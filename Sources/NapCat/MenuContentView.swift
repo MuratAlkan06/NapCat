@@ -11,8 +11,14 @@ import SwiftUI
 /// coordinated restart; fallback would be a native Quit item.)
 ///
 /// The stay-awake toggle reflects the OBSERVED `pmset -g` state only,
-/// re-read on every menu open (ADR §6) — never cached intent. The alert
-/// flows (heat warning, setup required, failure) are unchanged from P2.
+/// re-read on every menu open (ADR §6) — never cached intent.
+///
+/// Menu-stays-open rule (2026-07-10 UX fix): panel controls never dismiss
+/// the menu. The stay-awake flip runs off the main actor and the published
+/// observed state re-renders the open panel when it completes. The only
+/// flows allowed to close the menu are the genuinely modal ones — first-ever
+/// heat warning, setup required, failure — and they go through
+/// `closeMenuThenPresent` (dismiss cleanly first, then present).
 @MainActor
 final class MenuContentView: NSObject, NSMenuDelegate {
     let menu: NSMenu
@@ -25,6 +31,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     private let loginItem: LoginItemController
     private let defaults: UserDefaults
     private let hostingView: NSHostingView<MenuPanelView>
+    /// Re-toggles are ignored while a privileged command is in flight; the
+    /// completion refresh re-publishes the observed state either way.
+    private var stayAwakeCommandInFlight = false
 
     init(
         sleep: SleepStateController,
@@ -88,43 +97,74 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         hostingView.frame.size = hostingView.fittingSize
     }
 
-    // MARK: - Stay-awake toggle (P2 flow, unchanged semantics)
+    // MARK: - Stay-awake toggle (P2 semantics; menu-stays-open rework 2026-07-10)
 
+    /// Happy path (warning acknowledged, setup done): the menu STAYS OPEN.
+    /// Only the first-ever heat warning needs a modal answer before the
+    /// command may run — that flow dismisses first via closeMenuThenPresent.
     private func toggleStayAwake() {
-        // Alerts may follow — close the menu before running modal flows.
-        menu.cancelTracking()
+        guard !stayAwakeCommandInFlight else { return }
         // Decide from fresh observed state, not the toggle position.
         if sleep.refreshObservedState() == true {
-            disableStayAwake()
+            applyStayAwake(false)
+        } else if defaults.bool(forKey: DefaultsKey.heatWarningAcknowledged) {
+            applyStayAwake(true)
         } else {
-            enableStayAwake()
-        }
-        model.refresh()
-    }
-
-    private func enableStayAwake() {
-        guard confirmHeatRiskIfNeeded() else { return }
-        switch sleep.setStayAwake(true) {
-        case .success:
-            defaults.set(true, forKey: DefaultsKey.stayAwakeIntent)
-            watchdog.start(appPID: pid_t(ProcessInfo.processInfo.processIdentifier))
-        case .sudoDenied:
-            presentSetupRequiredAlert()
-        case .commandFailed(let detail), .verificationFailed(let detail):
-            presentFailureAlert(detail)
+            closeMenuThenPresent { [weak self] in
+                guard let self else { return }
+                if self.confirmHeatRiskIfNeeded() {
+                    self.applyStayAwake(true)
+                } else {
+                    // Declined — snap the toggle back to the observed state.
+                    self.model.refresh()
+                }
+            }
         }
     }
 
-    private func disableStayAwake() {
-        switch sleep.setStayAwake(false) {
-        case .success:
-            defaults.set(false, forKey: DefaultsKey.stayAwakeIntent)
-            watchdog.stop()
-        case .sudoDenied:
-            presentSetupRequiredAlert()
-        case .commandFailed(let detail), .verificationFailed(let detail):
-            presentFailureAlert(detail)
+    /// Runs the privileged flip OFF the tracking runloop (async controller
+    /// path); the open menu stays responsive and re-renders from the
+    /// published observed state when the outcome lands.
+    private func applyStayAwake(_ enable: Bool) {
+        guard !stayAwakeCommandInFlight else { return }
+        stayAwakeCommandInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.sleep.setStayAwakeAsync(enable)
+            self.stayAwakeCommandInFlight = false
+            self.handleStayAwakeOutcome(outcome, enable: enable)
+            self.model.refresh()
         }
+    }
+
+    /// Success bookkeeping stays inline (menu open); the two failure flows
+    /// are modal and therefore dismiss first via closeMenuThenPresent.
+    private func handleStayAwakeOutcome(
+        _ outcome: SleepStateController.SetStayAwakeOutcome,
+        enable: Bool
+    ) {
+        switch outcome {
+        case .success:
+            defaults.set(enable, forKey: DefaultsKey.stayAwakeIntent)
+            if enable {
+                watchdog.start(appPID: pid_t(ProcessInfo.processInfo.processIdentifier))
+            } else {
+                watchdog.stop()
+            }
+        case .sudoDenied:
+            closeMenuThenPresent { [weak self] in self?.presentSetupRequiredAlert() }
+        case .commandFailed(let detail), .verificationFailed(let detail):
+            closeMenuThenPresent { [weak self] in self?.presentFailureAlert(detail) }
+        }
+    }
+
+    /// The ONLY place that may dismiss the menu (locked by a lint-style
+    /// regression test in ScaffoldTests). Presentation is deferred one
+    /// runloop turn so the dismissal finishes before the modal session
+    /// starts.
+    private func closeMenuThenPresent(_ present: @escaping @MainActor () -> Void) {
+        menu.cancelTracking()
+        Task { @MainActor in present() }
     }
 
     /// One-time heat-risk warning; acknowledgment persisted. Returns true

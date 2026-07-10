@@ -31,11 +31,42 @@ final class SleepStateController {
 
     /// Runs the exact privileged command, then VERIFIES by re-reading
     /// `pmset -g` (unprivileged). Publishes the observed state either way.
+    /// Synchronous (blocks on two subprocesses) — used by the shutdown
+    /// revert and launch reconciliation, which cannot await. The menu
+    /// toggle uses `setStayAwakeAsync` so the open menu never blocks.
     func setStayAwake(_ enable: Bool) -> SetStayAwakeOutcome {
         let command: PrivilegedCommand = enable ? .stayAwakeOn : .stayAwakeOff
-        switch command.run() {
+        if let failure = failureOutcome(afterRunning: command, result: command.run()) {
+            return failure
+        }
+        return verifiedOutcome(enable: enable, observed: refreshObservedState())
+    }
+
+    /// Identical semantics to `setStayAwake(_:)`, but both subprocess runs
+    /// (sudo pmset + the pmset -g read-back) execute OFF the main actor, so
+    /// the menu-tracking runloop stays responsive while the command runs
+    /// (2026-07-10 menu-stays-open fix). The observed state is published on
+    /// the main actor when the read-back returns.
+    func setStayAwakeAsync(_ enable: Bool) async -> SetStayAwakeOutcome {
+        let command: PrivilegedCommand = enable ? .stayAwakeOn : .stayAwakeOff
+        let runResult = await Task.detached(priority: .userInitiated) { command.run() }.value
+        if let failure = failureOutcome(afterRunning: command, result: runResult) {
+            return failure
+        }
+        let output = await Task.detached(priority: .userInitiated) { Self.readPmsetG() }.value
+        return verifiedOutcome(enable: enable, observed: applyObservedRead(output))
+    }
+
+    /// Shared by the sync and async paths: classifies a privileged-command
+    /// result into an early-return outcome, or nil when the write succeeded
+    /// and the caller should proceed to read-back verification.
+    private func failureOutcome(
+        afterRunning command: PrivilegedCommand,
+        result: PrivilegedCommandResult
+    ) -> SetStayAwakeOutcome? {
+        switch result {
         case .success:
-            break
+            return nil
         case .sudoDenied:
             Self.logger.notice("sudo -n denied for \(command.argv.joined(separator: " "), privacy: .public) — setup required")
             return .sudoDenied
@@ -44,7 +75,12 @@ final class SleepStateController {
             Self.logger.error("\(detail, privacy: .public)")
             return .commandFailed(detail)
         }
-        let observed = refreshObservedState()
+    }
+
+    /// Shared read-back verification: pmset exited 0, so the observed state
+    /// must now match the requested one — anything else is a verification
+    /// failure, never a false success (ADR §2 spirit).
+    private func verifiedOutcome(enable: Bool, observed: Bool?) -> SetStayAwakeOutcome {
         guard observed == enable else {
             let detail = "pmset exited 0 but pmset -g reports SleepDisabled=\(observed.map { $0 ? "1" : "0" } ?? "unknown")"
             Self.logger.error("\(detail, privacy: .public)")
@@ -57,8 +93,15 @@ final class SleepStateController {
     /// Re-reads `pmset -g` and publishes the observed state.
     @discardableResult
     func refreshObservedState() -> Bool? {
+        applyObservedRead(Self.readPmsetG())
+    }
+
+    /// Parses a `pmset -g` read and publishes the observed state (fires
+    /// `onObservedStateChange` on change). Factored out so the async path
+    /// can read off the main actor and publish here.
+    private func applyObservedRead(_ output: String?) -> Bool? {
         let newValue: Bool?
-        if let output = Self.readPmsetG() {
+        if let output {
             newValue = Self.parseSleepDisabled(fromPmsetG: output) ?? false
         } else {
             Self.logger.error("could not read pmset -g — observed sleep state unknown")

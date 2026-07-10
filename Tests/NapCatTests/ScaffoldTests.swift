@@ -80,6 +80,55 @@ struct ScaffoldTests {
         #expect(mapped.caption != nil)
     }
 
+    /// Regression lock for the 2026-07-10 UX fix: toggling Stay Awake used
+    /// to close the menu because toggleStayAwake() called
+    /// menu.cancelTracking() unconditionally before deciding anything.
+    /// Lint-style (NSMenu tracking cannot be driven headlessly): the
+    /// happy-path functions must contain no menu-dismissal, alert, or
+    /// app-activation call, and the single cancelTracking call in the file
+    /// must live inside closeMenuThenPresent — the one modal-flow gateway.
+    @Test func stayAwakeToggleHappyPathNeverClosesTheMenu() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)  // Tests/NapCatTests/<this file>
+            .deletingLastPathComponent()                 // Tests/NapCatTests
+            .deletingLastPathComponent()                 // Tests
+            .deletingLastPathComponent()                 // repo root
+            .appendingPathComponent("Sources/NapCat/MenuContentView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        // Guard against path drift making the test vacuous.
+        try #require(source.contains("final class MenuContentView"))
+
+        let happyPathFunctions = ["toggleStayAwake", "applyStayAwake", "handleStayAwakeOutcome"]
+        let forbidden = ["cancelTracking", "NSAlert", "runModal", "NSApp.activate", "activate("]
+        for function in happyPathFunctions {
+            let body = try #require(Self.functionChunk(named: function, in: source),
+                                    "function \(function) not found — rewiring must keep this lock updated")
+            for token in forbidden {
+                #expect(!body.contains(token),
+                        "'\(token)' in \(function) — the happy path must keep the menu open")
+            }
+        }
+
+        // Exactly one dismissal call in the whole file, inside the gateway.
+        let dismissals = source.components(separatedBy: "cancelTracking").count - 1
+        #expect(dismissals == 1, "expected exactly one cancelTracking call, found \(dismissals)")
+        let gateway = try #require(Self.functionChunk(named: "closeMenuThenPresent", in: source))
+        #expect(gateway.contains("cancelTracking"),
+                "the one dismissal must live in closeMenuThenPresent")
+    }
+
+    /// Source chunk from `func <name>(` to the next function declaration
+    /// (or end of file) — coarse but stable for lint-style assertions.
+    private static func functionChunk(named name: String, in source: String) -> String? {
+        guard let start = source.range(of: "func \(name)(") else { return nil }
+        let tail = source[start.upperBound...]
+        let boundaries = ["\n    private func ", "\n    func ", "\n    static func ", "\n    nonisolated static func "]
+        let end = boundaries
+            .compactMap { tail.range(of: $0)?.lowerBound }
+            .min() ?? tail.endIndex
+        return String(tail[..<end])
+    }
+
     @Test func debugSectionVisibleOnlyWithSimulator() {
         let menuContent = makeMenuContent()
         #expect(menuContent.model.debugControlsVisible, "built with a simulator here")

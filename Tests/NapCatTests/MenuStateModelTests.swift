@@ -1,9 +1,60 @@
+// AppKit, not Foundation: an explicit `import Foundation` next to `import
+// Testing` triggers the _Testing_Foundation cross-import overlay, which the
+// CLT frameworks dir does not ship (see PLAN.md decision log 2026-07-09).
+import AppKit
 import Testing
 @testable import NapCat
 
 /// Pure display mappings behind the SwiftUI menu panel (the view itself gets
-/// its sign-off from the user's screenshot review — PLAN.md decision log).
+/// its sign-off from the user's screenshot review — PLAN.md decision log),
+/// plus the live-wiring guarantees the open-menu panel relies on
+/// (2026-07-10 menu-stays-open fix).
 struct MenuStateModelTests {
+    /// Isolated defaults suite so tests never touch com.muratalkan.napcat.
+    private static let testSuite = "com.muratalkan.napcat.tests.menustatemodel"
+
+    @MainActor
+    private func makeModel(
+        simulator: DebugPowerSimulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+    ) -> MenuStateModel {
+        let defaults = UserDefaults(suiteName: Self.testSuite)!
+        defaults.removePersistentDomain(forName: Self.testSuite)
+        let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
+        return MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter, simulator: simulator)
+    }
+
+    // MARK: Live wiring (menu stays open; panel updates in place)
+
+    /// The SwiftUI toggle binding forwards through the hook — it must NOT
+    /// run any privileged flow itself (MenuContentView owns that, async).
+    @Test @MainActor func setStayAwakeForwardsDesiredStateToTheHook() {
+        let model = makeModel()
+        var recorded: [Bool] = []
+        model.requestStayAwakeToggle = { recorded.append($0) }
+        model.setStayAwake(true)
+        model.setStayAwake(false)
+        #expect(recorded == [true, false])
+    }
+
+    /// refresh() re-reads every mirror from the controllers — this is the
+    /// publish path that re-renders the OPEN panel (battery header, charging
+    /// line, feature state) after an async command or power push completes.
+    @Test @MainActor func refreshRereadsControllersSoTheOpenPanelUpdates() {
+        let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let model = makeModel(simulator: simulator)
+        #expect(model.batteryPercent == 80)
+        #expect(model.adapterConnected)
+        #expect(model.isCharging)
+
+        simulator.batteryPercent = 42
+        simulator.adapterConnected = false
+        #expect(model.batteryPercent == 80, "mirrors update on refresh(), not by magic")
+
+        model.refresh()
+        #expect(model.batteryPercent == 42)
+        #expect(!model.adapterConnected)
+        #expect(!model.isCharging)
+    }
     // MARK: Stay-awake toggle = P2 checkmark semantics on a SwiftUI Toggle
 
     @Test func observedEnabledRendersOn() {
