@@ -78,4 +78,50 @@ struct WatchdogControllerTests {
                 == NSHomeDirectory() + "/Library/Application Support/NapCat/watchdog.pid"
         )
     }
+
+    /// Lint-style lock on the watchdog script's privileged surface
+    /// (ADR §6b): every sudo invocation in Resources/napcat-watchdog.sh must
+    /// byte-match one of the granted sudoers argv strings (PLAN.md §4, via
+    /// PrivilegedCommand — the same source of truth PrivilegedCommandTests
+    /// locks against setup.sh), each revert command appears exactly once,
+    /// and NO other sudo invocation exists in the script.
+    @Test func watchdogScriptSudoLinesByteMatchGrantedArgvStrings() throws {
+        let scriptURL = URL(fileURLWithPath: #filePath)  // Tests/NapCatTests/<this file>
+            .deletingLastPathComponent()                 // Tests/NapCatTests
+            .deletingLastPathComponent()                 // Tests
+            .deletingLastPathComponent()                 // repo root
+            .appendingPathComponent("Resources/napcat-watchdog.sh")
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        // Guard against path drift making the test vacuous.
+        try #require(script.contains("napcat-watchdog.sh <app-pid>"))
+
+        // The complete revert set: stay-awake off + the three charging
+        // re-enables (CHTE, with CH0B/CH0C as the fallback family).
+        let expectedInvocations: [PrivilegedCommand] = [
+            .stayAwakeOff, .chargingEnableCHTE, .chargingEnableCH0B, .chargingEnableCH0C,
+        ]
+
+        // Executable lines only — comments in the script legitimately
+        // mention sudoers. Every line in this script is either a full-line
+        // comment or plain code (no trailing comments, asserted below).
+        let codeLines = script
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        for line in codeLines {
+            #expect(!line.contains("#"),
+                    "trailing comment would defeat this lint — split it out: \(line)")
+        }
+
+        for command in expectedInvocations {
+            let sudoLine = command.sudoArgv.joined(separator: " ")
+            #expect(codeLines.filter { $0.contains(sudoLine) }.count == 1,
+                    "watchdog must invoke exactly once: \(sudoLine)")
+        }
+
+        let sudoLineCount = codeLines.filter { $0.contains("sudo") }.count
+        #expect(sudoLineCount == expectedInvocations.count,
+                "watchdog contains a sudo invocation beyond the granted revert set")
+    }
 }

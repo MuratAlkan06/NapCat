@@ -148,9 +148,10 @@ independent reverts:
    reverts `disablesleep` and re-enables charging before exit.
 2. **Watchdog** — while Stay Awake is on, a tiny shell script polls the
    app's PID every 5 seconds. `kill -9` the app and sleep is re-enabled
-   within ~5 seconds. The watchdog is handed the PID explicitly (not PPID —
-   orphaned processes get reparented) and stale watchdogs are reaped at
-   launch.
+   within ~5 seconds — and charging is un-paused too, if the privileged
+   helper is installed. The watchdog is handed the PID explicitly (not
+   PPID — orphaned processes get reparented) and stale watchdogs are reaped
+   at launch.
 3. **Login failsafe LaunchAgent** — covers crash-then-reboot: if the machine
    went down with sleep disabled and nothing above got to run,
    `com.napcat.failsafe` clears `disablesleep` once at the next login. The
@@ -197,7 +198,9 @@ machine awake, as designed.
   blindly.
 - **Not enforced when the app is not running.** The limit is a userspace
   loop, not firmware. If NapCat is quit while paused, it re-enables
-  charging on the way out; if it crashes, the next launch reconciles. But
+  charging on the way out; if it crashes while Stay Awake is on, the
+  watchdog re-enables charging within ~5 seconds; otherwise the next
+  launch reconciles. But
   while it simply isn't running, nothing pauses charging — enable **Launch
   at Login** so it is always on duty. There is also a 60-second re-assert
   while paused, because macOS has been observed re-enabling charging on its
@@ -287,10 +290,10 @@ Notes:
 
 ## License and attribution
 
-- **NapCat itself**: no license has been chosen yet — until one is added,
-  default copyright applies (all rights reserved). If you are reading this
-  on a public host and want to use the code, open an issue.
-- **`third_party/smc/`**: the SMC command-line tool is vendored from
+- **NapCat itself** is licensed under the **MIT License** — see
+  [LICENSE](LICENSE).
+- **`third_party/smc/`** (unchanged, not covered by NapCat's MIT license):
+  the SMC command-line tool is vendored from
   [hholtmann/smcFanControl](https://github.com/hholtmann/smcFanControl)
   (`smc-command/`, pinned at commit
   `e1bd672bcd2d72eddff9b6da7b9cae38e35c4206`, unmodified) and is licensed

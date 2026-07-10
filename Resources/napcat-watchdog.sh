@@ -30,10 +30,17 @@ done
 # This argv must byte-match /etc/sudoers.d/napcat (PLAN.md §4).
 /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0
 
-# P3 TODO: also re-enable charging once the smc sudoers entries ship:
-#   /usr/bin/sudo -n /usr/local/napcat/smc -k CHTE -w 00000000
-#   /usr/bin/sudo -n /usr/local/napcat/smc -k CH0B -w 00
-#   /usr/bin/sudo -n /usr/local/napcat/smc -k CH0C -w 00
+# ADR §6b: also re-enable charging, in case the app died while paused at the
+# charge limit. Best effort — silent no-op when setup.sh has not installed
+# the helper, and never blocks pidfile cleanup. CHTE first (modern key
+# family); on failure fall back to CH0B/CH0C (older systems). All three argv
+# strings must byte-match /etc/sudoers.d/napcat (PLAN.md §4).
+if [ -x /usr/local/napcat/smc ]; then
+    if ! /usr/bin/sudo -n /usr/local/napcat/smc -k CHTE -w 00000000; then
+        /usr/bin/sudo -n /usr/local/napcat/smc -k CH0B -w 00 || true
+        /usr/bin/sudo -n /usr/local/napcat/smc -k CH0C -w 00 || true
+    fi
+fi
 
 rm -f "$PIDFILE"
 exit 0
