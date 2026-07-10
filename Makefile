@@ -13,7 +13,7 @@ CLT_FRAMEWORKS := /Library/Developer/CommandLineTools/Library/Developer/Framewor
 
 .PHONY: all run test clean frames smc
 
-all:
+all: smc
 	swift build -c release
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
@@ -42,5 +42,11 @@ clean:
 frames:
 	@echo "make frames: pixel-art frame rendering arrives in Phase 4"
 
-smc:
-	@echo "make smc: vendored smc build arrives in Phase 3"
+# Vendored GPL-2.0 smc CLI (third_party/smc/PROVENANCE.md). Native arch build;
+# NOT bundled into the .app and NOT installed anywhere — the user-run
+# scripts/setup.sh copies it to /usr/local/napcat/smc (P3b).
+smc: $(DIST)/smc
+
+$(DIST)/smc: third_party/smc/smc.c third_party/smc/smc.h
+	mkdir -p $(DIST)
+	cc -DCMD_TOOL_BUILD third_party/smc/smc.c -framework IOKit -framework CoreFoundation -o $(DIST)/smc
