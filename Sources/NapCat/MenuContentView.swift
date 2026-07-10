@@ -1,103 +1,99 @@
 import AppKit
+import SwiftUI
 
-/// Builds the status item menu and owns the stay-awake toggle flow.
-/// Plain NSMenuItems; NSHostingView-backed SwiftUI items are introduced only
-/// when a phase actually needs them (slider etc.) — see PLAN.md decision log.
+/// Owns the status-item NSMenu. Since P3b the content is a rich SwiftUI
+/// panel (MenuPanelView) hosted in an NSHostingView inside a single
+/// view-based NSMenuItem — the menu still opens/closes as a plain NSMenu.
 ///
-/// The stay-awake checkmark reflects the OBSERVED `pmset -g` state only,
-/// re-read on every menu open (ADR §6) — never cached intent.
+/// ⌘Q: the hosting item carries keyEquivalent "q" + the terminate action;
+/// AppKit's command-key matching runs for view-based items, and the SwiftUI
+/// Quit button is the visible control. (Live ⌘Q check happens at the
+/// coordinated restart; fallback would be a native Quit item.)
+///
+/// The stay-awake toggle reflects the OBSERVED `pmset -g` state only,
+/// re-read on every menu open (ADR §6) — never cached intent. The alert
+/// flows (heat warning, setup required, failure) are unchanged from P2.
 @MainActor
 final class MenuContentView: NSObject, NSMenuDelegate {
     let menu: NSMenu
+    let model: MenuStateModel
 
     private let sleep: SleepStateController
     private let watchdog: WatchdogController
+    private let power: PowerInterface
+    private let limiter: ChargeLimiter
     private let defaults: UserDefaults
-    private let stayAwakeItem: NSMenuItem
+    private let hostingView: NSHostingView<MenuPanelView>
 
     init(
         sleep: SleepStateController,
         watchdog: WatchdogController,
+        power: PowerInterface,
+        limiter: ChargeLimiter,
+        simulator: DebugPowerSimulator? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.sleep = sleep
         self.watchdog = watchdog
+        self.power = power
+        self.limiter = limiter
         self.defaults = defaults
+        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, simulator: simulator)
         self.menu = NSMenu()
-        self.stayAwakeItem = NSMenuItem(
-            title: "Stay Awake (Lid Closed)",
-            action: #selector(toggleStayAwake(_:)),
-            keyEquivalent: ""
-        )
+        self.hostingView = NSHostingView(rootView: MenuPanelView(model: model))
         super.init()
 
-        // Explicit enable/disable control for placeholder items.
         menu.autoenablesItems = false
         menu.delegate = self
 
-        let batteryItem = NSMenuItem(title: "Battery: —%", action: nil, keyEquivalent: "")
-        batteryItem.isEnabled = false // Live IOKit data arrives in Phase 3.
-        menu.addItem(batteryItem)
+        hostingView.frame = NSRect(origin: .zero, size: hostingView.fittingSize)
+        let panelItem = NSMenuItem()
+        panelItem.view = hostingView
+        panelItem.isEnabled = true
+        // ⌘Q while the menu is open (see class comment).
+        panelItem.keyEquivalent = "q"
+        panelItem.keyEquivalentModifierMask = .command
+        panelItem.target = nil // responder chain → NSApplication
+        panelItem.action = #selector(NSApplication.terminate(_:))
+        menu.addItem(panelItem)
 
-        menu.addItem(.separator())
+        // Observed-state pushes → published mirrors.
+        sleep.onObservedStateChange = { [weak self] _ in self?.model.refresh() }
+        limiter.onChange = { [weak self] in self?.model.refresh() }
 
-        stayAwakeItem.target = self
-        // Stays enabled even when setup is missing, so the "Setup Required"
-        // alert can re-trigger.
-        stayAwakeItem.isEnabled = true
-        menu.addItem(stayAwakeItem)
+        // View actions that need AppKit flows.
+        model.requestStayAwakeToggle = { [weak self] _ in self?.toggleStayAwake() }
+        model.requestQuit = { NSApp.terminate(nil) }
 
-        let chargeLimitItem = NSMenuItem(title: "Charge Limit: 90%", action: nil, keyEquivalent: "")
-        chargeLimitItem.isEnabled = false // Wired up in Phase 3.
-        menu.addItem(chargeLimitItem)
-
-        menu.addItem(.separator())
-
-        let launchAtLoginItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
-        launchAtLoginItem.isEnabled = false // Wired up in Phase 5 (SMAppService).
-        menu.addItem(launchAtLoginItem)
-
-        let quitItem = NSMenuItem(
-            title: "Quit NapCat",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        // nil target: dispatch through the responder chain to NSApplication.
-        quitItem.target = nil
-        quitItem.isEnabled = true
-        menu.addItem(quitItem)
-
-        sleep.onObservedStateChange = { [weak self] observed in
-            self?.stayAwakeItem.state = Self.stayAwakeItemState(forObserved: observed)
-        }
-        stayAwakeItem.state = Self.stayAwakeItemState(forObserved: sleep.observedSleepDisabled)
+        model.refresh()
     }
 
-    /// Menu-open reconciliation (ADR §6): re-read the real pmset state every
-    /// time the menu opens, so external changes are reflected immediately.
+    /// Menu-open reconciliation (ADR §6): re-read the real pmset state and
+    /// re-evaluate the charge limiter every time the menu opens, so external
+    /// changes are reflected immediately. Also re-probes the smc helper so
+    /// running setup.sh takes effect without an app restart.
     func menuWillOpen(_ menu: NSMenu) {
         sleep.refreshObservedState()
+        power.reprobeChargeControlIfNeeded()
+        limiter.evaluate(reason: "menu open")
+        model.refresh()
+        // Section visibility (charge limit, debug) can change the intrinsic
+        // height — resize the hosted view before the menu lays out.
+        hostingView.frame.size = hostingView.fittingSize
     }
 
-    /// Pure mapping from observed state to the menu item checkmark.
-    /// nil (pmset -g unreadable) renders as mixed — never a false on/off.
-    nonisolated static func stayAwakeItemState(forObserved observed: Bool?) -> NSControl.StateValue {
-        switch observed {
-        case .some(true): return .on
-        case .some(false): return .off
-        case .none: return .mixed
-        }
-    }
+    // MARK: - Stay-awake toggle (P2 flow, unchanged semantics)
 
-    // MARK: - Stay-awake toggle
-
-    @objc private func toggleStayAwake(_ sender: NSMenuItem) {
-        // Decide from fresh observed state, not the menu checkmark.
+    private func toggleStayAwake() {
+        // Alerts may follow — close the menu before running modal flows.
+        menu.cancelTracking()
+        // Decide from fresh observed state, not the toggle position.
         if sleep.refreshObservedState() == true {
             disableStayAwake()
         } else {
             enableStayAwake()
         }
+        model.refresh()
     }
 
     private func enableStayAwake() {

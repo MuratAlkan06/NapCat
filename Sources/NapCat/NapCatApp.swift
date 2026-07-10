@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let defaults = UserDefaults.standard
     private let sleepController = SleepStateController()
     private let watchdogController = WatchdogController()
+    private var powerSource: PowerInterface?
+    private var chargeLimiter: ChargeLimiter?
     private var statusItemController: StatusItemController?
     private var signalSources: [DispatchSourceSignal] = []
     private var didRevertOnShutdown = false
@@ -25,13 +27,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchdogController.reapStaleWatchdog()
         reconcileAtLaunch()
         installTerminationSignalHandlers()
+
+        // ADR §8: debugBattery swaps the ENTIRE power interface at startup.
+        // In simulated mode IOKitPowerSource is never constructed, so no smc
+        // probe and no subprocess can ever run from the battery path.
+        let simulator: DebugPowerSimulator?
+        let power: PowerInterface
+        if defaults.bool(forKey: DefaultsKey.debugBattery) {
+            let debugSimulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            simulator = debugSimulator
+            power = debugSimulator
+            Self.logger.notice("debugBattery mode: DebugPowerSimulator active — no IOKit reads, no smc")
+        } else {
+            simulator = nil
+            power = IOKitPowerSource()
+        }
+        let limiter = ChargeLimiter(power: power, defaults: defaults)
+        powerSource = power
+        chargeLimiter = limiter
+
         statusItemController = StatusItemController(
             menuContent: MenuContentView(
                 sleep: sleepController,
                 watchdog: watchdogController,
+                power: power,
+                limiter: limiter,
+                simulator: simulator,
                 defaults: defaults
             )
         )
+        // After the menu is wired (limiter.onChange set) so the first
+        // evaluation is already visible in the UI.
+        limiter.start()
     }
 
     // Crash-failsafe layer (a), clean path.
@@ -56,7 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Idempotent shutdown revert shared by applicationWillTerminate and the
     /// SIGTERM/SIGINT handlers. Only reverts what NapCat itself enabled
-    /// (intent flag) — an externally-set disablesleep is left alone.
+    /// (intent flag / an active charging pause) — externally-set state is
+    /// left alone.
     private func revertStayAwakeIfNeeded() {
         guard !didRevertOnShutdown else { return }
         didRevertOnShutdown = true
@@ -64,6 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = sleepController.setStayAwake(false)
             defaults.set(false, forKey: DefaultsKey.stayAwakeIntent)
         }
+        // Never leave charging inhibited after a clean quit (P3b).
+        chargeLimiter?.releasePauseForShutdown()
         watchdogController.stop()
     }
 

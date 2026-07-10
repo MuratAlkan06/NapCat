@@ -14,17 +14,27 @@ final class DebugPowerSimulator: PowerInterface {
         case enableCharging
     }
 
-    // MARK: Simulated inputs (settable from tests / hidden debug menu)
+    // MARK: Simulated inputs (settable from tests / debug menu section)
 
     /// Simulated charge 0–100; nil simulates an unreadable battery.
-    var batteryPercent: Int?
+    var batteryPercent: Int? {
+        didSet { if batteryPercent != oldValue { notifyChange() } }
+    }
     /// Simulated external power connection.
-    var adapterConnected: Bool
+    var adapterConnected: Bool {
+        didSet { if adapterConnected != oldValue { notifyChange() } }
+    }
     /// Simulated battery presence (false = desktop Mac).
     let hasBattery: Bool
     /// Outcome returned by both writes; set to a failure case to simulate a
     /// write error. Failed writes are still recorded but change nothing.
     var writeResult: PrivilegedCommandResult = .success
+    /// Simulated charge-control availability; tests set `.setupRequired` /
+    /// `.probeFailed` to exercise those feature states. Defaults to ready —
+    /// the simulator needs no privileged helper.
+    var chargeControlReadiness: ChargeControlReadiness = .ready {
+        didSet { if chargeControlReadiness != oldValue { notifyChange() } }
+    }
 
     // MARK: Observable outputs
 
@@ -45,6 +55,10 @@ final class DebugPowerSimulator: PowerInterface {
     /// Every write call in order, for test assertions.
     private(set) var writeCalls: [WriteCall] = []
 
+    /// Single observer per PowerInterface — fired after any simulated value
+    /// change, exactly like the real interface pushes IOKit updates.
+    var onPowerChange: (() -> Void)?
+
     init(
         batteryPercent: Int? = 80,
         adapterConnected: Bool = false,
@@ -55,19 +69,37 @@ final class DebugPowerSimulator: PowerInterface {
         self.hasBattery = hasBattery
     }
 
+    private func notifyChange() {
+        onPowerChange?()
+    }
+
+    // MARK: PowerInterface availability
+
+    /// Nothing to probe in simulation.
+    func reprobeChargeControlIfNeeded() {}
+
+    /// The simulator always knows its own inhibit state.
+    func readChargingInhibited() -> Bool? { chargingInhibited }
+
     // MARK: PowerInterface writes
 
     @discardableResult
     func disableCharging() -> PrivilegedCommandResult {
         writeCalls.append(.disableCharging)
-        if writeResult == .success { chargingInhibited = true }
+        if writeResult == .success, !chargingInhibited {
+            chargingInhibited = true
+            notifyChange()
+        }
         return writeResult
     }
 
     @discardableResult
     func enableCharging() -> PrivilegedCommandResult {
         writeCalls.append(.enableCharging)
-        if writeResult == .success { chargingInhibited = false }
+        if writeResult == .success, chargingInhibited {
+            chargingInhibited = false
+            notifyChange()
+        }
         return writeResult
     }
 }

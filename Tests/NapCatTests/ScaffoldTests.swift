@@ -5,7 +5,8 @@ import Testing
 /// Menu scaffold tests (Swift Testing — XCTest is unavailable with
 /// Command Line Tools only; see PLAN.md decision log 2026-07-09).
 /// Construction only — no test here (or anywhere) may invoke sudo or spawn
-/// the real watchdog; building these objects runs no external process.
+/// the real watchdog; the power interface is always the simulator, so
+/// building these objects runs no external process.
 @MainActor
 struct ScaffoldTests {
     /// Isolated defaults suite so tests never touch com.muratalkan.napcat.
@@ -14,9 +15,14 @@ struct ScaffoldTests {
     private func makeMenuContent() -> MenuContentView {
         let defaults = UserDefaults(suiteName: Self.testSuite)!
         defaults.removePersistentDomain(forName: Self.testSuite)
+        let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
         return MenuContentView(
             sleep: SleepStateController(),
             watchdog: WatchdogController(),
+            power: simulator,
+            limiter: limiter,
+            simulator: simulator,
             defaults: defaults
         )
     }
@@ -27,46 +33,62 @@ struct ScaffoldTests {
         #expect(icon.size == NSSize(width: 18, height: 18))
     }
 
-    @Test func menuLayoutAndEnabledStates() {
+    /// P3b: the menu is a single view-based item hosting the SwiftUI panel.
+    @Test func menuHostsExactlyOneSwiftUIPanelItem() {
         let menuContent = makeMenuContent()
         let menu = menuContent.menu
-        #expect(menu.items.count == 7)
+        #expect(menu.items.count == 1)
 
-        #expect(menu.items[0].title == "Battery: —%")
-        #expect(!menu.items[0].isEnabled)
+        let panelItem = menu.items[0]
+        // Type spelled as a string: `import SwiftUI` next to `import Testing`
+        // would pull in another CLT-missing cross-import overlay.
+        let hostedViewType = String(describing: type(of: panelItem.view as AnyObject))
+        #expect(hostedViewType.contains("NSHostingView"), "got \(hostedViewType)")
+        #expect(hostedViewType.contains("MenuPanelView"), "got \(hostedViewType)")
+        #expect(panelItem.isEnabled)
+        // The hosted panel must have laid out to a real size.
+        #expect((panelItem.view?.frame.width ?? 0) > 0)
+        #expect((panelItem.view?.frame.height ?? 0) > 0)
+    }
 
-        #expect(menu.items[1].isSeparatorItem)
-
-        // Phase 2: stay-awake is live — enabled with a toggle action, and it
-        // stays enabled even when setup is missing (alert must re-trigger).
-        #expect(menu.items[2].title == "Stay Awake (Lid Closed)")
-        #expect(menu.items[2].isEnabled)
-        #expect(menu.items[2].action != nil)
-        #expect(menu.items[2].target === menuContent)
-
-        #expect(menu.items[3].title == "Charge Limit: 90%")
-        #expect(!menu.items[3].isEnabled)
-
-        #expect(menu.items[4].isSeparatorItem)
-
-        #expect(menu.items[5].title == "Launch at Login")
-        #expect(!menu.items[5].isEnabled)
-
-        #expect(menu.items[6].title == "Quit NapCat")
-        #expect(menu.items[6].isEnabled)
-        #expect(menu.items[6].action == #selector(NSApplication.terminate(_:)))
+    /// ⌘Q stays wired even though Quit is a SwiftUI button: the hosting item
+    /// carries the key equivalent and terminates via the responder chain.
+    @Test func commandQTerminatesThroughTheHostingItem() {
+        let menuContent = makeMenuContent()
+        let panelItem = menuContent.menu.items[0]
+        #expect(panelItem.keyEquivalent == "q")
+        #expect(panelItem.keyEquivalentModifierMask == .command)
+        #expect(panelItem.action == #selector(NSApplication.terminate(_:)))
+        #expect(panelItem.target == nil, "nil target → responder chain → NSApplication")
     }
 
     @Test func menuIsItsOwnDelegateForOpenReconciliation() {
         let menuContent = makeMenuContent()
-        // menuWillOpen re-reads pmset -g on every open (ADR §6).
+        // menuWillOpen re-reads pmset -g and re-evaluates the limiter on
+        // every open (ADR §6).
         #expect(menuContent.menu.delegate === menuContent)
     }
 
-    @Test func stayAwakeItemStartsFromObservedStateNotIntent() {
+    @Test func modelStartsFromObservedStateNotIntent() {
         let menuContent = makeMenuContent()
         // No pmset -g read has happened yet in this fresh controller, so the
-        // observed state is unknown → mixed, never a cached-intent checkmark.
-        #expect(menuContent.menu.items[2].state == .mixed)
+        // observed state is unknown → toggle off WITH caption, never a
+        // cached-intent checkmark.
+        #expect(menuContent.model.stayAwakeObserved == nil)
+        let mapped = MenuStateModel.stayAwakeToggle(forObserved: menuContent.model.stayAwakeObserved)
+        #expect(!mapped.isOn)
+        #expect(mapped.caption != nil)
+    }
+
+    @Test func debugSectionVisibleOnlyWithSimulator() {
+        let menuContent = makeMenuContent()
+        #expect(menuContent.model.debugControlsVisible, "built with a simulator here")
+
+        // Real-interface wiring (simulator: nil) hides the debug section.
+        let defaults = UserDefaults(suiteName: Self.testSuite)!
+        let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
+        let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter, simulator: nil)
+        #expect(!model.debugControlsVisible)
     }
 }

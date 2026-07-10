@@ -8,4 +8,11 @@ enum DefaultsKey {
     static let stayAwakeIntent = "stayAwakeIntent"
     /// One-time heat-risk warning acknowledged.
     static let heatWarningAcknowledged = "heatWarningAcknowledged"
+    /// Charge limit percent (Int, 50–100 step 5, default 90; 100 = uncapped).
+    static let limit = "limit"
+    /// Whether the charge-limit feature is enabled.
+    static let limitEnabled = "limitEnabled"
+    /// Read ONCE at startup (ADR §8): true swaps the entire power interface
+    /// for DebugPowerSimulator — restart the app to change modes.
+    static let debugBattery = "debugBattery"
 }
