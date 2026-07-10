@@ -6,9 +6,10 @@ import AppKit
 @MainActor
 final class StatusItemController {
     private let statusItem: NSStatusItem
-    private let menuContent = MenuContentView()
+    private let menuContent: MenuContentView
 
-    init() {
+    init(menuContent: MenuContentView) {
+        self.menuContent = menuContent
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = Self.placeholderIcon()
         statusItem.menu = menuContent.menu
