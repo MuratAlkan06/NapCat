@@ -16,10 +16,11 @@ CLT_FRAMEWORKS := /Library/Developer/CommandLineTools/Library/Developer/Framewor
 all: smc
 	swift build -c release
 	rm -rf $(APP)
-	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
+	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources/frames
 	cp $(BINARY) $(APP)/Contents/MacOS/$(APP_NAME)
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	install -m 0755 Resources/napcat-watchdog.sh $(APP)/Contents/Resources/napcat-watchdog.sh
+	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
 	codesign --force -s - $(APP)
 
 run: all
@@ -39,8 +40,12 @@ test:
 clean:
 	rm -rf .build $(DIST)
 
+# Regenerates Resources/frames/*.png from the in-code pixel grids. Output is
+# byte-deterministic (self-contained PNG encoder, no timestamps), so rerunning
+# leaves `git status` clean. Frames are committed AND regenerable; `make all`
+# copies the committed PNGs into the app bundle without re-rendering.
 frames:
-	@echo "make frames: pixel-art frame rendering arrives in Phase 4"
+	swift scripts/render_frames.swift
 
 # Vendored GPL-2.0 smc CLI (third_party/smc/PROVENANCE.md). Native arch build;
 # NOT bundled into the .app and NOT installed anywhere — the user-run
