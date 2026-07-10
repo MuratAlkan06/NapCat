@@ -22,6 +22,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     private let watchdog: WatchdogController
     private let power: PowerInterface
     private let limiter: ChargeLimiter
+    private let loginItem: LoginItemController
     private let defaults: UserDefaults
     private let hostingView: NSHostingView<MenuPanelView>
 
@@ -30,6 +31,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         watchdog: WatchdogController,
         power: PowerInterface,
         limiter: ChargeLimiter,
+        loginItem: LoginItemController = LoginItemController(),
         simulator: DebugPowerSimulator? = nil,
         defaults: UserDefaults = .standard
     ) {
@@ -37,8 +39,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.watchdog = watchdog
         self.power = power
         self.limiter = limiter
+        self.loginItem = loginItem
         self.defaults = defaults
-        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, simulator: simulator)
+        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, loginItem: loginItem, simulator: simulator)
         self.menu = NSMenu()
         self.hostingView = NSHostingView(rootView: MenuPanelView(model: model))
         super.init()
@@ -76,6 +79,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         sleep.refreshObservedState()
         power.reprobeChargeControlIfNeeded()
         limiter.evaluate(reason: "menu open")
+        // Launch-at-login reflects the live SMAppService status on every
+        // open (approval may have been granted in System Settings meanwhile).
+        loginItem.refresh()
         model.refresh()
         // Section visibility (charge limit, debug) can change the intrinsic
         // height — resize the hosted view before the menu lays out.

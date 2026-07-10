@@ -1,6 +1,8 @@
 import Foundation
 
-/// UserDefaults keys (PLAN.md §11).
+/// UserDefaults keys (PLAN.md §11) — the complete set; nothing else is
+/// persisted. Launch-at-login is deliberately NOT stored here: SMAppService
+/// is the source of truth and is queried live (P5 decision).
 enum DefaultsKey {
     /// The user's last stay-awake action through the app. NEVER used to
     /// auto-enable at launch — only to detect that a previous session ended

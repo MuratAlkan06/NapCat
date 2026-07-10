@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 /// Observable bridge between the controllers and the SwiftUI menu panel
@@ -20,12 +21,16 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var featureState: ChargeLimitFeatureState = .off
     @Published private(set) var limit = ChargeLimiter.defaultLimit
     @Published private(set) var limitEnabled = false
+    /// SMAppService status snapshot (source of truth — PLAN.md §11); the
+    /// live service is queried on menu open, never persisted to defaults.
+    @Published private(set) var loginItemStatus: SMAppService.Status = .notRegistered
 
     // MARK: Wiring
 
     private let power: PowerInterface
     private let sleep: SleepStateController
     private let limiter: ChargeLimiter
+    private let loginItem: LoginItemController?
     /// Non-nil only in debugBattery mode — enables the hidden debug section.
     private let simulator: DebugPowerSimulator?
 
@@ -40,11 +45,13 @@ final class MenuStateModel: ObservableObject {
         power: PowerInterface,
         sleep: SleepStateController,
         limiter: ChargeLimiter,
+        loginItem: LoginItemController? = nil,
         simulator: DebugPowerSimulator? = nil
     ) {
         self.power = power
         self.sleep = sleep
         self.limiter = limiter
+        self.loginItem = loginItem
         self.simulator = simulator
         refresh()
     }
@@ -59,6 +66,9 @@ final class MenuStateModel: ObservableObject {
         featureState = limiter.featureState
         limit = limiter.limit
         limitEnabled = limiter.enabled
+        // Cached snapshot only — MenuContentView refreshes the live status
+        // on menu open (constructing the model must not query the service).
+        loginItemStatus = loginItem?.status ?? .notRegistered
     }
 
     // MARK: Actions (forwarded)
@@ -67,6 +77,15 @@ final class MenuStateModel: ObservableObject {
     func setLimitEnabled(_ enabled: Bool) { limiter.setEnabled(enabled) }
     func setLimit(_ newLimit: Int) { limiter.setLimit(newLimit) }
     func quit() { requestQuit?() }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        loginItem?.setEnabled(enabled)
+        refresh()
+    }
+
+    func openLoginItemsSettings() {
+        loginItem?.openSystemSettingsLoginItems()
+    }
 
     func setSimulatedPercent(_ percent: Int) {
         simulator?.batteryPercent = min(100, max(0, percent))
@@ -118,6 +137,27 @@ final class MenuStateModel: ObservableObject {
 
     nonisolated static func limitLabel(limit: Int) -> String {
         limit >= 100 ? "No limit — charge to 100%" : "Pause charging at \(limit)%"
+    }
+
+    /// Launch-at-login checkbox from the OBSERVED SMAppService status —
+    /// same never-guess rule as the stay-awake toggle. `.requiresApproval`
+    /// renders off with guidance plus a System Settings shortcut;
+    /// `.notFound` explains itself instead of failing silently.
+    nonisolated static func launchAtLoginPresentation(
+        for status: SMAppService.Status
+    ) -> (isOn: Bool, caption: String?, showSettingsShortcut: Bool) {
+        switch status {
+        case .enabled:
+            return (true, nil, false)
+        case .notRegistered:
+            return (false, nil, false)
+        case .requiresApproval:
+            return (false, "Waiting for approval in System Settings › General › Login Items.", true)
+        case .notFound:
+            return (false, "Login item not found — toggle again to re-register this copy of NapCat.", false)
+        @unknown default:
+            return (false, nil, false)
+        }
     }
 
     /// Feature-state messaging line under the charge-limit controls.

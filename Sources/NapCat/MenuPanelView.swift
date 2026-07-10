@@ -205,16 +205,39 @@ struct MenuPanelView: View {
 
     // MARK: Footer
 
+    /// SMAppService is the source of truth — the checkbox renders the
+    /// OBSERVED status (refreshed on menu open), never a stored flag.
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { MenuStateModel.launchAtLoginPresentation(for: model.loginItemStatus).isOn },
+            set: { model.setLaunchAtLogin($0) }
+        )
+    }
+
     private var footer: some View {
-        HStack {
-            Toggle("Launch at Login", isOn: .constant(false))
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-                .disabled(true) // Wired up in Phase 5 (SMAppService).
-            Spacer()
-            Button("Quit NapCat") { model.quit() }
-                .controlSize(.small)
-                .keyboardShortcut("q", modifiers: .command)
+        let presentation = MenuStateModel.launchAtLoginPresentation(for: model.loginItemStatus)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Toggle("Launch at Login", isOn: launchAtLoginBinding)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                Spacer()
+                Button("Quit NapCat") { model.quit() }
+                    .controlSize(.small)
+                    .keyboardShortcut("q", modifiers: .command)
+            }
+            if let caption = presentation.caption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if presentation.showSettingsShortcut {
+                Button("Open Login Items Settings…") { model.openLoginItemsSettings() }
+                    .buttonStyle(.link)
+                    .controlSize(.small)
+                    .font(.caption2)
+            }
         }
     }
 }
