@@ -17,6 +17,17 @@ enum FrameSet: String, CaseIterable, Sendable {
         }
     }
 
+    /// Pixel height of the @1x frame PNG for this set (the @2x asset is exactly
+    /// twice this). run/sit are 18px on-grid pixel art; sleep is the processed
+    /// hand-drawn grooming cat rendered at iconPointHeight = 21px
+    /// (decision log 2026-07-11). All frames are square.
+    var baseDimension: Int {
+        switch self {
+        case .run, .sit: return 18
+        case .sleep: return 21
+        }
+    }
+
     /// Base names of the frame files on disk ("run0" → run0.png + run0@2x.png).
     var frameNames: [String] {
         (0..<frameCount).map { "\(rawValue)\($0)" }
@@ -32,6 +43,12 @@ enum FrameSet: String, CaseIterable, Sendable {
 ///   else charging paused     → sit   @  1 fps
 ///   else                     → sleep @ 0.5 fps
 ///   screens asleep           → nil   (timer stopped)
+///
+/// Sleep runs at 0.5 fps: the three sleep frames are byte-identical copies of
+/// one static processed grooming cat (the user rejected the synthetic head-bob,
+/// decision log 2026-07-11), so the cadence is moot — 0.5 fps just minimizes
+/// timer wakeups. The upcoming hand-drawn 17-frame set will animate the SIT
+/// state instead.
 ///
 /// PRIORITY: stay-awake beats charge-paused — while both are true the cat
 /// runs, because running signals "an awake purpose is active"; the sit pose

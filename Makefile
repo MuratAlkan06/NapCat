@@ -40,10 +40,12 @@ test:
 clean:
 	rm -rf .build $(DIST)
 
-# Regenerates Resources/frames/*.png from the in-code pixel grids. Output is
-# byte-deterministic (self-contained PNG encoder, no timestamps), so rerunning
-# leaves `git status` clean. Frames are committed AND regenerable; `make all`
-# copies the committed PNGs into the app bundle without re-rendering.
+# Regenerates Resources/frames/*.png: run/sit from the in-code pixel grids,
+# sleep from art/groom-source.png (the hand-drawn grooming cat). Output is
+# byte-deterministic (self-contained PNG encoder + pure processing, no
+# timestamps), so rerunning leaves `git status` clean. Frames are committed AND
+# regenerable; `make all` copies the committed PNGs into the app bundle without
+# re-rendering.
 frames:
 	swift scripts/render_frames.swift
 

@@ -27,10 +27,14 @@ struct ScaffoldTests {
         )
     }
 
-    @Test func placeholderIconIsTemplateAt18Points() {
+    @Test func placeholderIconIsTemplateAtIconPointHeight() {
         let icon = StatusItemController.placeholderIcon()
         #expect(icon.isTemplate, "menu bar icon must be a template image")
-        #expect(icon.size == NSSize(width: 18, height: 18))
+        #expect(StatusItemController.iconPointHeight == 21, "locked render size (user decision 2026-07-10)")
+        #expect(icon.size == NSSize(
+            width: StatusItemController.iconPointHeight,
+            height: StatusItemController.iconPointHeight
+        ))
     }
 
     /// P3b: the menu is a single view-based item hosting the SwiftUI panel.

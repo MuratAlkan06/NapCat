@@ -35,7 +35,7 @@ struct AnimationMappingTests {
             rationale: "charge paused at limit → sit @1fps"),
         Row(stayAwakeOn: false, chargePaused: false, screenAwake: true,
             expectedSet: .sleep, expectedFPS: 0.5,
-            rationale: "idle → sleeping kitten @0.5fps"),
+            rationale: "idle → static grooming cat @0.5fps (frames identical; slow tick, 2026-07-11)"),
         Row(stayAwakeOn: true, chargePaused: true, screenAwake: false,
             expectedSet: nil, expectedFPS: nil,
             rationale: "screens asleep → timer stopped regardless of app state"),
@@ -208,10 +208,13 @@ struct FrameAssetTests {
             .appendingPathComponent("Resources/frames", isDirectory: true)
     }
 
+    /// run/sit are 18px on-grid pixel art (@2x = 36); sleep is the processed
+    /// grooming cat at iconPointHeight = 21px (@2x = 42) — see FrameSet
+    /// .baseDimension (decision log 2026-07-11).
     @Test(arguments: FrameSet.allCases)
     func frameAssetsExistAsValidPNGsWithCorrectDimensions(set: FrameSet) throws {
         for name in set.frameNames {
-            for (suffix, expectedPixels) in [("", 18), ("@2x", 36)] {
+            for (suffix, expectedPixels) in [("", set.baseDimension), ("@2x", set.baseDimension * 2)] {
                 let url = Self.framesDirectory.appendingPathComponent("\(name)\(suffix).png")
                 let data = try #require(try? Data(contentsOf: url), "missing \(url.lastPathComponent)")
                 #expect(data.prefix(8) == Self.pngSignature, "\(url.lastPathComponent): not a PNG")
@@ -220,6 +223,72 @@ struct FrameAssetTests {
                 #expect(rep.pixelsHigh == expectedPixels, "\(url.lastPathComponent)")
             }
         }
+    }
+
+    /// The sleep state is a STILL processed grooming cat: all three frames are
+    /// byte-identical copies of the one rest pose (the user rejected the
+    /// synthetic head-bob, decision log 2026-07-11). This guards against a
+    /// regression that re-introduces motion, and confirms the single frame is a
+    /// real cutout cat (non-blank, not fully opaque — the interior cutouts and
+    /// breathing margin survived the pipeline).
+    @Test func sleepFramesAreStaticIdenticalCopies() throws {
+        func data(_ name: String) throws -> Data {
+            let url = Self.framesDirectory.appendingPathComponent("\(name).png")
+            return try #require(try? Data(contentsOf: url), "missing \(name).png")
+        }
+        // @1x and @2x: sleep0/1/2 must be byte-identical (no animation).
+        for suffix in ["", "@2x"] {
+            let s0 = try data("sleep0\(suffix)")
+            let s1 = try data("sleep1\(suffix)")
+            let s2 = try data("sleep2\(suffix)")
+            #expect(s0 == s1, "sleep0\(suffix) and sleep1\(suffix) must be identical (static sleep)")
+            #expect(s1 == s2, "sleep1\(suffix) and sleep2\(suffix) must be identical (static sleep)")
+        }
+        // The frame must actually contain the cat: a non-trivial opaque area
+        // (not blank) with cutouts/margin intact (not fully opaque).
+        for name in FrameSet.sleep.frameNames {
+            let rep = try #require(NSBitmapImageRep(data: try data(name)))
+            var opaque = 0
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.2 {
+                    opaque += 1
+                }
+            }
+            let total = rep.pixelsHigh * rep.pixelsWide
+            #expect(opaque > total / 6, "\(name): too few opaque pixels — frame looks blank")
+            #expect(opaque < total, "\(name): fully opaque — cutout/margin lost")
+        }
+    }
+
+    /// ORIENTATION LOCK (regression guard, 2026-07-11). A sitting/curled cat is
+    /// bottom-heavy: its seated base — haunches and folded paws — fills the lower
+    /// half of the frame, while the ears and head leave the upper half sparser.
+    /// So the bottom half of the rendered sleep silhouette must hold MORE opaque
+    /// pixels than the top half. The groom pipeline decodes the source via
+    /// CoreGraphics; a stray vertical flip at that row-order boundary once
+    /// rendered the sleep cat upside down (top-heavy). A flip swaps the two
+    /// half-masses exactly, so `bottom > top` trips immediately if it returns.
+    /// Deliberately a mass-distribution check (not a pixel hash) so it stays
+    /// valid for any future seated/curled cat art — all of which are bottom-heavy.
+    @Test(arguments: ["sleep0", "sleep0@2x"])
+    func sleepFrameIsBottomHeavyNotUpsideDown(_ name: String) throws {
+        let url = Self.framesDirectory.appendingPathComponent("\(name).png")
+        let data = try #require(try? Data(contentsOf: url), "missing \(name).png")
+        let rep = try #require(NSBitmapImageRep(data: data), "\(name): undecodable")
+        let height = rep.pixelsHigh, width = rep.pixelsWide
+        // colorAt(x:y:) uses a top-left origin (y = 0 is the top row). Compare
+        // two SYMMETRIC bands of floor(height/2) rows each; for an odd height
+        // (21px @1x) the exact center row is excluded so the bands are equal —
+        // otherwise the extra row biases "bottom" and a flip could still pass.
+        let half = height / 2
+        var top = 0, bottom = 0
+        for y in 0..<height {
+            for x in 0..<width where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.2 {
+                if y < half { top += 1 } else if y >= height - half { bottom += 1 }
+            }
+        }
+        #expect(bottom > top,
+            "\(name): sleep cat must be bottom-heavy (seated base below, ears above) — top=\(top) bottom=\(bottom). top-heavy means the groom pipeline flipped it vertically.")
     }
 
     /// The directory contains exactly the 20 expected PNGs — no stale
@@ -236,9 +305,9 @@ struct FrameAssetTests {
         #expect(pngs == expected)
     }
 
-    /// Integration-level load: every frame becomes an 18pt template image
-    /// with both representations; a missing directory falls back to nil
-    /// (StatusItemController then keeps the placeholder icon).
+    /// Integration-level load: every frame becomes an iconPointHeight-tall
+    /// template image with both representations; a missing directory falls
+    /// back to nil (StatusItemController then keeps the placeholder icon).
     @Test func frameLibraryLoadsTemplateImagesAndFailsClosedWhenMissing() throws {
         let frames = try #require(StatusItemController.loadFrameImages(from: Self.framesDirectory))
         for set in FrameSet.allCases {
@@ -246,7 +315,13 @@ struct FrameAssetTests {
             #expect(images.count == set.frameCount)
             for image in images {
                 #expect(image.isTemplate, "menu bar frames must be template images")
-                #expect(image.size == NSSize(width: 18, height: 18))
+                // All frames are square (run/sit 18px, sleep 21px), so width
+                // == height at the render size; non-square art would scale
+                // width proportionally.
+                #expect(image.size == NSSize(
+                    width: StatusItemController.iconPointHeight,
+                    height: StatusItemController.iconPointHeight
+                ))
                 #expect(image.representations.count == 2, "@1x + @2x reps")
             }
         }

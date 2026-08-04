@@ -10,6 +10,13 @@ import os
 final class StatusItemController {
     private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "statusitem")
 
+    /// Menu bar icon render height in points (18 → 21 per user request,
+    /// 2026-07-10). Applies to loaded frame images and the placeholder. The
+    /// sleep frames are now rendered 1:1 at 21px (the grooming cat, art v2,
+    /// 2026-07-11); run/sit remain 18px on-grid art upscaled to 21pt until
+    /// their replacements are drawn.
+    static let iconPointHeight: CGFloat = 21
+
     private let statusItem: NSStatusItem
     private let menuContent: MenuContentView
     /// nil when the bundle lacks Resources/frames (placeholder fallback).
@@ -57,13 +64,12 @@ final class StatusItemController {
             .store(in: &cancellables)
     }
 
-    /// Loads every animation frame from a frames directory as an 18pt
-    /// template image with @1x and @2x bitmap representations. ANY missing
-    /// or undecodable file fails the whole load (nil → caller keeps the
-    /// placeholder icon). Internal so tests can point it at the repo's
-    /// Resources/frames.
+    /// Loads every animation frame from a frames directory as an
+    /// iconPointHeight-tall template image with @1x and @2x bitmap
+    /// representations. ANY missing or undecodable file fails the whole load
+    /// (nil → caller keeps the placeholder icon). Internal so tests can point
+    /// it at the repo's Resources/frames.
     static func loadFrameImages(from directory: URL) -> [FrameSet: [NSImage]]? {
-        let pointSize = NSSize(width: 18, height: 18)
         var result: [FrameSet: [NSImage]] = [:]
         for set in FrameSet.allCases {
             var images: [NSImage] = []
@@ -71,10 +77,19 @@ final class StatusItemController {
                 guard
                     let data1x = try? Data(contentsOf: directory.appendingPathComponent("\(name).png")),
                     let rep1x = NSBitmapImageRep(data: data1x),
+                    rep1x.pixelsHigh > 0,
                     let data2x = try? Data(contentsOf: directory.appendingPathComponent("\(name)@2x.png")),
                     let rep2x = NSBitmapImageRep(data: data2x)
                 else { return nil }
-                // 18px and 36px backings both cover 18×18 points → 1x + 2x.
+                // Height renders at iconPointHeight; width follows the
+                // frame's pixel aspect ratio so non-square frames scale
+                // proportionally (all current frames are square — run/sit 18px,
+                // sleep 21px → 21×21pt). Both backings cover the same point
+                // rect → 1x+2x.
+                let pointSize = NSSize(
+                    width: Self.iconPointHeight * CGFloat(rep1x.pixelsWide) / CGFloat(rep1x.pixelsHigh),
+                    height: Self.iconPointHeight
+                )
                 rep1x.size = pointSize
                 rep2x.size = pointSize
                 let image = NSImage(size: pointSize)
@@ -90,13 +105,19 @@ final class StatusItemController {
         return result
     }
 
-    /// Simple cat-ish silhouette (head + two ears) drawn in code at 18x18pt.
-    /// Template image (black + alpha) so the system tints it for the menu bar.
-    /// Kept as the fallback icon when the frame assets cannot be loaded.
-    /// Internal (not private) so tests can inspect it.
+    /// Simple cat-ish silhouette (head + two ears) drawn in code at
+    /// iconPointHeight (square). Template image (black + alpha) so the system
+    /// tints it for the menu bar. Kept as the fallback icon when the frame
+    /// assets cannot be loaded. Internal (not private) so tests can inspect it.
     static func placeholderIcon() -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size, flipped: false) { _ in
+        let size = NSSize(width: iconPointHeight, height: iconPointHeight)
+        let image = NSImage(size: size, flipped: false) { rect in
+            // Paths are authored in the original 18×18 design space; scale
+            // the context so the silhouette fills the current icon size.
+            let transform = NSAffineTransform()
+            transform.scale(by: rect.height / 18)
+            transform.concat()
+
             let head = NSBezierPath(ovalIn: NSRect(x: 3, y: 2, width: 12, height: 11))
 
             let leftEar = NSBezierPath()
