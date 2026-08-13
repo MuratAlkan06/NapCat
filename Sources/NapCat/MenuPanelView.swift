@@ -12,6 +12,8 @@ struct MenuPanelView: View {
             header
             Divider()
             stayAwakeSection
+            Divider()
+            lockScreenSection
             // ADR §12: no battery → the charge-limit section is hidden
             // entirely, not disabled.
             if model.featureState != .hidden {
@@ -100,6 +102,36 @@ struct MenuPanelView: View {
                 Text(caption)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: Lock screen
+
+    /// One click: lock the session AND turn the display off, with the Mac
+    /// still running (pairs with Stay Awake). The menu closes first — the
+    /// user is walking away — and the click is handled by MenuContentView.
+    private var lockScreenSection: some View {
+        let presentation = MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Lock Screen")
+                    Text("Lock now and turn the display off — the Mac keeps running")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Lock") { model.lockScreen() }
+                    .controlSize(.small)
+                    .disabled(!presentation.enabled)
+            }
+            if let caption = presentation.caption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

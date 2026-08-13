@@ -17,7 +17,8 @@ import SwiftUI
 /// the menu. The stay-awake flip runs off the main actor and the published
 /// observed state re-renders the open panel when it completes. The only
 /// flows allowed to close the menu are the genuinely modal ones — first-ever
-/// heat warning, setup required, failure — and they go through
+/// heat warning, setup required, failure — plus Lock Screen (the user is
+/// deliberately leaving the machine), and they all go through
 /// `closeMenuThenPresent` (dismiss cleanly first, then present).
 @MainActor
 final class MenuContentView: NSObject, NSMenuDelegate {
@@ -29,6 +30,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     private let power: PowerInterface
     private let limiter: ChargeLimiter
     private let loginItem: LoginItemController
+    private let screenLock: ScreenLockController
     private let defaults: UserDefaults
     /// Track B read-only detection; nil in debugBattery mode (structurally
     /// absent). Sampled on menu open only — no background timer.
@@ -40,6 +42,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
     private var stayAwakeCommandInFlight = false
+    /// Same guard for the lock sequence — a double click must not fire two
+    /// lock/verify/darken runs.
+    private var lockCommandInFlight = false
 
     init(
         sleep: SleepStateController,
@@ -47,6 +52,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         power: PowerInterface,
         limiter: ChargeLimiter,
         loginItem: LoginItemController = LoginItemController(),
+        screenLock: ScreenLockController = ScreenLockController(),
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
@@ -57,10 +63,20 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.power = power
         self.limiter = limiter
         self.loginItem = loginItem
+        self.screenLock = screenLock
         self.defaults = defaults
         self.detection = detection
         self.lidGuard = lidGuard
-        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, loginItem: loginItem, simulator: simulator, detection: detection, lidGuard: lidGuard)
+        self.model = MenuStateModel(
+            power: power,
+            sleep: sleep,
+            limiter: limiter,
+            loginItem: loginItem,
+            screenLock: screenLock,
+            simulator: simulator,
+            detection: detection,
+            lidGuard: lidGuard
+        )
         self.menu = NSMenu()
         self.hostingView = NSHostingView(rootView: MenuPanelView(model: model))
         super.init()
@@ -85,6 +101,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 
         // View actions that need AppKit flows.
         model.requestStayAwakeToggle = { [weak self] _ in self?.toggleStayAwake() }
+        model.requestLockScreen = { [weak self] in self?.lockScreen() }
         model.requestQuit = { NSApp.terminate(nil) }
         model.requestLidGuardToggle = { [weak self] enabled in self?.toggleLidAlert(enabled) }
         model.requestLidGuardSettingsPrompt = { [weak self] in self?.promptForLidAlertSettings() }
@@ -184,6 +201,59 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         case .commandFailed(let detail), .verificationFailed(let detail):
             closeMenuThenPresent { [weak self] in self?.presentFailureAlert(detail) }
         }
+    }
+
+    // MARK: - Lock screen (2026-08-13)
+
+    /// One click: lock the session, verify it, then turn the display off —
+    /// the Mac keeps running (pairs with Stay Awake). Unlike the toggles this
+    /// flow DOES dismiss the menu first, through the single gateway: the user
+    /// is walking away, and an open menu would be left floating over a screen
+    /// that is about to go dark. The sequence itself then runs async so the
+    /// dismissal never waits on it.
+    private func lockScreen() {
+        guard !lockCommandInFlight else { return }
+        lockCommandInFlight = true
+        closeMenuThenPresent { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                let outcome = await self.screenLock.lockScreen()
+                self.lockCommandInFlight = false
+                self.handleLockOutcome(outcome)
+            }
+        }
+    }
+
+    /// Failure surfacing is asymmetric by design: a screen that failed to
+    /// lock is still LIT, so the user can (and must) be told; a screen that
+    /// locked but stayed lit is already safe, so it is logged only — a modal
+    /// nobody can see would be pointless.
+    private func handleLockOutcome(_ outcome: ScreenLockController.Outcome) {
+        switch outcome {
+        case .success, .lockedButDisplaySleepFailed:
+            break // logged by ScreenLockController; the Mac is locked
+        case .unavailable:
+            break // the row is disabled in this state — nothing to report
+        case .lockNotVerified(let detail):
+            presentLockFailureAlert(detail)
+        }
+    }
+
+    /// The menu is already dismissed by the time this runs (the lock flow
+    /// closes it up front), so it presents directly.
+    private func presentLockFailureAlert(_ detail: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Could Not Lock the Screen"
+        alert.informativeText = """
+            \(detail)
+
+            Your Mac is still unlocked. Try again, or use Apple menu › \
+            Lock Screen (⌃⌘Q).
+            """
+        alert.addButton(withTitle: "OK")
+        NSApp.activate()
+        alert.runModal()
     }
 
     // MARK: - Lid-close alert (Track B / B2)

@@ -24,6 +24,9 @@ final class MenuStateModel: ObservableObject {
     /// SMAppService status snapshot (source of truth — PLAN.md §11); the
     /// live service is queried on menu open, never persisted to defaults.
     @Published private(set) var loginItemStatus: SMAppService.Status = .notRegistered
+    /// Whether the private lock entry point resolves on this OS. Fixed for
+    /// the process lifetime (resolved once at launch).
+    @Published private(set) var lockScreenAvailable = false
 
     // Track B (READ-ONLY detection) mirrors — sampled on menu open only.
     @Published private(set) var claudeTaskInFlight = false
@@ -49,6 +52,7 @@ final class MenuStateModel: ObservableObject {
     private let sleep: SleepStateController
     private let limiter: ChargeLimiter
     private let loginItem: LoginItemController?
+    private let screenLock: ScreenLockController?
     /// Non-nil only in debugBattery mode — enables the hidden debug section.
     private let simulator: DebugPowerSimulator?
     /// Non-nil outside debugBattery mode — drives the Claude detection section.
@@ -60,6 +64,9 @@ final class MenuStateModel: ObservableObject {
     /// MenuContentView, reached through this hook.
     var requestStayAwakeToggle: ((Bool) -> Void)?
     var requestQuit: (() -> Void)?
+    /// Lock Screen dismisses the menu and may present a failure alert —
+    /// owned by MenuContentView, reached through this hook.
+    var requestLockScreen: (() -> Void)?
     /// B2 actions that need AppKit flows (the topic/server modal) or an
     /// off-main command (the test send) — owned by MenuContentView.
     var requestLidGuardToggle: ((Bool) -> Void)?
@@ -75,6 +82,7 @@ final class MenuStateModel: ObservableObject {
         sleep: SleepStateController,
         limiter: ChargeLimiter,
         loginItem: LoginItemController? = nil,
+        screenLock: ScreenLockController? = nil,
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil
@@ -83,6 +91,7 @@ final class MenuStateModel: ObservableObject {
         self.sleep = sleep
         self.limiter = limiter
         self.loginItem = loginItem
+        self.screenLock = screenLock
         self.simulator = simulator
         self.detection = detection
         self.lidGuard = lidGuard
@@ -102,6 +111,7 @@ final class MenuStateModel: ObservableObject {
         // Cached snapshot only — MenuContentView refreshes the live status
         // on menu open (constructing the model must not query the service).
         loginItemStatus = loginItem?.status ?? .notRegistered
+        lockScreenAvailable = screenLock?.isAvailable ?? false
         // Track B mirrors — the controller is re-sampled by MenuContentView
         // on menu open before this refresh runs.
         claudeTaskInFlight = detection?.taskInFlight ?? false
@@ -122,6 +132,7 @@ final class MenuStateModel: ObservableObject {
     // MARK: Actions (forwarded)
 
     func setStayAwake(_ desired: Bool) { requestStayAwakeToggle?(desired) }
+    func lockScreen() { requestLockScreen?() }
     func setLimitEnabled(_ enabled: Bool) { limiter.setEnabled(enabled) }
     func setLimit(_ newLimit: Int) { limiter.setLimit(newLimit) }
     func quit() { requestQuit?() }
@@ -194,6 +205,19 @@ final class MenuStateModel: ObservableObject {
         case .some(false): return (false, nil)
         case .none: return (false, "Sleep state could not be read")
         }
+    }
+
+    /// Lock Screen row from the OBSERVED capability of this OS: the button is
+    /// live only when the private lock entry point actually resolved. When it
+    /// did not, the row is disabled and says so instead of failing on click —
+    /// there is no alternative mechanism to fall back to (PLAN.md decision
+    /// log 2026-08-13).
+    nonisolated static func lockScreenPresentation(
+        available: Bool
+    ) -> (enabled: Bool, caption: String?) {
+        available
+            ? (true, nil)
+            : (false, "Locking is unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q).")
     }
 
     nonisolated static func limitLabel(limit: Int) -> String {
