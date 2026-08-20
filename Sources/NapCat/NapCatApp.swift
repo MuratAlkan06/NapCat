@@ -31,9 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ADR §8: debugBattery swaps the ENTIRE power interface at startup.
         // In simulated mode IOKitPowerSource is never constructed, so no smc
         // probe and no subprocess can ever run from the battery path.
+        let isDebugBattery = defaults.bool(forKey: DefaultsKey.debugBattery)
         let simulator: DebugPowerSimulator?
         let power: PowerInterface
-        if defaults.bool(forKey: DefaultsKey.debugBattery) {
+        if isDebugBattery {
             let debugSimulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
             simulator = debugSimulator
             power = debugSimulator
@@ -46,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         powerSource = power
         chargeLimiter = limiter
 
+        // Track B (READ-ONLY detection). Constructed only outside debugBattery
+        // mode — the single gate is the wiring predicate, so in simulated mode
+        // no proc enumeration / IOKit assertion read exists (ADR §8 mirror).
+        let detection = ClaudeActivityController.makeIfEnabled(debugBattery: isDebugBattery)
+
         statusItemController = StatusItemController(
             menuContent: MenuContentView(
                 sleep: sleepController,
@@ -53,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 power: power,
                 limiter: limiter,
                 simulator: simulator,
+                detection: detection,
                 defaults: defaults
             )
         )

@@ -18,6 +18,11 @@ struct MenuPanelView: View {
                 Divider()
                 chargeLimitSection
             }
+            // Track B: READ-ONLY Claude detection (absent in debugBattery mode).
+            if model.claudeDetectionVisible {
+                Divider()
+                claudeSection
+            }
             if model.debugControlsVisible {
                 Divider()
                 debugSection
@@ -158,6 +163,48 @@ struct MenuPanelView: View {
                     .font(.caption2)
                     .foregroundStyle(messageColor)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: Claude detection (READ-ONLY; pause toggle = kill switch)
+
+    private var pauseDetectionBinding: Binding<Bool> {
+        Binding(
+            get: { model.claudeDetectionPaused },
+            set: { model.setDetectionPaused($0) }
+        )
+    }
+
+    private var claudeSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Claude")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+            Text(MenuStateModel.claudeTaskLine(
+                inFlight: model.claudeTaskInFlight,
+                paused: model.claudeDetectionPaused
+            ))
+            .font(.caption)
+            Text(MenuStateModel.claudeAwakeLine(holding: model.claudeHoldingAwake))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(MenuStateModel.claudeHookLine(
+                installed: model.claudeHookInstalled,
+                everSeen: model.claudeHookEverSeen,
+                lastSeenSeconds: model.claudeHookLastSeenSeconds
+            ))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text("Pause detection").font(.caption)
+                Spacer()
+                Toggle("Pause detection", isOn: pauseDetectionBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
             }
         }
     }

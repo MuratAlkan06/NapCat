@@ -30,6 +30,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     private let limiter: ChargeLimiter
     private let loginItem: LoginItemController
     private let defaults: UserDefaults
+    /// Track B read-only detection; nil in debugBattery mode (structurally
+    /// absent). Sampled on menu open only — no background timer.
+    private let detection: ClaudeActivityController?
     private let hostingView: NSHostingView<MenuPanelView>
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
@@ -42,6 +45,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         limiter: ChargeLimiter,
         loginItem: LoginItemController = LoginItemController(),
         simulator: DebugPowerSimulator? = nil,
+        detection: ClaudeActivityController? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.sleep = sleep
@@ -50,7 +54,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.limiter = limiter
         self.loginItem = loginItem
         self.defaults = defaults
-        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, loginItem: loginItem, simulator: simulator)
+        self.detection = detection
+        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, loginItem: loginItem, simulator: simulator, detection: detection)
         self.menu = NSMenu()
         self.hostingView = NSHostingView(rootView: MenuPanelView(model: model))
         super.init()
@@ -91,6 +96,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // Launch-at-login reflects the live SMAppService status on every
         // open (approval may have been granted in System Settings meanwhile).
         loginItem.refresh()
+        // Track B: sample the marker dir / processes / sleep assertions once,
+        // here — the only place detection is read (no polling timer).
+        detection?.sample()
         model.refresh()
         // Section visibility (charge limit, debug) can change the intrinsic
         // height — resize the hosted view before the menu lays out.

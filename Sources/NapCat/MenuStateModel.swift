@@ -25,6 +25,14 @@ final class MenuStateModel: ObservableObject {
     /// live service is queried on menu open, never persisted to defaults.
     @Published private(set) var loginItemStatus: SMAppService.Status = .notRegistered
 
+    // Track B (READ-ONLY detection) mirrors — sampled on menu open only.
+    @Published private(set) var claudeTaskInFlight = false
+    @Published private(set) var claudeHoldingAwake = false
+    @Published private(set) var claudeHookInstalled = false
+    @Published private(set) var claudeHookEverSeen = false
+    @Published private(set) var claudeHookLastSeenSeconds: Int?
+    @Published private(set) var claudeDetectionPaused = false
+
     // MARK: Wiring
 
     private let power: PowerInterface
@@ -33,6 +41,8 @@ final class MenuStateModel: ObservableObject {
     private let loginItem: LoginItemController?
     /// Non-nil only in debugBattery mode — enables the hidden debug section.
     private let simulator: DebugPowerSimulator?
+    /// Non-nil outside debugBattery mode — drives the Claude detection section.
+    private let detection: ClaudeActivityController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -40,19 +50,22 @@ final class MenuStateModel: ObservableObject {
     var requestQuit: (() -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
+    var claudeDetectionVisible: Bool { detection != nil }
 
     init(
         power: PowerInterface,
         sleep: SleepStateController,
         limiter: ChargeLimiter,
         loginItem: LoginItemController? = nil,
-        simulator: DebugPowerSimulator? = nil
+        simulator: DebugPowerSimulator? = nil,
+        detection: ClaudeActivityController? = nil
     ) {
         self.power = power
         self.sleep = sleep
         self.limiter = limiter
         self.loginItem = loginItem
         self.simulator = simulator
+        self.detection = detection
         refresh()
     }
 
@@ -69,6 +82,14 @@ final class MenuStateModel: ObservableObject {
         // Cached snapshot only — MenuContentView refreshes the live status
         // on menu open (constructing the model must not query the service).
         loginItemStatus = loginItem?.status ?? .notRegistered
+        // Track B mirrors — the controller is re-sampled by MenuContentView
+        // on menu open before this refresh runs.
+        claudeTaskInFlight = detection?.taskInFlight ?? false
+        claudeHoldingAwake = detection?.claudeHoldingAwake ?? false
+        claudeHookInstalled = detection?.hookInstalled ?? false
+        claudeHookEverSeen = detection?.hookEverSeen ?? false
+        claudeHookLastSeenSeconds = detection?.lastSeenSeconds
+        claudeDetectionPaused = detection?.detectionPaused ?? false
     }
 
     // MARK: Actions (forwarded)
@@ -93,6 +114,13 @@ final class MenuStateModel: ObservableObject {
 
     func setSimulatedAdapter(_ connected: Bool) {
         simulator?.adapterConnected = connected
+    }
+
+    /// Kill switch (create/remove the DISABLED flag). NapCat writing its OWN
+    /// state dir is allowed — this NEVER touches ~/.claude/settings.json.
+    func setDetectionPaused(_ paused: Bool) {
+        detection?.setPaused(paused)
+        refresh()
     }
 
     // MARK: - Pure display mappings (unit-tested)
@@ -176,5 +204,36 @@ final class MenuStateModel: ObservableObject {
         case .error(let message):
             return message
         }
+    }
+
+    // MARK: - Track B (Claude detection) presentation (READ-ONLY display)
+
+    /// Primary line: whether a Claude turn is in flight. Paused (kill switch)
+    /// takes precedence over running/idle.
+    nonisolated static func claudeTaskLine(inFlight: Bool, paused: Bool) -> String {
+        if paused { return "Claude task: detection paused" }
+        return inFlight ? "Claude task: running" : "Claude task: idle"
+    }
+
+    /// Secondary line from the sleep-assertion reader (NOT the busy signal).
+    nonisolated static func claudeAwakeLine(holding: Bool) -> String {
+        "Keeping Mac awake: \(holding ? "yes" : "no")"
+    }
+
+    /// Hook-liveness line from the marker-dir state. Dir absent ⇒ not
+    /// installed; present but the hook has never run ⇒ not seen yet; otherwise
+    /// the relative time of the last marker activity.
+    nonisolated static func claudeHookLine(
+        installed: Bool,
+        everSeen: Bool,
+        lastSeenSeconds: Int?
+    ) -> String {
+        guard installed else {
+            return "Busy hook: not installed — run scripts/install-claude-busy-hook.sh"
+        }
+        guard everSeen, let seconds = lastSeenSeconds else {
+            return "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh"
+        }
+        return "Busy hook: last seen \(ClaudeActivityPolicy.relativeTime(seconds: seconds))"
     }
 }

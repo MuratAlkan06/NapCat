@@ -260,6 +260,86 @@ and a test fails if any subprocess-capable API ever appears in it.
 defaults delete com.muratalkan.napcat debugBattery   # and restart again
 ```
 
+## Claude busy detection (Track B — optional, read-only)
+
+NapCat can show whether a Claude Code turn is in flight, whether Claude is
+holding your Mac awake, and how recently the companion hook last fired — a new
+**Claude** section in the menu. This is the READ-ONLY half of the feature; the
+message-when-done delivery (best-effort iMessage-to-self) is coming in a later
+slice. Everything here is unprivileged: no `sudo`, no new privileged commands,
+no message is sent yet.
+
+It works by way of a tiny **companion Claude Code hook** that drops a per-session
+marker file under `~/Library/Application Support/NapCat/claude-busy/` while a turn
+is running and removes it when the turn ends. NapCat only reads those markers
+(cross-checked against the live process list, fail-open so it never falsely
+reports "idle"). This is separate from the standalone *[redacted-tool]* tool.
+
+### Install and register — BY HAND
+
+```sh
+./scripts/install-claude-busy-hook.sh
+```
+
+That copies the hook to the stable path `~/.claude/hooks/napcat-busy-hook.sh`
+(so `make clean` never removes it), creates the marker directory, and **prints**
+the exact registration to paste into `~/.claude/settings.json`. The installer
+never edits `settings.json` itself. Merge these five entries into your existing
+`"hooks"` object (replace `<HOME>` with your home directory — the installer
+prints the absolute paths for you):
+
+```json
+"UserPromptSubmit": [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"Stop":            [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"StopFailure":     [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"SessionEnd":      [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"Notification":    [ { "matcher":"idle_prompt", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
+```
+
+**The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
+not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`
+before bash starts; registering the bare script path (shell form) would let those
+run attacker code before the hook's own safeguards ever execute. Paste it exactly.
+Hooks load at session start, so **open a new Claude Code session** afterward.
+
+The hook is written so a bug in it can never break your Claude Code session: it
+always exits 0, never prints to stdout, does its marker write in the background,
+and does nothing at all if a kill-switch flag is present.
+
+### Kill switch
+
+Pause detection at any time from the menu (**Claude → Pause detection**), or by
+hand:
+
+```sh
+touch "$HOME/Library/Application Support/NapCat/claude-busy/DISABLED"   # pause
+rm    "$HOME/Library/Application Support/NapCat/claude-busy/DISABLED"   # resume
+```
+
+While the flag exists the hook no-ops immediately.
+
+### Uninstall — BY HAND
+
+```sh
+./scripts/uninstall-claude-busy-hook.sh
+```
+
+Removes the installed hook and the marker directory and prints which
+`settings.json` entries to delete. Like the installer, it never edits
+`settings.json`; delete the five NapCat entries yourself and restart Claude Code.
+
+### Honest limitations
+
+- **Read-only for now.** NapCat shows Claude's busy/idle state; it does not yet
+  send you a message when a run finishes. That best-effort delivery is a later
+  slice.
+- **Best-effort markers.** If a Claude session ends uncleanly a marker may linger;
+  markers older than 12 h are ignored and swept automatically, and the live
+  process cross-check suppresses "running" when no Claude process is present.
+- **Classification is heuristic.** A process whose executable basename is exactly
+  `claude` is confirmed; `node` and other claude-adjacent images are treated as
+  "uncertain" (which keeps a real marker standing rather than dropping it).
+
 ## Development
 
 ```sh
