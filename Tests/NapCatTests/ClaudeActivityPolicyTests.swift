@@ -90,14 +90,31 @@ struct ClaudeActivityPolicyTests {
     @Test func classificationFixtures() {
         #expect(ClaudeActivityPolicy.classifyProcess(path: "/usr/local/bin/claude") == .confirmed)
         #expect(ClaudeActivityPolicy.classifyProcess(path: "/Users/x/.claude/local/node_modules/.bin/claude") == .confirmed)
+        // The standard npm install symlinks /opt/homebrew/bin/claude at the
+        // resolved launcher; proc_pidpath reports basename `claude.exe` (B1.1).
+        #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe") == .confirmed,
+                "npm symlink resolves the running worker to basename claude.exe")
         #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/homebrew/bin/node") == .inconclusive)
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/claude-tools/bin/wrapper") == .inconclusive,
-                "path mentions claude but basename is not claude")
+        #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/claude-tools/bin/claude-utils") == .inconclusive,
+                "path mentions claude but basename claude-utils is not an exact claude launcher → inconclusive, NOT confirmed")
         #expect(ClaudeActivityPolicy.classifyProcess(path: "/usr/bin/vim") == .none)
+        #expect(ClaudeActivityPolicy.classifyProcess(path: "/bin/bash") == .none)
         #expect(ClaudeActivityPolicy.classifyProcess(path: "/usr/local/bin/nodejs") == .none,
                 "basename 'nodejs' is not 'node' and has no claude in the path")
         #expect(ClaudeActivityPolicy.classifyProcess(path: nil) == .inconclusive, "unreadable pid → inconclusive, never none")
         #expect(ClaudeActivityPolicy.classifyProcess(path: "") == .inconclusive)
+    }
+
+    // MARK: Shared claude-executable predicate (B1.1 single source of truth)
+
+    @Test func claudeExecutablePredicate() {
+        #expect(ClaudeActivityPolicy.isClaudeExecutable(basename: "claude"), "direct binary")
+        #expect(ClaudeActivityPolicy.isClaudeExecutable(basename: "claude.exe"), "npm symlink-resolved launcher")
+        #expect(!ClaudeActivityPolicy.isClaudeExecutable(basename: "node"))
+        #expect(!ClaudeActivityPolicy.isClaudeExecutable(basename: "claude-utils"), "prefix is not an exact launcher name")
+        #expect(!ClaudeActivityPolicy.isClaudeExecutable(basename: "claudexyz"), "substring is not an exact launcher name")
+        #expect(!ClaudeActivityPolicy.isClaudeExecutable(basename: "bash"))
+        #expect(!ClaudeActivityPolicy.isClaudeExecutable(basename: ""))
     }
 
     @Test func lastPathComponentIsStdlibOnly() {
@@ -124,6 +141,33 @@ struct ClaudeActivityPolicyTests {
         let parents = [42: 9, 9: 1]
         #expect(!ClaudeActivityPolicy.ancestryReachesClaude(
             fromPID: 42, isClaude: { _ in false }, parentOf: { parents[$0] }))
+    }
+
+    // B1.1: the reader keys its isClaude closure off the executable basename
+    // via isClaudeExecutable, so an ancestor whose image resolves to the npm
+    // launcher `claude.exe` must be attributed to Claude. These mirror the
+    // reader's wiring (basename → predicate) so they canary the exact gap the
+    // H3 spike found: with the old basename-exactly-`claude` match these fail.
+    @Test func ancestryReachesClaudeExeAncestor() {
+        // caffeinate(42) ← claude.exe(7) ← launchd(1)
+        let parents = [42: 7, 7: 1]
+        let basenames = [42: "caffeinate", 7: "claude.exe", 1: "launchd"]
+        #expect(ClaudeActivityPolicy.ancestryReachesClaude(
+            fromPID: 42,
+            isClaude: { ClaudeActivityPolicy.isClaudeExecutable(basename: basenames[$0] ?? "") },
+            parentOf: { parents[$0] }),
+            "a claude.exe ancestor holding the assertion counts as Claude keeping the Mac awake")
+    }
+
+    @Test func ancestryNoClaudeExecutableIsNotAttributed() {
+        // caffeinate(42) ← bash(9) ← superconductor(3) ← launchd(1): no
+        // claude/claude.exe basename anywhere → not attributed to Claude.
+        let parents = [42: 9, 9: 3, 3: 1]
+        let basenames = [42: "caffeinate", 9: "bash", 3: "superconductor", 1: "launchd"]
+        #expect(!ClaudeActivityPolicy.ancestryReachesClaude(
+            fromPID: 42,
+            isClaude: { ClaudeActivityPolicy.isClaudeExecutable(basename: basenames[$0] ?? "") },
+            parentOf: { parents[$0] }))
     }
 
     @Test func ancestryStopsOnSelfCycleAndHopCap() {

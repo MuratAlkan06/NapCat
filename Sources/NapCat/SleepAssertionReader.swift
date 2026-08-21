@@ -43,14 +43,17 @@ final class IOKitSleepAssertionReader: SleepAssertionReader {
         return false
     }
 
-    /// Walk the ppid chain (≤10 hops, stop at 1/0/self) looking for a
-    /// basename-`claude` process. The decision is the pure
-    /// `ClaudeActivityPolicy.ancestryReachesClaude`; this shim supplies the
-    /// two syscalls it needs.
+    /// Walk the ppid chain (≤10 hops, stop at 1/0/self) looking for a Claude
+    /// Code process. The decision is the pure
+    /// `ClaudeActivityPolicy.ancestryReachesClaude`; this shim supplies the two
+    /// syscalls it needs. The basename match is the shared
+    /// `ClaudeActivityPolicy.isClaudeExecutable` predicate (matches `claude`
+    /// AND the npm launcher `claude.exe`), so it never diverges from
+    /// `classifyProcess`.
     private static func ancestryReachesClaude(fromPID pid: pid_t) -> Bool {
         ClaudeActivityPolicy.ancestryReachesClaude(
             fromPID: Int(pid),
-            isClaude: { basename(ofPID: pid_t($0)) == "claude" },
+            isClaude: { ClaudeActivityPolicy.isClaudeExecutable(basename: basename(ofPID: pid_t($0)) ?? "") },
             parentOf: { parentPID(ofPID: pid_t($0)) }
         )
     }

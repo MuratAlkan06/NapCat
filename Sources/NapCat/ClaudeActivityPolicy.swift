@@ -17,7 +17,11 @@ struct BusyMarker: Equatable, Sendable {
 
 /// How one enumerated process classifies against "is this Claude Code?".
 enum ClaudeProcessClassification: Equatable, Sendable {
-    /// Executable basename is exactly `claude`.
+    /// Executable basename is a Claude Code launcher — exactly `claude` (direct
+    /// binary) or exactly `claude.exe` (the npm install symlinks
+    /// `/opt/homebrew/bin/claude` at the resolved
+    /// `@anthropic-ai/claude-code/bin/claude.exe`, and `proc_pidpath` resolves
+    /// the symlink). See `ClaudeActivityPolicy.isClaudeExecutable`.
     case confirmed
     /// Basename `node`, or the path mentions claude but the basename is not
     /// exactly `claude`, or the pid's path could not be read — anything that
@@ -92,13 +96,29 @@ enum ClaudeActivityPolicy {
 
     // MARK: Process classification
 
+    /// The two real basenames a RUNNING Claude Code worker's executable
+    /// resolves to: `claude` (a direct binary) and `claude.exe` (the launcher
+    /// the standard npm install's `/opt/homebrew/bin/claude` symlink points at
+    /// — `proc_pidpath`/`lsof txt` report the resolved image, not the symlink).
+    /// SINGLE SOURCE OF TRUTH for both `classifyProcess` and the
+    /// `SleepAssertionReader` ancestry match, so the set is never duplicated.
+    static let claudeExecutableNames: Set<String> = ["claude", "claude.exe"]
+
+    /// True iff `basename` is EXACTLY one of the Claude Code launcher names.
+    /// Deliberately not a prefix/substring test: `claude-utils` / `claudexyz`
+    /// must NOT confirm here (they may still land as `inconclusive` via the
+    /// path-contains branch — the safe, fail-open direction).
+    static func isClaudeExecutable(basename: String) -> Bool {
+        claudeExecutableNames.contains(basename)
+    }
+
     /// Pure classifier. `nil` path = the pid's `proc_pidpath` read failed ⇒
     /// inconclusive (never "none" — a pid we cannot read is doubt, not
     /// absence).
     static func classifyProcess(path: String?) -> ClaudeProcessClassification {
         guard let path, !path.isEmpty else { return .inconclusive }
         let base = lastPathComponent(path)
-        if base == "claude" { return .confirmed }
+        if isClaudeExecutable(basename: base) { return .confirmed }
         if base == "node" { return .inconclusive }
         if path.contains("claude") { return .inconclusive }
         return .none
@@ -115,7 +135,8 @@ enum ClaudeActivityPolicy {
     // the real closures live in SleepAssertionReader.
 
     /// Does the assertion-holder pid, or any ancestor within `maxHops`, have a
-    /// basename-`claude` executable? Stops at ppid 1/0/self.
+    /// Claude Code executable (see `isClaudeExecutable`: `claude` or
+    /// `claude.exe`)? Stops at ppid 1/0/self.
     static func ancestryReachesClaude(
         fromPID pid: Int,
         isClaude: (Int) -> Bool,
