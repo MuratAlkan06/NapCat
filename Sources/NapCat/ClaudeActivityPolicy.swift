@@ -23,9 +23,9 @@ enum ClaudeProcessClassification: Equatable, Sendable {
     /// `@anthropic-ai/claude-code/bin/claude.exe`, and `proc_pidpath` resolves
     /// the symlink). See `ClaudeActivityPolicy.isClaudeExecutable`.
     case confirmed
-    /// Basename `node`, or the path mentions claude but the basename is not
-    /// exactly `claude`, or the pid's path could not be read — anything that
-    /// leaves doubt.
+    /// Name/basename `node`, or the image mentions claude but the basename is
+    /// not exactly `claude`, or the pid's name AND path could not be read —
+    /// anything that leaves doubt.
     case inconclusive
     /// Definitely not Claude.
     case none
@@ -112,15 +112,25 @@ enum ClaudeActivityPolicy {
         claudeExecutableNames.contains(basename)
     }
 
-    /// Pure classifier. `nil` path = the pid's `proc_pidpath` read failed ⇒
-    /// inconclusive (never "none" — a pid we cannot read is doubt, not
-    /// absence).
-    static func classifyProcess(path: String?) -> ClaudeProcessClassification {
-        guard let path, !path.isEmpty else { return .inconclusive }
-        let base = lastPathComponent(path)
-        if isClaudeExecutable(basename: base) { return .confirmed }
-        if base == "node" { return .inconclusive }
-        if path.contains("claude") { return .inconclusive }
+    /// Pure classifier. `name` is the process accounting NAME (`proc_pidinfo`
+    /// `pbi_name`), which is readable even for hardened-runtime images where
+    /// `proc_pidpath` returns ESRCH (the real Claude Code worker — B1.2); it is
+    /// the PRIMARY signal. `path` is the best-effort `proc_pidpath` image (may
+    /// be `nil` when introspection failed) used only for the fail-open
+    /// path-mentions-claude tier. If NEITHER is readable ⇒ inconclusive (never
+    /// "none" — a pid we cannot read is doubt, not absence).
+    static func classifyProcess(name: String?, path: String?) -> ClaudeProcessClassification {
+        let name = name.flatMap { $0.isEmpty ? nil : $0 }
+        let pathBase = path.flatMap { $0.isEmpty ? nil : lastPathComponent($0) }
+        // Unreadable pid: neither introspection call yielded anything.
+        guard name != nil || pathBase != nil else { return .inconclusive }
+        if let name, isClaudeExecutable(basename: name) { return .confirmed }
+        if let pathBase, isClaudeExecutable(basename: pathBase) { return .confirmed }
+        if name == "node" || pathBase == "node" { return .inconclusive }
+        // Basename is not an exact launcher, but the image (or truncated name)
+        // still mentions claude — leave doubt rather than claim absence.
+        if let path, path.contains("claude") { return .inconclusive }
+        if let name, name.contains("claude") { return .inconclusive }
         return .none
     }
 

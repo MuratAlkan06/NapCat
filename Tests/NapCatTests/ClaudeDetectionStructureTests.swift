@@ -42,8 +42,11 @@ struct ClaudeDetectionStructureTests {
     @Test func syscallsAreConfinedToReaderFiles() throws {
         let allowed: [String: Set<String>] = [
             "proc_listpids": ["ClaudeProcessProber.swift"],
-            "proc_pidpath": ["ClaudeProcessProber.swift", "SleepAssertionReader.swift"],
-            "proc_pidinfo": ["SleepAssertionReader.swift"],
+            // B1.2: proc_pidpath is now the prober's best-effort SECONDARY only
+            // (dropped from SleepAssertionReader); proc_pidinfo pbi_name is the
+            // NAME-returning primary in BOTH readers.
+            "proc_pidpath": ["ClaudeProcessProber.swift"],
+            "proc_pidinfo": ["ClaudeProcessProber.swift", "SleepAssertionReader.swift"],
             "IOPMCopyAssertionsByProcess": ["SleepAssertionReader.swift"],
         ]
         let sources = try Self.swiftSources()

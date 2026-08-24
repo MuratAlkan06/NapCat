@@ -88,21 +88,40 @@ struct ClaudeActivityPolicyTests {
     // MARK: Process classification fixtures
 
     @Test func classificationFixtures() {
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/usr/local/bin/claude") == .confirmed)
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/Users/x/.claude/local/node_modules/.bin/claude") == .confirmed)
-        // The standard npm install symlinks /opt/homebrew/bin/claude at the
-        // resolved launcher; proc_pidpath reports basename `claude.exe` (B1.1).
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe") == .confirmed,
-                "npm symlink resolves the running worker to basename claude.exe")
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/homebrew/bin/node") == .inconclusive)
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/opt/claude-tools/bin/claude-utils") == .inconclusive,
-                "path mentions claude but basename claude-utils is not an exact claude launcher → inconclusive, NOT confirmed")
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/usr/bin/vim") == .none)
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/bin/bash") == .none)
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "/usr/local/bin/nodejs") == .none,
-                "basename 'nodejs' is not 'node' and has no claude in the path")
-        #expect(ClaudeActivityPolicy.classifyProcess(path: nil) == .inconclusive, "unreadable pid → inconclusive, never none")
-        #expect(ClaudeActivityPolicy.classifyProcess(path: "") == .inconclusive)
+        // Name-primary: the executable NAME (proc_pidinfo pbi_name) is the main
+        // signal — readable even when proc_pidpath ESRCHes (B1.2).
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "claude", path: "/usr/local/bin/claude") == .confirmed)
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "claude", path: "/Users/x/.claude/local/node_modules/.bin/claude") == .confirmed)
+        // The standard npm install resolves the running worker to basename
+        // claude.exe (B1.1); pbi_name reports it directly.
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "claude.exe", path: "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe") == .confirmed,
+                "npm launcher name claude.exe confirms")
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "node", path: "/opt/homebrew/bin/node") == .inconclusive)
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "claude-utils", path: "/opt/claude-tools/bin/claude-utils") == .inconclusive,
+                "name/path mention claude but basename claude-utils is not an exact launcher → inconclusive, NOT confirmed")
+        // Best-effort SECONDARY path tier (proc_pidpath): a non-claude NAME
+        // whose readable image path still mentions claude stays inconclusive.
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "helper", path: "/opt/claude-runtime/bin/helper") == .inconclusive,
+                "path-contains-claude secondary tier keeps doubt even when the name is unremarkable")
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "vim", path: "/usr/bin/vim") == .none)
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "bash", path: "/bin/bash") == .none)
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "nodejs", path: "/usr/local/bin/nodejs") == .none,
+                "basename 'nodejs' is not 'node' and has no claude in name or path")
+        #expect(ClaudeActivityPolicy.classifyProcess(name: nil, path: nil) == .inconclusive, "unreadable pid → inconclusive, never none")
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "", path: "") == .inconclusive)
+    }
+
+    // B1.2 CANARY — the exact hardware failure at the classifier. The Claude
+    // worker's hardened-runtime image makes proc_pidpath return ESRCH
+    // (path == nil), yet proc_pidinfo pbi_name reads "claude.exe". Name-primary
+    // classification must CONFIRM it. Under the OLD proc_pidpath-only classifier
+    // the same worker (path nil) fell through to inconclusive — accidental
+    // correctness that rendered "Keeping Mac awake: no". Reverting
+    // classifyProcess to ignore `name` makes this #expect fail.
+    @Test func claudeWorkerWithUnreadablePathIsConfirmedByName() {
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "claude.exe", path: nil) == .confirmed,
+                "hardened-runtime claude.exe (proc_pidpath ESRCH) confirmed via pbi_name")
+        #expect(ClaudeActivityPolicy.classifyProcess(name: "claude", path: nil) == .confirmed)
     }
 
     // MARK: Shared claude-executable predicate (B1.1 single source of truth)
@@ -168,6 +187,30 @@ struct ClaudeActivityPolicyTests {
             fromPID: 42,
             isClaude: { ClaudeActivityPolicy.isClaudeExecutable(basename: basenames[$0] ?? "") },
             parentOf: { parents[$0] }))
+    }
+
+    // B1.2 CANARY — assertion ancestry for the same unreadable-path worker.
+    // caffeinate(42) holds PreventUserIdleSystemSleep ← claude worker(7) ←
+    // launchd(1). pbi_name for pid 7 is "claude.exe"; proc_pidpath ESRCHes → "".
+    // The reader now keys isClaude off pbi_name, so the assertion is attributed
+    // to Claude ("Keeping Mac awake: yes"). The OLD proc_pidpath-basename wiring
+    // saw "" and missed it ("no"). Both wirings run on the SAME chain here.
+    @Test func ancestryAttributesClaudeWorkerWithUnreadablePath() {
+        let parents = [42: 7, 7: 1]
+        let pbiName = [42: "caffeinate", 7: "claude.exe", 1: "launchd"]   // proc_pidinfo (readable)
+        let pidpathBasename = [42: "caffeinate", 7: "", 1: "launchd"]     // proc_pidpath ESRCH → ""
+
+        #expect(!ClaudeActivityPolicy.ancestryReachesClaude(
+            fromPID: 42,
+            isClaude: { ClaudeActivityPolicy.isClaudeExecutable(basename: pidpathBasename[$0] ?? "") },
+            parentOf: { parents[$0] }),
+            "OLD proc_pidpath-basename wiring cannot see the hardened-runtime claude worker")
+
+        #expect(ClaudeActivityPolicy.ancestryReachesClaude(
+            fromPID: 42,
+            isClaude: { ClaudeActivityPolicy.isClaudeExecutable(basename: pbiName[$0] ?? "") },
+            parentOf: { parents[$0] }),
+            "NEW pbi_name wiring attributes the assertion to the claude worker → Keeping Mac awake: yes")
     }
 
     @Test func ancestryStopsOnSelfCycleAndHopCap() {
