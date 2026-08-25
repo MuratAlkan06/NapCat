@@ -1,6 +1,33 @@
 import Foundation
 import os
 
+/// Sendable atomic mirror of the OBSERVED stay-awake state, written
+/// synchronously at `SleepStateController`'s single publish choke point.
+///
+/// Track B / B2 needs this value from the IOKit power-notification queue at the
+/// instant the lid closes — including the case the whole feature exists for:
+/// the user toggles Stay Awake OFF and closes the lid seconds later. Hopping to
+/// the main actor for it would risk reading a stale or delayed value, so the
+/// observed state is mirrored here the moment it is published.
+final class ObservedStayAwakeMirror: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observed: Bool?
+
+    /// nil = `pmset -g` unreadable (unknown). B2 treats unknown as "not on"
+    /// and fires — deliberate fail-toward-notify.
+    var value: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return observed
+    }
+
+    func set(_ newValue: Bool?) {
+        lock.lock()
+        observed = newValue
+        lock.unlock()
+    }
+}
+
 /// Enables/disables stay-awake (`pmset disablesleep`) and tracks the
 /// OBSERVED system state, read back from unprivileged `pmset -g`.
 ///
@@ -18,6 +45,10 @@ final class SleepStateController {
 
     /// Fired (on the main actor) whenever the observed state changes.
     var onObservedStateChange: ((Bool?) -> Void)?
+
+    /// Thread-safe mirror of `observedSleepDisabled` for the B2 lid guard,
+    /// updated on EVERY read (see `applyObservedRead`).
+    let observedMirror = ObservedStayAwakeMirror()
 
     enum SetStayAwakeOutcome: Equatable {
         case success
@@ -107,6 +138,10 @@ final class SleepStateController {
             Self.logger.error("could not read pmset -g — observed sleep state unknown")
             newValue = nil
         }
+        // THE choke point: every observed-state publication updates the
+        // Sendable mirror synchronously, so the B2 lid guard reads a fresh
+        // value from the power-notification queue without a main-actor hop.
+        observedMirror.set(newValue)
         if newValue != observedSleepDisabled {
             observedSleepDisabled = newValue
             onObservedStateChange?(newValue)

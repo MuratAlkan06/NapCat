@@ -114,9 +114,15 @@ struct ClaudeBusyHookScriptTests {
     /// this seam cannot weaken production. SUPERCONDUCTOR_MANAGED_AGENT is
     /// deliberately absent, matching env -i, so `src` records `unknown`.
     private func runHook(json: String, home: URL) -> RunResult {
+        runScript(Self.hookScriptURL, json: json, home: home)
+    }
+
+    /// Runs an ARBITRARY hook script (the shipped one, or a mutated copy for a
+    /// canary) under the same HOME/PATH discipline as `runHook`.
+    private func runScript(_ scriptURL: URL, json: String, home: URL) -> RunResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [Self.hookScriptURL.path]
+        process.arguments = [scriptURL.path]
         process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         let stdin = Pipe(), stdout = Pipe()
         process.standardInput = stdin
@@ -141,6 +147,18 @@ struct ClaudeBusyHookScriptTests {
             Thread.sleep(forTimeInterval: 0.03)
         }
         return FileManager.default.fileExists(atPath: url.path) == present
+    }
+
+    /// Polls a marker until its content records `event=<event>` and returns it.
+    /// The keep path re-writes an ALREADY-PRESENT marker in the background, so
+    /// `waitForFile(present:true)` alone can observe the pre-reconcile content.
+    private func waitForMarkerEvent(_ url: URL, event: String, timeout: Double = 3) -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let c = try? String(contentsOf: url, encoding: .utf8), c.contains("event=\(event) ") { return c }
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }
 
     private func withHome(_ body: (URL) -> Void) {
@@ -184,6 +202,160 @@ struct ClaudeBusyHookScriptTests {
                 #expect(result.exitCode == 0)
                 #expect(waitForFile(marker, present: false), "\(clearEvent) must remove the marker")
             }
+        }
+    }
+
+    // MARK: - B3: background_tasks reconcile on turn-ending / idle events
+
+    /// A UserPromptSubmit payload for `session`.
+    private func promptJSON(_ session: String) -> String {
+        #"{"hook_event_name":"UserPromptSubmit","session_id":"\#(session)"}"#
+    }
+    /// A reconcile-event payload with an optional raw `background_tasks` value
+    /// (pass the JSON literal, e.g. `[{"status":"running"}]`, or nil to omit
+    /// the field entirely — the pre-B3 shape).
+    private func eventJSON(_ event: String, _ session: String, backgroundTasks: String? = nil) -> String {
+        if let tasks = backgroundTasks {
+            return #"{"hook_event_name":"\#(event)","session_id":"\#(session)","background_tasks":\#(tasks)}"#
+        }
+        return #"{"hook_event_name":"\#(event)","session_id":"\#(session)"}"#
+    }
+
+    /// Sets a marker for `session` and asserts it landed.
+    private func primeMarker(_ session: String, home: URL) {
+        _ = runHook(json: promptJSON(session), home: home)
+        #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: true),
+                "setup: marker for \(session) must exist")
+    }
+
+    /// The dominant workflow bug B3 fixes: the main turn's Stop fires while a
+    /// background subagent is still running. The marker must be KEPT.
+    @Test func stopWithRunningBackgroundTaskKeepsTheMarker() {
+        withHome { home in
+            let session = "b3000001-0011-4abc-8def-000000000011"
+            primeMarker(session, home: home)
+            let tasks = #"[{"id":"a","type":"subagent","status":"running","agent_type":"security-dependency-reviewer"}]"#
+            let result = runHook(json: eventJSON("Stop", session, backgroundTasks: tasks), home: home)
+            #expect(result.exitCode == 0)
+            #expect(result.stdout.isEmpty, "stdout must stay empty")
+            let marker = markerDir(home).appendingPathComponent(session)
+            // The keep path re-writes the marker in the background with the new
+            // reconcile event — wait for that content, not just file presence.
+            let contents = waitForMarkerEvent(marker, event: "Stop")
+            #expect(FileManager.default.fileExists(atPath: marker.path),
+                    "a running subagent must KEEP the marker on Stop")
+            let pattern = "^v1 ts=[0-9]+ event=Stop pid=[0-9]+ src=unknown\n$"
+            #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                    "kept marker \(String(reflecting: contents)) records the reconcile event, same grammar")
+        }
+    }
+
+    /// Non-running / empty / absent background_tasks preserve the original
+    /// clear-on-Stop behavior.
+    @Test func stopWithNoRunningBackgroundTaskClearsTheMarker() {
+        let noneRunning: [String?] = [
+            #"[{"id":"a","type":"subagent","status":"completed","agent_type":"foo"}]"#,  // all done
+            "[]",                                                                        // empty
+            nil,                                                                          // field absent
+        ]
+        for tasks in noneRunning {
+            withHome { home in
+                let session = "b3000002-0012-4abc-8def-000000000012"
+                primeMarker(session, home: home)
+                let result = runHook(json: eventJSON("Stop", session, backgroundTasks: tasks), home: home)
+                #expect(result.exitCode == 0)
+                #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                        "no running subagent (\(tasks ?? "absent")) must CLEAR the marker")
+            }
+        }
+    }
+
+    /// SubagentStop (newly registered in B3) reconciles the same way: a subagent
+    /// finishing while others still run keeps the session busy; the last one
+    /// finishing clears it.
+    @Test func subagentStopReconcilesOnRemainingBackgroundTasks() {
+        withHome { home in
+            let session = "b3000003-0013-4abc-8def-000000000013"
+            primeMarker(session, home: home)
+            // One subagent finished, another still running → KEEP.
+            let stillRunning = #"[{"id":"b","type":"subagent","status":"running"}]"#
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: stillRunning), home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            #expect(waitForFile(marker, present: true), "SubagentStop with a still-running peer KEEPS the marker")
+            // Last subagent finished → CLEAR.
+            let allDone = #"[{"id":"b","type":"subagent","status":"completed"}]"#
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: allDone), home: home)
+            #expect(waitForFile(marker, present: false), "SubagentStop with none running CLEARS the marker")
+        }
+    }
+
+    /// The `"status":"running"` match must be precise: valid-JSON background_tasks
+    /// that merely CONTAIN "running" inside another token, or are the wrong shape
+    /// entirely, must NOT be read as a running task — the marker CLEARS (fail
+    /// toward the original behavior), exit 0, empty stdout.
+    @Test func lookalikeBackgroundTasksNeverCountAsRunning() {
+        let decoys: [String] = [
+            #"[{"status":"not_running"},{"status":"running_slow"},{"agent_status":"running"}]"#, // lookalike tokens
+            #""a-plain-running-string""#,                       // valid JSON, not an array
+            "42",                                               // valid JSON, not an array
+            #"[{"note":"the word running appears here"}]"#,     // "running" only inside a value
+            #"[{"status":"completed"},{"status":"failed"},{"status":"queued"}]"#, // several, none running
+        ]
+        for tasks in decoys {
+            withHome { home in
+                let session = "b3000004-0014-4abc-8def-000000000014"
+                primeMarker(session, home: home)
+                let result = runHook(json: eventJSON("Stop", session, backgroundTasks: tasks), home: home)
+                #expect(result.exitCode == 0, "exit 0 on \(String(reflecting: tasks))")
+                #expect(result.stdout.isEmpty, "stdout empty on \(String(reflecting: tasks))")
+                #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                        "no exact running token in \(String(reflecting: tasks)) → CLEAR")
+            }
+        }
+    }
+
+    /// A background_tasks value that breaks the WHOLE payload's JSON (truncated /
+    /// oversized-then-cut) must never crash the hook and must never be read as a
+    /// running task. Invalid stdin is IGNORED at the JSON gate (pre-B3 behavior),
+    /// so — with no prior marker — garbage can NEVER conjure a busy marker.
+    @Test func brokenBackgroundTasksNeverCrashOrFalselyKeep() {
+        withHome { home in
+            let session = "b3000006-0016-4abc-8def-000000000016"
+            let broken = #"{"hook_event_name":"Stop","session_id":"\#(session)","background_tasks":[{"status":"running"#
+            let result = runHook(json: broken, home: home)
+            #expect(result.exitCode == 0, "invalid stdin must still exit 0")
+            #expect(result.stdout.isEmpty, "invalid stdin must stay silent")
+            Thread.sleep(forTimeInterval: 0.1)
+            #expect(sessionShapedFiles(in: markerDir(home)).isEmpty,
+                    "a truncated background_tasks must never be read as running (no marker created)")
+        }
+    }
+
+    /// Canary: prove the keep logic has teeth. Neuter the background-task guard
+    /// so the reconcile branch ALWAYS clears, then run the exact
+    /// "Stop with a running subagent" scenario against the mutant — the marker
+    /// MUST be lost. If this ever passes without the guard, the keep behavior
+    /// is untested.
+    @Test func keepOnRunningBackgroundTaskCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(
+            of: #"if [ "$bg_running" = yes ]; then"#,
+            with: "if false; then")
+        #expect(mutant != original, "canary setup: the background-task keep guard must exist to be neutered")
+
+        withHome { home in
+            let session = "b3000005-0015-4abc-8def-000000000015"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+
+            _ = runScript(mutantURL, json: promptJSON(session), home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            #expect(waitForFile(marker, present: true), "canary setup: marker must be set first")
+
+            let tasks = #"[{"id":"a","type":"subagent","status":"running"}]"#
+            _ = runScript(mutantURL, json: eventJSON("Stop", session, backgroundTasks: tasks), home: home)
+            #expect(waitForFile(marker, present: false),
+                    "mutant that drops the keep guard must CLEAR the marker (so the keep test has teeth)")
         }
     }
 
@@ -263,6 +435,29 @@ struct ClaudeBusyHookScriptTests {
         }
         // 12h cap.
         #expect(script.contains("CAP=\(ClaudeBusyConstants.freshnessCapSeconds)"))
+    }
+
+    /// B3 event-set parity: SubagentStop is a real event, handled by the hook
+    /// and registered by the installer, but it is NOT one of ClaudeBusyConstants'
+    /// original five (NapCat's Swift reader only reads markers, so it does not
+    /// enumerate hook events). Assert the new event is wired consistently across
+    /// the hook, installer, and uninstaller so none drifts out of sync.
+    @Test func subagentStopIsWiredAcrossHookAndInstallers() throws {
+        let hook = try Self.read(Self.hookScriptURL)
+        let installer = try Self.read(Self.installerURL)
+        let uninstaller = try Self.read(Self.uninstallerURL)
+
+        #expect(hook.contains("SubagentStop"), "the hook must handle SubagentStop")
+        #expect(installer.contains("\"SubagentStop\""), "the installer must print a SubagentStop registration")
+        #expect(uninstaller.contains("SubagentStop"), "the uninstaller must list SubagentStop for removal")
+
+        // The installer registers the full set: B1's five + SubagentStop.
+        for event in ClaudeBusyConstants.allEvents + ["SubagentStop"] {
+            #expect(installer.contains("\"\(event)\""), "installer missing registration for '\(event)'")
+        }
+        // PreToolUse carries no background_tasks, so it is deliberately NOT wired.
+        #expect(!hook.contains("PreToolUse"), "PreToolUse must not be handled (no background_tasks signal)")
+        #expect(!installer.contains("PreToolUse"), "PreToolUse must not be registered")
     }
 
     // MARK: - Installer registration is EXEC FORM only (no shell-form path)

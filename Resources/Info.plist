@@ -14,6 +14,11 @@
 	<string>0.1.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<!-- Purpose string shown in the "NapCat wants to control Messages"
+	     Automation prompt (Track B / B2 lid-close alert). No entitlement is
+	     needed: the Makefile ad-hoc-signs without the hardened runtime. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>NapCat sends you an iMessage when your Mac starts sleeping while a Claude Code task is still running. It only ever messages the address you enter yourself.</string>
 	<key>LSUIElement</key>
 	<true/>
 </dict>

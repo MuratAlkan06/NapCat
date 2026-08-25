@@ -28,6 +28,10 @@ light/dark menu bars.
   in one SwiftUI menu.
 - **Launch at Login** via `SMAppService` — one toggle, one entry in
   System Settings › General › Login Items.
+- **Claude Code awareness** (optional, opt-in): the menu shows whether a Claude
+  turn is running, and NapCat can text you (iMessage to yourself) if the Mac
+  starts sleeping while one still is — see
+  [Claude busy detection](#claude-busy-detection-track-b--optional-read-only).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
 - No Dock icon, no windows. Quit from the menu (⌘Q while it is open works).
@@ -264,16 +268,20 @@ defaults delete com.muratalkan.napcat debugBattery   # and restart again
 
 NapCat can show whether a Claude Code turn is in flight, whether Claude is
 holding your Mac awake, and how recently the companion hook last fired — a new
-**Claude** section in the menu. This is the READ-ONLY half of the feature; the
-message-when-done delivery (best-effort iMessage-to-self) is coming in a later
-slice. Everything here is unprivileged: no `sudo`, no new privileged commands,
-no message is sent yet.
+**Claude** section in the menu. It can also **text you** if the Mac starts
+sleeping while a Claude task is still running (see "Text me if the Mac sleeps
+mid-task" below). Everything here is unprivileged: no `sudo`, no new privileged
+commands, no elevated helper.
 
 It works by way of a tiny **companion Claude Code hook** that drops a per-session
 marker file under `~/Library/Application Support/NapCat/claude-busy/` while a turn
-is running and removes it when the turn ends. NapCat only reads those markers
-(cross-checked against the live process list, fail-open so it never falsely
-reports "idle"). This is separate from the standalone *[redacted-tool]* tool.
+is running and removes it when the turn ends. When the main turn ends but a
+**background subagent** is still running, the hook keeps the marker until the last
+subagent finishes (it reconciles on the `background_tasks` the `Stop`/`SubagentStop`
+events carry), so NapCat still shows **running** during orchestrator-plus-subagent
+work. NapCat only reads those markers (cross-checked against the live process list,
+fail-open so it never falsely reports "idle"). This is separate from the standalone
+*[redacted-tool]* tool.
 
 ### Install and register — BY HAND
 
@@ -284,7 +292,7 @@ reports "idle"). This is separate from the standalone *[redacted-tool]* tool.
 That copies the hook to the stable path `~/.claude/hooks/napcat-busy-hook.sh`
 (so `make clean` never removes it), creates the marker directory, and **prints**
 the exact registration to paste into `~/.claude/settings.json`. The installer
-never edits `settings.json` itself. Merge these five entries into your existing
+never edits `settings.json` itself. Merge these six entries into your existing
 `"hooks"` object (replace `<HOME>` with your home directory — the installer
 prints the absolute paths for you):
 
@@ -292,9 +300,16 @@ prints the absolute paths for you):
 "UserPromptSubmit": [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "Stop":            [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "StopFailure":     [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"SubagentStop":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SessionEnd":      [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "Notification":    [ { "matcher":"idle_prompt", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
 ```
+
+The `SubagentStop` entry is what keeps NapCat showing **running** while a
+background subagent is still working after the main turn ends (the
+orchestrator-plus-subagents workflow). **If you registered an earlier version of
+this hook, add the `SubagentStop` entry** — the others are unchanged — and start a
+new Claude Code session so it loads.
 
 **The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
 not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`
@@ -326,19 +341,77 @@ While the flag exists the hook no-ops immediately.
 
 Removes the installed hook and the marker directory and prints which
 `settings.json` entries to delete. Like the installer, it never edits
-`settings.json`; delete the five NapCat entries yourself and restart Claude Code.
+`settings.json`; delete the six NapCat entries yourself and restart Claude Code.
+
+### Text me if the Mac sleeps mid-task
+
+The classic mistake this guards: you turn **Stay Awake** off, close the lid a
+minute later, and only discover hours afterwards that the long Claude run died
+with the machine. When it is armed, NapCat notices the sleep starting, checks
+that a Claude turn is actually in flight, and hands one **iMessage to yourself**
+to Messages before the Mac goes down.
+
+It is **notify-only**: it never controls Claude, never changes sleep or charging
+state, never arms itself, and never sends anything but its own fixed sentence.
+
+**Set it up (all in the menu, Claude section):**
+
+1. **Set recipient…** — enter *your own* iMessage address: the phone number or
+   Apple ID you use on your iPhone. NapCat only ever messages that address.
+2. Turn **Text me if the Mac sleeps mid-task** on.
+3. **Send test message** — macOS asks *"NapCat wants to control Messages"*.
+   Allow it. This is deliberate and required: it answers the permission prompt
+   while you are sitting there, and it creates the conversation with yourself.
+   **The feature does not arm until a test message succeeds** — otherwise the
+   very first send would be the lid-close one, blocking on a prompt nobody is
+   there to answer.
+
+The menu then shows a persistent status row: whether Messages access is allowed,
+and the outcome and time of the last message.
+
+**What it actually promises — read this.**
+
+- **Best effort, not guaranteed.** NapCat holds the sleep for about 1.5 seconds,
+  which is enough to hand the message to Messages — *not* enough to guarantee
+  Apple's servers received it. If the Mac sleeps first, the send usually
+  completes when it wakes. The menu says "handed to Messages", never "sent",
+  on purpose.
+- **A deliberate sleep texts you too.** NapCat cannot tell a closed lid from
+  Apple menu → Sleep. If a Claude task is running and Stay Awake is off, both
+  send the message.
+- **Not while Stay Awake is on** (the Mac is not really sleeping on you), not
+  when no Claude turn is in flight, and at most once every 15 minutes.
+- **Re-run the test message after an update.** Every `make` re-signs the app
+  with a fresh ad-hoc signature, and macOS usually revokes the Messages
+  permission when that happens. The menu shows it; the fix is one click.
+- **If the permission gets stuck**, reset it and run the test message again:
+
+  ```sh
+  tccutil reset AppleEvents com.muratalkan.napcat
+  ```
+
+**How it works, briefly.** NapCat registers for system power notifications
+(`IORegisterForSystemPower`) *only while armed* — switched off, it has no
+presence on the sleep path at all. The message itself is sent by a fixed
+AppleScript shipped inside the app bundle, invoked as
+`/usr/bin/osascript <script> <recipient> <body>`; both values are passed as
+arguments, never pasted into the script, and the body is built by NapCat from a
+fixed template plus the time and the number of busy sessions. **Nothing from
+your Claude conversation, prompts, or file paths can reach a message** — the
+sending API has no free-text parameter at all.
 
 ### Honest limitations
 
-- **Read-only for now.** NapCat shows Claude's busy/idle state; it does not yet
-  send you a message when a run finishes. That best-effort delivery is a later
-  slice.
 - **Best-effort markers.** If a Claude session ends uncleanly a marker may linger;
   markers older than 12 h are ignored and swept automatically, and the live
   process cross-check suppresses "running" when no Claude process is present.
 - **Classification is heuristic.** A process whose executable basename is exactly
   `claude` is confirmed; `node` and other claude-adjacent images are treated as
   "uncertain" (which keeps a real marker standing rather than dropping it).
+- **The lid alert can miss.** If NapCat cannot read the sleep state or sample
+  Claude quickly enough as the machine goes down, it stays quiet rather than
+  guessing — with one exception: if the sleep state is unreadable but a Claude
+  task *is* running, it errs toward texting you.
 
 ## Development
 

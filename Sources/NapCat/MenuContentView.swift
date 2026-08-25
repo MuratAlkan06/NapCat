@@ -33,6 +33,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Track B read-only detection; nil in debugBattery mode (structurally
     /// absent). Sampled on menu open only — no background timer.
     private let detection: ClaudeActivityController?
+    /// Track B / B2 lid-close alert; nil in debugBattery mode (structurally
+    /// absent). Registers for IOKit power notifications only while armed.
+    private let lidGuard: LidGuardController?
     private let hostingView: NSHostingView<MenuPanelView>
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
@@ -46,6 +49,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         loginItem: LoginItemController = LoginItemController(),
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
+        lidGuard: LidGuardController? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.sleep = sleep
@@ -55,7 +59,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.loginItem = loginItem
         self.defaults = defaults
         self.detection = detection
-        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, loginItem: loginItem, simulator: simulator, detection: detection)
+        self.lidGuard = lidGuard
+        self.model = MenuStateModel(power: power, sleep: sleep, limiter: limiter, loginItem: loginItem, simulator: simulator, detection: detection, lidGuard: lidGuard)
         self.menu = NSMenu()
         self.hostingView = NSHostingView(rootView: MenuPanelView(model: model))
         super.init()
@@ -81,6 +86,15 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // View actions that need AppKit flows.
         model.requestStayAwakeToggle = { [weak self] _ in self?.toggleStayAwake() }
         model.requestQuit = { NSApp.terminate(nil) }
+        model.requestLidGuardToggle = { [weak self] enabled in self?.toggleLidAlert(enabled) }
+        model.requestLidGuardRecipientPrompt = { [weak self] in self?.promptForLidAlertRecipient() }
+        model.requestLidGuardTestSend = { [weak self] in self?.sendLidAlertTestMessage() }
+
+        // The lid guard's own async events (send outcome, permission probe)
+        // republish through the same refresh path as every other controller.
+        lidGuard?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
 
         model.refresh()
     }
@@ -99,6 +113,12 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // Track B: sample the marker dir / processes / sleep assertions once,
         // here — the only place detection is read (no polling timer).
         detection?.sample()
+        // Track B / B2: register or drop the IOKit sleep hook so it matches the
+        // current config (the pmset refresh above has already primed the
+        // stay-awake mirror the fire gate reads), then probe the Messages
+        // permission OFF this critical path.
+        lidGuard?.refreshArming()
+        probeAutomationPermission()
         model.refresh()
         // Section visibility (charge limit, debug) can change the intrinsic
         // height — resize the hosted view before the menu lays out.
@@ -166,6 +186,45 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         }
     }
 
+    // MARK: - Lid-close alert (Track B / B2)
+
+    /// Happy path — the menu STAYS OPEN. Enabling with a recipient that has
+    /// never been primed also kicks off the config-time test send, which is
+    /// what raises the "NapCat wants to control Messages" prompt while the
+    /// user is present (never at lid-close). The send itself runs on the
+    /// sender's private queue, so nothing blocks here.
+    private func toggleLidAlert(_ enabled: Bool) {
+        guard let lidGuard else { return }
+        lidGuard.setEnabled(enabled)
+        if enabled, lidGuard.armingState == .needsTestSend {
+            lidGuard.sendTestMessage()
+        }
+        model.refresh()
+    }
+
+    /// Happy path — the menu STAYS OPEN; the send is handed to the sender's
+    /// private queue and its outcome republishes through setChangeHandler.
+    private func sendLidAlertTestMessage() {
+        lidGuard?.sendTestMessage()
+        model.refresh()
+    }
+
+    /// The ONE B2 flow that is genuinely modal (a text field), so it dismisses
+    /// first through the single gateway.
+    private func promptForLidAlertRecipient() {
+        closeMenuThenPresent { [weak self] in self?.presentRecipientPrompt() }
+    }
+
+    /// Silent Automation-permission probe: armed only, and detached so it
+    /// never sits on the menuWillOpen critical path. The probe passes
+    /// `askUserIfNeeded: false`, so it can never raise a prompt.
+    private func probeAutomationPermission() {
+        guard let lidGuard, lidGuard.isArmed else { return }
+        Task.detached(priority: .utility) {
+            lidGuard.refreshAutomationPermission()
+        }
+    }
+
     /// The ONLY place that may dismiss the menu (locked by a lint-style
     /// regression test in ScaffoldTests). Presentation is deferred one
     /// runloop turn so the dismissal finishes before the modal session
@@ -211,6 +270,37 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate()
         alert.runModal()
+    }
+
+    /// Modal recipient editor (accessory NSTextField). Saving a CHANGED
+    /// recipient clears the primed flag, so — while the feature is switched on
+    /// — the test send re-runs against the new address and its Automation
+    /// prompt is answered here and now.
+    private func presentRecipientPrompt() {
+        guard let lidGuard else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Where should NapCat text you?"
+        alert.informativeText = """
+            Enter YOUR own iMessage address — the phone number or Apple ID you use on your \
+            iPhone. NapCat messages that address (a note to yourself) when this Mac starts \
+            sleeping while a Claude Code task is still running. It never sends anything else, \
+            and never any of your Claude conversation.
+            """
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = lidGuard.storedRecipient
+        field.placeholderString = "+15551234567 or you@example.com"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if case .valid = lidGuard.setRecipient(field.stringValue),
+           lidGuard.armingState == .needsTestSend {
+            lidGuard.sendTestMessage()
+        }
+        model.refresh()
     }
 
     private func presentFailureAlert(_ detail: String) {

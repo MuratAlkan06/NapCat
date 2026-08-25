@@ -206,6 +206,63 @@ struct MenuPanelView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
             }
+            // B2 delivery controls (absent in debugBattery mode, like the
+            // detection block above).
+            if model.lidGuardVisible {
+                lidAlertBlock
+            }
+        }
+    }
+
+    // MARK: Lid-close alert (B2 — notify only, best effort)
+
+    private var lidAlertEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.lidGuardEnabled },
+            set: { model.setLidGuardEnabled($0) }
+        )
+    }
+
+    private var lidAlertBlock: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Text me if the Mac sleeps mid-task").font(.caption)
+                    Text(MenuStateModel.lidAlertStatusLine(for: model.lidGuardArming, automation: model.lidGuardAutomation))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("Text me if the Mac sleeps mid-task", isOn: lidAlertEnabledBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+            Text(MenuStateModel.lidAlertRecipientLine(model.lidGuardRecipient))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Set recipient…") { model.editLidGuardRecipient() }
+                    .controlSize(.small)
+                Button("Send test message") { model.sendLidGuardTestMessage() }
+                    .controlSize(.small)
+                    .disabled(!MenuStateModel.lidAlertTestSendAvailable(recipient: model.lidGuardRecipient))
+            }
+            Text(MenuStateModel.lidAlertAutomationCaption(model.lidGuardAutomation))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(MenuStateModel.lidAlertLastSendCaption(
+                outcome: model.lidGuardLastOutcome,
+                at: model.lidGuardLastOutcomeAt,
+                now: Date().timeIntervalSince1970
+            ))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Text(MenuStateModel.lidAlertRebuildNote)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -16,6 +16,11 @@ struct PersistenceTests {
         #expect(DefaultsKey.stayAwakeIntent == "stayAwakeIntent")
         #expect(DefaultsKey.heatWarningAcknowledged == "heatWarningAcknowledged")
         #expect(DefaultsKey.debugBattery == "debugBattery")
+        // Track B / B2 (lid-close alert) — the only three keys the feature
+        // adds; cooldown, budgets, and paths stay code constants.
+        #expect(DefaultsKey.lidGuardEnabled == "lidGuardEnabled")
+        #expect(DefaultsKey.lidGuardRecipient == "lidGuardRecipient")
+        #expect(DefaultsKey.lidGuardPrimedAt == "lidGuardPrimedAt")
     }
 
     /// Fresh isolated defaults per test; the suite file is removed again.
@@ -74,6 +79,67 @@ struct PersistenceTests {
             #expect(makeLimiter(defaults).limit == 100, "stored above range clamps down")
             defaults.set("junk", forKey: DefaultsKey.limit)
             #expect(makeLimiter(defaults).limit == 90, "non-integer falls back to the default")
+        }
+    }
+
+    // MARK: - Track B / B2 (lid-close alert)
+
+    /// Unset defaults must read as "off, no recipient, never primed" — the
+    /// feature never auto-arms.
+    @Test func lidGuardDefaultsToDisarmed() {
+        withLidGuardHarness { harness in
+            #expect(!harness.controller.isEnabled)
+            #expect(harness.controller.storedRecipient == "")
+            #expect(harness.controller.primedAt == 0)
+            #expect(harness.controller.armingState == .off)
+            #expect(!harness.controller.isObservingSleep)
+            for key in [DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardRecipient, DefaultsKey.lidGuardPrimedAt] {
+                #expect(harness.defaults.object(forKey: key) == nil, "defaults are computed, not eagerly written")
+            }
+        }
+    }
+
+    @Test func lidGuardSettingsRoundTripAcrossInstances() {
+        let suite = "com.muratalkan.napcat.tests.lidguard.roundtrip"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let first = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+        first.controller.setEnabled(true)
+        first.controller.setRecipient("  you@example.com  ")
+        first.controller.sendTestMessage()
+        #expect(first.controller.armingState == .armed)
+
+        // A second controller on the same defaults = an app relaunch.
+        let second = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+        #expect(second.controller.isEnabled)
+        #expect(second.controller.storedRecipient == "you@example.com", "stored trimmed, not raw")
+        #expect(second.controller.primedAt == first.controller.primedAt)
+        #expect(second.controller.armingState == .armed)
+    }
+
+    /// Hand-edited or corrupted values must read back safely and leave the
+    /// feature inert rather than crashing or half-arming.
+    @Test func junkLidGuardValuesReadBackSane() {
+        withLidGuardHarness { harness in
+            let controller = harness.controller
+            harness.defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
+
+            harness.defaults.set([1, 2], forKey: DefaultsKey.lidGuardRecipient)
+            #expect(controller.storedRecipient == "", "a non-string value reads as no recipient")
+            #expect(controller.armingState == .needsRecipient)
+
+            harness.defaults.set("has\nnewline", forKey: DefaultsKey.lidGuardRecipient)
+            #expect(controller.armingState == .needsRecipient, "an unusable address never arms")
+
+            harness.defaults.set("+15551234567", forKey: DefaultsKey.lidGuardRecipient)
+            harness.defaults.set("junk", forKey: DefaultsKey.lidGuardPrimedAt)
+            #expect(controller.primedAt == 0)
+            #expect(controller.armingState == .needsTestSend)
+
+            harness.defaults.set(1_700_000_000.0, forKey: DefaultsKey.lidGuardPrimedAt)
+            #expect(controller.armingState == .armed)
         }
     }
 

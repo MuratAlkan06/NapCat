@@ -94,6 +94,13 @@ enum ClaudeActivityPolicy {
         return hasFreshMarker && !suppressed(proc)
     }
 
+    /// How many sessions are busy right now (one fresh marker = one session).
+    /// B2 puts this COUNT — and nothing else from any session — into the
+    /// lid-close message body.
+    static func freshMarkerCount(markers: [BusyMarker], now: Int) -> Int {
+        markers.filter { markerIsFresh(ts: $0.ts, now: now) }.count
+    }
+
     // MARK: Process classification
 
     /// The two real basenames a RUNNING Claude Code worker's executable

@@ -33,6 +33,14 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var claudeHookLastSeenSeconds: Int?
     @Published private(set) var claudeDetectionPaused = false
 
+    // Track B / B2 (lid-close alert) mirrors.
+    @Published private(set) var lidGuardEnabled = false
+    @Published private(set) var lidGuardRecipient = ""
+    @Published private(set) var lidGuardArming: LidGuardArmingState = .off
+    @Published private(set) var lidGuardAutomation: AutomationPermission?
+    @Published private(set) var lidGuardLastOutcome: MessageSendOutcome?
+    @Published private(set) var lidGuardLastOutcomeAt: Double?
+
     // MARK: Wiring
 
     private let power: PowerInterface
@@ -43,14 +51,22 @@ final class MenuStateModel: ObservableObject {
     private let simulator: DebugPowerSimulator?
     /// Non-nil outside debugBattery mode — drives the Claude detection section.
     private let detection: ClaudeActivityController?
+    /// Non-nil outside debugBattery mode — drives the lid-alert controls (B2).
+    private let lidGuard: LidGuardController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
     var requestStayAwakeToggle: ((Bool) -> Void)?
     var requestQuit: (() -> Void)?
+    /// B2 actions that need AppKit flows (the recipient modal) or a privileged-
+    /// free but off-main command (the test send) — owned by MenuContentView.
+    var requestLidGuardToggle: ((Bool) -> Void)?
+    var requestLidGuardRecipientPrompt: (() -> Void)?
+    var requestLidGuardTestSend: (() -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
+    var lidGuardVisible: Bool { lidGuard != nil }
 
     init(
         power: PowerInterface,
@@ -58,7 +74,8 @@ final class MenuStateModel: ObservableObject {
         limiter: ChargeLimiter,
         loginItem: LoginItemController? = nil,
         simulator: DebugPowerSimulator? = nil,
-        detection: ClaudeActivityController? = nil
+        detection: ClaudeActivityController? = nil,
+        lidGuard: LidGuardController? = nil
     ) {
         self.power = power
         self.sleep = sleep
@@ -66,6 +83,7 @@ final class MenuStateModel: ObservableObject {
         self.loginItem = loginItem
         self.simulator = simulator
         self.detection = detection
+        self.lidGuard = lidGuard
         refresh()
     }
 
@@ -90,6 +108,13 @@ final class MenuStateModel: ObservableObject {
         claudeHookEverSeen = detection?.hookEverSeen ?? false
         claudeHookLastSeenSeconds = detection?.lastSeenSeconds
         claudeDetectionPaused = detection?.detectionPaused ?? false
+        // B2 mirrors — read straight off the (thread-safe) controller.
+        lidGuardEnabled = lidGuard?.isEnabled ?? false
+        lidGuardRecipient = lidGuard?.storedRecipient ?? ""
+        lidGuardArming = lidGuard?.armingState ?? .off
+        lidGuardAutomation = lidGuard?.automationPermission
+        lidGuardLastOutcome = lidGuard?.lastSendOutcome
+        lidGuardLastOutcomeAt = lidGuard?.lastSendOutcomeAt
     }
 
     // MARK: Actions (forwarded)
@@ -122,6 +147,12 @@ final class MenuStateModel: ObservableObject {
         detection?.setPaused(paused)
         refresh()
     }
+
+    // MARK: B2 actions (forwarded — the model never sends anything itself)
+
+    func setLidGuardEnabled(_ enabled: Bool) { requestLidGuardToggle?(enabled) }
+    func editLidGuardRecipient() { requestLidGuardRecipientPrompt?() }
+    func sendLidGuardTestMessage() { requestLidGuardTestSend?() }
 
     // MARK: - Pure display mappings (unit-tested)
 
@@ -235,5 +266,101 @@ final class MenuStateModel: ObservableObject {
             return "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh"
         }
         return "Busy hook: last seen \(ClaudeActivityPolicy.relativeTime(seconds: seconds))"
+    }
+
+    // MARK: - Track B / B2 (lid-close alert) presentation
+
+    /// Primary line: what the feature will do right now, and if it is not
+    /// armed, the NEXT step. Modeled on `featureMessage(for:)`.
+    ///
+    /// Honesty downgrade: NapCat is ad-hoc signed, so every rebuild re-signs the
+    /// app and revokes the Messages Automation grant while `primedAt` (hence
+    /// `.armed`) survives in UserDefaults. When the last Automation probe says a
+    /// send would be refused (`.denied` / `.wouldRequireConsent`), the armed
+    /// line must NOT claim "armed" — it names the fix instead. The arming logic
+    /// itself is untouched; only the DISPLAYED wording changes.
+    nonisolated static func lidAlertStatusLine(
+        for state: LidGuardArmingState,
+        automation: AutomationPermission?
+    ) -> String {
+        switch state {
+        case .off:
+            return "Lid alert: off"
+        case .needsRecipient:
+            return "Lid alert: add your own iMessage address to arm it"
+        case .needsTestSend:
+            return "Lid alert: send the test message to grant Messages access"
+        case .armed:
+            switch automation {
+            case .denied?, .wouldRequireConsent?:
+                return "Lid alert: needs Messages permission — re-run Send test message"
+            default:
+                return "Lid alert: armed — best-effort text if this Mac sleeps mid-task"
+            }
+        }
+    }
+
+    /// Recipient row. An invalid stored value says so instead of silently
+    /// behaving as if nothing were set.
+    nonisolated static func lidAlertRecipientLine(_ recipient: String) -> String {
+        switch LidGuardPolicy.validateRecipient(recipient) {
+        case .valid(let value):
+            return "Sends to \(value)"
+        case .empty:
+            return "No recipient set"
+        case .invalid:
+            return "Recipient is not usable — no line breaks, max \(LidGuardTuning.maxRecipientLength) characters"
+        }
+    }
+
+    /// Automation (TCC) grant caption from the SILENT probe. "Messages not
+    /// running" is its own answer — never rendered as ready or denied.
+    nonisolated static func lidAlertAutomationCaption(_ permission: AutomationPermission?) -> String {
+        switch permission {
+        case .none:
+            return "Messages access: not checked yet"
+        case .granted:
+            return "Messages access: allowed"
+        case .denied:
+            return "Messages access: denied — see the README (tccutil), then send the test message again"
+        case .wouldRequireConsent:
+            return "Messages access: not granted yet — send the test message"
+        case .targetNotRunning:
+            return "Messages access: unknown (Messages is not running)"
+        case .unknown(let status):
+            return "Messages access: unknown (status \(status))"
+        }
+    }
+
+    /// PERSISTENT last-send row: outcome + when. Note "handed to Messages" is
+    /// the honest ceiling — iMessage transmission is asynchronous and may
+    /// complete after the Mac wakes.
+    nonisolated static func lidAlertLastSendCaption(
+        outcome: MessageSendOutcome?,
+        at: Double?,
+        now: Double
+    ) -> String {
+        guard let outcome, let at else { return "Last message: none since NapCat started" }
+        let when = ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - at)))
+        switch outcome {
+        case .handedToMessages:
+            return "Last message: handed to Messages \(when)"
+        case .permissionDenied:
+            return "Last message: refused by Messages permission \(when)"
+        case .timedOutUnconfirmed:
+            return "Last message: unconfirmed \(when) — it may still have gone out"
+        case .sendFailed(let detail):
+            return "Last message: failed \(when) — \(detail)"
+        }
+    }
+
+    /// Ad-hoc signature churn: every `make` re-signs the app, which usually
+    /// revokes the Automation grant. Always visible in the section.
+    nonisolated static let lidAlertRebuildNote =
+        "Updating NapCat re-signs the app and usually revokes Messages access — send the test message again after an update."
+
+    /// The test send is offered only when there is something to send TO.
+    nonisolated static func lidAlertTestSendAvailable(recipient: String) -> Bool {
+        LidGuardPolicy.normalizedRecipient(recipient) != nil
     }
 }

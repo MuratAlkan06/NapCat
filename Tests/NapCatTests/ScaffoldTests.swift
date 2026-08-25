@@ -121,6 +121,39 @@ struct ScaffoldTests {
                 "the one dismissal must live in closeMenuThenPresent")
     }
 
+    /// Same lock extended to the Track B / B2 controls (2026-08-24): the
+    /// lid-alert toggle and the test-send button must keep the menu OPEN, and
+    /// the recipient editor — the one genuinely modal B2 flow — must go
+    /// through `closeMenuThenPresent` rather than dismissing on its own. The
+    /// "exactly one cancelTracking" assertion above still holds because the
+    /// recipient prompt reuses that single gateway.
+    @Test func lidAlertHappyPathsNeverCloseTheMenu() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/NapCat/MenuContentView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        try #require(source.contains("final class MenuContentView"))
+
+        let happyPathFunctions = ["toggleLidAlert", "sendLidAlertTestMessage", "probeAutomationPermission"]
+        let forbidden = ["cancelTracking", "NSAlert", "runModal", "NSApp.activate", "activate("]
+        for function in happyPathFunctions {
+            let body = try #require(Self.functionChunk(named: function, in: source),
+                                    "function \(function) not found — rewiring must keep this lock updated")
+            for token in forbidden {
+                #expect(!body.contains(token),
+                        "'\(token)' in \(function) — the happy path must keep the menu open")
+            }
+        }
+
+        // The modal recipient editor dismisses ONLY via the shared gateway.
+        let prompt = try #require(Self.functionChunk(named: "promptForLidAlertRecipient", in: source))
+        #expect(prompt.contains("closeMenuThenPresent"))
+        #expect(!prompt.contains("cancelTracking"))
+        #expect(!prompt.contains("runModal"), "the modal itself lives in presentRecipientPrompt")
+    }
+
     /// Source chunk from `func <name>(` to the next function declaration
     /// (or end of file) — coarse but stable for lint-style assertions.
     private static func functionChunk(named name: String, in source: String) -> String? {

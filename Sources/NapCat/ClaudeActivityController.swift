@@ -67,6 +67,23 @@ final class ClaudeActivityController {
         lastSeenSeconds = store.lastActivityEpoch().map { max(0, now - $0) }
     }
 
+    /// FRESH busy reading for the B2 lid guard, taken at the instant the system
+    /// announces sleep. Deliberately does NOT touch the published B1 snapshot:
+    /// that one stays "sampled on menu open only". Reuses the same markers +
+    /// fail-open prober + kill switch as `sample()`.
+    func sampleBusyNow() -> LidGuardBusySample {
+        guard !FileManager.default.fileExists(atPath: disabledFlagURL.path) else {
+            return LidGuardBusySample(taskInFlight: false, sessionCount: 0)
+        }
+        let now = Int(Date().timeIntervalSince1970)
+        let markers = store.markers()
+        let probe = prober.probe()
+        return LidGuardBusySample(
+            taskInFlight: ClaudeActivityPolicy.isTaskInFlight(markers: markers, now: now, proc: probe),
+            sessionCount: ClaudeActivityPolicy.freshMarkerCount(markers: markers, now: now)
+        )
+    }
+
     /// Kill switch: create/remove the DISABLED flag in NapCat's OWN state dir
     /// (never ~/.claude/settings.json). Creating it makes the hook no-op on
     /// its next run.

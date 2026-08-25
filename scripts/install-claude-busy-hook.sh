@@ -46,18 +46,23 @@ EXEC_CMD='{"type":"command","command":"/usr/bin/env","args":["-i","HOME='"$HOME"
 
 cat <<JSON
 
-Add these five entries to the "hooks" object in ~/.claude/settings.json
+Add these six entries to the "hooks" object in ~/.claude/settings.json
 (merge with any existing hooks; do not remove yours). Paste EXACTLY — the
 exec form (/usr/bin/env -i …) is a security requirement, not cosmetic:
 
   "UserPromptSubmit": [ { "hooks": [ $EXEC_CMD ] } ],
   "Stop": [ { "hooks": [ $EXEC_CMD ] } ],
   "StopFailure": [ { "hooks": [ $EXEC_CMD ] } ],
+  "SubagentStop": [ { "hooks": [ $EXEC_CMD ] } ],
   "SessionEnd": [ { "hooks": [ $EXEC_CMD ] } ],
   "Notification": [ { "matcher": "idle_prompt", "hooks": [ $EXEC_CMD ] } ]
 
 JSON
 
+echo "UPDATE: SubagentStop is NEW in this version. If you registered an earlier"
+echo "        NapCat hook, ADD the SubagentStop entry above — it keeps NapCat"
+echo "        'busy' while a background subagent is still running after the main"
+echo "        turn ends. A NEW Claude Code session is needed to load it."
 echo "NOTE: hooks load at session start — open a NEW Claude Code session for"
 echo "      this to take effect. Pause anytime by creating:"
 echo "          $MARKER_DIR/DISABLED"

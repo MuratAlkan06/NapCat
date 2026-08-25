@@ -127,4 +127,90 @@ struct MenuStateModelTests {
         #expect(MenuStateModel.featureMessage(for: .error("smc exploded")) == "smc exploded",
                 "error text passes through verbatim")
     }
+
+    // MARK: Track B / B2 — lid-alert presentation
+
+    @Test func lidAlertStatusLineNamesTheNextStep() {
+        // The not-armed wording never depends on the Automation probe.
+        let everyPermission: [AutomationPermission?] =
+            [nil, .granted, .denied, .wouldRequireConsent, .targetNotRunning, .unknown(-9)]
+        for automation in everyPermission {
+            #expect(MenuStateModel.lidAlertStatusLine(for: .off, automation: automation) == "Lid alert: off")
+            #expect(MenuStateModel.lidAlertStatusLine(for: .needsRecipient, automation: automation).contains("iMessage address"))
+            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTestSend, automation: automation).contains("test message"))
+        }
+        // Armed reads "armed" while access is good, not-yet-probed, or unknowable.
+        for automation: AutomationPermission? in [nil, .granted, .targetNotRunning, .unknown(-9)] {
+            let line = MenuStateModel.lidAlertStatusLine(for: .armed, automation: automation)
+            #expect(line.contains("armed"))
+            // The armed line must stay honest about what is promised.
+            #expect(line.contains("best-effort"))
+        }
+    }
+
+    /// Ad-hoc signing revokes Messages Automation on every rebuild while the
+    /// primed flag survives, so "armed" can outlive real access. When the last
+    /// probe says a send would be refused, the primary line must NOT claim armed
+    /// — it points back at the test send. (Arming logic is untouched.)
+    @Test func lidAlertStatusLineDowngradesWhenMessagesAccessIsRevoked() {
+        for automation: AutomationPermission in [.denied, .wouldRequireConsent] {
+            let line = MenuStateModel.lidAlertStatusLine(for: .armed, automation: automation)
+            #expect(!line.contains("armed"), "must not claim armed while Messages access is revoked")
+            #expect(line.contains("Messages permission"))
+            #expect(line.contains("test message"))
+        }
+    }
+
+    @Test func lidAlertRecipientLineDistinguishesUnsetFromUnusable() {
+        #expect(MenuStateModel.lidAlertRecipientLine("+15551234567") == "Sends to +15551234567")
+        #expect(MenuStateModel.lidAlertRecipientLine("  you@example.com ") == "Sends to you@example.com")
+        #expect(MenuStateModel.lidAlertRecipientLine("") == "No recipient set")
+        #expect(MenuStateModel.lidAlertRecipientLine("bad\nvalue").contains("not usable"))
+    }
+
+    @Test func lidAlertAutomationCaptions() {
+        #expect(MenuStateModel.lidAlertAutomationCaption(nil).contains("not checked"))
+        #expect(MenuStateModel.lidAlertAutomationCaption(.granted).contains("allowed"))
+        #expect(MenuStateModel.lidAlertAutomationCaption(.denied).contains("tccutil"))
+        #expect(MenuStateModel.lidAlertAutomationCaption(.wouldRequireConsent).contains("test message"))
+        // "Messages is not running" must never read as ready or denied.
+        let unknown = MenuStateModel.lidAlertAutomationCaption(.targetNotRunning)
+        #expect(unknown.contains("unknown"))
+        #expect(!unknown.contains("allowed"))
+        #expect(!unknown.contains("denied"))
+        #expect(MenuStateModel.lidAlertAutomationCaption(.unknown(-7)).contains("-7"))
+    }
+
+    @Test func lidAlertLastSendCaptionIsHonestAndTimestamped() {
+        let now = 1_000_000.0
+        #expect(MenuStateModel.lidAlertLastSendCaption(outcome: nil, at: nil, now: now)
+                == "Last message: none since NapCat started")
+        let handed = MenuStateModel.lidAlertLastSendCaption(
+            outcome: .handedToMessages, at: now - 120, now: now)
+        #expect(handed.contains("handed to Messages"), "never claims delivery")
+        #expect(handed.contains("2m ago"))
+        #expect(MenuStateModel.lidAlertLastSendCaption(outcome: .permissionDenied, at: now, now: now)
+                .contains("refused"))
+        #expect(MenuStateModel.lidAlertLastSendCaption(outcome: .timedOutUnconfirmed, at: now, now: now)
+                .contains("unconfirmed"))
+        #expect(MenuStateModel.lidAlertLastSendCaption(outcome: .sendFailed("boom"), at: now, now: now)
+                .contains("boom"))
+    }
+
+    @Test func lidAlertRebuildNoteWarnsAboutSignatureChurn() {
+        #expect(MenuStateModel.lidAlertRebuildNote.contains("test message"))
+        #expect(MenuStateModel.lidAlertRebuildNote.contains("re-signs"))
+    }
+
+    @Test func testSendIsOfferedOnlyWithAUsableRecipient() {
+        #expect(MenuStateModel.lidAlertTestSendAvailable(recipient: "+15551234567"))
+        #expect(!MenuStateModel.lidAlertTestSendAvailable(recipient: ""))
+        #expect(!MenuStateModel.lidAlertTestSendAvailable(recipient: "bad\nvalue"))
+    }
+
+    /// The panel section only exists when the subsystem does (absent in
+    /// debugBattery mode) — same rule as the B1 detection section.
+    @Test @MainActor func lidAlertSectionIsHiddenWithoutTheController() {
+        #expect(!makeModel().lidGuardVisible)
+    }
 }

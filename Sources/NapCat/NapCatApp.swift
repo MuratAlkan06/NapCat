@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var powerSource: PowerInterface?
     private var chargeLimiter: ChargeLimiter?
     private var statusItemController: StatusItemController?
+    private var lidGuard: LidGuardController?
     private var signalSources: [DispatchSourceSignal] = []
     private var didRevertOnShutdown = false
 
@@ -52,6 +53,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // no proc enumeration / IOKit assertion read exists (ADR §8 mirror).
         let detection = ClaudeActivityController.makeIfEnabled(debugBattery: isDebugBattery)
 
+        // Track B / B2 (lid-close alert). Same wiring-predicate gate: nothing
+        // in this subsystem exists in debugBattery mode, so no IOKit power
+        // registration and no osascript spawn is reachable there. The IOKit
+        // registration itself happens only when the feature is ARMED
+        // (refreshArming below and on every menu open).
+        let lidGuard = LidGuardController.makeIfEnabled(
+            debugBattery: isDebugBattery,
+            defaults: defaults,
+            stayAwakeMirror: sleepController.observedMirror,
+            detection: detection
+        )
+        self.lidGuard = lidGuard
+
         statusItemController = StatusItemController(
             menuContent: MenuContentView(
                 sleep: sleepController,
@@ -60,9 +74,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 limiter: limiter,
                 simulator: simulator,
                 detection: detection,
+                lidGuard: lidGuard,
                 defaults: defaults
             )
         )
+        // reconcileAtLaunch() has already refreshed the observed sleep state,
+        // so the mirror the fire gate reads is primed before we may arm.
+        lidGuard?.refreshArming()
         // After the menu is wired (limiter.onChange set) so the first
         // evaluation is already visible in the UI.
         limiter.start()
@@ -101,6 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Never leave charging inhibited after a clean quit (P3b).
         chargeLimiter?.releasePauseForShutdown()
+        // Drop the IOKit power-notification registration (B2) so a quitting
+        // NapCat leaves no sleep-path footprint at all.
+        lidGuard?.disarmForShutdown()
         watchdogController.stop()
     }
 
