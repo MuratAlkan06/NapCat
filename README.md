@@ -29,8 +29,8 @@ light/dark menu bars.
 - **Launch at Login** via `SMAppService` — one toggle, one entry in
   System Settings › General › Login Items.
 - **Claude Code awareness** (optional, opt-in): the menu shows whether a Claude
-  turn is running, and NapCat can text you (iMessage to yourself) if the Mac
-  starts sleeping while one still is — see
+  turn is running, and NapCat can push a notification to your phone (via ntfy)
+  if the Mac starts sleeping while one still is — see
   [Claude busy detection](#claude-busy-detection-track-b--optional-read-only).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
@@ -268,10 +268,10 @@ defaults delete com.muratalkan.napcat debugBattery   # and restart again
 
 NapCat can show whether a Claude Code turn is in flight, whether Claude is
 holding your Mac awake, and how recently the companion hook last fired — a new
-**Claude** section in the menu. It can also **text you** if the Mac starts
-sleeping while a Claude task is still running (see "Text me if the Mac sleeps
-mid-task" below). Everything here is unprivileged: no `sudo`, no new privileged
-commands, no elevated helper.
+**Claude** section in the menu. It can also **push a notification to your phone**
+if the Mac starts sleeping while a Claude task is still running (see "Notify me
+if the Mac sleeps mid-task" below). Everything here is unprivileged: no `sudo`,
+no new privileged commands, no elevated helper.
 
 It works by way of a tiny **companion Claude Code hook** that drops a per-session
 marker file under `~/Library/Application Support/NapCat/claude-busy/` while a turn
@@ -343,62 +343,95 @@ Removes the installed hook and the marker directory and prints which
 `settings.json` entries to delete. Like the installer, it never edits
 `settings.json`; delete the six NapCat entries yourself and restart Claude Code.
 
-### Text me if the Mac sleeps mid-task
+### Notify me if the Mac sleeps mid-task
 
 The classic mistake this guards: you turn **Stay Awake** off, close the lid a
 minute later, and only discover hours afterwards that the long Claude run died
 with the machine. When it is armed, NapCat notices the sleep starting, checks
-that a Claude turn is actually in flight, and hands one **iMessage to yourself**
-to Messages before the Mac goes down.
+that a Claude turn is actually in flight, and pushes one notification to your
+phone via [ntfy](https://ntfy.sh) before the Mac goes down.
 
 It is **notify-only**: it never controls Claude, never changes sleep or charging
 state, never arms itself, and never sends anything but its own fixed sentence.
 
-**Set it up (all in the menu, Claude section):**
+> **Why ntfy and not iMessage?** NapCat originally texted you an iMessage. Two
+> things killed that: iOS suppresses notification *banners* for messages you send
+> to yourself (the text arrived, but silently — exactly the one thing this
+> feature exists to do), and the AppleScript path only worked while Messages.app
+> was open, which is not something you can assume as a Mac goes to sleep. ntfy
+> has neither problem, needs no Automation permission, and survives rebuilds.
 
-1. **Set recipient…** — enter *your own* iMessage address: the phone number or
-   Apple ID you use on your iPhone. NapCat only ever messages that address.
-2. Turn **Text me if the Mac sleeps mid-task** on.
-3. **Send test message** — macOS asks *"NapCat wants to control Messages"*.
-   Allow it. This is deliberate and required: it answers the permission prompt
-   while you are sitting there, and it creates the conversation with yourself.
-   **The feature does not arm until a test message succeeds** — otherwise the
-   very first send would be the lid-close one, blocking on a prompt nobody is
-   there to answer.
+**Set it up:**
 
-The menu then shows a persistent status row: whether Messages access is allowed,
-and the outcome and time of the last message.
+1. Install the **ntfy** app on your iPhone or Android phone (App Store / Play
+   Store / F-Droid), or just open <https://ntfy.sh> in a browser.
+2. Invent a **topic name** and subscribe the app to it. ⚠️ **The topic name is
+   the password.** ntfy has no accounts, so anyone who guesses your topic can
+   read *and* post to it. Use something long and random — the shape is
+   `napcat-<paste-your-own-random-suffix>`, not `napcat`. Generate the suffix
+   rather than typing one you thought of (`openssl rand -hex 8` is enough), and
+   **do not copy any example from this README or from the app**: an example
+   everybody can read is a feed everybody can read. Allowed: letters, digits,
+   `_` and `-`, up to 64 characters.
+3. In the NapCat menu (Claude section) click **ntfy settings…**, paste the topic,
+   and leave the server as `https://ntfy.sh` unless you run your own instance.
+   A custom server must be an `https://` origin and nothing more — no path,
+   query, fragment, or `user@` part, and a plain ASCII host name or IP address
+   (`https://ntfy.example.com:8443`). Anything else is refused with an
+   explanation in the dialog rather than half-saved.
+4. Turn **Notify me if the Mac sleeps mid-task** on.
+5. **Send test message** — your phone should show a banner within a couple of
+   seconds. **The feature does not arm until a test message is accepted**, so
+   the lid-close alert is never the first thing your topic is trusted with.
+
+The menu then shows a persistent status row: whether it is armed, and the outcome
+and time of the last message. It deliberately never displays the topic itself.
+
+You can check a topic from the terminal without NapCat:
+
+```sh
+curl -d "hello from the terminal" https://ntfy.sh/<your-topic>
+```
 
 **What it actually promises — read this.**
 
 - **Best effort, not guaranteed.** NapCat holds the sleep for about 1.5 seconds,
-  which is enough to hand the message to Messages — *not* enough to guarantee
-  Apple's servers received it. If the Mac sleeps first, the send usually
-  completes when it wakes. The menu says "handed to Messages", never "sent",
-  on purpose.
-- **A deliberate sleep texts you too.** NapCat cannot tell a closed lid from
+  which gives the POST a chance to leave the Mac — *not* a guarantee that ntfy
+  answered before the machine went down. If it did not, the menu says
+  "unconfirmed", never "sent". Once ntfy *has* the message it holds it for 12
+  hours, so a phone that is briefly offline still gets it.
+- **A deliberate sleep notifies you too.** NapCat cannot tell a closed lid from
   Apple menu → Sleep. If a Claude task is running and Stay Awake is off, both
   send the message.
 - **Not while Stay Awake is on** (the Mac is not really sleeping on you), not
   when no Claude turn is in flight, and at most once every 15 minutes.
-- **Re-run the test message after an update.** Every `make` re-signs the app
-  with a fresh ad-hoc signature, and macOS usually revokes the Messages
-  permission when that happens. The menu shows it; the fix is one click.
-- **If the permission gets stuck**, reset it and run the test message again:
-
-  ```sh
-  tccutil reset AppleEvents com.muratalkan.napcat
-  ```
+- **Changing the topic or server disarms it** until you run the test message
+  again — a feed nobody has proven should never be trusted with the real alert.
+- **Your topic is a shared secret with a public server.** Treat it like a
+  password: do not paste it into screenshots, issues, or logs. NapCat never
+  writes it to the unified log, and the menu never renders it. It is stored in
+  NapCat's own preferences (`com.muratalkan.napcat`) in cleartext, like any
+  other setting — anyone with access to your logged-in account can read it, and
+  `sudo ./scripts/uninstall.sh` deletes it along with the rest of NapCat's
+  settings. The operator of whichever ntfy server you use also sees the topic
+  and the message text, and holds it for 12 hours.
 
 **How it works, briefly.** NapCat registers for system power notifications
 (`IORegisterForSystemPower`) *only while armed* — switched off, it has no
-presence on the sleep path at all. The message itself is sent by a fixed
-AppleScript shipped inside the app bundle, invoked as
-`/usr/bin/osascript <script> <recipient> <body>`; both values are passed as
-arguments, never pasted into the script, and the body is built by NapCat from a
-fixed template plus the time and the number of busy sessions. **Nothing from
-your Claude conversation, prompts, or file paths can reach a message** — the
-sending API has no free-text parameter at all.
+presence on the sleep path at all. The message is a plain-text HTTP POST to
+`<server>/<topic>` with fixed `Title`/`Priority`/`Tags` headers, and the body is
+built by NapCat from a fixed template plus the time and the number of busy
+sessions. **Nothing from your Claude conversation, prompts, or file paths can
+reach a message** — the sending API has no free-text parameter at all, not even
+a String. The URL is assembled only from a topic that already matched
+`^[A-Za-z0-9_-]{1,64}$` and an `https` origin with no path, and the finished URL
+must match those two pieces byte-for-byte or the send is refused. The origin is
+checked in its *un*-decoded form and its host must be a plain
+`[A-Za-z0-9._-]` name, so a percent-encoded address cannot smuggle a path,
+query, fragment, or `user@` back in; and before publishing, the built request is
+re-checked to be exactly “that origin plus one path segment”. HTTP redirects are
+refused outright — following one would hand your topic to whatever host the
+server named — so a redirected publish is reported as a failure.
 
 ### Honest limitations
 

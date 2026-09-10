@@ -6,12 +6,14 @@ import Testing
 @testable import NapCat
 
 /// Structural isolation for Track B slice B2 (mirrors
-/// ClaudeDetectionStructureTests and the DebugPowerSimulator lint):
-/// process spawning, the IOKit power registration, and the AppleEvent
-/// permission probe each live in exactly ONE file; the whole subsystem is
-/// absent from the debug-simulator object graph; the sender API cannot carry
-/// free text; the shipped AppleScript is argv-only; and the feature adds no
-/// privileged surface.
+/// ClaudeDetectionStructureTests and the DebugPowerSimulator lint): network I/O
+/// and the IOKit power registration each live in exactly ONE file; the whole
+/// subsystem is absent from the debug-simulator object graph; the sender API
+/// cannot carry free text; the ntfy topic (which IS the password) can never
+/// reach a log line; and the feature adds no privileged surface.
+///
+/// Since B4 the subsystem also asserts what is GONE: no osascript, no
+/// AppleEvents, no bundled AppleScript, no Automation (TCC) surface at all.
 struct LidGuardStructureTests {
     // MARK: Helpers
 
@@ -48,10 +50,33 @@ struct LidGuardStructureTests {
         "LidGuardPolicy.swift",
         "LidGuardController.swift",
         "MessageSender.swift",
-        "OSAScriptMessageSender.swift",
+        "NtfyMessageSender.swift",
         "SystemSleepSource.swift",
-        "AutomationPermissionProbe.swift",
     ]
+
+    /// Files scanned by the no-topic-in-logs lint: the B2 subsystem PLUS the
+    /// three menu files, which see the topic (the model mirrors it so the editor
+    /// can be prefilled, and the editor renders it). They contain zero `logger.`
+    /// calls today; including them turns that fact into a lock, so the first log
+    /// line added there has to obey the same rules (security review 2026-09-09).
+    ///
+    /// Deliberately NOT folded into `b2Files`: the privileged-surface lint would
+    /// then trip over MenuContentView's legitimate "sudo ./scripts/setup.sh"
+    /// instruction text.
+    static let logScannedFiles = b2Files + [
+        "MenuStateModel.swift",
+        "MenuPanelView.swift",
+        "MenuContentView.swift",
+    ]
+
+    /// What counts as "a line that emits output", matched case-INSENSITIVELY
+    /// (so `osLogger.`/`alertLogger.` cannot slip past). `Logger` is the only
+    /// one this codebase uses; the other three are here so that reaching for a
+    /// cruder tool — which has no `privacy:` annotation at all, and on
+    /// `print`/`NSLog` no redaction whatsoever — cannot become a way around the
+    /// no-topic-in-logs rule (I-4, review closure pass 2026-09-09). The scanned
+    /// files contain none of them today.
+    static let logCallTokens = ["logger.", "print(", "nslog", "os_log"]
 
     // MARK: - Symbol confinement
 
@@ -59,12 +84,15 @@ struct LidGuardStructureTests {
     /// wide. Vacuity is guarded: the token must really be present there.
     @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
         let allowed: [String: String] = [
-            "osascript": "OSAScriptMessageSender.swift",
+            "URLSession": "NtfyMessageSender.swift",
+            "URLRequest": "NtfyMessageSender.swift",
+            "dataTask": "NtfyMessageSender.swift",
+            "httpBody": "NtfyMessageSender.swift",
+            "setValue": "NtfyMessageSender.swift",
             "IORegisterForSystemPower": "SystemSleepSource.swift",
             "IODeregisterForSystemPower": "SystemSleepSource.swift",
             "IOAllowPowerChange": "SystemSleepSource.swift",
             "IONotificationPortSetDispatchQueue": "SystemSleepSource.swift",
-            "AEDeterminePermissionToAutomateTarget": "AutomationPermissionProbe.swift",
         ]
         let sources = try Self.swiftSources()
         for (token, owner) in allowed {
@@ -76,17 +104,17 @@ struct LidGuardStructureTests {
         }
     }
 
-    /// Inside the B2 subsystem only the sender may construct a subprocess.
-    @Test func onlyTheSenderMaySpawnAProcess() throws {
+    /// The B2 subsystem spawns NOTHING. Before B4 the osascript sender was the
+    /// one permitted spawner; the ntfy channel needs no subprocess at all, so
+    /// the exception is gone and the rule covers every file.
+    @Test func theSubsystemNeverSpawnsAProcess() throws {
         let sources = try Self.swiftSources()
-        let spawnTokens = ["Process(", "posix_spawn", "NSTask", "system(", "popen"]
-        for (name, text) in sources where Self.b2Files.contains(name) && name != "OSAScriptMessageSender.swift" {
+        let spawnTokens = ["Process(", "posix_spawn", "NSTask", "system(", "popen", "osascript"]
+        for (name, text) in sources where Self.b2Files.contains(name) {
             for token in spawnTokens {
-                #expect(!text.contains(token), "'\(token)' in \(name) — only the sender may spawn")
+                #expect(!text.contains(token), "'\(token)' in \(name) — B2 must never spawn a process")
             }
         }
-        let sender = try #require(sources.first { $0.name == "OSAScriptMessageSender.swift" })
-        #expect(sender.text.contains("Process("), "lint would be vacuous if the sender stopped spawning")
     }
 
     /// B2 adds ZERO privileged surface: no sudo, no pmset, no smc, no PLAN §4
@@ -107,8 +135,7 @@ struct LidGuardStructureTests {
         let constructors = [
             "LidGuardController(",
             "IOKitSystemSleepSource(",
-            "OSAScriptMessageSender(",
-            "AppleEventAutomationProbe(",
+            "NtfyMessageSender(",
         ]
         for token in constructors {
             for (name, text) in sources where text.contains(token) {
@@ -120,6 +147,19 @@ struct LidGuardStructureTests {
         let app = try #require(sources.first { $0.name == "NapCatApp.swift" })
         #expect(app.text.contains("LidGuardController.makeIfEnabled("))
         #expect(!app.text.contains("LidGuardController("))
+    }
+
+    /// A `NtfyDestination` is the ONLY thing that ever becomes a URL, so it
+    /// must only ever be built by the validator. Any other source file
+    /// assembling one by hand would bypass the ntfy grammar check.
+    @Test func onlyThePolicyMayConstructADestination() throws {
+        let sources = try Self.swiftSources()
+        for (name, text) in sources where text.contains("NtfyDestination(") {
+            #expect(name == "LidGuardPolicy.swift",
+                    "'NtfyDestination(' in \(name) — build it through LidGuardPolicy.destination(server:topic:)")
+        }
+        let policy = try #require(sources.first { $0.name == "LidGuardPolicy.swift" })
+        #expect(policy.text.contains("NtfyDestination("), "lint would be vacuous")
     }
 
     // MARK: - Debug-simulator absence
@@ -154,17 +194,66 @@ struct LidGuardStructureTests {
         let dir = Self.sourcesDir()
         for file in ["MenuStateModel.swift", "MenuPanelView.swift", "MenuContentView.swift"] {
             let text = Self.codeOnly(try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8))
-            for token in ["osascript", "IORegisterForSystemPower", "IOAllowPowerChange",
-                          "AEDeterminePermissionToAutomateTarget"] {
+            for token in ["URLSession", "URLRequest", "dataTask", "osascript",
+                          "IORegisterForSystemPower", "IOAllowPowerChange"] {
                 #expect(!text.contains(token), "'\(token)' must not appear in \(file)")
             }
+        }
+    }
+
+    // MARK: - The topic is a password
+
+    /// The ntfy topic is the ONLY access control on the feed and it rides
+    /// inside the request URL. So no B2 output line — `Logger`, `print`,
+    /// `NSLog` or `os_log`, see `logCallTokens` — may name a topic or a URL, and
+    /// every interpolation in one must carry an explicit `privacy:` annotation
+    /// (all B2 log statements are single-line by construction).
+    @Test func noLidGuardLogLineCanEchoTheTopicOrTheUrl() throws {
+        let sources = try Self.swiftSources()
+        var scanned = 0
+        for (name, text) in sources where Self.logScannedFiles.contains(name) {
+            // Case-INSENSITIVE: a differently-named logger (`osLogger`,
+            // `alertLogger`, …) must not slip past the scan. Caught by a canary
+            // during the 2026-09-09 security review, when an injected
+            // `canaryLogger.notice("…topic…")` was not matched.
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false)
+            where Self.logCallTokens.contains(where: { line.lowercased().contains($0) }) {
+                scanned += 1
+                for secret in ["topic", "Topic", "absoluteString", ".url", "request.url", "endpoint"] {
+                    #expect(!line.contains(secret),
+                            "\(name): a log line must never carry '\(secret)' — the ntfy topic is a password")
+                }
+                let interpolations = line.components(separatedBy: "\\(").count - 1
+                let annotations = line.components(separatedBy: "privacy:").count - 1
+                #expect(interpolations == annotations,
+                        "\(name): every interpolation in a log line needs an explicit privacy level: \(line)")
+            }
+        }
+        #expect(scanned > 0, "no log lines scanned — this lint would be vacuous")
+        // Every scanned file must really exist under that name, or a rename
+        // would silently drop it out of the lint.
+        for name in Self.logScannedFiles {
+            #expect(sources.contains { $0.name == name },
+                    "\(name) is not in Sources/NapCat — update the lint's file list")
+        }
+    }
+
+    /// The failure detail that reaches the menu and the (private) log comes
+    /// from a fixed vocabulary, never from an error's own message — those can
+    /// embed the failing URL.
+    @Test func senderFailureDetailsNeverComeFromAnErrorDescription() throws {
+        let sources = try Self.swiftSources()
+        for (name, text) in sources where Self.b2Files.contains(name) {
+            #expect(!text.contains("localizedDescription"),
+                    "\(name): localizedDescription can carry the failing URL, which carries the topic")
         }
     }
 
     // MARK: - Sender API surface (body is app-generated, enforced by shape)
 
     /// The one send entry point takes NO free-text parameter — byte-locked, so
-    /// adding a `body:`/`text:` String would fail here.
+    /// adding a `body:`/`text:` String would fail here. Since B4 it carries no
+    /// String at all: the destination is a pre-validated struct.
     @Test func theSenderApiCannotCarryFreeText() throws {
         let source = try String(
             contentsOf: Self.sourcesDir().appendingPathComponent("MessageSender.swift"),
@@ -173,20 +262,20 @@ struct LidGuardStructureTests {
         let expected = [
             "    func send(",
             "        _ kind: LidGuardMessageKind,",
-            "        to recipient: String,",
+            "        to destination: NtfyDestination,",
             "        at firedAt: Date,",
             "        completion: @escaping @Sendable (MessageSendOutcome) -> Void",
             "    )",
         ].joined(separator: "\n")
         #expect(source.contains(expected), "the MessageSender signature changed — re-review the free-text guarantee")
 
-        // Within the protocol declaration, `recipient` is the ONLY String.
+        // Within the protocol declaration there is now NO String parameter.
         let start = try #require(source.range(of: "protocol MessageSender"))
         let body = source[start.upperBound...]
         let end = try #require(body.range(of: "\n}"))
         let declaration = String(body[..<end.lowerBound])
         let stringParameters = declaration.components(separatedBy: ": String").count - 1
-        #expect(stringParameters == 1, "expected exactly one String parameter (the recipient), found \(stringParameters)")
+        #expect(stringParameters == 0, "expected no String parameter at all, found \(stringParameters)")
         for forbidden in ["body:", "text:", "message:", "subject:"] {
             #expect(!declaration.contains(forbidden), "'\(forbidden)' would let caller text reach a message")
         }
@@ -194,65 +283,54 @@ struct LidGuardStructureTests {
 
     /// The dry-run sender proves the produced body really is the template.
     @Test func theDryRunSenderProducesOnlyTemplateBodies() {
+        let destination = NtfyDestination(server: "https://ntfy.sh", topic: "napcat-structure")
         let sender = RecordingMessageSender()
-        sender.send(.lidAlert(busySessionCount: 2), to: "+15551234567", at: Date(timeIntervalSince1970: 0)) { _ in }
-        sender.send(.test, to: "+15551234567", at: Date(timeIntervalSince1970: 0)) { _ in }
+        sender.send(.lidAlert(busySessionCount: 2), to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
+        sender.send(.test, to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
         let bodies = sender.bodies(clockTime: "22:49")
         #expect(bodies.count == 2)
         #expect(bodies[0] == LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 2), clockTime: "22:49"))
         #expect(bodies[1] == LidGuardPolicy.messageBody(kind: .test, clockTime: "22:49"))
     }
 
-    // MARK: - The shipped AppleScript
+    // MARK: - What B4 removed (regression locks)
 
-    /// The script is FIXED and argv-only. It is deliberately NOT compiled here:
-    /// compiling `tell application "Messages"` makes AppleScript fetch the
-    /// app's terminology over an AppleEvent, which can launch Messages and
-    /// raise the very Automation prompt `make test` must never trigger. The
-    /// real proof is the user-run test send (hardware spike SB1).
-    @Test func theBundledAppleScriptIsFixedAndArgvOnly() throws {
-        let url = Self.repoRoot()
-            .appendingPathComponent("Resources")
-            .appendingPathComponent("\(LidGuardTuning.scriptResourceName).\(LidGuardTuning.scriptResourceExtension)")
-        #expect(FileManager.default.fileExists(atPath: url.path), "missing \(url.lastPathComponent)")
-        let script = try String(contentsOf: url, encoding: .utf8)
-
-        for required in [
-            "on run argv",
-            "set theRecipient to item 1 of argv",
-            "set theBody to item 2 of argv",
-            "with timeout of 8 seconds",
-            "tell application \"Messages\"",
-            "send theBody to participant theRecipient",
-            "end run",
+    /// The iMessage channel is gone repo-wide: no sender, no probe, no bundled
+    /// AppleScript, no Makefile rule, and no source naming Messages automation.
+    @Test func theIMessageChannelIsFullyRemoved() throws {
+        let fileManager = FileManager.default
+        for removed in [
+            "Sources/NapCat/OSAScriptMessageSender.swift",
+            "Sources/NapCat/AutomationPermissionProbe.swift",
+            "Resources/napcat-send-imessage.applescript",
         ] {
-            #expect(script.contains(required), "the script must contain: \(required)")
+            #expect(!fileManager.fileExists(atPath: Self.repoRoot().appendingPathComponent(removed).path),
+                    "\(removed) must be gone after the ntfy swap")
         }
 
-        // No interpolation, no shell, no nested evaluation: the two inputs are
-        // only ever bound to variables from argv.
-        for forbidden in ["do shell script", "run script", "sudo", "system attribute", "&", "\\("] {
-            #expect(!script.contains(forbidden), "'\(forbidden)' must not appear in the send script")
+        let sources = try Self.swiftSources()
+        for (name, text) in sources {
+            for token in ["osascript", "AEDeterminePermissionToAutomateTarget",
+                          "com.apple.MobileSMS", "AECreateDesc", "AutomationPermission"] {
+                #expect(!text.contains(token), "'\(token)' still in \(name) — the iMessage channel is retired")
+            }
         }
-    }
 
-    /// The bundle must actually ship it (the sender resolves it by name).
-    @Test func theMakefileInstallsTheAppleScriptIntoTheBundle() throws {
         let makefile = try String(contentsOf: Self.repoRoot().appendingPathComponent("Makefile"), encoding: .utf8)
-        let resource = "\(LidGuardTuning.scriptResourceName).\(LidGuardTuning.scriptResourceExtension)"
-        #expect(makefile.contains("Resources/\(resource)"), "Makefile must copy \(resource) into the app bundle")
-        #expect(makefile.contains("Contents/Resources/\(resource)"))
+        #expect(!makefile.contains("applescript"), "the Makefile must no longer bundle an AppleScript")
+        #expect(makefile.contains("napcat-watchdog.sh"), "lint would be vacuous if resource copying vanished")
     }
 
-    /// The Automation prompt needs a purpose string or macOS shows a bare
-    /// dialog (and on some releases refuses outright).
-    @Test func infoPlistDeclaresTheAppleEventsUsageDescription() throws {
+    /// NapCat now drives no other application, so it must request no
+    /// Automation (TCC) permission — an unused purpose string would be a
+    /// standing, unexplained privacy prompt waiting to happen.
+    @Test func infoPlistDeclaresNoAppleEventsUsage() throws {
         let plist = try String(
             contentsOf: Self.repoRoot().appendingPathComponent("Resources/Info.plist"),
             encoding: .utf8
         )
-        #expect(plist.contains("NSAppleEventsUsageDescription"))
-        #expect(plist.contains("Claude Code task"), "the purpose string must explain what the messages are")
+        #expect(!plist.contains("<key>NSAppleEventsUsageDescription</key>"))
+        #expect(plist.contains("LSUIElement"), "lint would be vacuous if the plist were empty")
     }
 }
 

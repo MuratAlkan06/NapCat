@@ -121,12 +121,12 @@ struct ScaffoldTests {
                 "the one dismissal must live in closeMenuThenPresent")
     }
 
-    /// Same lock extended to the Track B / B2 controls (2026-08-24): the
-    /// lid-alert toggle and the test-send button must keep the menu OPEN, and
-    /// the recipient editor — the one genuinely modal B2 flow — must go
-    /// through `closeMenuThenPresent` rather than dismissing on its own. The
-    /// "exactly one cancelTracking" assertion above still holds because the
-    /// recipient prompt reuses that single gateway.
+    /// Same lock extended to the Track B / B2 controls (2026-08-24, updated for
+    /// the B4 ntfy swap): the lid-alert toggle and the test-send button must
+    /// keep the menu OPEN, and the ntfy settings editor — the one genuinely
+    /// modal B2 flow — must go through `closeMenuThenPresent` rather than
+    /// dismissing on its own. The "exactly one cancelTracking" assertion above
+    /// still holds because the settings prompt reuses that single gateway.
     @Test func lidAlertHappyPathsNeverCloseTheMenu() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -136,7 +136,7 @@ struct ScaffoldTests {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         try #require(source.contains("final class MenuContentView"))
 
-        let happyPathFunctions = ["toggleLidAlert", "sendLidAlertTestMessage", "probeAutomationPermission"]
+        let happyPathFunctions = ["toggleLidAlert", "sendLidAlertTestMessage"]
         let forbidden = ["cancelTracking", "NSAlert", "runModal", "NSApp.activate", "activate("]
         for function in happyPathFunctions {
             let body = try #require(Self.functionChunk(named: function, in: source),
@@ -147,11 +147,56 @@ struct ScaffoldTests {
             }
         }
 
-        // The modal recipient editor dismisses ONLY via the shared gateway.
-        let prompt = try #require(Self.functionChunk(named: "promptForLidAlertRecipient", in: source))
+        // The modal ntfy editor dismisses ONLY via the shared gateway.
+        let prompt = try #require(Self.functionChunk(named: "promptForLidAlertSettings", in: source))
         #expect(prompt.contains("closeMenuThenPresent"))
         #expect(!prompt.contains("cancelTracking"))
-        #expect(!prompt.contains("runModal"), "the modal itself lives in presentRecipientPrompt")
+        #expect(!prompt.contains("runModal"), "the modal itself lives in presentLidAlertSettingsPrompt")
+    }
+
+    /// M1 regression lock (security review 2026-09-09): the ntfy editor used to
+    /// call `setServer`/`setTopic` and DISCARD their validation results, so an
+    /// unusable value silently kept the old configuration while the panel went
+    /// on claiming the feature was armed. The modal must now consult the
+    /// validation before it commits anything. Lint-style: an AppKit modal
+    /// session cannot be driven headlessly, so the pure mapping is unit-tested
+    /// in MenuStateModelTests and its USE is locked here.
+    @Test func theNtfySettingsModalValidatesBeforeItCommits() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/NapCat/MenuContentView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let body = try #require(Self.functionChunk(named: "presentLidAlertSettingsPrompt", in: source))
+
+        #expect(body.contains("MenuStateModel.lidAlertSettingsError("),
+                "the modal must surface an invalid field instead of dropping it")
+        // Order matters: the validation must be consulted BEFORE either setter.
+        let checkedAt = try #require(body.range(of: "lidAlertSettingsError("))
+        for setter in ["lidGuard.setServer(", "lidGuard.setTopic("] {
+            let setAt = try #require(body.range(of: setter), "\(setter) not found — keep this lock updated")
+            #expect(checkedAt.lowerBound < setAt.lowerBound,
+                    "\(setter) runs before the validation check — an invalid value would commit silently")
+        }
+    }
+
+    /// Menu-open must stay off the network: the panel renders stored config and
+    /// the last recorded outcome, never a live probe. (Before B4 this slot held
+    /// the silent Automation-permission probe; the ntfy channel has nothing to
+    /// probe, and a menu-open request would be a per-open network call.)
+    @Test func menuOpenPerformsNoNetworkIO() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/NapCat/MenuContentView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let body = try #require(Self.functionChunk(named: "menuWillOpen", in: source))
+        for token in ["sendTestMessage", "URLSession", "dataTask",
+                      "probeAutomationPermission", "refreshAutomationPermission"] {
+            #expect(!body.contains(token), "'\(token)' in menuWillOpen — opening the menu must not send anything")
+        }
     }
 
     /// Source chunk from `func <name>(` to the next function declaration

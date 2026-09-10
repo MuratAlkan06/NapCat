@@ -15,13 +15,13 @@ struct LidGuardBusySample: Equatable, Sendable {
 typealias ClaudeBusyProvider = @Sendable () -> LidGuardBusySample?
 
 /// Track B slice B2 — the DELIVERY half. When the Mac starts sleeping while a
-/// Claude turn is in flight and Stay Awake is off, hand one iMessage to
-/// Messages. NOTIFY-ONLY: it never controls Claude, never arms itself, and
-/// never touches sleep or charging state.
+/// Claude turn is in flight and Stay Awake is off, publish one ntfy push.
+/// NOTIFY-ONLY: it never controls Claude, never arms itself, and never touches
+/// sleep or charging state.
 ///
-/// Zero privileged surface: `osascript`, IOKit power notifications, and the
-/// AppleEvent permission probe are all unprivileged. No sudo, no PLAN §4
-/// command, no smc.
+/// Zero privileged surface: an https POST and IOKit power notifications are
+/// both unprivileged. No sudo, no PLAN §4 command, no smc, no subprocess, no
+/// TCC prompt.
 ///
 /// Thread model: the config/menu surface is used from the main actor, while
 /// `handle(_:ack:)` runs on the sleep source's private queue. Every piece of
@@ -32,7 +32,6 @@ final class LidGuardController: @unchecked Sendable {
     private let defaults: UserDefaults
     private let sleepSource: SystemSleepSource
     private let sender: MessageSender
-    private let probe: AutomationPermissionProbing
     /// Sendable atomic mirror of the OBSERVED stay-awake state, written
     /// synchronously at SleepStateController's single choke point — so a
     /// toggle-off made seconds before the lid closes is already visible here
@@ -52,14 +51,12 @@ final class LidGuardController: @unchecked Sendable {
     private var sendInFlight = false
     private var lastOutcome: MessageSendOutcome?
     private var lastOutcomeAt: Double?
-    private var automation: AutomationPermission?
     private var changeHandler: (@Sendable () -> Void)?
 
     init(
         defaults: UserDefaults,
         sleepSource: SystemSleepSource,
         sender: MessageSender,
-        probe: AutomationPermissionProbing,
         stayAwakeMirror: ObservedStayAwakeMirror,
         busyProvider: @escaping ClaudeBusyProvider,
         now: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }
@@ -67,7 +64,6 @@ final class LidGuardController: @unchecked Sendable {
         self.defaults = defaults
         self.sleepSource = sleepSource
         self.sender = sender
-        self.probe = probe
         self.stayAwakeMirror = stayAwakeMirror
         self.busyProvider = busyProvider
         self.now = now
@@ -76,9 +72,8 @@ final class LidGuardController: @unchecked Sendable {
     /// The single construction site, gated by the debug-sim wiring predicate
     /// (ADR §8 mirror, same shape as B1's `makeIfEnabled`). Returns nil in
     /// debugBattery mode — nothing in this subsystem is built there, so no
-    /// IOKit registration and no osascript spawn can exist. Also nil without
-    /// the B1 detection stack (there would be nothing to notify about) or
-    /// without the bundled AppleScript.
+    /// IOKit registration and no network request can exist. Also nil without
+    /// the B1 detection stack (there would be nothing to notify about).
     static func makeIfEnabled(
         debugBattery: Bool,
         defaults: UserDefaults = .standard,
@@ -87,12 +82,10 @@ final class LidGuardController: @unchecked Sendable {
     ) -> LidGuardController? {
         guard LidGuardPolicy.lidGuardMayBeConstructed(debugBattery: debugBattery) else { return nil }
         guard let detection else { return nil }
-        guard let sender = OSAScriptMessageSender() else { return nil }
         return LidGuardController(
             defaults: defaults,
             sleepSource: IOKitSystemSleepSource(),
-            sender: sender,
-            probe: AppleEventAutomationProbe(),
+            sender: NtfyMessageSender(),
             stayAwakeMirror: stayAwakeMirror,
             busyProvider: busyProvider(detection: detection)
         )
@@ -112,7 +105,7 @@ final class LidGuardController: @unchecked Sendable {
     }
 
     /// Republished on the main actor by MenuContentView after any state change
-    /// that the panel renders (send outcome, permission probe).
+    /// that the panel renders (send outcome, wake).
     func setChangeHandler(_ handler: (@Sendable () -> Void)?) {
         lock.lock()
         changeHandler = handler
@@ -126,36 +119,77 @@ final class LidGuardController: @unchecked Sendable {
         handler?()
     }
 
-    // MARK: - Persistence (PLAN.md §11 — three keys, nothing else)
+    // MARK: - Persistence (PLAN.md §11 — four keys, nothing else)
 
     var isEnabled: Bool { defaults.bool(forKey: DefaultsKey.lidGuardEnabled) }
-    var storedRecipient: String { defaults.string(forKey: DefaultsKey.lidGuardRecipient) ?? "" }
+    /// The ntfy topic — A SECRET (it is the only password on the feed). Stored
+    /// raw so the menu can render an "unusable" caption for a hand-edited
+    /// value; every consumer goes through `LidGuardPolicy.validateTopic`.
+    var storedTopic: String { defaults.string(forKey: DefaultsKey.lidGuardNtfyTopic) ?? "" }
+    /// The ntfy server origin. Unset (or a junk non-string value) reads back as
+    /// the public instance, so the feature has a working default.
+    var storedServer: String {
+        let raw = defaults.string(forKey: DefaultsKey.lidGuardNtfyServer) ?? ""
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? LidGuardTuning.defaultNtfyServer
+            : raw
+    }
     /// Unix epoch seconds of the last SUCCESSFUL config-time test send; 0 =
     /// never primed. Arming requires it (see `armingState`).
     var primedAt: Double { defaults.double(forKey: DefaultsKey.lidGuardPrimedAt) }
+
+    /// The validated pair the sender needs, or nil while the config is
+    /// unusable.
+    var storedDestination: NtfyDestination? {
+        LidGuardPolicy.destination(server: storedServer, topic: storedTopic)
+    }
 
     func setEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: DefaultsKey.lidGuardEnabled)
         refreshArming()
     }
 
-    /// Stores a validated recipient. A CHANGED recipient always clears the
-    /// primed flag: the test send must be repeated against the new address, so
-    /// the first message to it is never the lid-close one.
+    /// Stores a validated topic. A CHANGED topic always clears the primed flag:
+    /// the test send must be repeated against the new topic, so the first
+    /// message to it is never the lid-close one.
     @discardableResult
-    func setRecipient(_ raw: String) -> RecipientValidation {
-        let validation = LidGuardPolicy.validateRecipient(raw)
+    func setTopic(_ raw: String) -> TopicValidation {
+        let validation = LidGuardPolicy.validateTopic(raw)
         switch validation {
-        case .valid(let recipient):
-            if recipient != storedRecipient {
-                defaults.set(recipient, forKey: DefaultsKey.lidGuardRecipient)
+        case .valid(let topic):
+            if topic != storedTopic {
+                defaults.set(topic, forKey: DefaultsKey.lidGuardNtfyTopic)
                 defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
             }
         case .empty:
-            defaults.set("", forKey: DefaultsKey.lidGuardRecipient)
+            defaults.set("", forKey: DefaultsKey.lidGuardNtfyTopic)
             defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
         case .invalid:
             // Keep the previous value; the caller renders the inline caption.
+            break
+        }
+        refreshArming()
+        return validation
+    }
+
+    /// Stores a validated server. Like the topic, a CHANGED server clears the
+    /// primed flag — a different instance is a different feed, and the test
+    /// send has to prove it. Clearing the field reverts to the public default.
+    @discardableResult
+    func setServer(_ raw: String) -> ServerValidation {
+        let validation = LidGuardPolicy.validateServer(raw)
+        switch validation {
+        case .valid(let server):
+            if server != storedServer {
+                defaults.set(server, forKey: DefaultsKey.lidGuardNtfyServer)
+                defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
+            }
+        case .empty:
+            if storedServer != LidGuardTuning.defaultNtfyServer {
+                defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
+            }
+            defaults.removeObject(forKey: DefaultsKey.lidGuardNtfyServer)
+        case .invalid:
             break
         }
         refreshArming()
@@ -170,7 +204,12 @@ final class LidGuardController: @unchecked Sendable {
     // MARK: - Arming
 
     var armingState: LidGuardArmingState {
-        LidGuardPolicy.armingState(enabled: isEnabled, recipient: storedRecipient, primedAt: primedAt)
+        LidGuardPolicy.armingState(
+            enabled: isEnabled,
+            server: storedServer,
+            topic: storedTopic,
+            primedAt: primedAt
+        )
     }
 
     var isArmed: Bool { armingState == .armed }
@@ -245,6 +284,7 @@ final class LidGuardController: @unchecked Sendable {
         let sampledAt = now()
         let snapshot = snapshot(busy: busy)
         lock.lock()
+        let previousFiredAt = lastFiredAt
         let inputs = LidGuardGateInputs(
             snapshot: snapshot,
             sendInFlight: sendInFlight,
@@ -252,37 +292,58 @@ final class LidGuardController: @unchecked Sendable {
             now: sampledAt
         )
         let decision = LidGuardPolicy.decide(inputs)
-        if decision == .fire {
-            // Claimed BEFORE the spawn so a second notification cannot race in.
+        // `decide` returns `.fire` only for a snapshot that carries a validated
+        // destination, so pairing the two here is redundant by construction —
+        // but it guarantees the single-flight claim is NEVER taken without
+        // something to publish, which would otherwise wedge the gate forever.
+        let target = decision == .fire ? snapshot.destination : nil
+        if target != nil {
+            // Claimed BEFORE the request so a second notification cannot race in.
             sendInFlight = true
             lastFiredAt = sampledAt
         }
         lock.unlock()
 
-        guard decision == .fire else {
+        guard let destination = target else {
             if case .skip(let reason) = decision {
                 Self.logger.debug("lid guard: sleeping, no alert (\(reason.rawValue, privacy: .public))")
             }
             return
         }
 
-        Self.logger.notice("lid guard: sleeping with a Claude task in flight — handing an alert to Messages")
+        Self.logger.notice("lid guard: sleeping with a Claude task in flight — publishing the alert")
         let done = DispatchSemaphore(value: 0)
+        let inline = InlineOutcomeProbe()
         sender.send(
             .lidAlert(busySessionCount: busy.sessionCount),
-            to: snapshot.recipient,
+            to: destination,
             at: Date(timeIntervalSince1970: sampledAt)
         ) { [weak self] outcome in
+            inline.record(outcome)
             self?.recordOutcome(outcome, clearingSendInFlight: true)
             done.signal()
         }
-        // Hold the acknowledgment only long enough for the handoff. Even the
-        // full budget guarantees ONLY that Messages accepted the AppleEvent —
-        // the actual iMessage transmission is asynchronous and may complete
-        // after the Mac is asleep (i.e. on wake). Deliberately best-effort.
+        // A refusal that lands INLINE — before `send` even returns — means
+        // nothing was put on the wire: the sender's own single-flight held (its
+        // previous request can outlive our `sendInFlight`, which a wake clears),
+        // or the address was unusable. Spending the 15-minute cooldown on a
+        // publish that never happened would silence the NEXT real one, so the
+        // claim is rolled back. Only an inline `sendFailed` qualifies: a real
+        // HTTP answer cannot arrive synchronously, and `accepted` /
+        // `rejected` / `timedOutUnconfirmed` all mean the request DID leave.
+        if case .sendFailed = inline.finish() {
+            lock.lock()
+            if lastFiredAt == sampledAt { lastFiredAt = previousFiredAt }
+            lock.unlock()
+            Self.logger.notice("lid guard: the publish was refused before it left the Mac — the cooldown is not spent")
+        }
+        // Hold the acknowledgment only long enough to give the POST a chance to
+        // leave the Mac. Even the full budget guarantees nothing: if the server
+        // has not answered by then the outcome is reported as
+        // `timedOutUnconfirmed`. Deliberately best-effort.
         _ = done.wait(timeout: .now() + LidGuardTuning.ackHoldBudget)
-        // The child is NOT killed here: it freezes with the system and
-        // finishes on wake.
+        // The request is NOT cancelled here: it freezes with the system and
+        // resolves on wake.
     }
 
     private func handleWake(_ event: SystemSleepEvent) {
@@ -292,28 +353,19 @@ final class LidGuardController: @unchecked Sendable {
         sendInFlight = false
         lock.unlock()
         if wasSending {
-            // NO retry-on-wake: the user is present now. The orphaned child's
-            // exit is still collected by the sender and logged below.
-            Self.logger.notice("lid guard: woke with a send still in flight — clearing state; its outcome is logged when the child exits")
+            // NO retry-on-wake: the user is present now. The orphaned request
+            // still resolves and its outcome is logged when it does.
+            Self.logger.notice("lid guard: woke with a send still in flight — clearing state; its outcome is logged when the request resolves")
         }
         notifyChanged()
     }
 
     private func snapshot(busy: LidGuardBusySample) -> LidGuardSnapshot {
-        let validation = LidGuardPolicy.validateRecipient(storedRecipient)
-        let recipient: String
-        let recipientValid: Bool
-        if case .valid(let value) = validation {
-            recipient = value
-            recipientValid = true
-        } else {
-            recipient = ""
-            recipientValid = false
-        }
+        let destination = storedDestination
         return LidGuardSnapshot(
             enabled: isEnabled,
-            recipient: recipient,
-            recipientValid: recipientValid,
+            destination: destination,
+            topicValid: destination != nil,
             primed: primedAt > 0,
             // nil (pmset unreadable) satisfies "≠ true" and therefore fires:
             // a deliberate fail-toward-notify.
@@ -323,30 +375,30 @@ final class LidGuardController: @unchecked Sendable {
         )
     }
 
-    // MARK: - Test send (the TCC gate)
+    // MARK: - Test send (the priming gate)
 
-    /// The config-time send. It exists so the "NapCat wants to control
-    /// Messages" prompt is answered while the user is watching, and so the
-    /// self-conversation exists — the FIRST send must never be the lid-close
-    /// one, which would block osascript on an unanswered prompt as the machine
-    /// goes down. A success is what primes (arms) the feature.
+    /// The config-time send. It exists so the user proves — while they are
+    /// sitting there — that the topic is subscribed on their phone and the
+    /// server accepts the publish. The FIRST message on a topic must never be
+    /// the lid-close one, which nobody would be present to notice failing. A
+    /// success is what primes (arms) the feature.
     func sendTestMessage() {
-        guard let recipient = LidGuardPolicy.normalizedRecipient(storedRecipient) else {
-            Self.logger.notice("lid guard: test send skipped — no valid recipient")
+        guard let destination = storedDestination else {
+            Self.logger.notice("lid guard: test send skipped — the ntfy settings are not usable")
             return
         }
         let firedAt = now()
-        sender.send(.test, to: recipient, at: Date(timeIntervalSince1970: firedAt)) { [weak self] outcome in
+        sender.send(.test, to: destination, at: Date(timeIntervalSince1970: firedAt)) { [weak self] outcome in
             guard let self else { return }
             self.recordOutcome(outcome, clearingSendInFlight: false)
-            guard outcome == .handedToMessages else { return }
-            // Prime ONLY the address that was actually tested. The user can
-            // change the recipient while this send is in flight (and the
-            // follow-up test for the new address can be refused by the
-            // sender's single-flight guard) — priming the current config here
-            // would arm an untested, possibly mistyped address.
-            guard LidGuardPolicy.normalizedRecipient(self.storedRecipient) == recipient else {
-                Self.logger.notice("lid guard: test send succeeded for a recipient that has since changed — not priming")
+            guard outcome == .accepted else { return }
+            // Prime ONLY the destination that was actually tested. The user can
+            // change the topic or server while this send is in flight (and the
+            // follow-up test can be refused by the sender's single-flight
+            // guard) — priming the current config here would arm an untested,
+            // possibly mistyped feed.
+            guard self.storedDestination == destination else {
+                Self.logger.notice("lid guard: test send succeeded for settings that have since changed — not priming")
                 return
             }
             self.markPrimed()
@@ -360,9 +412,10 @@ final class LidGuardController: @unchecked Sendable {
         lastOutcome = outcome
         lastOutcomeAt = at
         lock.unlock()
-        // The CATEGORY is public, but the free-form `sendFailed` detail is raw
-        // osascript stderr and can echo the recipient — it stays `.private` so
-        // the recipient never reaches a `.public` (sysdiagnose-captured) line.
+        // The CATEGORY is public; the free-form `sendFailed` detail stays
+        // `.private` so nothing derived from the request can ever reach a
+        // `.public` (sysdiagnose-captured) line. The ntfy topic is a password
+        // and is never logged at any level.
         let fields = LidGuardPolicy.outcomeLogFields(outcome)
         if let detail = fields.privateDetail {
             Self.logger.notice("lid guard: send outcome \(fields.publicCategory, privacy: .public) — \(detail, privacy: .private)")
@@ -385,22 +438,29 @@ final class LidGuardController: @unchecked Sendable {
         defer { lock.unlock() }
         return lastOutcomeAt
     }
+}
 
-    var automationPermission: AutomationPermission? {
+/// Records a send outcome only while it is still INLINE — i.e. delivered
+/// before `MessageSender.send` returned. `finish()` closes the window and
+/// hands back what (if anything) arrived inside it, so a completion racing in
+/// from another thread a moment later cannot be mistaken for a synchronous
+/// refusal.
+private final class InlineOutcomeProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+    private var outcome: MessageSendOutcome?
+
+    func record(_ newValue: MessageSendOutcome) {
         lock.lock()
-        defer { lock.unlock() }
-        return automation
+        if !closed { outcome = newValue }
+        lock.unlock()
     }
 
-    /// SYNCHRONOUS probe — call it off the main actor (MenuContentView runs it
-    /// in a detached task so `menuWillOpen` stays on its critical path).
-    func refreshAutomationPermission() {
-        guard isArmed else { return }
-        let permission = probe.probeMessages()
+    func finish() -> MessageSendOutcome? {
         lock.lock()
-        automation = permission
-        lock.unlock()
-        notifyChanged()
+        defer { lock.unlock() }
+        closed = true
+        return outcome
     }
 }
 

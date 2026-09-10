@@ -6,8 +6,9 @@
 #
 # Idempotent — safe to run any number of times, including when setup.sh was
 # never run. Restores stock power behavior (sleep + charging), removes the
-# sudoers entries, /usr/local/napcat, and the com.napcat.failsafe
-# LaunchAgent.
+# sudoers entries, /usr/local/napcat, the com.napcat.failsafe LaunchAgent, and
+# the app's own settings (the com.muratalkan.napcat defaults domain — which
+# holds the ntfy topic, a bearer credential for the alert feed).
 #
 # Structure (P2 security-review carryover): steps COLLECT errors instead of
 # aborting — the sudoers file, /usr/local/napcat, and the LaunchAgent are
@@ -20,6 +21,7 @@ SUDOERS_FILE="/etc/sudoers.d/napcat"
 SMC_DIR="/usr/local/napcat"
 SMC_BIN="$SMC_DIR/smc"
 AGENT_LABEL="com.napcat.failsafe"
+DEFAULTS_DOMAIN="com.muratalkan.napcat"
 FAILURES=()
 REVERTED=()
 
@@ -101,8 +103,35 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
     else
         echo "ok: failsafe LaunchAgent not present for '$TARGET_USER' — nothing to remove"
     fi
+
+    # 6. Remove the app's own settings (per-user defaults domain).
+    #    WHY THIS IS A SECURITY STEP, not just tidiness: the lid-alert setting
+    #    `lidGuardNtfyTopic` is a BEARER CREDENTIAL — on ntfy there are no
+    #    accounts, so whoever knows the topic name can read and post to that
+    #    feed. Leaving it behind after an uninstall leaves a live credential in
+    #    the preferences plist. The value is never printed here (every read is
+    #    redirected to /dev/null); it is deleted, not inspected.
+    #    Run in the user's own context via `launchctl asuser`, because defaults
+    #    talk to that user's cfprefsd — root's own domain is a different one.
+    if /bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \
+        /usr/bin/defaults read "$DEFAULTS_DOMAIN" >/dev/null 2>&1; then
+        if /bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \
+            /usr/bin/defaults delete "$DEFAULTS_DOMAIN" >/dev/null 2>&1; then
+            echo "removed: $DEFAULTS_DOMAIN settings (including the ntfy topic)"
+            REVERTED+=("NapCat settings removed (defaults domain $DEFAULTS_DOMAIN, including the ntfy topic)")
+        else
+            FAILURES+=("could not remove the $DEFAULTS_DOMAIN defaults domain — as '$TARGET_USER' run: defaults delete $DEFAULTS_DOMAIN")
+        fi
+    else
+        echo "ok: no $DEFAULTS_DOMAIN settings for '$TARGET_USER' — nothing to remove"
+    fi
+    # cfprefsd may leave the (now empty) plist behind; drop it too.
+    DEFAULTS_PLIST="$TARGET_HOME/Library/Preferences/$DEFAULTS_DOMAIN.plist"
+    if [ -n "$TARGET_HOME" ] && [ -f "$DEFAULTS_PLIST" ]; then
+        rm -f "$DEFAULTS_PLIST" || FAILURES+=("could not remove $DEFAULTS_PLIST")
+    fi
 else
-    FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist manually")
+    FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist and run 'defaults delete $DEFAULTS_DOMAIN' manually")
 fi
 
 echo ""

@@ -227,30 +227,39 @@ struct MenuPanelView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Text me if the Mac sleeps mid-task").font(.caption)
-                    Text(MenuStateModel.lidAlertStatusLine(for: model.lidGuardArming, automation: model.lidGuardAutomation))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text("Notify me if the Mac sleeps mid-task").font(.caption)
+                    Text(MenuStateModel.lidAlertStatusLine(
+                        for: model.lidGuardArming,
+                        lastOutcome: model.lidGuardLastOutcome
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Toggle("Text me if the Mac sleeps mid-task", isOn: lidAlertEnabledBinding)
+                Toggle("Notify me if the Mac sleeps mid-task", isOn: lidAlertEnabledBinding)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
             }
-            Text(MenuStateModel.lidAlertRecipientLine(model.lidGuardRecipient))
+            // The topic itself is never rendered here — it is the password to
+            // the feed (see MenuStateModel.lidAlertTopicLine).
+            Text(MenuStateModel.lidAlertTopicLine(model.lidGuardTopic))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            Text(MenuStateModel.lidAlertServerLine(model.lidGuardServer))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Button("Set recipient…") { model.editLidGuardRecipient() }
+                Button("ntfy settings…") { model.editLidGuardSettings() }
                     .controlSize(.small)
                 Button("Send test message") { model.sendLidGuardTestMessage() }
                     .controlSize(.small)
-                    .disabled(!MenuStateModel.lidAlertTestSendAvailable(recipient: model.lidGuardRecipient))
+                    .disabled(!MenuStateModel.lidAlertTestSendAvailable(
+                        server: model.lidGuardServer,
+                        topic: model.lidGuardTopic
+                    ))
             }
-            Text(MenuStateModel.lidAlertAutomationCaption(model.lidGuardAutomation))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             Text(MenuStateModel.lidAlertLastSendCaption(
                 outcome: model.lidGuardLastOutcome,
                 at: model.lidGuardLastOutcomeAt,
@@ -259,7 +268,7 @@ struct MenuPanelView: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            Text(MenuStateModel.lidAlertRebuildNote)
+            Text(MenuStateModel.lidAlertTopicSecrecyNote)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

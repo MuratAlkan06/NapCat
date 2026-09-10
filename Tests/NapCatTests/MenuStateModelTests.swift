@@ -131,81 +131,135 @@ struct MenuStateModelTests {
     // MARK: Track B / B2 — lid-alert presentation
 
     @Test func lidAlertStatusLineNamesTheNextStep() {
-        // The not-armed wording never depends on the Automation probe.
-        let everyPermission: [AutomationPermission?] =
-            [nil, .granted, .denied, .wouldRequireConsent, .targetNotRunning, .unknown(-9)]
-        for automation in everyPermission {
-            #expect(MenuStateModel.lidAlertStatusLine(for: .off, automation: automation) == "Lid alert: off")
-            #expect(MenuStateModel.lidAlertStatusLine(for: .needsRecipient, automation: automation).contains("iMessage address"))
-            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTestSend, automation: automation).contains("test message"))
+        // The not-armed wording never depends on the last send outcome.
+        let everyOutcome: [MessageSendOutcome?] =
+            [nil, .accepted, .rejected(404), .timedOutUnconfirmed, .sendFailed("boom")]
+        for outcome in everyOutcome {
+            #expect(MenuStateModel.lidAlertStatusLine(for: .off, lastOutcome: outcome) == "Lid alert: off")
+            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTopic, lastOutcome: outcome).contains("ntfy topic"))
+            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTestSend, lastOutcome: outcome).contains("test message"))
         }
-        // Armed reads "armed" while access is good, not-yet-probed, or unknowable.
-        for automation: AutomationPermission? in [nil, .granted, .targetNotRunning, .unknown(-9)] {
-            let line = MenuStateModel.lidAlertStatusLine(for: .armed, automation: automation)
+        // Armed reads "armed" when the last publish worked, is unconfirmed, or
+        // has not happened yet.
+        for outcome: MessageSendOutcome? in [nil, .accepted, .timedOutUnconfirmed] {
+            let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome)
             #expect(line.contains("armed"))
             // The armed line must stay honest about what is promised.
             #expect(line.contains("best-effort"))
         }
+        // No TCC vocabulary survives the channel swap.
+        for state: LidGuardArmingState in [.off, .needsTopic, .needsTestSend, .armed] {
+            let line = MenuStateModel.lidAlertStatusLine(for: state, lastOutcome: nil)
+            for token in ["Messages", "iMessage", "Automation", "permission"] {
+                #expect(!line.contains(token), "'\(token)' must not appear in: \(line)")
+            }
+        }
     }
 
-    /// Ad-hoc signing revokes Messages Automation on every rebuild while the
-    /// primed flag survives, so "armed" can outlive real access. When the last
-    /// probe says a send would be refused, the primary line must NOT claim armed
-    /// — it points back at the test send. (Arming logic is untouched.)
-    @Test func lidAlertStatusLineDowngradesWhenMessagesAccessIsRevoked() {
-        for automation: AutomationPermission in [.denied, .wouldRequireConsent] {
-            let line = MenuStateModel.lidAlertStatusLine(for: .armed, automation: automation)
-            #expect(!line.contains("armed"), "must not claim armed while Messages access is revoked")
-            #expect(line.contains("Messages permission"))
+    /// `primedAt` (hence `.armed`) survives in UserDefaults even after the feed
+    /// stops working — a deleted topic, an instance that now needs auth. When
+    /// the LAST publish was refused or failed, the primary line must NOT claim
+    /// armed; it points back at the test send. (Arming logic is untouched.)
+    @Test func lidAlertStatusLineDowngradesAfterAFailedSend() {
+        for outcome: MessageSendOutcome in [.rejected(403), .rejected(404), .sendFailed("boom")] {
+            let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome)
+            #expect(!line.contains("armed"), "must not claim armed after a message failed to go out")
+            #expect(line.contains("did not go out"))
             #expect(line.contains("test message"))
         }
     }
 
-    @Test func lidAlertRecipientLineDistinguishesUnsetFromUnusable() {
-        #expect(MenuStateModel.lidAlertRecipientLine("+15551234567") == "Sends to +15551234567")
-        #expect(MenuStateModel.lidAlertRecipientLine("  you@example.com ") == "Sends to you@example.com")
-        #expect(MenuStateModel.lidAlertRecipientLine("") == "No recipient set")
-        #expect(MenuStateModel.lidAlertRecipientLine("bad\nvalue").contains("not usable"))
+    /// SECURITY: the topic is the only password on an ntfy feed, so the panel
+    /// says whether one is set — never what it is.
+    @Test func lidAlertTopicLineNeverEchoesTheTopic() {
+        let topic = "napcat-lid-8f3k2p"
+        let line = MenuStateModel.lidAlertTopicLine(topic)
+        #expect(!line.contains(topic), "the topic is a password — it must not be rendered in the panel")
+        #expect(line.contains("set"))
+        #expect(MenuStateModel.lidAlertTopicLine("") == "Topic: none set")
+        #expect(MenuStateModel.lidAlertTopicLine("bad/topic").contains("not usable"))
+        #expect(MenuStateModel.lidAlertTopicLine("  napcat-x  ").contains("hidden"))
     }
 
-    @Test func lidAlertAutomationCaptions() {
-        #expect(MenuStateModel.lidAlertAutomationCaption(nil).contains("not checked"))
-        #expect(MenuStateModel.lidAlertAutomationCaption(.granted).contains("allowed"))
-        #expect(MenuStateModel.lidAlertAutomationCaption(.denied).contains("tccutil"))
-        #expect(MenuStateModel.lidAlertAutomationCaption(.wouldRequireConsent).contains("test message"))
-        // "Messages is not running" must never read as ready or denied.
-        let unknown = MenuStateModel.lidAlertAutomationCaption(.targetNotRunning)
-        #expect(unknown.contains("unknown"))
-        #expect(!unknown.contains("allowed"))
-        #expect(!unknown.contains("denied"))
-        #expect(MenuStateModel.lidAlertAutomationCaption(.unknown(-7)).contains("-7"))
+    @Test func lidAlertServerLineShowsTheServerAndFlagsAnUnusableOne() {
+        #expect(MenuStateModel.lidAlertServerLine("https://ntfy.sh") == "Server: https://ntfy.sh")
+        #expect(MenuStateModel.lidAlertServerLine("https://ntfy.example.com:8443/")
+                == "Server: https://ntfy.example.com:8443")
+        #expect(MenuStateModel.lidAlertServerLine("") == "Server: https://ntfy.sh")
+        #expect(MenuStateModel.lidAlertServerLine("http://ntfy.sh").contains("not usable"))
     }
 
     @Test func lidAlertLastSendCaptionIsHonestAndTimestamped() {
         let now = 1_000_000.0
         #expect(MenuStateModel.lidAlertLastSendCaption(outcome: nil, at: nil, now: now)
                 == "Last message: none since NapCat started")
-        let handed = MenuStateModel.lidAlertLastSendCaption(
-            outcome: .handedToMessages, at: now - 120, now: now)
-        #expect(handed.contains("handed to Messages"), "never claims delivery")
-        #expect(handed.contains("2m ago"))
-        #expect(MenuStateModel.lidAlertLastSendCaption(outcome: .permissionDenied, at: now, now: now)
-                .contains("refused"))
+        let accepted = MenuStateModel.lidAlertLastSendCaption(outcome: .accepted, at: now - 120, now: now)
+        #expect(accepted.contains("accepted by ntfy"), "never claims the phone got it")
+        #expect(!accepted.contains("delivered"))
+        #expect(accepted.contains("2m ago"))
+        let rejected = MenuStateModel.lidAlertLastSendCaption(outcome: .rejected(404), at: now, now: now)
+        #expect(rejected.contains("refused"))
+        #expect(rejected.contains("404"))
         #expect(MenuStateModel.lidAlertLastSendCaption(outcome: .timedOutUnconfirmed, at: now, now: now)
                 .contains("unconfirmed"))
         #expect(MenuStateModel.lidAlertLastSendCaption(outcome: .sendFailed("boom"), at: now, now: now)
                 .contains("boom"))
     }
 
-    @Test func lidAlertRebuildNoteWarnsAboutSignatureChurn() {
-        #expect(MenuStateModel.lidAlertRebuildNote.contains("test message"))
-        #expect(MenuStateModel.lidAlertRebuildNote.contains("re-signs"))
+    /// M1 (security review 2026-09-09): the editor used to drop the validation
+    /// results, so an unusable value silently left the OLD configuration in
+    /// place while the panel still claimed the feature was armed. This mapping
+    /// is what the modal shows instead — and it names the offending field.
+    @Test func lidAlertSettingsErrorNamesTheUnusableField() throws {
+        // Both usable ⇒ nothing to say.
+        #expect(MenuStateModel.lidAlertSettingsError(
+            topic: .valid("napcat-x"), server: .valid("https://ntfy.sh")) == nil)
+        // Empty is a legitimate edit, not an error: it clears the topic /
+        // reverts the server to the public instance.
+        #expect(MenuStateModel.lidAlertSettingsError(topic: .empty, server: .empty) == nil)
+        #expect(MenuStateModel.lidAlertSettingsError(
+            topic: .valid("napcat-x"), server: .empty) == nil)
+
+        let badTopic = try #require(MenuStateModel.lidAlertSettingsError(
+            topic: .invalid, server: .valid("https://ntfy.sh")))
+        #expect(badTopic.contains("topic"))
+        #expect(badTopic.contains("Nothing was saved"))
+        #expect(!badTopic.contains("server"), "only the offending field is named")
+
+        let badServer = try #require(MenuStateModel.lidAlertSettingsError(
+            topic: .valid("napcat-x"), server: .invalid))
+        #expect(badServer.contains("server"))
+        #expect(badServer.contains("https"))
+        #expect(!badServer.contains("topic"))
+
+        let both = try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid))
+        #expect(both.contains("topic"))
+        #expect(both.contains("server"))
     }
 
-    @Test func testSendIsOfferedOnlyWithAUsableRecipient() {
-        #expect(MenuStateModel.lidAlertTestSendAvailable(recipient: "+15551234567"))
-        #expect(!MenuStateModel.lidAlertTestSendAvailable(recipient: ""))
-        #expect(!MenuStateModel.lidAlertTestSendAvailable(recipient: "bad\nvalue"))
+    /// The message is shown in a dialog the user can screenshot, so — like
+    /// every other B2 caption — it must never echo the topic itself.
+    @Test func lidAlertSettingsErrorNeverEchoesTheEnteredValues() {
+        let message = MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid)
+        // The mapping only ever sees the VALIDATION, never the raw text — this
+        // locks that shape: nothing user-entered can reach the string.
+        #expect(message?.contains("napcat") == false)
+        #expect(MenuStateModel.lidAlertSettingsError(topic: .valid("secret-topic"), server: .invalid)?
+            .contains("secret-topic") == false)
+    }
+
+    @Test func lidAlertNoteWarnsThatTheTopicIsThePassword() {
+        #expect(MenuStateModel.lidAlertTopicSecrecyNote.contains("topic name"))
+        #expect(MenuStateModel.lidAlertTopicSecrecyNote.contains("private"))
+    }
+
+    @Test func testSendIsOfferedOnlyWithAUsableDestination() {
+        #expect(MenuStateModel.lidAlertTestSendAvailable(server: "https://ntfy.sh", topic: "napcat-x"))
+        // An unset server means the public instance, which is usable.
+        #expect(MenuStateModel.lidAlertTestSendAvailable(server: "", topic: "napcat-x"))
+        #expect(!MenuStateModel.lidAlertTestSendAvailable(server: "https://ntfy.sh", topic: ""))
+        #expect(!MenuStateModel.lidAlertTestSendAvailable(server: "https://ntfy.sh", topic: "bad/topic"))
+        #expect(!MenuStateModel.lidAlertTestSendAvailable(server: "http://ntfy.sh", topic: "napcat-x"))
     }
 
     /// The panel section only exists when the subsystem does (absent in

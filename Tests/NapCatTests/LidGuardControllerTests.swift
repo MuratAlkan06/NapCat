@@ -92,12 +92,12 @@ final class DeferredMessageSender: MessageSender, @unchecked Sendable {
 
     func send(
         _ kind: LidGuardMessageKind,
-        to recipient: String,
+        to destination: NtfyDestination,
         at firedAt: Date,
         completion: @escaping @Sendable (MessageSendOutcome) -> Void
     ) {
         lock.lock()
-        recorded.append(RecordedMessageSend(kind: kind, recipient: recipient, firedAt: firedAt))
+        recorded.append(RecordedMessageSend(kind: kind, destination: destination, firedAt: firedAt))
         pending.append(completion)
         lock.unlock()
     }
@@ -109,36 +109,6 @@ final class DeferredMessageSender: MessageSender, @unchecked Sendable {
         pending = []
         lock.unlock()
         for handler in handlers { handler(outcome) }
-    }
-}
-
-final class StubAutomationProbe: AutomationPermissionProbing, @unchecked Sendable {
-    private let lock = NSLock()
-    private var result: AutomationPermission
-    private var calls = 0
-
-    init(result: AutomationPermission = .granted) {
-        self.result = result
-    }
-
-    var callCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return calls
-    }
-
-    func setResult(_ permission: AutomationPermission) {
-        lock.lock()
-        result = permission
-        lock.unlock()
-    }
-
-    func probeMessages() -> AutomationPermission {
-        lock.lock()
-        calls += 1
-        let value = result
-        lock.unlock()
-        return value
     }
 }
 
@@ -197,12 +167,11 @@ final class BusySampleStub: @unchecked Sendable {
 }
 
 /// Everything one controller test needs, wired to fakes only. No IOKit
-/// registration, no process spawn, no real message — `make test` can never
-/// send an iMessage or raise a TCC prompt.
+/// registration, no network, no real publish — `make test` can never reach
+/// ntfy.sh or any other host.
 final class LidGuardHarness {
     let defaults: UserDefaults
     let source = RecordingSystemSleepSource()
-    let probe = StubAutomationProbe()
     let mirror = ObservedStayAwakeMirror()
     let busy = BusySampleStub()
     let clock = TestClock(1_000_000)
@@ -217,17 +186,16 @@ final class LidGuardHarness {
             defaults: defaults,
             sleepSource: source,
             sender: sender,
-            probe: probe,
             stayAwakeMirror: mirror,
             busyProvider: busy.provider(),
             now: { [clock] in clock.now }
         )
     }
 
-    /// enabled ∧ valid recipient ∧ primed, then register.
-    func arm(recipient: String = "+15551234567") {
+    /// enabled ∧ usable topic ∧ primed, then register.
+    func arm(topic: String = "napcat-lid-8f3k2p") {
         defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
-        defaults.set(recipient, forKey: DefaultsKey.lidGuardRecipient)
+        defaults.set(topic, forKey: DefaultsKey.lidGuardNtfyTopic)
         defaults.set(clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
         controller.refreshArming()
     }
@@ -272,10 +240,11 @@ struct LidGuardControllerTests {
             let ack = harness.source.deliver(.systemWillSleep)
 
             #expect(sender.sends.count == 1)
-            #expect(sender.sends[0].recipient == "+15551234567")
+            #expect(sender.sends[0].destination
+                    == NtfyDestination(server: "https://ntfy.sh", topic: "napcat-lid-8f3k2p"))
             #expect(sender.sends[0].kind == .lidAlert(busySessionCount: 1))
             #expect(ack.performedCount == 1)
-            #expect(harness.controller.lastSendOutcome == .handedToMessages)
+            #expect(harness.controller.lastSendOutcome == .accepted)
             #expect(harness.controller.lastSendOutcomeAt == harness.clock.now)
         }
     }
@@ -383,7 +352,7 @@ struct LidGuardControllerTests {
             harness.source.deliver(.systemWillSleep)
             #expect(sender.sends.count == 1)
 
-            // A dark wake a minute later must NOT double-text.
+            // A dark wake a minute later must NOT double-notify.
             harness.clock.advance(60)
             harness.source.deliver(.systemWillSleep)
             #expect(sender.sends.count == 1)
@@ -399,7 +368,7 @@ struct LidGuardControllerTests {
 
     // MARK: Single flight
 
-    @Test func aSecondAlertIsNeverSpawnedWhileOneIsStillInFlight() {
+    @Test func aSecondAlertIsNeverSentWhileOneIsStillInFlight() {
         let deferredSender = DeferredMessageSender()
         withLidGuardHarness(sender: deferredSender) { harness in
             harness.arm()
@@ -413,11 +382,57 @@ struct LidGuardControllerTests {
             #expect(deferredSender.sends.count == 1, "single-flight must hold")
 
             // Waking clears the in-flight state (no retry-on-wake; the orphaned
-            // child's outcome is still collected by the sender).
+            // request's outcome is still collected by the sender).
             harness.source.deliver(.systemHasPoweredOn)
             harness.clock.advance(LidGuardTuning.cooldownSeconds + 1)
             harness.source.deliver(.systemWillSleep)
             #expect(deferredSender.sends.count == 2)
+        }
+    }
+
+    /// N1 (security review 2026-09-09): the cooldown is claimed BEFORE the
+    /// publish, so a send the sender refuses SYNCHRONOUSLY — its own
+    /// single-flight still holding an orphaned request, or an unusable address —
+    /// used to spend the whole 15-minute window on a message that never left the
+    /// Mac, silencing the next real sleep. An inline `sendFailed` now rolls the
+    /// claim back.
+    @Test func aSynchronouslyRefusedPublishDoesNotSpendTheCooldown() {
+        let sender = RecordingMessageSender(outcome: .sendFailed("another message is still being sent"))
+        withLidGuardHarness(sender: sender) { harness in
+            harness.arm()
+            harness.source.deliver(.systemWillSleep)
+            #expect(sender.sends.count == 1)
+            #expect(harness.controller.lastSendOutcome == .sendFailed("another message is still being sent"))
+
+            // Immediately again — well inside the cooldown. Because nothing was
+            // published, the guard must still be allowed to try.
+            harness.clock.advance(1)
+            harness.source.deliver(.systemWillSleep)
+            #expect(sender.sends.count == 2, "a refused publish must not burn the cooldown")
+
+            // …and once one is really accepted, the cooldown applies as usual.
+            sender.setOutcome(.accepted)
+            harness.clock.advance(1)
+            harness.source.deliver(.systemWillSleep)
+            #expect(sender.sends.count == 3)
+            harness.clock.advance(60)
+            harness.source.deliver(.systemWillSleep)
+            #expect(sender.sends.count == 3, "an accepted publish spends the cooldown")
+        }
+    }
+
+    /// The rollback is keyed on the OUTCOME, not on the timing: an outcome that
+    /// means the request DID leave (unconfirmed) still spends the cooldown —
+    /// "we do not know" must not become "send another one".
+    @Test func anUnconfirmedPublishStillSpendsTheCooldown() {
+        let sender = RecordingMessageSender(outcome: .timedOutUnconfirmed)
+        withLidGuardHarness(sender: sender) { harness in
+            harness.arm()
+            harness.source.deliver(.systemWillSleep)
+            #expect(sender.sends.count == 1)
+            harness.clock.advance(60)
+            harness.source.deliver(.systemWillSleep)
+            #expect(sender.sends.count == 1)
         }
     }
 
@@ -432,10 +447,10 @@ struct LidGuardControllerTests {
             #expect(!harness.source.isRunning, "off → nothing registered")
 
             controller.setEnabled(true)
-            #expect(controller.armingState == .needsRecipient)
+            #expect(controller.armingState == .needsTopic)
             #expect(!harness.source.isRunning)
 
-            controller.setRecipient("+15551234567")
+            controller.setTopic("napcat-lid-8f3k2p")
             #expect(controller.armingState == .needsTestSend)
             #expect(!harness.source.isRunning, "an unprimed feature must not register")
 
@@ -484,107 +499,172 @@ struct LidGuardControllerTests {
     // MARK: Test send / priming
 
     @Test func onlyASuccessfulTestSendPrimesTheFeature() {
-        let sender = RecordingMessageSender(outcome: .permissionDenied)
+        let sender = RecordingMessageSender(outcome: .rejected(404))
         withLidGuardHarness(sender: sender) { harness in
             let controller = harness.controller
             controller.setEnabled(true)
-            controller.setRecipient("+15551234567")
+            controller.setTopic("napcat-lid-8f3k2p")
 
             controller.sendTestMessage()
             #expect(sender.sends.count == 1)
             #expect(sender.sends[0].kind == .test)
-            #expect(controller.primedAt == 0, "a refused send must not arm anything")
+            #expect(controller.primedAt == 0, "a refused publish must not arm anything")
             #expect(controller.armingState == .needsTestSend)
-            #expect(controller.lastSendOutcome == .permissionDenied)
+            #expect(controller.lastSendOutcome == .rejected(404))
 
-            sender.setOutcome(.handedToMessages)
+            sender.setOutcome(.accepted)
             controller.sendTestMessage()
             #expect(controller.primedAt == harness.clock.now)
             #expect(controller.armingState == .armed)
         }
     }
 
-    /// A test send that lands AFTER the user changed the address must never
-    /// arm the new (untested) one — otherwise a mistyped address could receive
-    /// the lid-close message as its very first contact.
-    @Test func aLateTestSendNeverPrimesADifferentRecipient() {
+    /// An UNCONFIRMED publish must not prime either: "we do not know" is not a
+    /// proof that the phone got it.
+    @Test func anUnconfirmedTestSendDoesNotPrime() {
+        let sender = RecordingMessageSender(outcome: .timedOutUnconfirmed)
+        withLidGuardHarness(sender: sender) { harness in
+            harness.controller.setEnabled(true)
+            harness.controller.setTopic("napcat-lid-8f3k2p")
+            harness.controller.sendTestMessage()
+            #expect(harness.controller.primedAt == 0)
+            #expect(harness.controller.armingState == .needsTestSend)
+        }
+    }
+
+    /// A test send that lands AFTER the user changed the topic must never arm
+    /// the new (untested) one — otherwise a mistyped topic could be trusted
+    /// with the lid-close message without anyone ever proving it works.
+    @Test func aLateTestSendNeverPrimesADifferentTopic() {
         let sender = DeferredMessageSender()
         withLidGuardHarness(sender: sender) { harness in
             let controller = harness.controller
             controller.setEnabled(true)
-            controller.setRecipient("+15551110000")
+            controller.setTopic("napcat-first-topic")
             controller.sendTestMessage()
             #expect(sender.sends.count == 1)
-            #expect(sender.sends[0].recipient == "+15551110000")
+            #expect(sender.sends[0].destination.topic == "napcat-first-topic")
 
-            // The user re-opens the editor and switches address while the
-            // first test is still in flight.
-            controller.setRecipient("+15552220000")
+            // The user re-opens the editor and switches topic while the first
+            // test is still in flight.
+            controller.setTopic("napcat-second-topic")
             #expect(controller.primedAt == 0)
 
             // Now the FIRST test's success arrives.
-            sender.completeAll(.handedToMessages)
-            #expect(controller.primedAt == 0, "the tested address is no longer the stored one")
+            sender.completeAll(.accepted)
+            #expect(controller.primedAt == 0, "the tested topic is no longer the stored one")
             #expect(controller.armingState == .needsTestSend)
             #expect(!harness.source.isRunning)
         }
     }
 
+    /// The same rule for the SERVER half of the destination.
+    @Test func aLateTestSendNeverPrimesADifferentServer() {
+        let sender = DeferredMessageSender()
+        withLidGuardHarness(sender: sender) { harness in
+            let controller = harness.controller
+            controller.setEnabled(true)
+            controller.setTopic("napcat-lid-8f3k2p")
+            controller.sendTestMessage()
+            #expect(sender.sends[0].destination.server == "https://ntfy.sh")
+
+            controller.setServer("https://ntfy.example.com")
+            sender.completeAll(.accepted)
+            #expect(controller.primedAt == 0, "the tested server is no longer the stored one")
+            #expect(controller.armingState == .needsTestSend)
+        }
+    }
+
     /// …and the ordinary case still primes.
-    @Test func aTestSendForTheStoredRecipientPrimesOnCompletion() {
+    @Test func aTestSendForTheStoredDestinationPrimesOnCompletion() {
         let sender = DeferredMessageSender()
         withLidGuardHarness(sender: sender) { harness in
             harness.controller.setEnabled(true)
-            harness.controller.setRecipient("+15551110000")
+            harness.controller.setTopic("napcat-lid-8f3k2p")
             harness.controller.sendTestMessage()
-            sender.completeAll(.handedToMessages)
+            sender.completeAll(.accepted)
             #expect(harness.controller.primedAt == harness.clock.now)
             #expect(harness.controller.armingState == .armed)
         }
     }
 
-    @Test func changingTheRecipientRequiresANewTestSend() {
+    @Test func changingTheTopicRequiresANewTestSend() {
         withLidGuardHarness { harness in
             harness.arm()
             #expect(harness.controller.armingState == .armed)
 
-            harness.controller.setRecipient("you@example.com")
-            #expect(harness.controller.storedRecipient == "you@example.com")
+            harness.controller.setTopic("napcat-other-topic")
+            #expect(harness.controller.storedTopic == "napcat-other-topic")
             #expect(harness.controller.primedAt == 0)
             #expect(harness.controller.armingState == .needsTestSend)
-            #expect(!harness.source.isRunning, "changing the address disarms until re-primed")
+            #expect(!harness.source.isRunning, "changing the topic disarms until re-primed")
         }
     }
 
-    @Test func anUnusableRecipientIsNotStoredAndSendsNothing() {
+    @Test func changingTheServerRequiresANewTestSend() {
+        withLidGuardHarness { harness in
+            harness.arm()
+            #expect(harness.controller.storedServer == LidGuardTuning.defaultNtfyServer)
+
+            #expect(harness.controller.setServer("https://ntfy.example.com:8443/")
+                    == .valid("https://ntfy.example.com:8443"))
+            #expect(harness.controller.storedServer == "https://ntfy.example.com:8443")
+            #expect(harness.controller.primedAt == 0)
+            #expect(harness.controller.armingState == .needsTestSend)
+            #expect(!harness.source.isRunning)
+        }
+    }
+
+    /// Re-saving the SAME values must not disarm a working configuration.
+    @Test func reSavingTheSameSettingsKeepsThePriming() {
+        withLidGuardHarness { harness in
+            harness.arm()
+            let primed = harness.controller.primedAt
+            harness.controller.setTopic("  napcat-lid-8f3k2p  ")
+            harness.controller.setServer("https://ntfy.sh")
+            #expect(harness.controller.primedAt == primed)
+            #expect(harness.controller.armingState == .armed)
+            #expect(harness.source.isRunning)
+        }
+    }
+
+    /// Clearing the server field reverts to the public instance.
+    @Test func clearingTheServerFallsBackToThePublicInstance() {
+        withLidGuardHarness { harness in
+            harness.controller.setServer("https://ntfy.example.com")
+            #expect(harness.controller.storedServer == "https://ntfy.example.com")
+            #expect(harness.controller.setServer("") == .empty)
+            #expect(harness.controller.storedServer == LidGuardTuning.defaultNtfyServer)
+        }
+    }
+
+    @Test func anUnusableTopicIsNotStoredAndSendsNothing() {
         withLidGuardHarness { harness in
             let sender = harness.sender as! RecordingMessageSender
             harness.arm()
-            let validation = harness.controller.setRecipient("bad\nvalue")
-            #expect(validation == .invalid)
-            #expect(harness.controller.storedRecipient == "+15551234567", "the previous value is kept")
+            #expect(harness.controller.setTopic("bad/topic") == .invalid)
+            #expect(harness.controller.storedTopic == "napcat-lid-8f3k2p", "the previous value is kept")
 
             // And an unusable STORED value keeps the feature inert.
-            harness.defaults.set("bad\nvalue", forKey: DefaultsKey.lidGuardRecipient)
-            #expect(harness.controller.armingState == .needsRecipient)
+            harness.defaults.set("bad/topic", forKey: DefaultsKey.lidGuardNtfyTopic)
+            #expect(harness.controller.armingState == .needsTopic)
             harness.controller.sendTestMessage()
             #expect(sender.sends.isEmpty)
         }
     }
 
-    // MARK: Automation probe
-
-    @Test func theAutomationProbeRunsOnlyWhileArmed() {
+    @Test func anUnusableServerIsNotStoredAndSendsNothing() {
         withLidGuardHarness { harness in
-            harness.controller.refreshAutomationPermission()
-            #expect(harness.probe.callCount == 0)
-            #expect(harness.controller.automationPermission == nil)
-
+            let sender = harness.sender as! RecordingMessageSender
             harness.arm()
-            harness.probe.setResult(.denied)
-            harness.controller.refreshAutomationPermission()
-            #expect(harness.probe.callCount == 1)
-            #expect(harness.controller.automationPermission == .denied)
+            #expect(harness.controller.setServer("http://ntfy.sh") == .invalid)
+            #expect(harness.controller.storedServer == LidGuardTuning.defaultNtfyServer,
+                    "the previous value is kept")
+
+            harness.defaults.set("http://ntfy.sh", forKey: DefaultsKey.lidGuardNtfyServer)
+            #expect(harness.controller.armingState == .needsTopic)
+            harness.controller.sendTestMessage()
+            #expect(sender.sends.isEmpty)
         }
     }
 }

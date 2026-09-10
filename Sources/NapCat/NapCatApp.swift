@@ -22,6 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // never show a Dock icon or app menu.
         NSApp.setActivationPolicy(.accessory)
 
+        // Retired keys first: `lidGuardRecipient` held the user's own phone
+        // number / Apple ID before the B4 ntfy swap and nothing reads it any
+        // more, so it is deleted rather than left sitting in the preferences
+        // plist. Names only are logged — never the value.
+        let removedKeys = DefaultsMigration.removeRetiredKeys(in: defaults)
+        if !removedKeys.isEmpty {
+            Self.logger.notice("startup migration: removed \(removedKeys.joined(separator: ", "), privacy: .public) — retired key(s), value not read")
+        }
+
         // Order matters: reap any stale watchdog BEFORE anything could spawn
         // a fresh one (kill-9 → relaunch → enable race), then reconcile
         // observed state, then build the menu from the reconciled state.
@@ -55,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Track B / B2 (lid-close alert). Same wiring-predicate gate: nothing
         // in this subsystem exists in debugBattery mode, so no IOKit power
-        // registration and no osascript spawn is reachable there. The IOKit
+        // registration and no network request is reachable there. The IOKit
         // registration itself happens only when the feature is ARMED
         // (refreshArming below and on every menu open).
         let lidGuard = LidGuardController.makeIfEnabled(

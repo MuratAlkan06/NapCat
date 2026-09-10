@@ -33,11 +33,13 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var claudeHookLastSeenSeconds: Int?
     @Published private(set) var claudeDetectionPaused = false
 
-    // Track B / B2 (lid-close alert) mirrors.
+    // Track B / B2 (lid-close alert) mirrors. `lidGuardTopic` is a SECRET (the
+    // ntfy topic is the feed's only password) — it exists so the editor can be
+    // prefilled, and is deliberately never rendered into a panel caption.
     @Published private(set) var lidGuardEnabled = false
-    @Published private(set) var lidGuardRecipient = ""
+    @Published private(set) var lidGuardTopic = ""
+    @Published private(set) var lidGuardServer = LidGuardTuning.defaultNtfyServer
     @Published private(set) var lidGuardArming: LidGuardArmingState = .off
-    @Published private(set) var lidGuardAutomation: AutomationPermission?
     @Published private(set) var lidGuardLastOutcome: MessageSendOutcome?
     @Published private(set) var lidGuardLastOutcomeAt: Double?
 
@@ -58,10 +60,10 @@ final class MenuStateModel: ObservableObject {
     /// MenuContentView, reached through this hook.
     var requestStayAwakeToggle: ((Bool) -> Void)?
     var requestQuit: (() -> Void)?
-    /// B2 actions that need AppKit flows (the recipient modal) or a privileged-
-    /// free but off-main command (the test send) — owned by MenuContentView.
+    /// B2 actions that need AppKit flows (the topic/server modal) or an
+    /// off-main command (the test send) — owned by MenuContentView.
     var requestLidGuardToggle: ((Bool) -> Void)?
-    var requestLidGuardRecipientPrompt: (() -> Void)?
+    var requestLidGuardSettingsPrompt: (() -> Void)?
     var requestLidGuardTestSend: (() -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
@@ -110,9 +112,9 @@ final class MenuStateModel: ObservableObject {
         claudeDetectionPaused = detection?.detectionPaused ?? false
         // B2 mirrors — read straight off the (thread-safe) controller.
         lidGuardEnabled = lidGuard?.isEnabled ?? false
-        lidGuardRecipient = lidGuard?.storedRecipient ?? ""
+        lidGuardTopic = lidGuard?.storedTopic ?? ""
+        lidGuardServer = lidGuard?.storedServer ?? LidGuardTuning.defaultNtfyServer
         lidGuardArming = lidGuard?.armingState ?? .off
-        lidGuardAutomation = lidGuard?.automationPermission
         lidGuardLastOutcome = lidGuard?.lastSendOutcome
         lidGuardLastOutcomeAt = lidGuard?.lastSendOutcomeAt
     }
@@ -151,7 +153,7 @@ final class MenuStateModel: ObservableObject {
     // MARK: B2 actions (forwarded — the model never sends anything itself)
 
     func setLidGuardEnabled(_ enabled: Bool) { requestLidGuardToggle?(enabled) }
-    func editLidGuardRecipient() { requestLidGuardRecipientPrompt?() }
+    func editLidGuardSettings() { requestLidGuardSettingsPrompt?() }
     func sendLidGuardTestMessage() { requestLidGuardTestSend?() }
 
     // MARK: - Pure display mappings (unit-tested)
@@ -273,68 +275,64 @@ final class MenuStateModel: ObservableObject {
     /// Primary line: what the feature will do right now, and if it is not
     /// armed, the NEXT step. Modeled on `featureMessage(for:)`.
     ///
-    /// Honesty downgrade: NapCat is ad-hoc signed, so every rebuild re-signs the
-    /// app and revokes the Messages Automation grant while `primedAt` (hence
-    /// `.armed`) survives in UserDefaults. When the last Automation probe says a
-    /// send would be refused (`.denied` / `.wouldRequireConsent`), the armed
-    /// line must NOT claim "armed" — it names the fix instead. The arming logic
-    /// itself is untouched; only the DISPLAYED wording changes.
+    /// Honesty downgrade: `primedAt` (hence `.armed`) survives in UserDefaults
+    /// even after the feed stops working — a deleted topic, a self-hosted
+    /// instance that now needs auth, a typo'd server. When the LAST send was
+    /// refused or failed outright, the armed line must NOT claim "armed"; it
+    /// names the fix instead. The arming logic itself is untouched; only the
+    /// DISPLAYED wording changes.
     nonisolated static func lidAlertStatusLine(
         for state: LidGuardArmingState,
-        automation: AutomationPermission?
+        lastOutcome: MessageSendOutcome?
     ) -> String {
         switch state {
         case .off:
             return "Lid alert: off"
-        case .needsRecipient:
-            return "Lid alert: add your own iMessage address to arm it"
+        case .needsTopic:
+            return "Lid alert: set an ntfy topic to arm it"
         case .needsTestSend:
-            return "Lid alert: send the test message to grant Messages access"
+            return "Lid alert: send the test message to check your phone gets it"
         case .armed:
-            switch automation {
-            case .denied?, .wouldRequireConsent?:
-                return "Lid alert: needs Messages permission — re-run Send test message"
+            switch lastOutcome {
+            case .rejected?, .sendFailed?:
+                return "Lid alert: the last message did not go out — re-run Send test message"
             default:
-                return "Lid alert: armed — best-effort text if this Mac sleeps mid-task"
+                return "Lid alert: armed — best-effort push if this Mac sleeps mid-task"
             }
         }
     }
 
-    /// Recipient row. An invalid stored value says so instead of silently
-    /// behaving as if nothing were set.
-    nonisolated static func lidAlertRecipientLine(_ recipient: String) -> String {
-        switch LidGuardPolicy.validateRecipient(recipient) {
-        case .valid(let value):
-            return "Sends to \(value)"
+    /// Topic row. THE TOPIC IS NEVER ECHOED: on ntfy the topic name is the only
+    /// password on the feed, so a panel that anyone can screenshot must say
+    /// whether one is set, not what it is. The editor is where it is visible.
+    nonisolated static func lidAlertTopicLine(_ topic: String) -> String {
+        switch LidGuardPolicy.validateTopic(topic) {
+        case .valid:
+            return "Topic: set (hidden — it is the password to your feed)"
         case .empty:
-            return "No recipient set"
+            return "Topic: none set"
         case .invalid:
-            return "Recipient is not usable — no line breaks, max \(LidGuardTuning.maxRecipientLength) characters"
+            return "Topic is not usable — letters, digits, “_” and “-” only, "
+                + "max \(LidGuardTuning.maxTopicLength) characters"
         }
     }
 
-    /// Automation (TCC) grant caption from the SILENT probe. "Messages not
-    /// running" is its own answer — never rendered as ready or denied.
-    nonisolated static func lidAlertAutomationCaption(_ permission: AutomationPermission?) -> String {
-        switch permission {
-        case .none:
-            return "Messages access: not checked yet"
-        case .granted:
-            return "Messages access: allowed"
-        case .denied:
-            return "Messages access: denied — see the README (tccutil), then send the test message again"
-        case .wouldRequireConsent:
-            return "Messages access: not granted yet — send the test message"
-        case .targetNotRunning:
-            return "Messages access: unknown (Messages is not running)"
-        case .unknown(let status):
-            return "Messages access: unknown (status \(status))"
+    /// Server row. The server is NOT a secret, so it is shown in full; an
+    /// unusable stored value says so instead of silently falling back.
+    nonisolated static func lidAlertServerLine(_ server: String) -> String {
+        switch LidGuardPolicy.validateServer(server) {
+        case .valid(let value):
+            return "Server: \(value)"
+        case .empty:
+            return "Server: \(LidGuardTuning.defaultNtfyServer)"
+        case .invalid:
+            return "Server is not usable — it must be an https address like \(LidGuardTuning.defaultNtfyServer)"
         }
     }
 
-    /// PERSISTENT last-send row: outcome + when. Note "handed to Messages" is
-    /// the honest ceiling — iMessage transmission is asynchronous and may
-    /// complete after the Mac wakes.
+    /// PERSISTENT last-send row: outcome + when. "Accepted by ntfy" is the
+    /// honest ceiling — the server has the message (and holds it 12 h), but the
+    /// push to the phone is asynchronous.
     nonisolated static func lidAlertLastSendCaption(
         outcome: MessageSendOutcome?,
         at: Double?,
@@ -343,10 +341,10 @@ final class MenuStateModel: ObservableObject {
         guard let outcome, let at else { return "Last message: none since NapCat started" }
         let when = ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - at)))
         switch outcome {
-        case .handedToMessages:
-            return "Last message: handed to Messages \(when)"
-        case .permissionDenied:
-            return "Last message: refused by Messages permission \(when)"
+        case .accepted:
+            return "Last message: accepted by ntfy \(when)"
+        case .rejected(let status):
+            return "Last message: refused by the server \(when) (HTTP \(status)) — check the topic and server"
         case .timedOutUnconfirmed:
             return "Last message: unconfirmed \(when) — it may still have gone out"
         case .sendFailed(let detail):
@@ -354,13 +352,42 @@ final class MenuStateModel: ObservableObject {
         }
     }
 
-    /// Ad-hoc signature churn: every `make` re-signs the app, which usually
-    /// revokes the Automation grant. Always visible in the section.
-    nonisolated static let lidAlertRebuildNote =
-        "Updating NapCat re-signs the app and usually revokes Messages access — send the test message again after an update."
+    /// Inline error for the ntfy settings editor, or nil when both fields can
+    /// be saved as entered.
+    ///
+    /// HONESTY (security review 2026-09-09): the controller deliberately KEEPS
+    /// the previous value when a field is `.invalid`. The modal used to discard
+    /// that result, so a typo'd topic looked saved while the panel went on
+    /// claiming the feature was armed against the OLD one. The editor now
+    /// validates before committing and re-presents itself with this message.
+    ///
+    /// `.empty` is NOT an error: clearing the topic switches the feature off at
+    /// the source, and clearing the server reverts to the public instance.
+    nonisolated static func lidAlertSettingsError(
+        topic: TopicValidation,
+        server: ServerValidation
+    ) -> String? {
+        var problems: [String] = []
+        if topic == .invalid {
+            problems.append("The topic can only contain letters, digits, “_” and “-”, "
+                + "up to \(LidGuardTuning.maxTopicLength) characters.")
+        }
+        if server == .invalid {
+            problems.append("The server must be an https address with no path, "
+                + "like \(LidGuardTuning.defaultNtfyServer).")
+        }
+        guard !problems.isEmpty else { return nil }
+        return (["Nothing was saved."] + problems).joined(separator: " ")
+    }
 
-    /// The test send is offered only when there is something to send TO.
-    nonisolated static func lidAlertTestSendAvailable(recipient: String) -> Bool {
-        LidGuardPolicy.normalizedRecipient(recipient) != nil
+    /// Standing security note: on ntfy there is no account, so the topic name
+    /// is the whole access-control story. Always visible in the section.
+    nonisolated static let lidAlertTopicSecrecyNote =
+        "Anyone who knows your topic name can read — and post to — your alerts. "
+        + "Pick a long, unguessable name and keep it private."
+
+    /// The test send is offered only when there is something to publish TO.
+    nonisolated static func lidAlertTestSendAvailable(server: String, topic: String) -> Bool {
+        LidGuardPolicy.destination(server: server, topic: topic) != nil
     }
 }

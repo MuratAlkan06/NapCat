@@ -87,11 +87,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         model.requestStayAwakeToggle = { [weak self] _ in self?.toggleStayAwake() }
         model.requestQuit = { NSApp.terminate(nil) }
         model.requestLidGuardToggle = { [weak self] enabled in self?.toggleLidAlert(enabled) }
-        model.requestLidGuardRecipientPrompt = { [weak self] in self?.promptForLidAlertRecipient() }
+        model.requestLidGuardSettingsPrompt = { [weak self] in self?.promptForLidAlertSettings() }
         model.requestLidGuardTestSend = { [weak self] in self?.sendLidAlertTestMessage() }
 
-        // The lid guard's own async events (send outcome, permission probe)
-        // republish through the same refresh path as every other controller.
+        // The lid guard's own async events (send outcome, wake) republish
+        // through the same refresh path as every other controller.
         lidGuard?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
@@ -115,10 +115,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         detection?.sample()
         // Track B / B2: register or drop the IOKit sleep hook so it matches the
         // current config (the pmset refresh above has already primed the
-        // stay-awake mirror the fire gate reads), then probe the Messages
-        // permission OFF this critical path.
+        // stay-awake mirror the fire gate reads). Nothing is probed here — the
+        // ntfy channel has no permission to check, and menu-open must never
+        // touch the network.
         lidGuard?.refreshArming()
-        probeAutomationPermission()
         model.refresh()
         // Section visibility (charge limit, debug) can change the intrinsic
         // height — resize the hosted view before the menu lays out.
@@ -188,11 +188,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 
     // MARK: - Lid-close alert (Track B / B2)
 
-    /// Happy path — the menu STAYS OPEN. Enabling with a recipient that has
-    /// never been primed also kicks off the config-time test send, which is
-    /// what raises the "NapCat wants to control Messages" prompt while the
-    /// user is present (never at lid-close). The send itself runs on the
-    /// sender's private queue, so nothing blocks here.
+    /// Happy path — the menu STAYS OPEN. Enabling with a topic that has never
+    /// been primed also kicks off the config-time test send, which is what
+    /// proves the phone really receives the feed while the user is present
+    /// (never at lid-close). URLSession returns immediately, so nothing blocks
+    /// here.
     private func toggleLidAlert(_ enabled: Bool) {
         guard let lidGuard else { return }
         lidGuard.setEnabled(enabled)
@@ -202,27 +202,17 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         model.refresh()
     }
 
-    /// Happy path — the menu STAYS OPEN; the send is handed to the sender's
-    /// private queue and its outcome republishes through setChangeHandler.
+    /// Happy path — the menu STAYS OPEN; the publish is handed to URLSession
+    /// and its outcome republishes through setChangeHandler.
     private func sendLidAlertTestMessage() {
         lidGuard?.sendTestMessage()
         model.refresh()
     }
 
-    /// The ONE B2 flow that is genuinely modal (a text field), so it dismisses
+    /// The ONE B2 flow that is genuinely modal (text fields), so it dismisses
     /// first through the single gateway.
-    private func promptForLidAlertRecipient() {
-        closeMenuThenPresent { [weak self] in self?.presentRecipientPrompt() }
-    }
-
-    /// Silent Automation-permission probe: armed only, and detached so it
-    /// never sits on the menuWillOpen critical path. The probe passes
-    /// `askUserIfNeeded: false`, so it can never raise a prompt.
-    private func probeAutomationPermission() {
-        guard let lidGuard, lidGuard.isArmed else { return }
-        Task.detached(priority: .utility) {
-            lidGuard.refreshAutomationPermission()
-        }
+    private func promptForLidAlertSettings() {
+        closeMenuThenPresent { [weak self] in self?.presentLidAlertSettingsPrompt() }
     }
 
     /// The ONLY place that may dismiss the menu (locked by a lint-style
@@ -272,35 +262,95 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.runModal()
     }
 
-    /// Modal recipient editor (accessory NSTextField). Saving a CHANGED
-    /// recipient clears the primed flag, so — while the feature is switched on
-    /// — the test send re-runs against the new address and its Automation
-    /// prompt is answered here and now.
-    private func presentRecipientPrompt() {
+    /// Modal ntfy editor (two accessory NSTextFields: topic + server). Saving a
+    /// CHANGED topic or server clears the primed flag, so — while the feature
+    /// is switched on — the test send re-runs against the new feed and the user
+    /// sees here and now whether their phone gets it.
+    ///
+    /// VALIDATE BEFORE COMMITTING (security review 2026-09-09): the controller
+    /// keeps the previous value for an `.invalid` field, so simply calling
+    /// `setTopic`/`setServer` and dropping their results left a typo looking
+    /// saved while the panel still claimed the feature was armed against the
+    /// OLD configuration. The editor is therefore re-presented — with the text
+    /// the user typed and an inline error naming the offending field — until
+    /// both halves are usable or the user cancels. The keep-the-old-value
+    /// behaviour in the controller is unchanged; only the honesty of the UI is.
+    private func presentLidAlertSettingsPrompt() {
         guard let lidGuard else { return }
+        var entry = LidAlertSettingsEntry(topic: lidGuard.storedTopic, server: lidGuard.storedServer)
+        var error: String?
+        while let entered = runLidAlertSettingsEditor(entry: entry, error: error) {
+            entry = entered
+            if let problem = MenuStateModel.lidAlertSettingsError(
+                topic: LidGuardPolicy.validateTopic(entered.topic),
+                server: LidGuardPolicy.validateServer(entered.server)
+            ) {
+                error = problem
+                continue
+            }
+            // Server first: a changed server also clears priming, so the topic's
+            // own arming check below sees the final configuration.
+            lidGuard.setServer(entered.server)
+            lidGuard.setTopic(entered.topic)
+            if lidGuard.armingState == .needsTestSend {
+                lidGuard.sendTestMessage()
+            }
+            model.refresh()
+            return
+        }
+    }
+
+    /// One pass of the two-field editor. Returns exactly what the user typed
+    /// (unvalidated — the caller decides), or nil when they cancelled. `error`
+    /// is rendered above the explanation, so a rejected value comes back for
+    /// correction instead of disappearing silently.
+    private func runLidAlertSettingsEditor(
+        entry: LidAlertSettingsEntry,
+        error: String?
+    ) -> LidAlertSettingsEntry? {
         let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Where should NapCat text you?"
-        alert.informativeText = """
-            Enter YOUR own iMessage address — the phone number or Apple ID you use on your \
-            iPhone. NapCat messages that address (a note to yourself) when this Mac starts \
-            sleeping while a Claude Code task is still running. It never sends anything else, \
-            and never any of your Claude conversation.
-            """
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = lidGuard.storedRecipient
-        field.placeholderString = "+15551234567 or you@example.com"
-        alert.accessoryView = field
+        alert.alertStyle = error == nil ? .informational : .warning
+        alert.messageText = "Where should NapCat notify you?"
+        alert.informativeText = [error, Self.lidAlertSettingsExplanation]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
+        let topicField = NSTextField(frame: NSRect(x: 0, y: 30, width: 300, height: 24))
+        topicField.stringValue = entry.topic
+        // Deliberately NOT a paste-ready value: a placeholder someone could copy
+        // verbatim would become a shared, publicly-known feed.
+        topicField.placeholderString = "Topic — e.g. napcat-<your-own-random-suffix>"
+        let serverField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        serverField.stringValue = entry.server
+        serverField.placeholderString = LidGuardTuning.defaultNtfyServer
+        let stack = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 54))
+        stack.addSubview(topicField)
+        stack.addSubview(serverField)
+        alert.accessoryView = stack
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        if case .valid = lidGuard.setRecipient(field.stringValue),
-           lidGuard.armingState == .needsTestSend {
-            lidGuard.sendTestMessage()
-        }
-        model.refresh()
+        alert.window.initialFirstResponder = topicField
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return LidAlertSettingsEntry(topic: topicField.stringValue, server: serverField.stringValue)
+    }
+
+    private static let lidAlertSettingsExplanation = """
+        NapCat publishes to ntfy — install the ntfy app on your iPhone and subscribe it to \
+        a topic you invent. There is no account: THE TOPIC NAME IS THE PASSWORD, so choose \
+        something long and unguessable and keep it private. Letters, digits, “_” and “-”, \
+        up to 64 characters.
+
+        NapCat posts to that topic only when this Mac starts sleeping while a Claude Code \
+        task is still running. It never sends anything else, and never any of your Claude \
+        conversation.
+        """
+
+    /// Raw, UNVALIDATED text from one pass of the ntfy settings editor. It
+    /// exists so the editor can hand its two fields back for validation without
+    /// anything being committed first.
+    private struct LidAlertSettingsEntry {
+        let topic: String
+        let server: String
     }
 
     private func presentFailureAlert(_ detail: String) {

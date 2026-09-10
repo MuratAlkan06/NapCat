@@ -6,10 +6,13 @@ import Testing
 @testable import NapCat
 
 /// Pure Track B / B2 decision logic — the fire gate, the wall-clock cooldown,
-/// recipient validation, the app-generated message bodies, the send-outcome
-/// classifier, and the Automation-status mapping. Table-driven like
-/// HysteresisEngineTests; nothing here sends anything or touches IOKit.
+/// ntfy topic/server validation, the app-generated message bodies, and the
+/// send-outcome classifier. Table-driven like HysteresisEngineTests; nothing
+/// here sends anything, opens a socket, or touches IOKit.
 struct LidGuardPolicyTests {
+    /// The destination every "valid config" row uses.
+    static let sampleDestination = NtfyDestination(server: "https://ntfy.sh", topic: "napcat-test-topic")
+
     // MARK: - Fire gate
 
     /// One row of the gate table. The baseline is "everything is right, fire";
@@ -17,7 +20,7 @@ struct LidGuardPolicyTests {
     struct GateRow: Sendable {
         let id: String
         let enabled: Bool
-        let recipientValid: Bool
+        let topicValid: Bool
         let primed: Bool
         let stayAwakeObserved: Bool?
         let taskInFlight: Bool
@@ -29,7 +32,7 @@ struct LidGuardPolicyTests {
         init(
             _ id: String,
             enabled: Bool = true,
-            recipientValid: Bool = true,
+            topicValid: Bool = true,
             primed: Bool = true,
             stayAwakeObserved: Bool? = false,
             taskInFlight: Bool = true,
@@ -40,7 +43,7 @@ struct LidGuardPolicyTests {
         ) {
             self.id = id
             self.enabled = enabled
-            self.recipientValid = recipientValid
+            self.topicValid = topicValid
             self.primed = primed
             self.stayAwakeObserved = stayAwakeObserved
             self.taskInFlight = taskInFlight
@@ -54,8 +57,8 @@ struct LidGuardPolicyTests {
             LidGuardGateInputs(
                 snapshot: LidGuardSnapshot(
                     enabled: enabled,
-                    recipient: recipientValid ? "+15551234567" : "",
-                    recipientValid: recipientValid,
+                    destination: topicValid ? LidGuardPolicyTests.sampleDestination : nil,
+                    topicValid: topicValid,
                     primed: primed,
                     stayAwakeObserved: stayAwakeObserved,
                     taskInFlight: taskInFlight,
@@ -71,7 +74,7 @@ struct LidGuardPolicyTests {
     static let gateRows: [GateRow] = [
         .init("G1 everything true", expected: .fire),
         .init("G2 feature off", enabled: false, expected: .skip(.disabled)),
-        .init("G3 recipient invalid", recipientValid: false, expected: .skip(.invalidRecipient)),
+        .init("G3 topic/server invalid", topicValid: false, expected: .skip(.invalidTopic)),
         .init("G4 never primed", primed: false, expected: .skip(.notPrimed)),
         .init("G5 stay-awake is ON — the Mac is not really sleeping on us",
               stayAwakeObserved: true, expected: .skip(.stayAwakeOn)),
@@ -88,10 +91,10 @@ struct LidGuardPolicyTests {
         .init("G12 a send is already in flight (single-flight)",
               sendInFlight: true, expected: .skip(.sendInFlight)),
         .init("G13 disabled beats every other reason",
-              enabled: false, recipientValid: false, primed: false,
+              enabled: false, topicValid: false, primed: false,
               stayAwakeObserved: true, taskInFlight: false, sendInFlight: true,
               expected: .skip(.disabled)),
-        .init("G14 clock jumped backwards — hold the cooldown, never double-text",
+        .init("G14 clock jumped backwards — hold the cooldown, never double-notify",
               lastFiredAt: 1_000_000 + 3_600, expected: .skip(.cooldown)),
     ]
 
@@ -110,10 +113,30 @@ struct LidGuardPolicyTests {
             return nil
         })
         let all: Set<LidGuardSkipReason> = [
-            .disabled, .invalidRecipient, .notPrimed, .stayAwakeOn,
+            .disabled, .invalidTopic, .notPrimed, .stayAwakeOn,
             .noTaskInFlight, .cooldown, .sendInFlight,
         ]
         #expect(reasons == all)
+    }
+
+    /// A snapshot that CLAIMS a valid topic but carries no destination must
+    /// never fire — the controller would have nothing to publish to.
+    @Test func aMissingDestinationNeverFiresEvenIfTheFlagSaysValid() {
+        let inputs = LidGuardGateInputs(
+            snapshot: LidGuardSnapshot(
+                enabled: true,
+                destination: nil,
+                topicValid: true,
+                primed: true,
+                stayAwakeObserved: false,
+                taskInFlight: true,
+                busySessionCount: 1
+            ),
+            sendInFlight: false,
+            lastFiredAt: nil,
+            now: 1_000_000
+        )
+        #expect(LidGuardPolicy.decide(inputs) == .skip(.invalidTopic))
     }
 
     // MARK: - Cooldown clock
@@ -141,52 +164,281 @@ struct LidGuardPolicyTests {
         #expect(LidGuardTuning.cooldownSeconds >= 15 * 60)
     }
 
-    /// The single tunable the design fixes by value.
+    /// The single tunable the design fixes by value — unchanged by the B4
+    /// channel swap; the request timeout is deliberately far larger, because
+    /// the sleep hold is a transmission window, not a deadline.
     @Test func ackHoldBudgetIsTheLockedValue() {
         #expect(LidGuardTuning.ackHoldBudget == 1.5)
         #expect(LidGuardTuning.forceAckCeiling < 30, "must never approach the OS ceiling")
         #expect(LidGuardTuning.ackHoldBudget < LidGuardTuning.forceAckCeiling)
+        #expect(LidGuardTuning.requestTimeout > LidGuardTuning.ackHoldBudget)
     }
 
-    // MARK: - Recipient validation
+    // MARK: - Topic validation (ntfy grammar: ^[A-Za-z0-9_-]{1,64}$)
 
     @Test(arguments: [
-        ("+15551234567", RecipientValidation.valid("+15551234567")),
-        ("  you@example.com  ", .valid("you@example.com")),
+        ("napcat-lid-8f3k2p", TopicValidation.valid("napcat-lid-8f3k2p")),
+        ("  napcat_Lid_42  ", .valid("napcat_Lid_42")),
+        ("A", .valid("A")),
+        ("0", .valid("0")),
+        (String(repeating: "a", count: 64), .valid(String(repeating: "a", count: 64))),
         ("", .empty),
         ("   ", .empty),
         ("\n", .empty),
-        ("+1555\n1234567", .invalid),
-        ("+1555\r1234567", .invalid),
-        ("a\u{0000}b", .invalid),
-        ("a\u{007F}b", .invalid),
-        ("a\u{0085}b", .invalid),
-        // Interior Unicode line/paragraph separators survive the trim; reject.
-        ("a\u{2028}b", .invalid),
-        ("a\u{2029}b", .invalid),
-        (String(repeating: "9", count: 128), .valid(String(repeating: "9", count: 128))),
-        (String(repeating: "9", count: 129), .invalid),
+        (String(repeating: "a", count: 65), .invalid),
+        // A slash would add a second path segment — the whole reason for the
+        // grammar.
+        ("napcat/lid", .invalid),
+        ("napcat.lid", .invalid),
+        ("napcat?x=1", .invalid),
+        ("napcat#frag", .invalid),
+        ("nap cat", .invalid),
+        ("napcat:8080", .invalid),
+        ("napcat%2Flid", .invalid),
+        ("nap\ncat", .invalid),
+        ("nap\rcat", .invalid),
+        ("nap\u{0000}cat", .invalid),
+        ("nap\u{2028}cat", .invalid),
+        ("nap\u{2029}cat", .invalid),
+        ("napcät", .invalid),
+        ("ナップキャット", .invalid),
+        ("napcat🐱", .invalid),
     ])
-    func recipientValidationTable(raw: String, expected: RecipientValidation) {
-        #expect(LidGuardPolicy.validateRecipient(raw) == expected)
+    func topicValidationTable(raw: String, expected: TopicValidation) {
+        #expect(LidGuardPolicy.validateTopic(raw) == expected)
     }
 
-    @Test func invalidRecipientLeavesTheFeatureInert() {
-        #expect(LidGuardPolicy.normalizedRecipient("bad\nvalue") == nil)
-        #expect(LidGuardPolicy.armingState(enabled: true, recipient: "bad\nvalue", primedAt: 1) == .needsRecipient)
+    @Test func topicLengthCapMatchesTheNtfyGrammar() {
+        #expect(LidGuardTuning.maxTopicLength == 64)
+    }
+
+    // MARK: - Server validation (https origin only)
+
+    @Test(arguments: [
+        ("https://ntfy.sh", ServerValidation.valid("https://ntfy.sh")),
+        ("  https://ntfy.sh  ", .valid("https://ntfy.sh")),
+        // Trailing-slash normalization: the sender always appends "/<topic>".
+        ("https://ntfy.sh/", .valid("https://ntfy.sh")),
+        ("https://ntfy.example.com:8443", .valid("https://ntfy.example.com:8443")),
+        ("https://ntfy.example.com:8443/", .valid("https://ntfy.example.com:8443")),
+        ("", .empty),
+        ("   ", .empty),
+        // http is refused outright: the topic (a password) rides in the URL.
+        ("http://ntfy.sh", .invalid),
+        ("HTTP://ntfy.sh", .invalid),
+        ("ftp://ntfy.sh", .invalid),
+        ("ntfy.sh", .invalid),
+        ("//ntfy.sh", .invalid),
+        ("https://", .invalid),
+        // A server PATH would silently move the message to another topic.
+        ("https://ntfy.sh/mytopic", .invalid),
+        ("https://ntfy.sh/a/b", .invalid),
+        ("https://ntfy.sh?x=1", .invalid),
+        ("https://ntfy.sh#frag", .invalid),
+        ("https://user:pw@ntfy.sh", .invalid),
+        ("https://nt fy.sh", .invalid),
+        ("https://ntfy.sh\nX", .invalid),
+        // An INTERIOR line/paragraph separator survives the trim; reject it.
+        // (A trailing one is trimmed like any newline and is therefore fine.)
+        ("https://ntfy\u{2028}.sh", .invalid),
+        ("https://ntfy\u{2029}.sh", .invalid),
+        ("https://ntfy.sh\u{2028}", .valid("https://ntfy.sh")),
+
+        // SECURITY REGRESSION ROWS (H1, security review 2026-09-09).
+        // `URLComponents.host` is percent-DECODED while the path/query/fragment/
+        // user guards see the UNdecoded parse, so every row below used to be
+        // accepted and normalized into an origin that smuggled the decoded
+        // character back in. Each is proven to reach a DIFFERENT address than
+        // the user configured — the topic is a password, so that is a
+        // credential-disclosure bug, not a cosmetic one.
+        //
+        // …the decoded "/" adds a host, leaving the real server in the path:
+        // normalized to "https://evil.com/ntfy.sh".
+        ("https://evil.com%2Fntfy.sh", .invalid),
+        // …the decoded "#" puts the topic in a FRAGMENT (never sent at all).
+        ("https://ntfy.sh%23x", .invalid),
+        // …the decoded "?" puts the topic in a QUERY.
+        ("https://ntfy.sh%3F", .invalid),
+        // …path traversal out of the intended origin.
+        ("https://ntfy.sh%2F..%2Fattacker.example", .invalid),
+        // …DOUBLE-encoded "@": the `user == nil` guard sees no credentials,
+        // but the produced URL resolves to host "evil.com".
+        ("https://ntfy.sh%2540evil.com", .invalid),
+        ("https://ntfy.sh%40evil.com", .invalid),
+        ("https://ntfy.sh%2Fpath", .invalid),
+        ("https://ntfy.sh%2f..%2fattacker.example", .invalid),
+        ("https://ntfy.sh%00", .invalid),
+        ("https://ntfy.sh%5Cevil", .invalid),
+        ("https://%2Fntfy.sh", .invalid),
+        // A bare "%" is not a host character either.
+        ("https://ntfy%sh", .invalid),
+        // Bracketed IPv6 literals: a DOCUMENTED non-goal (see
+        // `LidGuardPolicy.isUsableServerHost`), rejected rather than parsed.
+        ("https://[::1]", .invalid),
+        ("https://[::1]:8443", .invalid),
+        // IDN, BOTH spellings: `percentEncodedHost` escapes non-ASCII, and
+        // Foundation decodes an `xn--…` label back to Unicode before we see it,
+        // so neither form is usable. They never worked — `URL(string:)` rewrote
+        // the Unicode host to punycode, which the sender's byte-identical check
+        // refused while the config still read "valid". Now the rejection is
+        // visible to the user. (Workaround: an ASCII host name or an IP.)
+        ("https://ntfy.exämple.com", .invalid),
+        ("https://ntfy.xn--exmple-cua.com", .invalid),
+        // A port `URLComponents` cannot parse is reported as NO port at all, so
+        // these used to normalize to a bare "https://ntfy.sh" and publish to
+        // 443 — a truncation, which this validator does not do (I-2, review
+        // closure pass 2026-09-09).
+        ("https://ntfy.sh:99999999999999999999", .invalid),
+        ("https://ntfy.sh:9223372036854775808", .invalid),
+        // …but a bare trailing colon carries no port to begin with.
+        ("https://ntfy.sh:", .valid("https://ntfy.sh")),
+        // Ordinary hosts with the remaining allowlisted characters still pass.
+        ("https://ntfy-2.internal_host.example.com:8443",
+         .valid("https://ntfy-2.internal_host.example.com:8443")),
+        ("https://192.168.1.10:8443", .valid("https://192.168.1.10:8443")),
+    ])
+    func serverValidationTable(raw: String, expected: ServerValidation) {
+        #expect(LidGuardPolicy.validateServer(raw) == expected)
+    }
+
+    /// H1 root cause, stated as a property rather than a fixture list: whatever
+    /// the input, an ACCEPTED origin never contains a character that could
+    /// change the shape of `<server>/<topic>` — no `%` (hence no second decode
+    /// pass), no `/ ? # @ [ ]`, no whitespace.
+    @Test func anAcceptedOriginCanCarryNoUrlStructureAtAll() {
+        let hostile = [
+            "https://evil.com%2Fntfy.sh", "https://ntfy.sh%23x", "https://ntfy.sh%3F",
+            "https://ntfy.sh%2F..%2Fattacker.example", "https://ntfy.sh%2540evil.com",
+            "https://ntfy.sh%40evil.com", "https://ntfy.sh%2Fpath", "https://[::1]",
+            "https://ntfy.sh/topic", "https://ntfy.sh?x=1", "https://ntfy.sh#f",
+            "https://user:pw@ntfy.sh", "https://ntfy.exämple.com",
+            "https://ntfy.xn--exmple-cua.com",
+        ]
+        for raw in hostile {
+            #expect(LidGuardPolicy.validateServer(raw) == .invalid, "\(raw) must not be accepted")
+        }
+        // And the general property over every row the table accepts.
+        for (raw, expected) in Self.acceptedServerFixtures {
+            guard case .valid(let origin) = LidGuardPolicy.validateServer(raw) else {
+                Issue.record("\(raw) should be accepted")
+                continue
+            }
+            #expect(origin == expected)
+            #expect(origin.hasPrefix("https://"))
+            let authority = origin.dropFirst("https://".count)
+            for forbidden in ["%", "/", "?", "#", "@", "[", "]", " ", "\\"] {
+                #expect(!authority.contains(forbidden),
+                        "'\(forbidden)' survived into the normalized origin '\(origin)'")
+            }
+        }
+    }
+
+    static let acceptedServerFixtures: [(String, String)] = [
+        ("https://ntfy.sh", "https://ntfy.sh"),
+        ("https://ntfy.sh/", "https://ntfy.sh"),
+        ("https://ntfy.example.com:8443", "https://ntfy.example.com:8443"),
+        ("https://192.168.1.10:8443", "https://192.168.1.10:8443"),
+        ("https://ntfy-2.internal_host.example.com:8443", "https://ntfy-2.internal_host.example.com:8443"),
+    ]
+
+    /// The host allowlist itself (used by BOTH layers: the validator and the
+    /// sender's postcondition).
+    @Test func theHostAllowlistAcceptsOnlyPlainNames() {
+        for host in ["ntfy.sh", "a", "0", "A-Z_az-09", "ntfy.example.com", "192.168.1.10", "xn--exmple-cua.com"] {
+            #expect(LidGuardPolicy.isUsableServerHost(host), "'\(host)' is an ordinary host name")
+        }
+        for host in ["", "ntfy.sh/x", "ntfy.sh?x", "ntfy.sh#x", "ntfy.sh@x", "ntfy.sh%2F",
+                     "[::1]", "ntfy.sh:8443", "ntfy sh", "ntfy.exämple.com", "ntfy.sh\\x"] {
+            #expect(!LidGuardPolicy.isUsableServerHost(host), "'\(host)' must be refused")
+        }
+    }
+
+    @Test func anOverlongServerIsRejectedNotTruncated() {
+        let long = "https://" + String(repeating: "a", count: LidGuardTuning.maxServerLength) + ".example.com"
+        #expect(LidGuardPolicy.validateServer(long) == .invalid)
+    }
+
+    /// An unset server is the public instance, not an error.
+    @Test func anEmptyServerFallsBackToThePublicInstance() {
+        #expect(LidGuardPolicy.normalizedServer("") == LidGuardTuning.defaultNtfyServer)
+        #expect(LidGuardPolicy.normalizedServer("   ") == LidGuardTuning.defaultNtfyServer)
+        #expect(LidGuardPolicy.normalizedServer("http://ntfy.sh") == nil)
+        #expect(LidGuardTuning.defaultNtfyServer == "https://ntfy.sh")
+    }
+
+    // MARK: - Destination (the only constructor)
+
+    @Test func aDestinationNeedsBothHalvesToValidate() {
+        #expect(LidGuardPolicy.destination(server: "https://ntfy.sh", topic: "napcat-x")
+                == NtfyDestination(server: "https://ntfy.sh", topic: "napcat-x"))
+        // Empty server ⇒ default; the topic still decides.
+        #expect(LidGuardPolicy.destination(server: "", topic: "napcat-x")
+                == NtfyDestination(server: "https://ntfy.sh", topic: "napcat-x"))
+        #expect(LidGuardPolicy.destination(server: "https://ntfy.sh", topic: "") == nil)
+        #expect(LidGuardPolicy.destination(server: "https://ntfy.sh", topic: "bad/topic") == nil)
+        #expect(LidGuardPolicy.destination(server: "http://ntfy.sh", topic: "napcat-x") == nil)
+        // Normalization is applied on the way in.
+        #expect(LidGuardPolicy.destination(server: "https://ntfy.sh/", topic: "  napcat-x ")
+                == NtfyDestination(server: "https://ntfy.sh", topic: "napcat-x"))
+    }
+
+    @Test func anUnusableTopicLeavesTheFeatureInert() {
+        #expect(LidGuardPolicy.normalizedTopic("bad/topic") == nil)
+        #expect(LidGuardPolicy.armingState(
+            enabled: true, server: "https://ntfy.sh", topic: "bad/topic", primedAt: 1) == .needsTopic)
+        // …and so does an unusable SERVER, even with a perfect topic.
+        #expect(LidGuardPolicy.armingState(
+            enabled: true, server: "http://ntfy.sh", topic: "napcat-x", primedAt: 1) == .needsTopic)
     }
 
     // MARK: - Arming
 
-    @Test(arguments: [
-        (false, "+15551234567", 1.0, LidGuardArmingState.off),
-        (true, "", 1.0, .needsRecipient),
-        (true, "   ", 1.0, .needsRecipient),
-        (true, "+15551234567", 0.0, .needsTestSend),
-        (true, "+15551234567", 1.0, .armed),
-    ])
-    func armingStateTable(enabled: Bool, recipient: String, primedAt: Double, expected: LidGuardArmingState) {
-        #expect(LidGuardPolicy.armingState(enabled: enabled, recipient: recipient, primedAt: primedAt) == expected)
+    /// One arming row. A struct rather than a 5-tuple so the table stays
+    /// readable (and so the parameterization has a single argument type).
+    struct ArmingRow: Sendable {
+        let id: String
+        let enabled: Bool
+        let server: String
+        let topic: String
+        let primedAt: Double
+        let expected: LidGuardArmingState
+
+        init(
+            _ id: String,
+            enabled: Bool = true,
+            server: String = "https://ntfy.sh",
+            topic: String = "napcat-x",
+            primedAt: Double = 1,
+            expected: LidGuardArmingState
+        ) {
+            self.id = id
+            self.enabled = enabled
+            self.server = server
+            self.topic = topic
+            self.primedAt = primedAt
+            self.expected = expected
+        }
+    }
+
+    static let armingRows: [ArmingRow] = [
+        .init("A1 switched off", enabled: false, expected: .off),
+        .init("A2 no topic", topic: "", expected: .needsTopic),
+        .init("A3 blank topic", topic: "   ", expected: .needsTopic),
+        .init("A4 topic outside the grammar", topic: "bad topic", expected: .needsTopic),
+        .init("A5 unusable server blocks arming too", server: "notaserver", expected: .needsTopic),
+        .init("A6 never primed", primedAt: 0, expected: .needsTestSend),
+        .init("A7 fully configured", expected: .armed),
+        .init("A8 empty server means the public instance", server: "", expected: .armed),
+    ]
+
+    @Test(arguments: armingRows)
+    func armingStateTable(row: ArmingRow) {
+        #expect(LidGuardPolicy.armingState(
+            enabled: row.enabled,
+            server: row.server,
+            topic: row.topic,
+            primedAt: row.primedAt
+        ) == row.expected, "\(row.id)")
     }
 
     // MARK: - Message body (app-generated only)
@@ -201,10 +453,14 @@ struct LidGuardPolicyTests {
     }
 
     /// The body is a fixed template + the clock time + the COUNT. It must never
-    /// contain anything that could have come from a session.
+    /// contain anything that could have come from a session. The B4 channel
+    /// swap deliberately left this wording untouched.
     @Test(arguments: [0, 1, 2, 7])
     func lidAlertBodyIsTemplatePlusTimeAndCount(count: Int) {
         let body = LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: count), clockTime: "22:49")
+        #expect(body == "NapCat: this Mac started going to sleep at 22:49 while "
+                + LidGuardPolicy.taskPhrase(count)
+                + " still running, and Stay Awake is off.")
         #expect(body.contains("NapCat"))
         #expect(body.contains("22:49"))
         #expect(body.contains("Stay Awake is off"))
@@ -220,10 +476,12 @@ struct LidGuardPolicyTests {
         #expect(!body.contains("nil"))
     }
 
-    @Test func testMessageBodyIsSelfExplaining() {
+    @Test func testMessageBodyIsSelfExplainingAndNamesTheChannel() {
         let body = LidGuardPolicy.messageBody(kind: .test, clockTime: "09:05")
         #expect(body.contains("NapCat test message"))
         #expect(body.contains("09:05"))
+        #expect(body.contains("ntfy"))
+        #expect(!body.contains("Messages"), "no iMessage wording survives the channel swap")
     }
 
     /// The set of message kinds is CLOSED and carries no free text: the only
@@ -242,70 +500,86 @@ struct LidGuardPolicyTests {
 
     // MARK: - Send-outcome classifier (fixtures)
 
-    @Test func exitZeroIsHandedToMessagesNotSent() {
-        #expect(LidGuardPolicy.classifySend(exitStatus: 0, stderr: "") == .handedToMessages)
+    @Test(arguments: [200, 201, 202, 204, 299])
+    func twoHundredsAreAcceptedNotDelivered(status: Int) {
+        #expect(LidGuardPolicy.classifySend(statusCode: status, transportErrorCode: nil) == .accepted)
     }
 
+    @Test(arguments: [400, 401, 403, 404, 413, 429, 500, 502, 503])
+    func nonSuccessStatusesAreRejectedWithTheirCode(status: Int) {
+        #expect(LidGuardPolicy.classifySend(statusCode: status, transportErrorCode: nil) == .rejected(status))
+    }
+
+    /// A transport error whose meaning is "we never learned the answer" must
+    /// not be reported as a failure — the POST may well have left the Mac
+    /// before it went down.
     @Test(arguments: [
-        "execution error: Not authorized to send Apple events to Messages. (-1743)",
-        "errAEEventNotPermitted",
-        "execution error: Messages got an error: AppleEvent timed out. (-1712)",
+        URLError.timedOut.rawValue,
+        URLError.cancelled.rawValue,
+        URLError.networkConnectionLost.rawValue,
     ])
-    func permissionFailuresAreClassifiedAsDenied(stderr: String) {
-        #expect(LidGuardPolicy.classifySend(exitStatus: 1, stderr: stderr) == .permissionDenied)
+    func unknownOutcomeTransportErrorsAreUnconfirmed(code: Int) {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code) == .timedOutUnconfirmed)
+        // Even with a status on the response, "we did not get an answer" wins.
+        #expect(LidGuardPolicy.classifySend(statusCode: 200, transportErrorCode: code) == .timedOutUnconfirmed)
     }
 
-    @Test func stillRunningAtTheBudgetIsUnconfirmed() {
-        #expect(LidGuardPolicy.classifySend(exitStatus: nil, stderr: "") == .timedOutUnconfirmed)
-        // Even with denial text on stderr, "did not exit" wins — we cannot
-        // claim to know the outcome.
-        #expect(LidGuardPolicy.classifySend(exitStatus: nil, stderr: "(-1743)") == .timedOutUnconfirmed)
+    @Test func otherTransportErrorsAreNamedFromAFixedVocabulary() {
+        #expect(LidGuardPolicy.classifySend(
+            statusCode: nil, transportErrorCode: URLError.notConnectedToInternet.rawValue)
+            == .sendFailed("this Mac had no internet connection"))
+        #expect(LidGuardPolicy.classifySend(
+            statusCode: nil, transportErrorCode: URLError.cannotFindHost.rawValue)
+            == .sendFailed("the ntfy server name could not be resolved"))
+        #expect(LidGuardPolicy.classifySend(
+            statusCode: nil, transportErrorCode: URLError.secureConnectionFailed.rawValue)
+            == .sendFailed("the secure connection to the ntfy server failed"))
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: -424_242)
+            == .sendFailed("the request failed (network error -424242)"))
     }
 
-    @Test func anythingElseIsASendFailure() {
-        #expect(LidGuardPolicy.classifySend(exitStatus: 1, stderr: "  syntax error: Expected end of line. (-2741)  ")
-                == .sendFailed("syntax error: Expected end of line. (-2741)"))
-        #expect(LidGuardPolicy.classifySend(exitStatus: 2, stderr: "") == .sendFailed("the send helper exited 2"))
+    @Test func noResponseAndNoErrorIsAFailureNotASuccess() {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: nil)
+                == .sendFailed("the server sent no HTTP response"))
     }
 
-    // MARK: - Outcome log split (recipient PII must never reach a .public line)
+    /// SECURITY: the failure detail must be drawn from a fixed vocabulary, not
+    /// from `error.localizedDescription`, because that string can carry the
+    /// failing URL — and the URL contains the topic, which is the password.
+    @Test func noClassifiedFailureDetailCanEverCarryAUrlOrTopic() {
+        let codes = [-1, 0, -999, -1001, -1003, -1004, -1005, -1009, -1200, -1202, -424_242]
+        for code in codes {
+            let outcome = LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code)
+            guard case .sendFailed(let detail) = outcome else { continue }
+            for forbidden in ["http", "://", "ntfy.sh/", "/napcat"] {
+                #expect(!detail.lowercased().contains(forbidden),
+                        "the detail for \(code) must never look like a URL: \(detail)")
+            }
+        }
+        for code in codes {
+            let name = LidGuardPolicy.transportErrorName(code)
+            #expect(!name.contains("://"))
+        }
+    }
 
-    /// The free-form `sendFailed` detail is raw osascript stderr, which can echo
-    /// the recipient. The split locks that detail into the PRIVATE field while
-    /// the public category stays free of it — so the logging path can route the
-    /// detail through `privacy: .private`.
+    // MARK: - Outcome log split (the topic must never reach a .public line)
+
+    /// The free-form `sendFailed` detail is the only variable text a log line
+    /// carries. The split locks it into the PRIVATE field while the public
+    /// category stays free of it, so the logging path can route it through
+    /// `privacy: .private`. HTTP status codes are not secrets and therefore may
+    /// ride in the public category.
     @Test func outcomeLogSplitKeepsTheFreeFormDetailOutOfThePublicCategory() {
-        for outcome in [MessageSendOutcome.handedToMessages, .permissionDenied, .timedOutUnconfirmed] {
+        for outcome in [MessageSendOutcome.accepted, .timedOutUnconfirmed, .rejected(403)] {
             let fields = LidGuardPolicy.outcomeLogFields(outcome)
             #expect(fields.privateDetail == nil, "\(outcome) carries no free-form detail")
             #expect(!fields.publicCategory.isEmpty)
         }
-        let fields = LidGuardPolicy.outcomeLogFields(.sendFailed("error: +15551234567 not authorized"))
+        #expect(LidGuardPolicy.outcomeLogFields(.rejected(403)).publicCategory == "rejected(HTTP 403)")
+        let fields = LidGuardPolicy.outcomeLogFields(.sendFailed("the ntfy server refused the connection"))
         #expect(fields.publicCategory == "sendFailed")
-        #expect(fields.privateDetail == "error: +15551234567 not authorized")
-        // The recipient echoed in stderr must never leak into the public category.
-        #expect(!fields.publicCategory.contains("+15551234567"))
-    }
-
-    // MARK: - Automation permission mapping
-
-    @Test(arguments: [
-        (Int32(0), AutomationPermission.granted),
-        (-1743, .denied),
-        (-1744, .wouldRequireConsent),
-        (-600, .targetNotRunning),
-        (-42, .unknown(-42)),
-    ])
-    func automationStatusMapping(status: Int32, expected: AutomationPermission) {
-        #expect(LidGuardPolicy.automationPermission(fromStatus: status) == expected)
-    }
-
-    /// "Messages is not running" must never be mistaken for a verdict.
-    @Test func targetNotRunningIsNeitherGrantedNorDenied() {
-        let permission = LidGuardPolicy.automationPermission(fromStatus: LidGuardPolicy.procNotFoundStatus)
-        #expect(permission != .granted)
-        #expect(permission != .denied)
-        #expect(permission == .targetNotRunning)
+        #expect(fields.privateDetail == "the ntfy server refused the connection")
+        #expect(!fields.publicCategory.contains("ntfy server"))
     }
 
     // MARK: - Wiring predicate

@@ -20,7 +20,6 @@ all: smc
 	cp $(BINARY) $(APP)/Contents/MacOS/$(APP_NAME)
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	install -m 0755 Resources/napcat-watchdog.sh $(APP)/Contents/Resources/napcat-watchdog.sh
-	install -m 0644 Resources/napcat-send-imessage.applescript $(APP)/Contents/Resources/napcat-send-imessage.applescript
 	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
 	codesign --force -s - $(APP)
 
