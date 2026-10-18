@@ -12,7 +12,7 @@ import SwiftUI
 /// Details — `TuckedLine` / `SurfacedLine` split every Details-home line on
 /// `MenuStateModel.placement(ofDetailsLine:)`, so each renders exactly once.
 ///
-/// The layout variant (A/B/C, MenuPanelVariants.swift) is a curation-only
+/// The layout variant (A/C, MenuPanelVariants.swift) is a curation-only
 /// scaffold; every variant composes the shared components below from the SAME
 /// model outputs. Views decide arrangement only — never what is a warning.
 struct MenuPanelView: View {
@@ -22,7 +22,6 @@ struct MenuPanelView: View {
         Group {
             switch model.panelStyle {
             case .a: QuietRowsPanel(model: model)
-            case .b: GroupedCardsPanel(model: model)
             case .c: StatusHeroPanel(model: model)
             }
         }
@@ -30,17 +29,41 @@ struct MenuPanelView: View {
     }
 }
 
-/// Shared geometry: 4/8/12 spacing rhythm, a fixed 20pt symbol column.
+/// Shared geometry: 4/8/12 spacing rhythm, a fixed symbol column.
+///
+/// Density pass (curation round 1, 2026-10-18 — "the rows feel crowded"):
+/// leading symbols 13pt → 16pt in a column widened 20 → 28pt, and feature rows
+/// 8 → 12pt apart, while a row's own caption / slider / surfaced lines stay
+/// `tight` under it (`PanelFeature`).
 enum PanelMetrics {
     static let width: CGFloat = 300
     static let tight: CGFloat = 4
     static let regular: CGFloat = 8
     static let loose: CGFloat = 12
-    static let symbolColumn: CGFloat = 20
+    /// Point size of the leading feature symbols (~1.25× the 13pt body text).
+    static let symbolSize: CGFloat = 16
+    /// Holds the widest leading glyph at `symbolSize` (battery.75percent,
+    /// 28pt) without overflow — canary-tested in MenuPanelPresentationTests.
+    static let symbolColumn: CGFloat = 28
     /// Captions under a symbol row align with the row title.
     static let titleIndent: CGFloat = symbolColumn + regular
-    static let cardRadius: CGFloat = 8
-    static let cardPadding: CGFloat = 10
+    /// Gap between feature blocks in the variants' main column.
+    static let rowSpacing: CGFloat = loose
+}
+
+/// One feature block: a control row plus whatever hangs under it (caption,
+/// slider, surfaced problem lines), held `tight` together so the larger
+/// `rowSpacing` reads as the gap BETWEEN features. Only wrap content whose
+/// first view is unconditional: an empty VStack still takes a full stack gap
+/// (measured), whereas an empty conditional view takes none.
+struct PanelFeature<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            content()
+        }
+    }
 }
 
 // MARK: - Severity lines
@@ -148,35 +171,25 @@ struct SurfacedLaunchAtLogin: View {
 
 // MARK: - Rows
 
-/// One control row: optional leading symbol in the fixed 20pt column (A, C),
-/// title (+ B's nominal subtitle), trailing control.
+/// One control row: leading symbol in the fixed symbol column, title,
+/// trailing control.
 struct PanelRow<Trailing: View>: View {
-    let symbol: String?
+    let symbol: String
     let title: String
-    var subtitle: String?
     @ViewBuilder var trailing: () -> Trailing
 
     var body: some View {
         HStack(alignment: .center, spacing: PanelMetrics.regular) {
-            if let symbol {
-                Image(systemName: symbol)
-                    .foregroundStyle(.secondary)
-                    .frame(width: PanelMetrics.symbolColumn)
-                    .accessibilityHidden(true)
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .layoutPriority(1)
+            Image(systemName: symbol)
+                .font(.system(size: PanelMetrics.symbolSize))
+                .foregroundStyle(.secondary)
+                .frame(width: PanelMetrics.symbolColumn)
+                .accessibilityHidden(true)
+            Text(title)
+                .layoutPriority(1)
             Spacer(minLength: PanelMetrics.regular)
-            // Controls (not text) keep their ideal size, so a long subtitle
-            // wraps instead of crushing the button.
+            // Controls (not text) keep their ideal size, so the title gives way
+            // instead of crushing the button.
             HStack(spacing: PanelMetrics.regular) { trailing() }
                 .fixedSize()
         }
@@ -187,8 +200,6 @@ struct PanelRow<Trailing: View>: View {
 /// leading column plus the "where to undo it" hint.
 struct ClaudeStatusRow: View {
     @ObservedObject var model: MenuStateModel
-    /// A/C draw the symbol column; B rows have no column.
-    var showsSymbolColumn: Bool
 
     var body: some View {
         let status = model.claudeStatus
@@ -196,10 +207,12 @@ struct ClaudeStatusRow: View {
             HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.regular) {
                 if let warning = MenuStateModel.severitySymbol(status.severity) {
                     Image(systemName: warning)
+                        .font(.system(size: PanelMetrics.symbolSize))
                         .foregroundStyle(PanelSeverityTint.color(status.severity))
-                        .frame(width: showsSymbolColumn ? PanelMetrics.symbolColumn : nil)
-                } else if showsSymbolColumn {
+                        .frame(width: PanelMetrics.symbolColumn)
+                } else {
                     Image(systemName: PanelSymbol.claude)
+                        .font(.system(size: PanelMetrics.symbolSize))
                         .foregroundStyle(.secondary)
                         .frame(width: PanelMetrics.symbolColumn)
                 }
@@ -214,7 +227,7 @@ struct ClaudeStatusRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, showsSymbolColumn ? PanelMetrics.titleIndent : 0)
+                    .padding(.leading, PanelMetrics.titleIndent)
             }
         }
     }
@@ -335,12 +348,17 @@ struct LaunchAtLoginRow: View {
     }
 }
 
-struct QuitFooter: View {
+/// The panel's LAST row in every variant (curation round 1, 2026-10-18): the
+/// ONE Details disclosure on the left, Quit on the right. Expanded Details
+/// content renders ABOVE this row, so the footer — and Quit — always close
+/// the panel.
+struct PanelFooterRow: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        HStack {
-            Spacer()
+        HStack(alignment: .center, spacing: PanelMetrics.regular) {
+            PanelDetailsDisclosure(model: model)
+            Spacer(minLength: PanelMetrics.regular)
             Button("Quit NapCat") { model.quit() }
                 .controlSize(.small)
                 .keyboardShortcut("q", modifiers: .command)
@@ -435,13 +453,14 @@ struct BatteryHeader: View {
 
 // MARK: - The ONE "Details" disclosure (tier 3)
 
-/// Header row of the single disclosure. Toggling is pure model state (never
-/// dismisses the menu); the height change snaps (MenuPanelHostingView) and
-/// only the chevron turns — ≤150ms ease-out, none under Reduce Motion.
+/// The single disclosure control (chevron + "Details" + badge), placed by
+/// `PanelFooterRow` on the left of the panel's last row. Toggling is pure
+/// model state (never dismisses the menu); the height change snaps
+/// (MenuPanelHostingView) and only the chevron turns — ≤150ms ease-out, none
+/// under Reduce Motion. The content opens ABOVE the footer, so the expanded
+/// chevron points UP at it (right ▸ collapsed, up ▴ expanded).
 struct PanelDetailsDisclosure: View {
     @ObservedObject var model: MenuStateModel
-    /// A/C put the chevron in the 20pt symbol column.
-    var usesSymbolColumn: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -450,20 +469,20 @@ struct PanelDetailsDisclosure: View {
         Button {
             model.setDetailsExpanded(!expanded)
         } label: {
+            // Hugs its content: the footer's Spacer separates it from Quit.
             HStack(spacing: PanelMetrics.regular) {
                 Image(systemName: PanelSymbol.disclosure)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .rotationEffect(.degrees(expanded ? -90 : 0))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
-                    .frame(width: usesSymbolColumn ? PanelMetrics.symbolColumn : nil)
+                    .frame(width: PanelMetrics.symbolColumn)
                 Text("Details")
                 if let symbol = MenuStateModel.severitySymbol(badge) {
                     Image(systemName: symbol)
                         .font(.caption)
                         .foregroundStyle(PanelSeverityTint.color(badge))
                 }
-                Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }
@@ -483,7 +502,7 @@ struct PanelDetailsDisclosure: View {
 struct PanelDetailsContent: View {
     @ObservedObject var model: MenuStateModel
     /// Variant C keeps the nominal Claude status here (its hero line already
-    /// says "Claude running"); A and B show it at top level always.
+    /// says "Claude running"); A shows it at top level always.
     var includesClaudeStatus: Bool
 
     var body: some View {
@@ -576,7 +595,7 @@ struct DetailsGroupHeader: View {
 }
 
 /// CURATION-ONLY SCAFFOLD (remove at design freeze with MenuPanelStyle):
-/// cycles the layout variant A → B → C, persisted to `menuPanelStyle`.
+/// toggles the layout variant A ↔ C, persisted to `menuPanelStyle`.
 struct PanelStylePreviewRow: View {
     @ObservedObject var model: MenuStateModel
 
@@ -597,13 +616,10 @@ struct PanelStylePreviewRow: View {
 
 struct DebugBatterySection: View {
     @ObservedObject var model: MenuStateModel
-    var showsTitle = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.tight) {
-            if showsTitle {
-                DetailsGroupHeader(title: "Debug — Simulated Battery")
-            }
+            DetailsGroupHeader(title: "Debug — Simulated Battery")
             HStack {
                 Slider(
                     value: Binding(

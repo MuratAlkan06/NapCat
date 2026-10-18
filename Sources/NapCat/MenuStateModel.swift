@@ -12,19 +12,21 @@ import SwiftUI
 /// menu open (no restart). At freeze: delete the losing variants, this enum,
 /// the "Panel style (preview)" row and the key (moving it to
 /// `RetiredDefaultsKey` so it is cleaned out of the plist).
+///
+/// Curation round 1 (2026-10-18) SCRAPPED variant B "Grouped Cards": the
+/// user narrowed the choice to A vs C. A stored "b" is no longer a case, so it
+/// resolves to the default like any other junk value.
 enum MenuPanelStyle: String, CaseIterable, Sendable {
     /// "Quiet Rows" — one column, symbol + title + trailing control, captions
     /// only for non-nominal states.
     case a
-    /// "Grouped Cards" — Power / Claude / System inset containers.
-    case b
     /// "Status Hero" — hero gauge + activity line, compact rows below.
     case c
 
-    static let `default`: MenuPanelStyle = .b
+    static let `default`: MenuPanelStyle = .a
 
-    /// Unset, junk, or unknown stored values read back as the default — a
-    /// hand-edited plist can never break the panel.
+    /// Unset, junk, unknown, or retired ("b") stored values read back as the
+    /// default — a hand-edited or stale plist can never break the panel.
     static func resolve(_ stored: Any?) -> MenuPanelStyle {
         guard let raw = stored as? String,
               let style = MenuPanelStyle(rawValue: raw.trimmingCharacters(in: .whitespaces).lowercased())
@@ -32,11 +34,10 @@ enum MenuPanelStyle: String, CaseIterable, Sendable {
         return style
     }
 
-    /// The preview row cycles A → B → C → A.
+    /// The preview row toggles A ↔ C.
     var next: MenuPanelStyle {
         switch self {
-        case .a: return .b
-        case .b: return .c
+        case .a: return .c
         case .c: return .a
         }
     }
@@ -44,14 +45,9 @@ enum MenuPanelStyle: String, CaseIterable, Sendable {
     var title: String {
         switch self {
         case .a: return "A — Quiet Rows"
-        case .b: return "B — Grouped Cards"
         case .c: return "C — Status Hero"
         }
     }
-
-    /// B shows explanatory captions for nominal states too; A and C render a
-    /// caption only when something is NOT nominal.
-    var showsNominalCaptions: Bool { self == .b }
 }
 
 /// How loud a panel line is. Decided ONLY by the pure mappings below — the
@@ -295,7 +291,7 @@ final class MenuStateModel: ObservableObject {
         panelStyle = next
     }
 
-    // MARK: Panel presentation — EVERY variant renders these, so A/B/C are
+    // MARK: Panel presentation — EVERY variant renders these, so A and C are
     // composed from identical outputs (thin wrappers over the pure mappings).
 
     var stayAwakeCaption: PanelLine? { Self.stayAwakeCaption(forObserved: stayAwakeObserved) }

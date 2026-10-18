@@ -39,9 +39,10 @@ enum DefaultsKey {
 
     // MARK: Menu-panel redesign — CURATION-ONLY scaffold (2026-10-18)
 
-    /// Which panel layout variant renders ("a" / "b" / "c"; unset or junk ⇒
-    /// "b"). Re-read on every menu open. Temporary: removed at design freeze,
-    /// when it moves to `RetiredDefaultsKey` so it leaves the plist.
+    /// Which panel layout variant renders ("a" / "c"; unset, junk, or the
+    /// scrapped "b" ⇒ "a" — curation round 1). Re-read on every menu open.
+    /// Temporary: removed at design freeze, when it moves to
+    /// `RetiredDefaultsKey` so it leaves the plist.
     static let menuPanelStyle = "menuPanelStyle"
 }
 

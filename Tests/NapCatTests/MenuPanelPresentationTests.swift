@@ -289,6 +289,27 @@ struct MenuPanelPresentationTests {
         }
     }
 
+    /// Density pass (curation round 1): every glyph that can sit in the
+    /// leading symbol column — the feature symbols, plus the severity symbols
+    /// that replace the Claude glyph while it is not nominal — fits the column
+    /// at the panel's symbol size, so no symbol crowds into the gap before its
+    /// title. OS-drift canary: a wider glyph in a future macOS fails here.
+    @Test func leadingSymbolsFitTheSymbolColumn() throws {
+        let config = NSImage.SymbolConfiguration(pointSize: PanelMetrics.symbolSize, weight: .regular)
+        let leading = [PanelSymbol.stayAwake, PanelSymbol.lockScreen, PanelSymbol.chargeLimit,
+                       PanelSymbol.claude, PanelSymbol.lidAlert, PanelSymbol.info, PanelSymbol.warning,
+                       PanelSymbol.error]
+        for name in leading {
+            let image = try #require(NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(config), "\(name) does not resolve")
+            #expect(image.size.width <= PanelMetrics.symbolColumn,
+                    "\(name) is \(image.size.width)pt wide at \(PanelMetrics.symbolSize)pt — wider than the \(PanelMetrics.symbolColumn)pt column")
+        }
+        #expect(PanelMetrics.symbolSize > 13, "leading symbols are larger than the 13pt body text")
+        #expect(PanelMetrics.rowSpacing > PanelMetrics.tight, "rows breathe more than a row and its caption")
+        #expect(PanelMetrics.titleIndent == PanelMetrics.symbolColumn + PanelMetrics.regular)
+    }
+
     // MARK: - Variant C hero line
 
     @Test func heroActivityLineShowsActiveFactsOnly() {
@@ -322,25 +343,28 @@ struct MenuPanelPresentationTests {
 
     // MARK: - MenuPanelStyle (curation scaffold)
 
+    /// Curation round 1 scrapped B: unset, junk, non-string AND the retired
+    /// "b" (which a live plist may still hold) all fall back to A.
     @Test func panelStyleResolvesStoredValuesSafely() {
-        #expect(MenuPanelStyle.default == .b)
-        #expect(MenuPanelStyle.resolve(nil) == .b)
+        #expect(MenuPanelStyle.default == .a)
+        #expect(MenuPanelStyle.resolve(nil) == .a, "unset ⇒ default")
         #expect(MenuPanelStyle.resolve("a") == .a)
         #expect(MenuPanelStyle.resolve("C") == .c)
-        #expect(MenuPanelStyle.resolve(" b ") == .b)
-        #expect(MenuPanelStyle.resolve("z") == .b, "unknown ⇒ default")
-        #expect(MenuPanelStyle.resolve(42) == .b, "non-string ⇒ default")
-        #expect(MenuPanelStyle.allCases.map(\.rawValue) == ["a", "b", "c"], "raw values are the stored strings")
+        #expect(MenuPanelStyle.resolve(" c ") == .c)
+        #expect(MenuPanelStyle.resolve("b") == .a, "scrapped variant B ⇒ default")
+        #expect(MenuPanelStyle.resolve(" B ") == .a, "scrapped variant B, any spelling ⇒ default")
+        #expect(MenuPanelStyle.resolve("z") == .a, "unknown ⇒ default")
+        #expect(MenuPanelStyle.resolve(42) == .a, "non-string ⇒ default")
+        #expect(MenuPanelStyle.allCases.map(\.rawValue) == ["a", "c"], "raw values are the stored strings")
     }
 
-    @Test func panelStyleCyclesThroughEveryVariant() {
-        #expect(MenuPanelStyle.a.next == .b)
-        #expect(MenuPanelStyle.b.next == .c)
+    @Test func panelStyleTogglesBetweenAAndC() {
+        #expect(MenuPanelStyle.a.next == .c)
         #expect(MenuPanelStyle.c.next == .a)
-        #expect(Set(MenuPanelStyle.allCases.map(\.title)).count == 3)
-        #expect(MenuPanelStyle.b.showsNominalCaptions)
-        #expect(!MenuPanelStyle.a.showsNominalCaptions)
-        #expect(!MenuPanelStyle.c.showsNominalCaptions)
+        for style in MenuPanelStyle.allCases {
+            #expect(style.next != style && style.next.next == style, "the preview button is a two-way toggle")
+        }
+        #expect(Set(MenuPanelStyle.allCases.map(\.title)).count == MenuPanelStyle.allCases.count)
     }
 
     // MARK: - Model panel state
@@ -365,17 +389,25 @@ struct MenuPanelPresentationTests {
     /// every menu open) — an external `defaults write` needs no restart.
     @Test @MainActor func panelStyleIsReReadOnRefreshNoRestart() {
         withModel { model, defaults, _ in
-            #expect(model.panelStyle == .b)
-            defaults.set("a", forKey: DefaultsKey.menuPanelStyle)
-            #expect(model.panelStyle == .b, "picked up on refresh, not by magic")
-            model.refresh()
             #expect(model.panelStyle == .a)
+            defaults.set("c", forKey: DefaultsKey.menuPanelStyle)
+            #expect(model.panelStyle == .a, "picked up on refresh, not by magic")
+            model.refresh()
+            #expect(model.panelStyle == .c)
             defaults.set("junk", forKey: DefaultsKey.menuPanelStyle)
             model.refresh()
-            #expect(model.panelStyle == .b)
+            #expect(model.panelStyle == .a)
+            defaults.set("c", forKey: DefaultsKey.menuPanelStyle)
+            model.refresh()
+            #expect(model.panelStyle == .c)
+            // The scrapped variant, as a pre-round-1 plist may still store it.
+            defaults.set("b", forKey: DefaultsKey.menuPanelStyle)
+            model.refresh()
+            #expect(model.panelStyle == .a)
         }
     }
 
+    /// The preview button toggles A ↔ C and persists each choice.
     @Test @MainActor func cyclingPersistsTheStyle() {
         withModel { model, defaults, _ in
             model.cyclePanelStyle()
@@ -383,6 +415,9 @@ struct MenuPanelPresentationTests {
             #expect(defaults.string(forKey: DefaultsKey.menuPanelStyle) == "c")
             model.refresh()
             #expect(model.panelStyle == .c, "survives the next open")
+            model.cyclePanelStyle()
+            #expect(model.panelStyle == .a, "back to A — there is no third variant")
+            #expect(defaults.string(forKey: DefaultsKey.menuPanelStyle) == "a")
         }
     }
 

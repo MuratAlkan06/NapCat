@@ -9,14 +9,16 @@ import Testing
 /// cannot be driven headlessly, so the pure mappings are unit-tested in
 /// MenuPanelPresentationTests and their USE is locked here):
 /// the topic never reaches a view, every variant gives problem lines a
-/// top-level home, Details only ever tucks NOMINAL lines, Pause detection
+/// top-level home, the ONE disclosure shares the last row with Quit
+/// (curation round 1), Details only ever tucks NOMINAL lines, Pause detection
 /// lives in Details (F3), motion is gated on Reduce Motion, and colors are
 /// system/semantic only.
 struct MenuPanelStructureTests {
     /// Every SwiftUI view file of the panel. A new view file must be added
     /// here AND to the LidGuard / ClaudeDetection scanned-file sets.
     static let viewFiles = ["MenuPanelView.swift", "MenuPanelVariants.swift"]
-    static let variants = ["QuietRowsPanel", "GroupedCardsPanel", "StatusHeroPanel"]
+    /// Curation round 1 (2026-10-18) scrapped B "Grouped Cards".
+    static let variants = ["QuietRowsPanel", "StatusHeroPanel"]
 
     static func code(_ file: String) throws -> String {
         LidGuardStructureTests.codeOnly(try String(
@@ -66,16 +68,56 @@ struct MenuPanelStructureTests {
 
     /// Every variant must render the three surfaced-line components (the
     /// top-level home of every Details line that can be a problem) plus the
-    /// one disclosure, its content, and the always-visible Quit footer.
+    /// Details content and the ONE footer row that carries the disclosure and
+    /// the always-visible Quit.
     @Test func everyVariantGivesProblemLinesATopLevelHome() throws {
         let source = try Self.code("MenuPanelVariants.swift")
         for variant in Self.variants {
             let body = try #require(Self.structChunk(variant, in: source), "\(variant) not found — keep this lock updated")
             for component in ["ClaudeSurfacedLines(", "LidAlertSurfacedLines(", "SurfacedLaunchAtLogin(",
-                              "PanelDetailsDisclosure(", "PanelDetailsContent(", "QuitFooter("] {
+                              "PanelDetailsContent(", "PanelFooterRow("] {
                 #expect(body.contains(component), "\(variant) is missing \(component)")
             }
-            #expect(Self.occurrences(of: "PanelDetailsDisclosure(", in: body) == 1, "\(variant): ONE disclosure")
+            #expect(Self.occurrences(of: "PanelFooterRow(", in: body) == 1, "\(variant): ONE footer row")
+            #expect(Self.occurrences(of: "PanelDetailsContent(", in: body) == 1, "\(variant): ONE Details content")
+        }
+        // No variant renders a disclosure of its own — the footer row is the
+        // only home, so every variant has exactly ONE disclosure.
+        #expect(!source.contains("PanelDetailsDisclosure("), "a variant renders a second disclosure")
+    }
+
+    /// Curation round 1 (2026-10-18): Details sits on the LEFT of the panel's
+    /// last row with Quit on the RIGHT. The footer holds the ONLY disclosure
+    /// and the ONLY Quit button in the panel, and in every variant it is the
+    /// LAST thing — expanded Details content (and a surfaced Launch at Login)
+    /// render above it, so Quit can never be pushed out of view.
+    @Test func theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast() throws {
+        let views = try Self.allViewCode()
+        #expect(Self.occurrences(of: "PanelDetailsDisclosure(", in: views) == 1, "exactly ONE disclosure in the panel")
+        #expect(Self.occurrences(of: "Button(\"Quit NapCat\")", in: views) == 1, "exactly ONE Quit button")
+        let footer = try #require(Self.structChunk("PanelFooterRow", in: try Self.code("MenuPanelView.swift")))
+        let disclosure = try #require(footer.range(of: "PanelDetailsDisclosure("), "the disclosure lives in the footer")
+        let spacer = try #require(footer.range(of: "Spacer("))
+        let quit = try #require(footer.range(of: "Button(\"Quit NapCat\")"), "Quit lives in the footer")
+        #expect(footer.contains("HStack("), "one row")
+        #expect(disclosure.lowerBound < spacer.lowerBound && spacer.lowerBound < quit.lowerBound,
+                "Details on the left, Spacer, Quit on the right")
+        #expect(footer.contains(".keyboardShortcut(\"q\", modifiers: .command)"))
+
+        let source = try Self.code("MenuPanelVariants.swift")
+        for variant in Self.variants {
+            let body = try #require(Self.structChunk(variant, in: source))
+            let footerCall = try #require(body.range(of: "PanelFooterRow(model: model)"), "\(variant) has no footer row")
+            for above in ["PanelDetailsContent(", "SurfacedLaunchAtLogin("] {
+                let position = try #require(body.range(of: above), "\(variant) is missing \(above)")
+                #expect(position.lowerBound < footerCall.lowerBound, "\(variant): \(above) must render ABOVE the footer")
+            }
+            // Nothing follows the footer inside the main column: only the
+            // closing brace before the column's own modifiers.
+            let tail = body[footerCall.upperBound...]
+            let beforeModifiers = tail.range(of: ".padding(").map { tail[..<$0.lowerBound] } ?? tail
+            #expect(beforeModifiers.trimmingCharacters(in: .whitespacesAndNewlines) == "}",
+                    "\(variant): the footer row must be the panel's last row")
         }
     }
 

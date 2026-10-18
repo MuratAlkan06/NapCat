@@ -1,13 +1,16 @@
 import SwiftUI
 
-// The three layout variants of the menu panel — CURATION-ONLY SCAFFOLD
+// The layout variants of the menu panel — CURATION-ONLY SCAFFOLD
 // (2026-10-18, PLAN.md "UI Redesign — Menu Panel (variant exploration)").
 // Each arranges the SAME shared components (MenuPanelView.swift) and therefore
 // renders identical MenuStateModel outputs; none of them decides what is a
 // warning. Every variant MUST include the three surfaced-line components
 // (`ClaudeSurfacedLines`, `LidAlertSurfacedLines`, `SurfacedLaunchAtLogin`) so
-// that a non-nominal Details line always has a top-level home (lint-locked in
-// MenuPanelStructureTests). At design freeze, keep one and delete the rest.
+// that a non-nominal Details line always has a top-level home, and must END
+// with `PanelFooterRow` (the one Details disclosure + Quit), with expanded
+// Details content above it (lint-locked in MenuPanelStructureTests).
+// Curation round 1 scrapped variant B "Grouped Cards"; at design freeze, keep
+// one of A / C and delete the other.
 
 // MARK: - A — Quiet Rows
 
@@ -17,46 +20,56 @@ struct QuietRowsPanel: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PanelMetrics.regular) {
+        VStack(alignment: .leading, spacing: PanelMetrics.rowSpacing) {
             BatteryHeader(model: model)
             Divider()
 
-            PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
-                StayAwakeToggle(model: model)
+            PanelFeature {
+                PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
+                    StayAwakeToggle(model: model)
+                }
+                indentedCaption(model.stayAwakeCaption)
             }
-            indentedCaption(model.stayAwakeCaption)
-            PanelRow(symbol: PanelSymbol.lockScreen, title: "Lock Screen") {
-                LockScreenButton(model: model)
+            PanelFeature {
+                PanelRow(symbol: PanelSymbol.lockScreen, title: "Lock Screen") {
+                    LockScreenButton(model: model)
+                }
+                indentedCaption(model.lockScreenCaption)
             }
-            indentedCaption(model.lockScreenCaption)
 
             // ADR §12: no battery → the charge-limit section is hidden
             // entirely, not disabled.
             if model.featureState != .hidden {
-                PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
-                    Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
-                        .font(.callout)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    ChargeLimitToggle(model: model)
+                PanelFeature {
+                    PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
+                        Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
+                            .font(.callout)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        ChargeLimitToggle(model: model)
+                    }
+                    ChargeLimitSlider(model: model)
+                        .padding(.leading, PanelMetrics.titleIndent)
+                    indentedCaption(model.chargeLimitCaption)
                 }
-                ChargeLimitSlider(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
-                indentedCaption(model.chargeLimitCaption)
             }
 
             // Track B (absent in debugBattery mode).
             if model.claudeDetectionVisible {
-                ClaudeStatusRow(model: model, showsSymbolColumn: true)
-                ClaudeSurfacedLines(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
-                if model.lidGuardVisible {
-                    PanelRow(symbol: PanelSymbol.lidAlert, title: "Lid alert") {
-                        LidAlertToggle(model: model)
-                    }
-                    indentedCaption(model.lidStatus)
-                    LidAlertSurfacedLines(model: model)
+                PanelFeature {
+                    ClaudeStatusRow(model: model)
+                    ClaudeSurfacedLines(model: model)
                         .padding(.leading, PanelMetrics.titleIndent)
+                }
+                if model.lidGuardVisible {
+                    PanelFeature {
+                        PanelRow(symbol: PanelSymbol.lidAlert, title: "Lid alert") {
+                            LidAlertToggle(model: model)
+                        }
+                        indentedCaption(model.lidStatus)
+                        LidAlertSurfacedLines(model: model)
+                            .padding(.leading, PanelMetrics.titleIndent)
+                    }
                 }
             }
 
@@ -66,14 +79,14 @@ struct QuietRowsPanel: View {
             }
 
             Divider()
-            PanelDetailsDisclosure(model: model, usesSymbolColumn: true)
+            // Details opens ABOVE the footer row, which always closes the panel.
             if model.detailsExpanded {
                 PanelDetailsContent(model: model, includesClaudeStatus: false)
                     .padding(.leading, PanelMetrics.titleIndent)
             }
             SurfacedLaunchAtLogin(model: model)
                 .padding(.leading, PanelMetrics.titleIndent)
-            QuitFooter(model: model)
+            PanelFooterRow(model: model)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, PanelMetrics.loose)
@@ -88,102 +101,6 @@ struct QuietRowsPanel: View {
     }
 }
 
-// MARK: - B — Grouped Cards (default)
-
-/// Three inset-grouped containers — Power, Claude, System — with caption
-/// section headers. The ONE Details disclosure heads the System card (it is
-/// also the only home in debugBattery mode, where the Claude card is absent).
-struct GroupedCardsPanel: View {
-    @ObservedObject var model: MenuStateModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: PanelMetrics.regular) {
-            PanelCard(title: "Power") {
-                BatteryHeader(model: model)
-                PanelRow(symbol: nil, title: "Stay Awake", subtitle: "Keep this Mac awake with the lid closed") {
-                    StayAwakeToggle(model: model)
-                }
-                caption(model.stayAwakeCaption)
-                PanelRow(symbol: nil, title: "Lock Screen", subtitle: "Lock now and turn the display off — the Mac keeps running") {
-                    LockScreenButton(model: model)
-                }
-                caption(model.lockScreenCaption)
-                if model.featureState != .hidden {
-                    PanelRow(symbol: nil, title: "Charge Limit", subtitle: MenuStateModel.limitLabel(limit: model.limit)) {
-                        ChargeLimitToggle(model: model)
-                    }
-                    ChargeLimitSlider(model: model)
-                    caption(model.chargeLimitCaption)
-                }
-            }
-
-            if model.claudeDetectionVisible {
-                PanelCard(title: "Claude") {
-                    ClaudeStatusRow(model: model, showsSymbolColumn: false)
-                    ClaudeSurfacedLines(model: model)
-                    if model.lidGuardVisible {
-                        PanelRow(symbol: nil, title: "Lid alert") {
-                            LidAlertToggle(model: model)
-                        }
-                        caption(model.lidStatus)
-                        LidAlertSurfacedLines(model: model)
-                    }
-                }
-            }
-
-            if model.debugControlsVisible {
-                PanelCard(title: "Debug — Simulated Battery") {
-                    DebugBatterySection(model: model, showsTitle: false)
-                }
-            }
-
-            PanelCard(title: "System") {
-                PanelDetailsDisclosure(model: model, usesSymbolColumn: false)
-                if model.detailsExpanded {
-                    PanelDetailsContent(model: model, includesClaudeStatus: false)
-                }
-                SurfacedLaunchAtLogin(model: model)
-                Divider()
-                QuitFooter(model: model)
-            }
-        }
-        .padding(PanelMetrics.cardPadding)
-    }
-
-    /// B shows nominal captions too; non-nominal ones get the icon.
-    @ViewBuilder private func caption(_ line: PanelLine?) -> some View {
-        if let line {
-            PanelCaptionLine(line: line, showsNominal: true)
-        }
-    }
-}
-
-/// Inset-grouped container: caption header above a rounded quaternary fill.
-struct PanelCard<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
-            Text(title)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-                .padding(.leading, PanelMetrics.tight)
-                .accessibilityAddTraits(.isHeader)
-            VStack(alignment: .leading, spacing: PanelMetrics.regular) {
-                content()
-            }
-            .padding(PanelMetrics.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: PanelMetrics.cardRadius, style: .continuous)
-                    .fill(.quaternary.opacity(0.5))
-            )
-        }
-    }
-}
-
 // MARK: - C — Status Hero
 
 /// A ~76pt hero (full-size gauge + charging line + the composed activity
@@ -194,44 +111,59 @@ struct StatusHeroPanel: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: PanelMetrics.regular) {
+        VStack(alignment: .leading, spacing: PanelMetrics.rowSpacing) {
             BatteryHeader(model: model, size: .hero)
             Divider()
 
-            PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
-                StayAwakeToggle(model: model)
-            }
-            indentedCaption(model.stayAwakeCaption)
-            PanelRow(symbol: PanelSymbol.lockScreen, title: "Lock Screen") {
-                LockScreenButton(model: model)
-            }
-            indentedCaption(model.lockScreenCaption)
-            if model.featureState != .hidden {
-                PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
-                    Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
-                        .font(.callout)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    ChargeLimitToggle(model: model)
+            PanelFeature {
+                PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
+                    StayAwakeToggle(model: model)
                 }
-                ChargeLimitSlider(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
-                indentedCaption(model.chargeLimitCaption)
+                indentedCaption(model.stayAwakeCaption)
+            }
+            PanelFeature {
+                PanelRow(symbol: PanelSymbol.lockScreen, title: "Lock Screen") {
+                    LockScreenButton(model: model)
+                }
+                indentedCaption(model.lockScreenCaption)
+            }
+            if model.featureState != .hidden {
+                PanelFeature {
+                    PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
+                        Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
+                            .font(.callout)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        ChargeLimitToggle(model: model)
+                    }
+                    ChargeLimitSlider(model: model)
+                        .padding(.leading, PanelMetrics.titleIndent)
+                    indentedCaption(model.chargeLimitCaption)
+                }
             }
 
             if model.claudeDetectionVisible {
+                // The status row is conditional here, so it only forms a
+                // feature block when present (an empty block would leave a gap).
                 if MenuStateModel.placement(ofDetailsLine: model.claudeStatus.severity) == .topLevel {
-                    ClaudeStatusRow(model: model, showsSymbolColumn: true)
-                }
-                ClaudeSurfacedLines(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
-                if model.lidGuardVisible {
-                    PanelRow(symbol: PanelSymbol.lidAlert, title: "Lid alert") {
-                        LidAlertToggle(model: model)
+                    PanelFeature {
+                        ClaudeStatusRow(model: model)
+                        ClaudeSurfacedLines(model: model)
+                            .padding(.leading, PanelMetrics.titleIndent)
                     }
-                    indentedCaption(model.lidStatus)
-                    LidAlertSurfacedLines(model: model)
+                } else {
+                    ClaudeSurfacedLines(model: model)
                         .padding(.leading, PanelMetrics.titleIndent)
+                }
+                if model.lidGuardVisible {
+                    PanelFeature {
+                        PanelRow(symbol: PanelSymbol.lidAlert, title: "Lid alert") {
+                            LidAlertToggle(model: model)
+                        }
+                        indentedCaption(model.lidStatus)
+                        LidAlertSurfacedLines(model: model)
+                            .padding(.leading, PanelMetrics.titleIndent)
+                    }
                 }
             }
 
@@ -241,14 +173,14 @@ struct StatusHeroPanel: View {
             }
 
             Divider()
-            PanelDetailsDisclosure(model: model, usesSymbolColumn: true)
+            // Details opens ABOVE the footer row, which always closes the panel.
             if model.detailsExpanded {
                 PanelDetailsContent(model: model, includesClaudeStatus: true)
                     .padding(.leading, PanelMetrics.titleIndent)
             }
             SurfacedLaunchAtLogin(model: model)
                 .padding(.leading, PanelMetrics.titleIndent)
-            QuitFooter(model: model)
+            PanelFooterRow(model: model)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, PanelMetrics.loose)
