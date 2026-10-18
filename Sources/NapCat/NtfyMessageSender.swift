@@ -10,7 +10,7 @@ import os
 ///
 ///     POST <server>/<topic>
 ///     Title: NapCat
-///     Priority: high
+///     Priority: urgent
 ///     Tags: zzz,warning
 ///
 ///     <app-generated body>

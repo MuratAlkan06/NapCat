@@ -49,7 +49,7 @@ struct NtfyMessageSenderTests {
         let request = try #require(NtfyMessageSender.makeRequest(destination: Self.destination, body: "hello"))
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Title") == "NapCat")
-        #expect(request.value(forHTTPHeaderField: "Priority") == "high")
+        #expect(request.value(forHTTPHeaderField: "Priority") == "urgent")
         #expect(request.value(forHTTPHeaderField: "Tags") == "zzz,warning")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "text/plain; charset=utf-8")
         #expect(request.timeoutInterval == LidGuardTuning.requestTimeout)
@@ -72,7 +72,9 @@ struct NtfyMessageSenderTests {
             #expect(!value.isEmpty)
         }
         #expect(LidGuardTuning.ntfyTagsValue == "zzz,warning")
-        #expect(LidGuardTuning.ntfyPriorityValue == "high")
+        // p5 — the only level ntfy iOS 1.8.0 turns into a critical alert that
+        // reaches a phone on silent (see LidGuardTuning.ntfyPriorityValue).
+        #expect(LidGuardTuning.ntfyPriorityValue == "urgent")
     }
 
     /// The body is the message, verbatim, UTF-8 encoded — no JSON wrapper, no

@@ -59,7 +59,14 @@ enum LidGuardTuning {
     static let ntfyTitleHeader = "Title"
     static let ntfyTitleValue = "NapCat"
     static let ntfyPriorityHeader = "Priority"
-    static let ntfyPriorityValue = "high"
+    /// `urgent` = ntfy priority 5 (alias `max`). ntfy iOS v1.8.0 delivers
+    /// priority-5 messages as iOS CRITICAL ALERTS that bypass silent mode and
+    /// Do Not Disturb — the user's phone is permanently on silent, so the lid
+    /// alert needs p5 to be heard at all the moment that app version ships.
+    /// On Android (and on iOS before 1.8.0) it only means a longer vibration
+    /// burst plus a pop-over. Was `high` (p4) until curation round 1,
+    /// 2026-10-18 (PLAN.md decision log).
+    static let ntfyPriorityValue = "urgent"
     static let ntfyTagsHeader = "Tags"
     static let ntfyTagsValue = "zzz,warning"
     static let ntfyContentTypeHeader = "Content-Type"
