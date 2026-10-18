@@ -485,18 +485,20 @@ struct MenuPanelPresentationTests {
 }
 
 // MARK: - Detection stubs (no filesystem scan, no process enumeration, no IOKit)
+// Module-internal: ScaffoldTests reuses them to wire a hermetic detection
+// controller into the real panel.
 
-private final class StubMarkerStore: BusyMarkerStore {
+final class StubMarkerStore: BusyMarkerStore {
     func markers() -> [BusyMarker] { [] }
     func markerDirExists() -> Bool { true }
     func hookLogExists() -> Bool { true }
     func lastActivityEpoch() -> Int? { Int(Date().timeIntervalSince1970) - 60 }
 }
 
-private final class StubProber: ClaudeProcessProber {
+final class StubProber: ClaudeProcessProber {
     func probe() -> ProcessProbe { ProcessProbe(enumerationSucceeded: true, confirmedCount: 0, inconclusiveCount: 0) }
 }
 
-private final class StubAssertions: SleepAssertionReader {
+final class StubAssertions: SleepAssertionReader {
     func claudeIsHoldingAwake() -> Bool { false }
 }

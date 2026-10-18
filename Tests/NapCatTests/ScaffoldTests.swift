@@ -12,7 +12,7 @@ struct ScaffoldTests {
     /// Isolated defaults suite so tests never touch com.muratalkan.napcat.
     private static let testSuite = "com.muratalkan.napcat.tests"
 
-    private func makeMenuContent() -> MenuContentView {
+    private func makeMenuContent(detection: ClaudeActivityController? = nil) -> MenuContentView {
         let defaults = UserDefaults(suiteName: Self.testSuite)!
         defaults.removePersistentDomain(forName: Self.testSuite)
         let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
@@ -23,6 +23,7 @@ struct ScaffoldTests {
             power: simulator,
             limiter: limiter,
             simulator: simulator,
+            detection: detection,
             defaults: defaults
         )
     }
@@ -91,9 +92,18 @@ struct ScaffoldTests {
     }
 
     /// Same mechanism for the curation-only style switch: every variant ends
-    /// up exactly content-sized, without reopening the menu.
+    /// up exactly content-sized, without reopening the menu. Since curation
+    /// round 2 A and C share the hero-size header, so the height difference
+    /// that proves a real re-fit comes from the Claude row (top-level in A,
+    /// tucked in Details in C): detection is wired with stubs and a
+    /// nonexistent marker dir, and it is never sampled (no menu opens).
     @Test func panelRefitsForEveryStyleWithoutReopening() throws {
-        let menuContent = makeMenuContent()
+        let detection = ClaudeActivityController(
+            store: StubMarkerStore(), prober: StubProber(), assertions: StubAssertions(),
+            markerDirURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("napcat-scaffold-\(UUID().uuidString)")
+        )
+        let menuContent = makeMenuContent(detection: detection)
         let view = try #require(menuContent.menu.items[0].view)
         let window = Self.offscreenHost(view)
         defer { window.contentView = nil }

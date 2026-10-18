@@ -10,7 +10,8 @@ import Testing
 /// MenuPanelPresentationTests and their USE is locked here):
 /// the topic never reaches a view, every variant gives problem lines a
 /// top-level home, the ONE disclosure shares the last row with Quit
-/// (curation round 1), Details only ever tucks NOMINAL lines, Pause detection
+/// (curation round 1), A and C share the hero-size gauge (curation round 2),
+/// Details only ever tucks NOMINAL lines, Pause detection
 /// lives in Details (F3), motion is gated on Reduce Motion, and colors are
 /// system/semantic only.
 struct MenuPanelStructureTests {
@@ -118,6 +119,35 @@ struct MenuPanelStructureTests {
             let beforeModifiers = tail.range(of: ".padding(").map { tail[..<$0.lowerBound] } ?? tail
             #expect(beforeModifiers.trimmingCharacters(in: .whitespacesAndNewlines) == "}",
                     "\(variant): the footer row must be the panel's last row")
+        }
+    }
+
+    /// Curation round 2 (2026-10-18): A and C render the SAME hero-size gauge
+    /// so the comparison is fair. Gauge geometry (`size`) and the text column
+    /// (`content`) are independent knobs: A keeps its "Battery N%" headline +
+    /// charging line, C keeps the composed activity line, and the text choice
+    /// never changes the gauge.
+    @Test func bothVariantsShareTheHeroGaugeAndKeepTheirOwnHeaderText() throws {
+        let source = try Self.code("MenuPanelVariants.swift")
+        let quiet = try #require(Self.structChunk("QuietRowsPanel", in: source))
+        let hero = try #require(Self.structChunk("StatusHeroPanel", in: source))
+        for (variant, body) in [("QuietRowsPanel", quiet), ("StatusHeroPanel", hero)] {
+            #expect(Self.occurrences(of: "BatteryHeader(", in: body) == 1, "\(variant): ONE battery header")
+            #expect(body.contains("BatteryHeader(model: model, size: .hero"), "\(variant): hero-size gauge")
+        }
+        #expect(quiet.contains("BatteryHeader(model: model, size: .hero)"), "A keeps its headline text")
+        #expect(hero.contains("BatteryHeader(model: model, size: .hero, content: .activity)"),
+                "C keeps its activity line")
+
+        let header = try #require(Self.structChunk("BatteryHeader", in: try Self.code("MenuPanelView.swift")))
+        let gaugeStart = try #require(header.range(of: "private var gauge"), "BatteryHeader.gauge not found")
+        let gauge = header[gaugeStart.lowerBound...]
+        let textColumn = header[..<gaugeStart.lowerBound]
+        #expect(textColumn.contains("switch content"), "the text column follows `content`")
+        #expect(!textColumn.contains("switch size"), "the text column must not follow the gauge size")
+        #expect(Self.occurrences(of: "model.heroActivity", in: header) == 1)
+        for token in ["switch content", "content ==", "content !=", ".activity", ".headline"] {
+            #expect(!gauge.contains(token), "the gauge must depend on `size` only — found '\(token)'")
         }
     }
 

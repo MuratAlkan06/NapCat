@@ -368,14 +368,20 @@ struct PanelFooterRow: View {
 
 // MARK: - Battery header
 
-/// Live battery gauge + charging state. `.hero` (variant C) is the full-size
-/// gauge with the percent inside and the composed activity line; `.compact`
-/// is the classic 44pt header.
+/// Live battery gauge + charging state. Two independent knobs (curation
+/// round 2, 2026-10-18): `size` is the gauge geometry ONLY — `.hero` is the
+/// full-size gauge with the percent inside (~76pt header), `.compact` the
+/// classic 44pt one; `content` is the text column — `.headline` ("Battery N%"
+/// + charging line, variant A) or `.activity` (charging line + the composed
+/// activity line, variant C). A and C both use `.hero` so the comparison is
+/// fair.
 struct BatteryHeader: View {
     enum Size { case compact, hero }
+    enum Content { case headline, activity }
 
     @ObservedObject var model: MenuStateModel
     var size: Size = .compact
+    var content: Content = .headline
 
     private var percent: String { MenuStateModel.percentText(model.batteryPercent) }
 
@@ -383,15 +389,15 @@ struct BatteryHeader: View {
         HStack(spacing: PanelMetrics.loose) {
             gauge
             VStack(alignment: .leading, spacing: 2) {
-                switch size {
-                case .compact:
+                switch content {
+                case .headline:
                     Text(MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))
                         .font(.headline)
                         .monospacedDigit()
                     chargingLine
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                case .hero:
+                case .activity:
                     chargingLine
                         .font(.headline)
                     Text(model.heroActivity)
