@@ -159,10 +159,11 @@ struct ScreenLockControllerTests {
         #expect(verify.lowerBound < darken.lowerBound)
     }
 
-    /// The lock click is the one panel control that SHOULD dismiss the menu —
-    /// but only through the single gateway (`closeMenuThenPresent`), never by
-    /// adding a second dismissal call (which is what the 2026-07-10 UX fix
-    /// removed, and what ScaffoldTests still counts file-wide).
+    /// The lock click dismisses the menu by design — but only through the
+    /// single shared gateway (`closeMenuThenPresent`, also used by the modal
+    /// flows: heat warning, setup/failure alerts, the ntfy settings editor),
+    /// never by adding a second dismissal call (which is what the 2026-07-10
+    /// UX fix removed, and what ScaffoldTests still counts file-wide).
     @Test func lockClickDismissesOnlyThroughTheSingleGateway() throws {
         let source = try Self.appSource(named: "MenuContentView.swift")
         try #require(source.contains("final class MenuContentView"))
