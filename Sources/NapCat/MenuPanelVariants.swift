@@ -22,7 +22,8 @@ struct QuietRowsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.rowSpacing) {
             // Curation round 2: the same hero-size gauge as C (fair A-vs-C
-            // comparison), with A's own headline + charging-line text.
+            // comparison), with A's own headline + charging-line text and
+            // the charge-state glyph inside the ring.
             BatteryHeader(model: model, size: .hero)
             Divider()
 

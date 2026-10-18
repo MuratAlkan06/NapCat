@@ -122,11 +122,24 @@ struct MenuPanelStructureTests {
         }
     }
 
+    /// `BatteryHeader` split into its three parts: the text column (before
+    /// `gauge`), the ring geometry (`gauge`), and the ring interior.
+    static func batteryHeaderParts() throws -> (text: String, ring: String, interior: String) {
+        let header = try #require(Self.structChunk("BatteryHeader", in: try Self.code("MenuPanelView.swift")))
+        let ringStart = try #require(header.range(of: "private var gauge"), "BatteryHeader.gauge not found")
+        let interiorStart = try #require(header.range(of: "private var ringInterior"),
+                                         "BatteryHeader.ringInterior not found")
+        #expect(ringStart.lowerBound < interiorStart.lowerBound, "keep `gauge` above `ringInterior`")
+        return (String(header[..<ringStart.lowerBound]),
+                String(header[ringStart.lowerBound..<interiorStart.lowerBound]),
+                String(header[interiorStart.lowerBound...]))
+    }
+
     /// Curation round 2 (2026-10-18): A and C render the SAME hero-size gauge
-    /// so the comparison is fair. Gauge geometry (`size`) and the text column
-    /// (`content`) are independent knobs: A keeps its "Battery N%" headline +
-    /// charging line, C keeps the composed activity line, and the text choice
-    /// never changes the gauge.
+    /// so the comparison is fair. Ring geometry (`size`) and what the header
+    /// says (`content`) are independent knobs: A keeps its "Battery N%"
+    /// headline + charging line, C keeps the composed activity line, and the
+    /// content choice never changes the ring's geometry.
     @Test func bothVariantsShareTheHeroGaugeAndKeepTheirOwnHeaderText() throws {
         let source = try Self.code("MenuPanelVariants.swift")
         let quiet = try #require(Self.structChunk("QuietRowsPanel", in: source))
@@ -139,16 +152,57 @@ struct MenuPanelStructureTests {
         #expect(hero.contains("BatteryHeader(model: model, size: .hero, content: .activity)"),
                 "C keeps its activity line")
 
-        let header = try #require(Self.structChunk("BatteryHeader", in: try Self.code("MenuPanelView.swift")))
-        let gaugeStart = try #require(header.range(of: "private var gauge"), "BatteryHeader.gauge not found")
-        let gauge = header[gaugeStart.lowerBound...]
-        let textColumn = header[..<gaugeStart.lowerBound]
+        let (textColumn, ring, _) = try Self.batteryHeaderParts()
         #expect(textColumn.contains("switch content"), "the text column follows `content`")
         #expect(!textColumn.contains("switch size"), "the text column must not follow the gauge size")
-        #expect(Self.occurrences(of: "model.heroActivity", in: header) == 1)
+        #expect(Self.occurrences(of: "model.heroActivity", in: textColumn) == 1)
         for token in ["switch content", "content ==", "content !=", ".activity", ".headline"] {
-            #expect(!gauge.contains(token), "the gauge must depend on `size` only — found '\(token)'")
+            #expect(!ring.contains(token), "the ring geometry must depend on `size` only — found '\(token)'")
         }
+    }
+
+    /// Curation round 2 fix (2026-10-18 — "you removed the battery icon"):
+    /// the ring's INTERIOR follows `content`, never `size`. A (`.headline`)
+    /// gets the pre-round-2 charge-state glyph, C (`.activity`) the percent,
+    /// so each variant states the percent exactly once: A in its headline, C
+    /// in its ring. Both sizes take the interior from the one helper, so the
+    /// ring itself never chooses it (and A/C ring parity stays with `size`).
+    @Test func theRingInteriorFollowsContentGlyphForAPercentForC() throws {
+        let (textColumn, ring, interior) = try Self.batteryHeaderParts()
+
+        // Every ring's label is the shared interior — no size picks its own.
+        let gauges = Self.occurrences(of: "Gauge(value:", in: ring)
+        #expect(gauges == 2, "one ring per size (compact, hero)")
+        #expect(Self.occurrences(of: "currentValueLabel: {\n                    ringInterior\n                }", in: ring)
+                == gauges, "every ring's currentValueLabel must be exactly `ringInterior`")
+        for token in ["Text(percent)", "Image(systemName: model.isCharging"] {
+            #expect(!ring.contains(token), "the ring draws its own interior ('\(token)') — use `ringInterior`")
+        }
+
+        // The interior switches on `content` only.
+        #expect(interior.contains("switch content"), "the ring interior follows `content`")
+        for token in ["switch size", "size ==", "size !=", ".hero", ".compact"] {
+            #expect(!interior.contains(token), "the ring interior must not follow `size` — found '\(token)'")
+        }
+        let headlineCase = try #require(interior.range(of: "case .headline:"))
+        let activityCase = try #require(interior.range(of: "case .activity:"))
+        #expect(headlineCase.lowerBound < activityCase.lowerBound)
+        let glyphArm = interior[headlineCase.upperBound..<activityCase.lowerBound]
+        let percentArm = interior[activityCase.upperBound...]
+        #expect(glyphArm.contains("Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)"),
+                "A's ring holds the charge-state glyph")
+        #expect(!glyphArm.contains("percent"), "A's ring must not repeat the percent its headline states")
+        #expect(percentArm.contains("Text(percent).monospacedDigit()"), "C's ring states the percent")
+        #expect(!percentArm.contains("Image("), "C's ring holds the percent only")
+
+        // Text column: the percent is in A's headline and nowhere in C's text.
+        let textHeadline = try #require(textColumn.range(of: "case .headline:"))
+        let textActivity = try #require(textColumn.range(of: "case .activity:"))
+        #expect(textColumn[textHeadline.upperBound..<textActivity.lowerBound].contains("MenuStateModel.batteryHeadline("))
+        let activityText = textColumn[textActivity.upperBound...]
+        let activityTextEnd = activityText.range(of: "Spacer(").map { activityText[..<$0.lowerBound] } ?? activityText
+        #expect(!activityTextEnd.contains("batteryHeadline") && !activityTextEnd.contains("percent"),
+                "C's text column must not state the percent — its ring does")
     }
 
     /// Inside Details, every line that can be a problem goes through

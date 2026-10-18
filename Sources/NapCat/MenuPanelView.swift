@@ -369,12 +369,13 @@ struct PanelFooterRow: View {
 // MARK: - Battery header
 
 /// Live battery gauge + charging state. Two independent knobs (curation
-/// round 2, 2026-10-18): `size` is the gauge geometry ONLY — `.hero` is the
-/// full-size gauge with the percent inside (~76pt header), `.compact` the
-/// classic 44pt one; `content` is the text column — `.headline` ("Battery N%"
-/// + charging line, variant A) or `.activity` (charging line + the composed
-/// activity line, variant C). A and C both use `.hero` so the comparison is
-/// fair.
+/// round 2, 2026-10-18): `size` is the ring geometry ONLY — `.hero` is the
+/// full-size ring (~76pt header), `.compact` the classic 44pt one; `content`
+/// is what the header SAYS, in the text column AND inside the ring —
+/// `.headline` ("Battery N%" + charging line, charge-state glyph in the ring;
+/// variant A) or `.activity` (charging line + the composed activity line,
+/// percent in the ring; variant C). A and C both use `.hero` so the rings are
+/// the same size and the comparison is fair.
 struct BatteryHeader: View {
     enum Size { case compact, hero }
     enum Content { case headline, activity }
@@ -421,6 +422,8 @@ struct BatteryHeader: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// The ring. Its geometry follows `size` ONLY; what sits inside it is
+    /// `ringInterior`, which follows `content`.
     @ViewBuilder private var gauge: some View {
         if model.hasBattery {
             switch size {
@@ -428,9 +431,7 @@ struct BatteryHeader: View {
                 Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
                     EmptyView()
                 } currentValueLabel: {
-                    Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                    ringInterior
                 }
                 .gaugeStyle(.accessoryCircularCapacity)
                 .scaleEffect(0.8)
@@ -441,7 +442,7 @@ struct BatteryHeader: View {
                 Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
                     EmptyView()
                 } currentValueLabel: {
-                    Text(percent).monospacedDigit()
+                    ringInterior
                 }
                 .gaugeStyle(.accessoryCircularCapacity)
                 .accessibilityLabel("Battery")
@@ -453,6 +454,24 @@ struct BatteryHeader: View {
                 .foregroundStyle(.secondary)
                 .frame(width: size == .hero ? 60 : 44, height: size == .hero ? 60 : 44)
                 .accessibilityHidden(true)
+        }
+    }
+
+    /// Curation round 2 fix ("you removed the battery icon"): the interior
+    /// follows `content`, never `size`, so each variant states the percent
+    /// exactly once. `.headline` already says "Battery N%", so its ring holds
+    /// the pre-round-2 charge-state glyph — at the same 12pt, which keeps the
+    /// glyph-to-ring proportion of the old compact header (whose 0.8 scale
+    /// shrank ring and glyph alike). `.activity` text never says the percent,
+    /// so its ring does.
+    @ViewBuilder private var ringInterior: some View {
+        switch content {
+        case .headline:
+            Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        case .activity:
+            Text(percent).monospacedDigit()
         }
     }
 }
