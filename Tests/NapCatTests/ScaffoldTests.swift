@@ -38,21 +38,94 @@ struct ScaffoldTests {
     }
 
     /// P3b: the menu is a single view-based item hosting the SwiftUI panel.
-    @Test func menuHostsExactlyOneSwiftUIPanelItem() {
+    @Test func menuHostsExactlyOneSwiftUIPanelItem() throws {
         let menuContent = makeMenuContent()
         let menu = menuContent.menu
         #expect(menu.items.count == 1)
 
         let panelItem = menu.items[0]
-        // Type spelled as a string: `import SwiftUI` next to `import Testing`
-        // would pull in another CLT-missing cross-import overlay.
-        let hostedViewType = String(describing: type(of: panelItem.view as AnyObject))
-        #expect(hostedViewType.contains("NSHostingView"), "got \(hostedViewType)")
-        #expect(hostedViewType.contains("MenuPanelView"), "got \(hostedViewType)")
+        // Types spelled as strings: `import SwiftUI` next to `import Testing`
+        // would pull in another CLT-missing cross-import overlay. Since the
+        // 2026-10-18 redesign the item view is MenuPanelHostingView (an
+        // NSHostingView subclass that re-fits the open menu), so the chain of
+        // superclasses must still contain NSHostingView<MenuPanelView>.
+        let view = try #require(panelItem.view)
+        var chain: [String] = []
+        var cls: AnyClass? = type(of: view)
+        while let current = cls {
+            chain.append(String(describing: current))
+            cls = class_getSuperclass(current)
+        }
+        #expect(chain.first?.contains("MenuPanelHostingView") == true, "got \(chain)")
+        #expect(chain.contains { $0.contains("NSHostingView") && $0.contains("MenuPanelView") }, "got \(chain)")
         #expect(panelItem.isEnabled)
         // The hosted panel must have laid out to a real size.
         #expect((panelItem.view?.frame.width ?? 0) > 0)
         #expect((panelItem.view?.frame.height ?? 0) > 0)
+    }
+
+    /// 2026-10-18 redesign — the NSMenu height problem. The panel's height
+    /// changes while the menu is OPEN (Details disclosure, style switch); a
+    /// frame measured once at menuWillOpen used to clip. MenuPanelHostingView
+    /// re-fits itself in the first layout pass that sees new content (NSMenu
+    /// follows an item view's frame live — NSMenuItem.h). Driven headlessly in
+    /// an offscreen window: no menu is shown, nothing is clicked.
+    @Test func panelRefitsItsHeightWhenDetailsToggleWhileOpen() throws {
+        let menuContent = makeMenuContent()
+        let view = try #require(menuContent.menu.items[0].view)
+        let window = Self.offscreenHost(view)
+        defer { window.contentView = nil }
+
+        Self.settle(view)
+        let collapsed = view.frame.height
+        #expect(abs(collapsed - view.fittingSize.height) < 1)
+
+        menuContent.model.setDetailsExpanded(true)
+        Self.settle(view)
+        #expect(view.frame.height > collapsed + 20, "Details content must grow the panel")
+        #expect(abs(view.frame.height - view.fittingSize.height) < 1, "frame must match content — no clipping")
+
+        menuContent.model.setDetailsExpanded(false)
+        Self.settle(view)
+        #expect(abs(view.frame.height - collapsed) < 1, "collapsing must not leave dead space")
+    }
+
+    /// Same mechanism for the curation-only style switch: every variant ends
+    /// up exactly content-sized, without reopening the menu.
+    @Test func panelRefitsForEveryStyleWithoutReopening() throws {
+        let menuContent = makeMenuContent()
+        let view = try #require(menuContent.menu.items[0].view)
+        let window = Self.offscreenHost(view)
+        defer { window.contentView = nil }
+        var heights: Set<Int> = []
+        for _ in MenuPanelStyle.allCases {
+            menuContent.model.cyclePanelStyle()
+            Self.settle(view)
+            #expect(abs(view.frame.height - view.fittingSize.height) < 1,
+                    "\(menuContent.model.panelStyle) is not content-sized")
+            heights.insert(Int(view.frame.height.rounded()))
+        }
+        #expect(heights.count > 1, "the variants differ in height — the re-fit was really exercised")
+    }
+
+    private static func offscreenHost(_ view: NSView) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 1200),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 1200))
+        window.contentView = container
+        container.addSubview(view)
+        view.setFrameOrigin(.zero)
+        return window
+    }
+
+    /// A few layout passes + runloop turns so SwiftUI applies pending state.
+    private static func settle(_ view: NSView) {
+        for _ in 0..<4 {
+            view.needsLayout = true
+            view.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
     }
 
     /// ⌘Q stays wired even though Quit is a SwiftUI button: the hosting item

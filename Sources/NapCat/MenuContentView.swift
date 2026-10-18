@@ -17,9 +17,17 @@ import SwiftUI
 /// the menu. The stay-awake flip runs off the main actor and the published
 /// observed state re-renders the open panel when it completes. The only
 /// flows allowed to close the menu are the genuinely modal ones — first-ever
-/// heat warning, setup required, failure — plus Lock Screen (the user is
-/// deliberately leaving the machine), and they all go through
-/// `closeMenuThenPresent` (dismiss cleanly first, then present).
+/// heat warning, setup required, failure, the "ntfy settings…" editor —
+/// plus Lock Screen (the user is deliberately leaving the machine), and they
+/// all go through `closeMenuThenPresent` (dismiss cleanly first, then
+/// present). The Details disclosure and the style preview are pure model
+/// state and never reach this class at all.
+///
+/// Height (2026-10-18 redesign): the panel's height changes while the menu
+/// is OPEN (Details disclosure, style switch, a caption appearing after an
+/// async outcome). `MenuPanelHostingView` re-fits its own frame in the first
+/// layout pass that sees new content, and NSMenu follows a view-based item's
+/// frame live — see that class.
 @MainActor
 final class MenuContentView: NSObject, NSMenuDelegate {
     let menu: NSMenu
@@ -38,7 +46,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Track B / B2 lid-close alert; nil in debugBattery mode (structurally
     /// absent). Registers for IOKit power notifications only while armed.
     private let lidGuard: LidGuardController?
-    private let hostingView: NSHostingView<MenuPanelView>
+    private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
     private var stayAwakeCommandInFlight = false
@@ -75,10 +83,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             screenLock: screenLock,
             simulator: simulator,
             detection: detection,
-            lidGuard: lidGuard
+            lidGuard: lidGuard,
+            defaults: defaults
         )
         self.menu = NSMenu()
-        self.hostingView = NSHostingView(rootView: MenuPanelView(model: model))
+        self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
         super.init()
 
         menu.autoenablesItems = false
@@ -137,9 +146,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // touch the network.
         lidGuard?.refreshArming()
         model.refresh()
-        // Section visibility (charge limit, debug) can change the intrinsic
-        // height — resize the hosted view before the menu lays out.
-        hostingView.frame.size = hostingView.fittingSize
+        // Section visibility (charge limit, debug), the stored style and the
+        // Details state can change the height — pre-size before the menu lays
+        // out. If SwiftUI has not applied this refresh yet, the hosting view's
+        // own first layout pass corrects it before anything is displayed.
+        hostingView.refitToContent()
     }
 
     // MARK: - Stay-awake toggle (P2 semantics; menu-stays-open rework 2026-07-10)
@@ -431,5 +442,47 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate()
         alert.runModal()
+    }
+}
+
+/// The panel's hosting view: keeps its frame equal to the SwiftUI content's
+/// fitting size, so the OPEN menu grows and shrinks with the content
+/// (2026-10-18 redesign — PLAN.md "UI Redesign — Menu Panel").
+///
+/// Why this works: NSMenu follows a view-based item's frame live — "A menu
+/// will resize itself as its containing views change frame size. Changes to
+/// the view's frame during tracking are reflected immediately in the menu."
+/// (NSMenuItem.h). The menu stays anchored at the status item and grows
+/// downward.
+///
+/// Why HERE, in `layout()`: prototyped in a real popped-up NSMenu, re-fitting
+/// right after the state change — synchronously, one runloop turn later, or in
+/// SwiftUI's `onChange` — read a STALE `fittingSize` (SwiftUI applies the change
+/// in a later pass), clipping on expand and leaving dead space on collapse, or
+/// left one pass with the content taller than the menu. Re-fitting in the first
+/// layout pass that sees the new content matched content, frame and menu window
+/// in that same pass, before display. This also covers captions that appear
+/// while the menu is open (async outcomes), which a measure-once frame clipped.
+///
+/// No animation: height changes snap. Animating content inside a menu window
+/// that resizes in one step either flashes dead space (expand) or clips the
+/// fade (collapse).
+final class MenuPanelHostingView<Content: View>: NSHostingView<Content> {
+    private var isRefitting = false
+
+    override func layout() {
+        super.layout()
+        refitToContent()
+    }
+
+    /// Sets the frame to `fittingSize` when it differs by more than half a
+    /// point. Re-entrancy guarded: the frame change itself triggers layout.
+    func refitToContent() {
+        guard !isRefitting else { return }
+        let fitting = fittingSize
+        guard abs(fitting.height - frame.height) > 0.5 || abs(fitting.width - frame.width) > 0.5 else { return }
+        isRefitting = true
+        setFrameSize(fitting)
+        isRefitting = false
     }
 }

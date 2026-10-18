@@ -23,6 +23,9 @@ struct PersistenceTests {
         #expect(DefaultsKey.lidGuardNtfyTopic == "lidGuardNtfyTopic")
         #expect(DefaultsKey.lidGuardNtfyServer == "lidGuardNtfyServer")
         #expect(DefaultsKey.lidGuardPrimedAt == "lidGuardPrimedAt")
+        // 2026-10-18 menu-panel redesign — CURATION-ONLY scaffold, removed at
+        // design freeze (it then moves to RetiredDefaultsKey).
+        #expect(DefaultsKey.menuPanelStyle == "menuPanelStyle")
     }
 
     /// Fresh isolated defaults per test; the suite file is removed again.
@@ -200,7 +203,8 @@ struct PersistenceTests {
         let live = [DefaultsKey.limit, DefaultsKey.limitEnabled, DefaultsKey.stayAwakeIntent,
                     DefaultsKey.heatWarningAcknowledged, DefaultsKey.debugBattery,
                     DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
-                    DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt]
+                    DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
+                    DefaultsKey.menuPanelStyle]
         for key in RetiredDefaultsKey.all {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }

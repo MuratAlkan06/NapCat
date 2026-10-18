@@ -36,6 +36,13 @@ enum DefaultsKey {
     /// never primed. Priming is what proves the topic is really subscribed on
     /// the user's phone, so the first message on it is never the lid-close one.
     static let lidGuardPrimedAt = "lidGuardPrimedAt"
+
+    // MARK: Menu-panel redesign — CURATION-ONLY scaffold (2026-10-18)
+
+    /// Which panel layout variant renders ("a" / "b" / "c"; unset or junk ⇒
+    /// "b"). Re-read on every menu open. Temporary: removed at design freeze,
+    /// when it moves to `RetiredDefaultsKey` so it leaves the plist.
+    static let menuPanelStyle = "menuPanelStyle"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

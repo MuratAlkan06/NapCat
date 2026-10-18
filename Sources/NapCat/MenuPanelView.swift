@@ -1,305 +1,519 @@
 import SwiftUI
 
-/// Rich menu content (P3b user decision), hosted by an NSHostingView inside
-/// a single NSMenuItem (MenuContentView). System materials and semantic
-/// colors only — the menu chrome supplies the background, so dark/light
-/// appearance follows automatically.
+/// Rich menu content (P3b user decision), hosted by a MenuPanelHostingView
+/// inside a single NSMenuItem (MenuContentView). System materials and
+/// semantic colors only — the menu chrome supplies the background, so
+/// dark/light appearance follows automatically.
+///
+/// UI redesign (2026-10-18, PLAN.md "UI Redesign — Menu Panel"): three tiers —
+/// glance (battery, Stay Awake, the merged Claude row), controls (Lock Screen,
+/// Charge Limit, Lid alert + its one-line status), and everything else behind
+/// ONE "Details" disclosure. IRON RULE: a non-nominal line never stays inside
+/// Details — `TuckedLine` / `SurfacedLine` split every Details-home line on
+/// `MenuStateModel.placement(ofDetailsLine:)`, so each renders exactly once.
+///
+/// The layout variant (A/B/C, MenuPanelVariants.swift) is a curation-only
+/// scaffold; every variant composes the shared components below from the SAME
+/// model outputs. Views decide arrangement only — never what is a warning.
 struct MenuPanelView: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            Divider()
-            stayAwakeSection
-            Divider()
-            lockScreenSection
-            // ADR §12: no battery → the charge-limit section is hidden
-            // entirely, not disabled.
-            if model.featureState != .hidden {
-                Divider()
-                chargeLimitSection
+        Group {
+            switch model.panelStyle {
+            case .a: QuietRowsPanel(model: model)
+            case .b: GroupedCardsPanel(model: model)
+            case .c: StatusHeroPanel(model: model)
             }
-            // Track B: READ-ONLY Claude detection (absent in debugBattery mode).
-            if model.claudeDetectionVisible {
-                Divider()
-                claudeSection
-            }
-            if model.debugControlsVisible {
-                Divider()
-                debugSection
-            }
-            Divider()
-            footer
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(width: 300)
+        .frame(width: PanelMetrics.width)
+    }
+}
+
+/// Shared geometry: 4/8/12 spacing rhythm, a fixed 20pt symbol column.
+enum PanelMetrics {
+    static let width: CGFloat = 300
+    static let tight: CGFloat = 4
+    static let regular: CGFloat = 8
+    static let loose: CGFloat = 12
+    static let symbolColumn: CGFloat = 20
+    /// Captions under a symbol row align with the row title.
+    static let titleIndent: CGFloat = symbolColumn + regular
+    static let cardRadius: CGFloat = 8
+    static let cardPadding: CGFloat = 10
+}
+
+// MARK: - Severity lines
+
+/// One status line. Non-nominal ⇒ severity icon + text (never color alone),
+/// with the severity spoken to VoiceOver. Nominal ⇒ a plain secondary caption,
+/// rendered only when the variant shows nominal captions.
+struct PanelCaptionLine: View {
+    let line: PanelLine
+    var showsNominal = true
+    var font: Font = .caption
+
+    var body: some View {
+        if let symbol = MenuStateModel.severitySymbol(line.severity) {
+            HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.tight) {
+                Image(systemName: symbol)
+                    .foregroundStyle(PanelSeverityTint.color(line.severity))
+                Text(line.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(font)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(PanelSeverityTint.spoken(line))
+        } else if showsNominal {
+            Text(line.text)
+                .font(font)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Styling only (the severity itself comes from the mappings): semantic
+/// system colors that adapt to appearance, always paired with the icon.
+enum PanelSeverityTint {
+    static func color(_ severity: PanelSeverity) -> Color {
+        switch severity {
+        case .nominal, .info: return .secondary
+        case .warning: return .orange
+        case .error: return .red
+        }
     }
 
-    // MARK: Header — battery gauge + live charging state
+    static func spoken(_ line: PanelLine) -> String {
+        MenuStateModel.severityAccessibilityPrefix(line.severity).map { "\($0): \(line.text)" } ?? line.text
+    }
+}
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            if model.hasBattery {
+/// A Details-home line, rendered inside Details ONLY while nominal.
+struct TuckedLine: View {
+    let line: PanelLine
+
+    var body: some View {
+        if MenuStateModel.placement(ofDetailsLine: line.severity) == .details {
+            PanelCaptionLine(line: line, showsNominal: true)
+        }
+    }
+}
+
+/// The same Details-home line at TOP LEVEL, rendered ONLY while non-nominal.
+struct SurfacedLine: View {
+    let line: PanelLine
+
+    var body: some View {
+        if MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel {
+            PanelCaptionLine(line: line)
+        }
+    }
+}
+
+/// Top-level home for the Claude-section Details lines that can be problems.
+struct ClaudeSurfacedLines: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        SurfacedLine(line: model.hookStatus)
+    }
+}
+
+/// Top-level home for the lid-alert Details lines that can be problems.
+struct LidAlertSurfacedLines: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        SurfacedLine(line: model.lidTopicStatus)
+        SurfacedLine(line: model.lidServerStatus)
+        SurfacedLine(line: model.lidLastSend(now: Date().timeIntervalSince1970))
+    }
+}
+
+/// Launch at Login escapes Details as a WHOLE row (checkbox + caption +
+/// System Settings link) while its status needs the user.
+struct SurfacedLaunchAtLogin: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        if let caption = model.launchAtLoginCaption,
+           MenuStateModel.placement(ofDetailsLine: caption.severity) == .topLevel {
+            LaunchAtLoginRow(model: model)
+        }
+    }
+}
+
+// MARK: - Rows
+
+/// One control row: optional leading symbol in the fixed 20pt column (A, C),
+/// title (+ B's nominal subtitle), trailing control.
+struct PanelRow<Trailing: View>: View {
+    let symbol: String?
+    let title: String
+    var subtitle: String?
+    @ViewBuilder var trailing: () -> Trailing
+
+    var body: some View {
+        HStack(alignment: .center, spacing: PanelMetrics.regular) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .foregroundStyle(.secondary)
+                    .frame(width: PanelMetrics.symbolColumn)
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .layoutPriority(1)
+            Spacer(minLength: PanelMetrics.regular)
+            // Controls (not text) keep their ideal size, so a long subtitle
+            // wraps instead of crushing the button.
+            HStack(spacing: PanelMetrics.regular) { trailing() }
+                .fixedSize()
+        }
+    }
+}
+
+/// The merged Claude row (tier 1). Paused renders the warning icon in the
+/// leading column plus the "where to undo it" hint.
+struct ClaudeStatusRow: View {
+    @ObservedObject var model: MenuStateModel
+    /// A/C draw the symbol column; B rows have no column.
+    var showsSymbolColumn: Bool
+
+    var body: some View {
+        let status = model.claudeStatus
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.regular) {
+                if let warning = MenuStateModel.severitySymbol(status.severity) {
+                    Image(systemName: warning)
+                        .foregroundStyle(PanelSeverityTint.color(status.severity))
+                        .frame(width: showsSymbolColumn ? PanelMetrics.symbolColumn : nil)
+                } else if showsSymbolColumn {
+                    Image(systemName: PanelSymbol.claude)
+                        .foregroundStyle(.secondary)
+                        .frame(width: PanelMetrics.symbolColumn)
+                }
+                Text(status.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(PanelSeverityTint.spoken(status))
+            if let hint = model.claudeStatusHint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, showsSymbolColumn ? PanelMetrics.titleIndent : 0)
+            }
+        }
+    }
+}
+
+// MARK: - Controls (bindings render OBSERVED state; actions forward to the model)
+
+struct StayAwakeToggle: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Toggle("Stay Awake", isOn: Binding(
+            get: { MenuStateModel.stayAwakeToggle(forObserved: model.stayAwakeObserved).isOn },
+            set: { model.setStayAwake($0) }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
+    }
+}
+
+/// One click: lock the session AND turn the display off, with the Mac still
+/// running. The menu closes first (the user is walking away) — handled by
+/// MenuContentView through the single dismissal gateway.
+struct LockScreenButton: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Button("Lock") { model.lockScreen() }
+            .controlSize(.small)
+            .disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)
+            .accessibilityLabel("Lock Screen")
+            .accessibilityHint("Locks now and turns the display off — the Mac keeps running")
+    }
+}
+
+/// Intel (notSupported): controls disabled with the explanation. Setup
+/// required: still usable (intent persists; the caption explains).
+struct ChargeLimitToggle: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Toggle("Charge Limit", isOn: Binding(
+            get: { model.limitEnabled },
+            set: { model.setLimitEnabled($0) }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .disabled(model.featureState == .notSupported)
+    }
+}
+
+struct ChargeLimitSlider: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Slider(
+            value: Binding(
+                get: { Double(model.limit) },
+                set: { model.setLimit(Int($0.rounded())) }
+            ),
+            in: 50...100,
+            step: Double(ChargeLimiter.limitStep)
+        ) {
+            Text("Charge limit")
+        } minimumValueLabel: {
+            Text("50%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+        } maximumValueLabel: {
+            Text("100%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+        }
+        .labelsHidden()
+        .controlSize(.small)
+        .disabled(model.featureState == .notSupported || !model.limitEnabled)
+        .accessibilityValue(MenuStateModel.limitLabel(limit: model.limit))
+    }
+}
+
+struct LidAlertToggle: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Toggle("Lid alert", isOn: Binding(
+            get: { model.lidGuardEnabled },
+            set: { model.setLidGuardEnabled($0) }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .accessibilityLabel("Lid alert — notify me if the Mac sleeps mid-task")
+    }
+}
+
+/// SMAppService is the source of truth — the checkbox renders the OBSERVED
+/// status (refreshed on menu open), never a stored flag.
+struct LaunchAtLoginRow: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        let presentation = MenuStateModel.launchAtLoginPresentation(for: model.loginItemStatus)
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            Toggle("Launch at Login", isOn: Binding(
+                get: { presentation.isOn },
+                set: { model.setLaunchAtLogin($0) }
+            ))
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            if let caption = model.launchAtLoginCaption {
+                PanelCaptionLine(line: caption)
+            }
+            if presentation.showSettingsShortcut {
+                Button("Open Login Items Settings…") { model.openLoginItemsSettings() }
+                    .buttonStyle(.link)
+                    .controlSize(.small)
+                    .font(.caption)
+            }
+        }
+    }
+}
+
+struct QuitFooter: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Button("Quit NapCat") { model.quit() }
+                .controlSize(.small)
+                .keyboardShortcut("q", modifiers: .command)
+        }
+    }
+}
+
+// MARK: - Battery header
+
+/// Live battery gauge + charging state. `.hero` (variant C) is the full-size
+/// gauge with the percent inside and the composed activity line; `.compact`
+/// is the classic 44pt header.
+struct BatteryHeader: View {
+    enum Size { case compact, hero }
+
+    @ObservedObject var model: MenuStateModel
+    var size: Size = .compact
+
+    private var percent: String { MenuStateModel.percentText(model.batteryPercent) }
+
+    var body: some View {
+        HStack(spacing: PanelMetrics.loose) {
+            gauge
+            VStack(alignment: .leading, spacing: 2) {
+                switch size {
+                case .compact:
+                    Text(MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))
+                        .font(.headline)
+                        .monospacedDigit()
+                    chargingLine
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .hero:
+                    chargingLine
+                        .font(.headline)
+                    Text(model.heroActivity)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: size == .hero ? 76 : nil)
+    }
+
+    private var chargingLine: some View {
+        Text(MenuStateModel.chargingStatusLine(
+            hasBattery: model.hasBattery,
+            percent: model.batteryPercent,
+            isCharging: model.isCharging,
+            adapterConnected: model.adapterConnected
+        ))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private var gauge: some View {
+        if model.hasBattery {
+            switch size {
+            case .compact:
                 Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
                     EmptyView()
                 } currentValueLabel: {
-                    Image(systemName: model.isCharging ? "bolt.fill" : "battery.100")
+                    Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 .gaugeStyle(.accessoryCircularCapacity)
                 .scaleEffect(0.8)
                 .frame(width: 44, height: 44)
-            } else {
-                Image(systemName: "desktopcomputer")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))
-                    .font(.headline)
-                Text(MenuStateModel.chargingStatusLine(
-                    hasBattery: model.hasBattery,
-                    percent: model.batteryPercent,
-                    isCharging: model.isCharging,
-                    adapterConnected: model.adapterConnected
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
-    // MARK: Stay awake
-
-    private var stayAwakeBinding: Binding<Bool> {
-        Binding(
-            get: { MenuStateModel.stayAwakeToggle(forObserved: model.stayAwakeObserved).isOn },
-            set: { model.setStayAwake($0) }
-        )
-    }
-
-    private var stayAwakeSection: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Stay Awake")
-                    Text("Keep this Mac awake with the lid closed")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                .accessibilityLabel("Battery")
+                .accessibilityValue(percent)
+            case .hero:
+                Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
+                    EmptyView()
+                } currentValueLabel: {
+                    Text(percent).monospacedDigit()
                 }
-                Spacer()
-                Toggle("Stay Awake", isOn: stayAwakeBinding)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
+                .gaugeStyle(.accessoryCircularCapacity)
+                .accessibilityLabel("Battery")
+                .accessibilityValue(percent)
             }
-            if let caption = MenuStateModel.stayAwakeToggle(forObserved: model.stayAwakeObserved).caption {
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    // MARK: Lock screen
-
-    /// One click: lock the session AND turn the display off, with the Mac
-    /// still running (pairs with Stay Awake). The menu closes first — the
-    /// user is walking away — and the click is handled by MenuContentView.
-    private var lockScreenSection: some View {
-        let presentation = MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable)
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Lock Screen")
-                    Text("Lock now and turn the display off — the Mac keeps running")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
-                Button("Lock") { model.lockScreen() }
-                    .controlSize(.small)
-                    .disabled(!presentation.enabled)
-            }
-            if let caption = presentation.caption {
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: Charge limit
-
-    private var limitEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { model.limitEnabled },
-            set: { model.setLimitEnabled($0) }
-        )
-    }
-
-    private var limitBinding: Binding<Double> {
-        Binding(
-            get: { Double(model.limit) },
-            set: { model.setLimit(Int($0.rounded())) }
-        )
-    }
-
-    /// Intel: permanently unavailable → controls disabled with explanation.
-    /// setupRequired: controls stay usable (intent persists; setup message
-    /// explains why nothing happens yet).
-    private var chargeControlsDisabled: Bool { model.featureState == .notSupported }
-
-    private var messageColor: Color {
-        switch model.featureState {
-        case .error: return .red
-        case .setupRequired: return .orange
-        default: return .secondary
-        }
-    }
-
-    private var chargeLimitSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Charge Limit")
-                    Text(MenuStateModel.limitLabel(limit: model.limit))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("Charge Limit", isOn: limitEnabledBinding)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .disabled(chargeControlsDisabled)
-            }
-            Slider(value: limitBinding, in: 50...100, step: Double(ChargeLimiter.limitStep)) {
-                EmptyView()
-            } minimumValueLabel: {
-                Text("50%").font(.caption2).foregroundStyle(.secondary)
-            } maximumValueLabel: {
-                Text("100%").font(.caption2).foregroundStyle(.secondary)
-            }
-            .controlSize(.small)
-            .disabled(chargeControlsDisabled || !model.limitEnabled)
-            if let message = MenuStateModel.featureMessage(for: model.featureState) {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(messageColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: Claude detection (READ-ONLY; pause toggle = kill switch)
-
-    private var pauseDetectionBinding: Binding<Bool> {
-        Binding(
-            get: { model.claudeDetectionPaused },
-            set: { model.setDetectionPaused($0) }
-        )
-    }
-
-    private var claudeSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Claude")
-                .font(.caption)
-                .fontWeight(.semibold)
+        } else {
+            Image(systemName: PanelSymbol.desktop)
+                .font(size == .hero ? .largeTitle : .title2)
                 .foregroundStyle(.secondary)
-            Text(MenuStateModel.claudeTaskLine(
-                inFlight: model.claudeTaskInFlight,
-                paused: model.claudeDetectionPaused
-            ))
-            .font(.caption)
-            Text(MenuStateModel.claudeAwakeLine(holding: model.claudeHoldingAwake))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(MenuStateModel.claudeHookLine(
-                installed: model.claudeHookInstalled,
-                everSeen: model.claudeHookEverSeen,
-                lastSeenSeconds: model.claudeHookLastSeenSeconds
-            ))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text("Pause detection").font(.caption)
-                Spacer()
-                Toggle("Pause detection", isOn: pauseDetectionBinding)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
+                .frame(width: size == .hero ? 60 : 44, height: size == .hero ? 60 : 44)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+// MARK: - The ONE "Details" disclosure (tier 3)
+
+/// Header row of the single disclosure. Toggling is pure model state (never
+/// dismisses the menu); the height change snaps (MenuPanelHostingView) and
+/// only the chevron turns — ≤150ms ease-out, none under Reduce Motion.
+struct PanelDetailsDisclosure: View {
+    @ObservedObject var model: MenuStateModel
+    /// A/C put the chevron in the 20pt symbol column.
+    var usesSymbolColumn: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let expanded = model.detailsExpanded
+        let badge = model.detailsBadge
+        Button {
+            model.setDetailsExpanded(!expanded)
+        } label: {
+            HStack(spacing: PanelMetrics.regular) {
+                Image(systemName: PanelSymbol.disclosure)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
+                    .frame(width: usesSymbolColumn ? PanelMetrics.symbolColumn : nil)
+                Text("Details")
+                if let symbol = MenuStateModel.severitySymbol(badge) {
+                    Image(systemName: symbol)
+                        .font(.caption)
+                        .foregroundStyle(PanelSeverityTint.color(badge))
+                }
+                Spacer(minLength: 0)
             }
-            // B2 delivery controls (absent in debugBattery mode, like the
-            // detection block above).
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Details")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+        .accessibilityHint(badge == .nominal
+            ? "Shows lid-alert settings, Claude hook status, Pause detection and Launch at Login"
+            : "Holds the setting for an item that needs attention, shown above")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// Tier-3 content — IDENTICAL in every variant. Details-home lines go through
+/// `TuckedLine`, so a non-nominal one is absent here (it renders above).
+struct PanelDetailsContent: View {
+    @ObservedObject var model: MenuStateModel
+    /// Variant C keeps the nominal Claude status here (its hero line already
+    /// says "Claude running"); A and B show it at top level always.
+    var includesClaudeStatus: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.loose) {
             if model.lidGuardVisible {
-                lidAlertBlock
+                lidAlertGroup
             }
+            if model.claudeDetectionVisible {
+                claudeGroup
+            }
+            generalGroup
         }
     }
 
-    // MARK: Lid-close alert (B2 — notify only, best effort)
-
-    private var lidAlertEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { model.lidGuardEnabled },
-            set: { model.setLidGuardEnabled($0) }
-        )
-    }
-
-    private var lidAlertBlock: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Notify me if the Mac sleeps mid-task").font(.caption)
-                    Text(MenuStateModel.lidAlertStatusLine(
-                        for: model.lidGuardArming,
-                        lastOutcome: model.lidGuardLastOutcome
-                    ))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("Notify me if the Mac sleeps mid-task", isOn: lidAlertEnabledBinding)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-            // The topic itself is never rendered here — it is the password to
-            // the feed (see MenuStateModel.lidAlertTopicLine).
-            Text(MenuStateModel.lidAlertTopicLine(model.lidGuardTopic))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(MenuStateModel.lidAlertServerLine(model.lidGuardServer))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
+    private var lidAlertGroup: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            DetailsGroupHeader(title: "Lid alert")
+            // The topic itself is never rendered — it is the password to the
+            // feed. The model does not even expose it to views.
+            TuckedLine(line: model.lidServerStatus)
+            TuckedLine(line: model.lidTopicStatus)
+            TuckedLine(line: model.lidLastSend(now: Date().timeIntervalSince1970))
+            HStack(spacing: PanelMetrics.regular) {
                 Button("ntfy settings…") { model.editLidGuardSettings() }
                     .controlSize(.small)
                 Button("Send test message") { model.sendLidGuardTestMessage() }
                     .controlSize(.small)
-                    .disabled(!MenuStateModel.lidAlertTestSendAvailable(
-                        server: model.lidGuardServer,
-                        topic: model.lidGuardTopic
-                    ))
+                    .disabled(!model.lidAlertTestSendAvailable)
             }
-            Text(MenuStateModel.lidAlertLastSendCaption(
-                outcome: model.lidGuardLastOutcome,
-                at: model.lidGuardLastOutcomeAt,
-                now: Date().timeIntervalSince1970
-            ))
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 2)
             Text(MenuStateModel.lidAlertTopicSecrecyNote)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -307,31 +521,102 @@ struct MenuPanelView: View {
         }
     }
 
-    // MARK: Debug (debugBattery mode only)
-
-    private var debugPercentBinding: Binding<Double> {
-        Binding(
-            get: { Double(model.batteryPercent ?? 0) },
-            set: { model.setSimulatedPercent(Int($0.rounded())) }
-        )
-    }
-
-    private var debugAdapterBinding: Binding<Bool> {
-        Binding(
-            get: { model.adapterConnected },
-            set: { model.setSimulatedAdapter($0) }
-        )
-    }
-
-    private var debugSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Debug — Simulated Battery")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
+    /// F3 (2026-10-18): the Pause detection kill switch lives HERE, out of
+    /// casual reach; while paused, the top-level Claude row says so.
+    private var claudeGroup: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            DetailsGroupHeader(title: "Claude detection")
+            if includesClaudeStatus {
+                TuckedLine(line: model.claudeStatus)
+            }
+            TuckedLine(line: model.hookStatus)
             HStack {
-                Slider(value: debugPercentBinding, in: 0...100, step: 1)
-                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Pause detection").font(.callout)
+                    Text(MenuStateModel.pauseDetectionCaption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .layoutPriority(1)
+                Spacer(minLength: PanelMetrics.regular)
+                Toggle("Pause detection", isOn: Binding(
+                    get: { model.claudeDetectionPaused },
+                    set: { model.setDetectionPaused($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private var generalGroup: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            DetailsGroupHeader(title: "General")
+            if MenuStateModel.placement(ofDetailsLine: model.launchAtLoginCaption?.severity ?? .nominal) == .details {
+                LaunchAtLoginRow(model: model)
+            }
+            PanelStylePreviewRow(model: model)
+        }
+    }
+}
+
+struct DetailsGroupHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// CURATION-ONLY SCAFFOLD (remove at design freeze with MenuPanelStyle):
+/// cycles the layout variant A → B → C, persisted to `menuPanelStyle`.
+struct PanelStylePreviewRow: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        HStack {
+            Text("Panel style (preview)").font(.caption)
+            Spacer(minLength: PanelMetrics.regular)
+            Button(model.panelStyle.title) { model.cyclePanelStyle() }
+                .controlSize(.small)
+                .accessibilityLabel("Panel style (preview)")
+                .accessibilityValue(model.panelStyle.title)
+                .accessibilityHint("Switches to \(model.panelStyle.next.title)")
+        }
+    }
+}
+
+// MARK: - Debug (debugBattery mode only)
+
+struct DebugBatterySection: View {
+    @ObservedObject var model: MenuStateModel
+    var showsTitle = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+            if showsTitle {
+                DetailsGroupHeader(title: "Debug — Simulated Battery")
+            }
+            HStack {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.batteryPercent ?? 0) },
+                        set: { model.setSimulatedPercent(Int($0.rounded())) }
+                    ),
+                    in: 0...100,
+                    step: 1
+                ) {
+                    Text("Simulated battery percent")
+                }
+                .labelsHidden()
+                .controlSize(.small)
                 Text(MenuStateModel.percentText(model.batteryPercent))
                     .font(.caption)
                     .monospacedDigit()
@@ -340,48 +625,13 @@ struct MenuPanelView: View {
             HStack {
                 Text("AC adapter connected").font(.caption)
                 Spacer()
-                Toggle("AC adapter connected", isOn: debugAdapterBinding)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-            }
-        }
-    }
-
-    // MARK: Footer
-
-    /// SMAppService is the source of truth — the checkbox renders the
-    /// OBSERVED status (refreshed on menu open), never a stored flag.
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { MenuStateModel.launchAtLoginPresentation(for: model.loginItemStatus).isOn },
-            set: { model.setLaunchAtLogin($0) }
-        )
-    }
-
-    private var footer: some View {
-        let presentation = MenuStateModel.launchAtLoginPresentation(for: model.loginItemStatus)
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Toggle("Launch at Login", isOn: launchAtLoginBinding)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                Spacer()
-                Button("Quit NapCat") { model.quit() }
-                    .controlSize(.small)
-                    .keyboardShortcut("q", modifiers: .command)
-            }
-            if let caption = presentation.caption {
-                Text(caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if presentation.showSettingsShortcut {
-                Button("Open Login Items Settings…") { model.openLoginItemsSettings() }
-                    .buttonStyle(.link)
-                    .controlSize(.small)
-                    .font(.caption2)
+                Toggle("AC adapter connected", isOn: Binding(
+                    get: { model.adapterConnected },
+                    set: { model.setSimulatedAdapter($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
             }
         }
     }

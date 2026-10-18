@@ -66,8 +66,14 @@ struct LidGuardStructureTests {
     static let logScannedFiles = b2Files + [
         "MenuStateModel.swift",
         "MenuPanelView.swift",
+        "MenuPanelVariants.swift",
         "MenuContentView.swift",
     ]
+
+    /// Every menu source file (2026-10-18 redesign split the view into two
+    /// files — a new panel file must be added here).
+    static let menuFiles = ["MenuStateModel.swift", "MenuPanelView.swift", "MenuPanelVariants.swift",
+                            "MenuContentView.swift"]
 
     /// What counts as "a line that emits output", matched case-INSENSITIVELY
     /// (so `osLogger.`/`alertLogger.` cannot slip past). `Logger` is the only
@@ -192,7 +198,7 @@ struct LidGuardStructureTests {
     /// rule to the B2 tokens).
     @Test func menuFilesStayFreeOfTheB2Capabilities() throws {
         let dir = Self.sourcesDir()
-        for file in ["MenuStateModel.swift", "MenuPanelView.swift", "MenuContentView.swift"] {
+        for file in Self.menuFiles {
             let text = Self.codeOnly(try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8))
             for token in ["URLSession", "URLRequest", "dataTask", "osascript",
                           "IORegisterForSystemPower", "IOAllowPowerChange"] {
@@ -235,6 +241,30 @@ struct LidGuardStructureTests {
         for name in Self.logScannedFiles {
             #expect(sources.contains { $0.name == name },
                     "\(name) is not in Sources/NapCat — update the lint's file list")
+        }
+    }
+
+    /// F1 (2026-10-18): the fire-gate SKIP line used to be `.debug`, which
+    /// macOS does not persist — `log show` could not see the skip reason, and a
+    /// one-click "Pause detection" (every sleep skipped `noTaskInFlight`) stayed
+    /// invisible for five weeks across two hardware drills. It must be logged at
+    /// a PERSISTED level, keep its one public reason field, and no B2 line may
+    /// drop back to a level macOS discards (`.debug`/`.trace`, or `.info`, which
+    /// is memory-only by default).
+    @Test func fireGateSkipReasonIsLoggedAtAPersistedLevel() throws {
+        let sources = try Self.swiftSources()
+        let controller = try #require(sources.first { $0.name == "LidGuardController.swift" })
+        let skipLines = controller.text.split(separator: "\n").filter { $0.contains("sleeping, no alert") }
+        #expect(skipLines.count == 1, "expected exactly one skip line, found \(skipLines.count)")
+        let line = try #require(skipLines.first)
+        #expect(line.contains("logger.notice("), "the skip reason must be persisted: \(line)")
+        #expect(line.contains("\\(reason.rawValue, privacy: .public)"), "the reason field must stay public")
+        #expect(line.components(separatedBy: "\\(").count - 1 == 1, "no new interpolations on the skip line")
+
+        for (name, text) in sources where Self.b2Files.contains(name) {
+            for level in ["logger.debug(", "logger.trace(", "logger.info("] {
+                #expect(!text.contains(level), "\(name): '\(level)' is not persisted by macOS — use .notice or higher")
+            }
         }
     }
 

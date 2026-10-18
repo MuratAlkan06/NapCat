@@ -335,8 +335,11 @@ and does nothing at all if a kill-switch flag is present.
 
 ### Kill switch
 
-Pause detection at any time from the menu (**Claude → Pause detection**), or by
-hand:
+Pause detection at any time from the menu (**Details → Pause detection** — kept
+behind the Details disclosure so it cannot be flipped by accident), or by hand.
+While it is paused the menu says **Detection paused** at the top, and an armed
+lid alert reads "armed — but Claude detection is paused; alerts cannot fire":
+with no busy markers, the alert can never fire.
 
 ```sh
 touch "$HOME/Library/Application Support/NapCat/claude-busy/DISABLED"   # pause
@@ -385,19 +388,23 @@ state, never arms itself, and never sends anything but its own fixed sentence.
    **do not copy any example from this README or from the app**: an example
    everybody can read is a feed everybody can read. Allowed: letters, digits,
    `_` and `-`, up to 64 characters.
-3. In the NapCat menu (Claude section) click **ntfy settings…**, paste the topic,
+3. In the NapCat menu open **Details** and click **ntfy settings…**, paste the topic,
    and leave the server as `https://ntfy.sh` unless you run your own instance.
    A custom server must be an `https://` origin and nothing more — no path,
    query, fragment, or `user@` part, and a plain ASCII host name or IP address
    (`https://ntfy.example.com:8443`). Anything else is refused with an
    explanation in the dialog rather than half-saved.
-4. Turn **Notify me if the Mac sleeps mid-task** on.
-5. **Send test message** — your phone should show a banner within a couple of
-   seconds. **The feature does not arm until a test message is accepted**, so
-   the lid-close alert is never the first thing your topic is trusted with.
+4. Turn the **Lid alert** toggle on.
+5. **Send test message** (under **Details**; switching the toggle on with an
+   untested topic sends one automatically) — your phone should show a banner
+   within a couple of seconds. **The feature does not arm until a test message
+   is accepted**, so the lid-close alert is never the first thing your topic is
+   trusted with.
 
-The menu then shows a persistent status row: whether it is armed, and the outcome
-and time of the last message. It deliberately never displays the topic itself.
+The menu then shows a status line under the toggle (whether it is armed) and,
+under **Details**, the outcome and time of the last message — which moves up next
+to the toggle whenever it is a failure. It deliberately never displays the topic
+itself.
 
 You can check a topic from the terminal without NapCat:
 

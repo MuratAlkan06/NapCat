@@ -306,7 +306,11 @@ final class LidGuardController: @unchecked Sendable {
 
         guard let destination = target else {
             if case .skip(let reason) = decision {
-                Self.logger.debug("lid guard: sleeping, no alert (\(reason.rawValue, privacy: .public))")
+                // PERSISTED level on purpose (F1, 2026-10-18): this was `.debug`,
+                // which macOS never writes to disk, so `log show` could not see
+                // the skip reason and a one-click "Pause detection" hid for five
+                // weeks. One line per real system sleep — low volume.
+                Self.logger.notice("lid guard: sleeping, no alert (\(reason.rawValue, privacy: .public))")
             }
             return
         }

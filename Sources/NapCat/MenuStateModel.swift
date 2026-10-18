@@ -1,6 +1,100 @@
 import ServiceManagement
 import SwiftUI
 
+// MARK: - Panel presentation types (UI redesign, 2026-10-18 — PLAN.md
+// "UI Redesign — Menu Panel (variant exploration)")
+
+/// Which layout variant renders the panel. Every variant renders the SAME
+/// model outputs; only the arrangement differs.
+///
+/// CURATION-ONLY SCAFFOLD: exists so the user can compare the variants live
+/// before the design freezes. Read from `DefaultsKey.menuPanelStyle` on every
+/// menu open (no restart). At freeze: delete the losing variants, this enum,
+/// the "Panel style (preview)" row and the key (moving it to
+/// `RetiredDefaultsKey` so it is cleaned out of the plist).
+enum MenuPanelStyle: String, CaseIterable, Sendable {
+    /// "Quiet Rows" — one column, symbol + title + trailing control, captions
+    /// only for non-nominal states.
+    case a
+    /// "Grouped Cards" — Power / Claude / System inset containers.
+    case b
+    /// "Status Hero" — hero gauge + activity line, compact rows below.
+    case c
+
+    static let `default`: MenuPanelStyle = .b
+
+    /// Unset, junk, or unknown stored values read back as the default — a
+    /// hand-edited plist can never break the panel.
+    static func resolve(_ stored: Any?) -> MenuPanelStyle {
+        guard let raw = stored as? String,
+              let style = MenuPanelStyle(rawValue: raw.trimmingCharacters(in: .whitespaces).lowercased())
+        else { return .default }
+        return style
+    }
+
+    /// The preview row cycles A → B → C → A.
+    var next: MenuPanelStyle {
+        switch self {
+        case .a: return .b
+        case .b: return .c
+        case .c: return .a
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .a: return "A — Quiet Rows"
+        case .b: return "B — Grouped Cards"
+        case .c: return "C — Status Hero"
+        }
+    }
+
+    /// B shows explanatory captions for nominal states too; A and C render a
+    /// caption only when something is NOT nominal.
+    var showsNominalCaptions: Bool { self == .b }
+}
+
+/// How loud a panel line is. Decided ONLY by the pure mappings below — the
+/// view never classifies a string as a warning. Anything above `.nominal`
+/// renders with an icon AND text (never color alone).
+enum PanelSeverity: Int, Comparable, CaseIterable, Sendable {
+    case nominal, info, warning, error
+
+    static func < (lhs: PanelSeverity, rhs: PanelSeverity) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+/// One rendered status line plus its severity.
+struct PanelLine: Equatable, Sendable {
+    let text: String
+    let severity: PanelSeverity
+}
+
+/// Where a line renders. See `MenuStateModel.placement(ofDetailsLine:)`.
+enum PanelTier: Equatable, Sendable {
+    case topLevel
+    case details
+}
+
+/// Every SF Symbol name the panel uses, in one place so a unit test can prove
+/// each resolves on this macOS (a missing symbol renders as nothing at all).
+enum PanelSymbol {
+    static let stayAwake = "cup.and.saucer"
+    static let lockScreen = "lock.display"
+    static let chargeLimit = "battery.75percent"
+    static let claude = "terminal"
+    static let lidAlert = "bell"
+    static let disclosure = "chevron.right"
+    static let desktop = "desktopcomputer"
+    static let charging = "bolt.fill"
+    static let battery = "battery.100"
+    static let info = "info.circle"
+    static let warning = "exclamationmark.triangle.fill"
+    static let error = "xmark.octagon.fill"
+
+    static let all = [stayAwake, lockScreen, chargeLimit, claude, lidAlert, disclosure,
+                      desktop, charging, battery, info, warning, error]
+}
+
 /// Observable bridge between the controllers and the SwiftUI menu panel
 /// (P3b rich-menu decision). Views bind to the @Published mirrors, which are
 /// re-read from the controllers on every change hook and menu open — the UI
@@ -37,14 +131,27 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var claudeDetectionPaused = false
 
     // Track B / B2 (lid-close alert) mirrors. `lidGuardTopic` is a SECRET (the
-    // ntfy topic is the feed's only password) — it exists so the editor can be
-    // prefilled, and is deliberately never rendered into a panel caption.
+    // ntfy topic is the feed's only password). It is PRIVATE since the panel
+    // redesign: the views cannot even read it — they get only the never-echo
+    // derivations (`lidTopicStatus`, `lidAlertTestSendAvailable`). The editor
+    // reads the controller directly.
     @Published private(set) var lidGuardEnabled = false
-    @Published private(set) var lidGuardTopic = ""
+    @Published private var lidGuardTopic = ""
     @Published private(set) var lidGuardServer = LidGuardTuning.defaultNtfyServer
     @Published private(set) var lidGuardArming: LidGuardArmingState = .off
     @Published private(set) var lidGuardLastOutcome: MessageSendOutcome?
     @Published private(set) var lidGuardLastOutcomeAt: Double?
+
+    // Panel redesign (2026-10-18).
+    /// Curation scaffold — re-read from defaults on every refresh (hence on
+    /// every menu open), so `defaults write … menuPanelStyle` needs no restart.
+    @Published private(set) var panelStyle: MenuPanelStyle = .default
+    /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
+    /// persisted to defaults: it survives menu close/reopen for the app's
+    /// lifetime (so the height is measured with the right content before the
+    /// menu opens) and starts collapsed at launch. Collapsing is always safe —
+    /// problems never live only in Details (the iron rule).
+    @Published private(set) var detailsExpanded = false
 
     // MARK: Wiring
 
@@ -59,6 +166,9 @@ final class MenuStateModel: ObservableObject {
     private let detection: ClaudeActivityController?
     /// Non-nil outside debugBattery mode — drives the lid-alert controls (B2).
     private let lidGuard: LidGuardController?
+    /// Holds only the curation-only `menuPanelStyle` key. nil (tests, by
+    /// default) ⇒ the default style and nothing persisted.
+    private let defaults: UserDefaults?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -85,7 +195,8 @@ final class MenuStateModel: ObservableObject {
         screenLock: ScreenLockController? = nil,
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
-        lidGuard: LidGuardController? = nil
+        lidGuard: LidGuardController? = nil,
+        defaults: UserDefaults? = nil
     ) {
         self.power = power
         self.sleep = sleep
@@ -95,6 +206,7 @@ final class MenuStateModel: ObservableObject {
         self.simulator = simulator
         self.detection = detection
         self.lidGuard = lidGuard
+        self.defaults = defaults
         refresh()
     }
 
@@ -127,6 +239,8 @@ final class MenuStateModel: ObservableObject {
         lidGuardArming = lidGuard?.armingState ?? .off
         lidGuardLastOutcome = lidGuard?.lastSendOutcome
         lidGuardLastOutcomeAt = lidGuard?.lastSendOutcomeAt
+        // Observed, not cached: the stored style is re-read every time.
+        panelStyle = MenuPanelStyle.resolve(defaults?.object(forKey: DefaultsKey.menuPanelStyle))
     }
 
     // MARK: Actions (forwarded)
@@ -166,6 +280,91 @@ final class MenuStateModel: ObservableObject {
     func setLidGuardEnabled(_ enabled: Bool) { requestLidGuardToggle?(enabled) }
     func editLidGuardSettings() { requestLidGuardSettingsPrompt?() }
     func sendLidGuardTestMessage() { requestLidGuardTestSend?() }
+
+    // MARK: Panel-only actions (pure UI state — never dismiss the menu)
+
+    /// The Details chevron. Purely local state: no controller, no AppKit flow,
+    /// so it can never dismiss the menu. The open menu follows the new height
+    /// through `MenuPanelHostingView`.
+    func setDetailsExpanded(_ expanded: Bool) { detailsExpanded = expanded }
+
+    /// Curation scaffold: persist the next style and show it immediately.
+    func cyclePanelStyle() {
+        let next = panelStyle.next
+        defaults?.set(next.rawValue, forKey: DefaultsKey.menuPanelStyle)
+        panelStyle = next
+    }
+
+    // MARK: Panel presentation — EVERY variant renders these, so A/B/C are
+    // composed from identical outputs (thin wrappers over the pure mappings).
+
+    var stayAwakeCaption: PanelLine? { Self.stayAwakeCaption(forObserved: stayAwakeObserved) }
+    var lockScreenCaption: PanelLine? { Self.lockScreenCaption(available: lockScreenAvailable) }
+    var chargeLimitCaption: PanelLine? { Self.chargeLimitCaption(for: featureState) }
+    var launchAtLoginCaption: PanelLine? { Self.launchAtLoginCaption(for: loginItemStatus) }
+
+    var claudeStatus: PanelLine {
+        Self.claudeStatusLine(
+            inFlight: claudeTaskInFlight,
+            holdingAwake: claudeHoldingAwake,
+            paused: claudeDetectionPaused
+        )
+    }
+
+    var claudeStatusHint: String? { Self.claudeStatusHint(paused: claudeDetectionPaused) }
+
+    var hookStatus: PanelLine {
+        Self.claudeHookStatus(
+            installed: claudeHookInstalled,
+            everSeen: claudeHookEverSeen,
+            lastSeenSeconds: claudeHookLastSeenSeconds
+        )
+    }
+
+    var lidStatus: PanelLine {
+        Self.lidAlertStatus(
+            for: lidGuardArming,
+            lastOutcome: lidGuardLastOutcome,
+            detectionPaused: claudeDetectionPaused
+        )
+    }
+
+    /// Never the topic itself — only whether one is set / usable.
+    var lidTopicStatus: PanelLine { Self.lidAlertTopicStatus(lidGuardTopic) }
+    var lidServerStatus: PanelLine { Self.lidAlertServerStatus(lidGuardServer) }
+
+    func lidLastSend(now: Double) -> PanelLine {
+        Self.lidAlertLastSend(outcome: lidGuardLastOutcome, at: lidGuardLastOutcomeAt, now: now)
+    }
+
+    var lidAlertTestSendAvailable: Bool {
+        Self.lidAlertTestSendAvailable(server: lidGuardServer, topic: lidGuardTopic)
+    }
+
+    var heroActivity: String {
+        Self.heroActivityLine(
+            stayAwakeObserved: stayAwakeObserved,
+            claudeTaskInFlight: claudeDetectionVisible && claudeTaskInFlight,
+            detectionPaused: claudeDetectionVisible && claudeDetectionPaused,
+            lidArming: lidGuardVisible ? lidGuardArming : .off,
+            lastOutcome: lidGuardLastOutcome
+        )
+    }
+
+    /// Badge on the collapsed "Details" row: the worst severity among the
+    /// items whose home or fix lives in Details (the problems themselves are
+    /// already shown at top level — the badge says where the setting is).
+    var detailsBadge: PanelSeverity {
+        var severities = [launchAtLoginCaption?.severity ?? .nominal]
+        if claudeDetectionVisible {
+            severities += [claudeStatus.severity, hookStatus.severity]
+        }
+        if lidGuardVisible {
+            severities += [lidStatus.severity, lidTopicStatus.severity, lidServerStatus.severity,
+                           Self.lidAlertLastSendSeverity(lidGuardLastOutcome, at: lidGuardLastOutcomeAt)]
+        }
+        return Self.detailsBadge(severities)
+    }
 
     // MARK: - Pure display mappings (unit-tested)
 
@@ -265,16 +464,39 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - Track B (Claude detection) presentation (READ-ONLY display)
 
-    /// Primary line: whether a Claude turn is in flight. Paused (kill switch)
-    /// takes precedence over running/idle.
-    nonisolated static func claudeTaskLine(inFlight: Bool, paused: Bool) -> String {
-        if paused { return "Claude task: detection paused" }
-        return inFlight ? "Claude task: running" : "Claude task: idle"
+    /// The ONE top-level Claude row (merged 2026-10-18 from the old task line +
+    /// awake line). Paused (the kill switch) wins over everything: it is a
+    /// non-nominal state the user must be able to see without opening Details,
+    /// because while paused no busy marker exists and the lid alert can never
+    /// fire (the 2026-10-18 root cause). "Keeping Mac awake" comes from the
+    /// sleep-assertion reader, which is NOT the busy signal — so it can be true
+    /// while the task is idle, and both facts are kept.
+    nonisolated static func claudeStatusLine(inFlight: Bool, holdingAwake: Bool, paused: Bool) -> PanelLine {
+        if paused { return PanelLine(text: "Detection paused", severity: .warning) }
+        let task = inFlight ? "Claude: running" : "Claude: idle"
+        return PanelLine(text: holdingAwake ? task + " — keeping Mac awake" : task, severity: .nominal)
     }
 
-    /// Secondary line from the sleep-assertion reader (NOT the busy signal).
-    nonisolated static func claudeAwakeLine(holding: Bool) -> String {
-        "Keeping Mac awake: \(holding ? "yes" : "no")"
+    /// Where to undo the pause — the toggle itself sits in Details (F3), so the
+    /// top-level row has to say where it went.
+    nonisolated static func claudeStatusHint(paused: Bool) -> String? {
+        paused ? "Busy markers are ignored. Turn it back on under Details › Pause detection." : nil
+    }
+
+    /// Explanation under the Pause toggle inside Details: pausing is legitimate
+    /// but has a non-obvious consequence for the lid alert.
+    nonisolated static let pauseDetectionCaption =
+        "Stops reading Claude busy markers. While paused the lid alert cannot fire."
+
+    /// Hook liveness with its severity: not installed / never seen are
+    /// problems (they escape Details); "last seen …" is nominal. A long gap is
+    /// NOT flagged — it may simply mean Claude has not been used.
+    nonisolated static func claudeHookStatus(installed: Bool, everSeen: Bool, lastSeenSeconds: Int?) -> PanelLine {
+        let healthy = installed && everSeen && lastSeenSeconds != nil
+        return PanelLine(
+            text: claudeHookLine(installed: installed, everSeen: everSeen, lastSeenSeconds: lastSeenSeconds),
+            severity: healthy ? .nominal : .warning
+        )
     }
 
     /// Hook-liveness line from the marker-dir state. Dir absent ⇒ not
@@ -305,9 +527,19 @@ final class MenuStateModel: ObservableObject {
     /// refused or failed outright, the armed line must NOT claim "armed"; it
     /// names the fix instead. The arming logic itself is untouched; only the
     /// DISPLAYED wording changes.
+    ///
+    /// Second downgrade (F2, 2026-10-18): while Claude detection is PAUSED the
+    /// guard is still registered and hears every sleep, but no busy marker can
+    /// exist, so the gate always skips — armed+paused can NEVER fire. Plain
+    /// "armed" there is what hid the five-week outage. Paused takes precedence
+    /// over a failed last send because it is the stronger claim (cannot fire at
+    /// all); the failed send still shows on its own line (`lidAlertLastSend`),
+    /// which escapes Details as an error. `detectionPaused` has no default on
+    /// purpose — a caller that forgets it must not get the dishonest line.
     nonisolated static func lidAlertStatusLine(
         for state: LidGuardArmingState,
-        lastOutcome: MessageSendOutcome?
+        lastOutcome: MessageSendOutcome?,
+        detectionPaused: Bool
     ) -> String {
         switch state {
         case .off:
@@ -317,6 +549,9 @@ final class MenuStateModel: ObservableObject {
         case .needsTestSend:
             return "Lid alert: send the test message to check your phone gets it"
         case .armed:
+            if detectionPaused {
+                return "Lid alert: armed — but Claude detection is paused; alerts cannot fire"
+            }
             switch lastOutcome {
             case .rejected?, .sendFailed?:
                 return "Lid alert: the last message did not go out — re-run Send test message"
@@ -324,6 +559,65 @@ final class MenuStateModel: ObservableObject {
                 return "Lid alert: armed — best-effort push if this Mac sleeps mid-task"
             }
         }
+    }
+
+    /// The status line with its severity. Off is a choice (nominal); a switched-
+    /// on feature that is not armed yet, or armed but unable to fire, is a
+    /// warning; armed with a failed last publish is an error.
+    nonisolated static func lidAlertStatus(
+        for state: LidGuardArmingState,
+        lastOutcome: MessageSendOutcome?,
+        detectionPaused: Bool
+    ) -> PanelLine {
+        let text = lidAlertStatusLine(for: state, lastOutcome: lastOutcome, detectionPaused: detectionPaused)
+        let severity: PanelSeverity
+        switch state {
+        case .off:
+            severity = .nominal
+        case .needsTopic, .needsTestSend:
+            severity = .warning
+        case .armed:
+            if detectionPaused {
+                severity = .warning
+            } else if case .rejected? = lastOutcome {
+                severity = .error
+            } else if case .sendFailed? = lastOutcome {
+                severity = .error
+            } else {
+                severity = .nominal
+            }
+        }
+        return PanelLine(text: text, severity: severity)
+    }
+
+    nonisolated static func lidAlertTopicStatus(_ topic: String) -> PanelLine {
+        let invalid = LidGuardPolicy.validateTopic(topic) == .invalid
+        return PanelLine(text: lidAlertTopicLine(topic), severity: invalid ? .warning : .nominal)
+    }
+
+    nonisolated static func lidAlertServerStatus(_ server: String) -> PanelLine {
+        let invalid = LidGuardPolicy.validateServer(server) == .invalid
+        return PanelLine(text: lidAlertServerLine(server), severity: invalid ? .warning : .nominal)
+    }
+
+    /// A refused or failed publish is an error; "unconfirmed" is a warning
+    /// (we do not know, and it does not prime); accepted / none are nominal.
+    /// Same guard as `lidAlertLastSendCaption`: no timestamp ⇒ the caption says
+    /// "none", so the severity must not claim otherwise.
+    nonisolated static func lidAlertLastSendSeverity(_ outcome: MessageSendOutcome?, at: Double?) -> PanelSeverity {
+        guard at != nil else { return .nominal }
+        switch outcome {
+        case nil, .accepted?: return .nominal
+        case .timedOutUnconfirmed?: return .warning
+        case .rejected?, .sendFailed?: return .error
+        }
+    }
+
+    nonisolated static func lidAlertLastSend(outcome: MessageSendOutcome?, at: Double?, now: Double) -> PanelLine {
+        PanelLine(
+            text: lidAlertLastSendCaption(outcome: outcome, at: at, now: now),
+            severity: lidAlertLastSendSeverity(outcome, at: at)
+        )
     }
 
     /// Topic row. THE TOPIC IS NEVER ECHOED: on ntfy the topic name is the only
@@ -405,7 +699,9 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Standing security note: on ntfy there is no account, so the topic name
-    /// is the whole access-control story. Always visible in the section.
+    /// is the whole access-control story. Lives in the Details tier next to
+    /// "ntfy settings…" since the 2026-10-18 redesign (kept, not removed —
+    /// the user has not signed off on dropping it).
     nonisolated static let lidAlertTopicSecrecyNote =
         "Anyone who knows your topic name can read — and post to — your alerts. "
         + "Pick a long, unguessable name and keep it private."
@@ -413,5 +709,97 @@ final class MenuStateModel: ObservableObject {
     /// The test send is offered only when there is something to publish TO.
     nonisolated static func lidAlertTestSendAvailable(server: String, topic: String) -> Bool {
         LidGuardPolicy.destination(server: server, topic: topic) != nil
+    }
+
+    // MARK: - Panel tiers + severity (UI redesign 2026-10-18)
+
+    /// THE IRON RULE, in one place: a line whose home is the Details
+    /// disclosure stays there ONLY while it is nominal. Anything else — error,
+    /// setup required, send failed, hook missing, detection paused, an armed
+    /// downgrade — renders at top level. Collapsed sections may hide settings,
+    /// never problems.
+    nonisolated static func placement(ofDetailsLine severity: PanelSeverity) -> PanelTier {
+        severity == .nominal ? .details : .topLevel
+    }
+
+    /// The collapsed Details row's badge: the worst of the given severities.
+    nonisolated static func detailsBadge(_ severities: [PanelSeverity]) -> PanelSeverity {
+        severities.max() ?? .nominal
+    }
+
+    /// Leading icon for a non-nominal line (icon + text, never color alone);
+    /// nil for nominal lines.
+    nonisolated static func severitySymbol(_ severity: PanelSeverity) -> String? {
+        switch severity {
+        case .nominal: return nil
+        case .info: return PanelSymbol.info
+        case .warning: return PanelSymbol.warning
+        case .error: return PanelSymbol.error
+        }
+    }
+
+    /// VoiceOver prefix — the icon is decorative, so the meaning is spoken.
+    nonisolated static func severityAccessibilityPrefix(_ severity: PanelSeverity) -> String? {
+        switch severity {
+        case .nominal: return nil
+        case .info: return "Note"
+        case .warning: return "Warning"
+        case .error: return "Error"
+        }
+    }
+
+    /// Unreadable sleep state is a warning (never a silent "off").
+    nonisolated static func stayAwakeCaption(forObserved observed: Bool?) -> PanelLine? {
+        stayAwakeToggle(forObserved: observed).caption.map { PanelLine(text: $0, severity: .warning) }
+    }
+
+    /// The disabled-lock explanation is a warning (the button cannot work).
+    nonisolated static func lockScreenCaption(available: Bool) -> PanelLine? {
+        lockScreenPresentation(available: available).caption.map { PanelLine(text: $0, severity: .warning) }
+    }
+
+    /// Charge-limit message with severity: a write/verify error is an error,
+    /// missing setup is a warning, Intel (permanently unsupported) is info;
+    /// "charging normally" / "paused at the limit" are nominal status.
+    nonisolated static func chargeLimitCaption(for state: ChargeLimitFeatureState) -> PanelLine? {
+        guard let text = featureMessage(for: state) else { return nil }
+        let severity: PanelSeverity
+        switch state {
+        case .error: severity = .error
+        case .setupRequired: severity = .warning
+        case .notSupported: severity = .info
+        case .hidden, .off, .active, .paused: severity = .nominal
+        }
+        return PanelLine(text: text, severity: severity)
+    }
+
+    /// Compact trailing value for rows that do not show `limitLabel`.
+    nonisolated static func chargeLimitValueText(limit: Int) -> String {
+        limit >= 100 ? "No limit" : "\(limit)%"
+    }
+
+    /// Waiting-for-approval and not-found both need the user — warnings, so
+    /// the Launch at Login row escapes Details while either is showing.
+    nonisolated static func launchAtLoginCaption(for status: SMAppService.Status) -> PanelLine? {
+        launchAtLoginPresentation(for: status).caption.map { PanelLine(text: $0, severity: .warning) }
+    }
+
+    /// Variant C's activity line: ACTIVE facts only, "Idle" when there are
+    /// none. "Lid alert armed" appears only when the alert can really fire —
+    /// exactly when its status line is nominal-armed (no paused / failed-send
+    /// downgrade), so the hero can never be more optimistic than the status.
+    nonisolated static func heroActivityLine(
+        stayAwakeObserved: Bool?,
+        claudeTaskInFlight: Bool,
+        detectionPaused: Bool,
+        lidArming: LidGuardArmingState,
+        lastOutcome: MessageSendOutcome?
+    ) -> String {
+        var facts: [String] = []
+        if stayAwakeObserved == true { facts.append("Awake lock on") }
+        if claudeTaskInFlight && !detectionPaused { facts.append("Claude running") }
+        let lid = lidAlertStatus(for: lidArming, lastOutcome: lastOutcome, detectionPaused: detectionPaused)
+        if lidArming == .armed && lid.severity == .nominal { facts.append("Lid alert armed") }
+        return facts.isEmpty ? "Idle" : facts.joined(separator: " · ")
     }
 }

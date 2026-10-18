@@ -135,21 +135,21 @@ struct MenuStateModelTests {
         let everyOutcome: [MessageSendOutcome?] =
             [nil, .accepted, .rejected(404), .timedOutUnconfirmed, .sendFailed("boom")]
         for outcome in everyOutcome {
-            #expect(MenuStateModel.lidAlertStatusLine(for: .off, lastOutcome: outcome) == "Lid alert: off")
-            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTopic, lastOutcome: outcome).contains("ntfy topic"))
-            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTestSend, lastOutcome: outcome).contains("test message"))
+            #expect(MenuStateModel.lidAlertStatusLine(for: .off, lastOutcome: outcome, detectionPaused: false) == "Lid alert: off")
+            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTopic, lastOutcome: outcome, detectionPaused: false).contains("ntfy topic"))
+            #expect(MenuStateModel.lidAlertStatusLine(for: .needsTestSend, lastOutcome: outcome, detectionPaused: false).contains("test message"))
         }
         // Armed reads "armed" when the last publish worked, is unconfirmed, or
         // has not happened yet.
         for outcome: MessageSendOutcome? in [nil, .accepted, .timedOutUnconfirmed] {
-            let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome)
+            let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome, detectionPaused: false)
             #expect(line.contains("armed"))
             // The armed line must stay honest about what is promised.
             #expect(line.contains("best-effort"))
         }
         // No TCC vocabulary survives the channel swap.
         for state: LidGuardArmingState in [.off, .needsTopic, .needsTestSend, .armed] {
-            let line = MenuStateModel.lidAlertStatusLine(for: state, lastOutcome: nil)
+            let line = MenuStateModel.lidAlertStatusLine(for: state, lastOutcome: nil, detectionPaused: false)
             for token in ["Messages", "iMessage", "Automation", "permission"] {
                 #expect(!line.contains(token), "'\(token)' must not appear in: \(line)")
             }
@@ -162,7 +162,7 @@ struct MenuStateModelTests {
     /// armed; it points back at the test send. (Arming logic is untouched.)
     @Test func lidAlertStatusLineDowngradesAfterAFailedSend() {
         for outcome: MessageSendOutcome in [.rejected(403), .rejected(404), .sendFailed("boom")] {
-            let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome)
+            let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome, detectionPaused: false)
             #expect(!line.contains("armed"), "must not claim armed after a message failed to go out")
             #expect(line.contains("did not go out"))
             #expect(line.contains("test message"))

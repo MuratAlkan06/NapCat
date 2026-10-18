@@ -66,7 +66,8 @@ struct ClaudeDetectionStructureTests {
     /// process/IOKit read symbol (belt-and-braces over the confinement above).
     @Test func nonReaderDetectionFilesAreSyscallFree() throws {
         let nonReaders = ["ClaudeActivityPolicy.swift", "ClaudeActivityController.swift",
-                          "BusyMarkerStore.swift", "MenuStateModel.swift", "MenuPanelView.swift"]
+                          "BusyMarkerStore.swift", "MenuStateModel.swift", "MenuPanelView.swift",
+                          "MenuPanelVariants.swift"]
         let dir = Self.sourcesDir()
         for file in nonReaders {
             let text = Self.codeOnly(try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8))

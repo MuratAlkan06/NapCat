@@ -240,16 +240,28 @@ struct ClaudeActivityPolicyTests {
         #expect(ClaudeActivityPolicy.relativeTime(seconds: -5) == "just now", "negative skew clamps")
     }
 
-    @Test func taskLinePresentation() {
-        #expect(MenuStateModel.claudeTaskLine(inFlight: true, paused: false) == "Claude task: running")
-        #expect(MenuStateModel.claudeTaskLine(inFlight: false, paused: false) == "Claude task: idle")
-        #expect(MenuStateModel.claudeTaskLine(inFlight: true, paused: true) == "Claude task: detection paused",
-                "pause takes precedence over running")
+    /// Migrated 1:1 from the old `claudeTaskLine` + `claudeAwakeLine` pair
+    /// (2026-10-18 redesign merged them into the single top-level row).
+    @Test func statusLineCoversTheOldTaskFacts() {
+        #expect(MenuStateModel.claudeStatusLine(inFlight: true, holdingAwake: false, paused: false)
+                == PanelLine(text: "Claude: running", severity: .nominal))
+        #expect(MenuStateModel.claudeStatusLine(inFlight: false, holdingAwake: false, paused: false)
+                == PanelLine(text: "Claude: idle", severity: .nominal))
+        #expect(MenuStateModel.claudeStatusLine(inFlight: true, holdingAwake: true, paused: true).text
+                == "Detection paused", "pause takes precedence over running")
     }
 
-    @Test func awakeLinePresentation() {
-        #expect(MenuStateModel.claudeAwakeLine(holding: true) == "Keeping Mac awake: yes")
-        #expect(MenuStateModel.claudeAwakeLine(holding: false) == "Keeping Mac awake: no")
+    /// The sleep-assertion reader is NOT the busy signal: "keeping Mac awake"
+    /// is reported whether or not a task is in flight, and never invented.
+    @Test func statusLineCoversTheOldAwakeFacts() {
+        #expect(MenuStateModel.claudeStatusLine(inFlight: true, holdingAwake: true, paused: false).text
+                == "Claude: running — keeping Mac awake")
+        #expect(MenuStateModel.claudeStatusLine(inFlight: false, holdingAwake: true, paused: false).text
+                == "Claude: idle — keeping Mac awake")
+        for inFlight in [true, false] {
+            #expect(!MenuStateModel.claudeStatusLine(inFlight: inFlight, holdingAwake: false, paused: false)
+                .text.contains("awake"))
+        }
     }
 
     @Test func hookLinePresentation() {
