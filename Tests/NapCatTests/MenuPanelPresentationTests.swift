@@ -7,10 +7,10 @@ import Testing
 @testable import NapCat
 
 /// Menu-panel redesign (2026-10-18, PLAN.md "UI Redesign — Menu Panel"): the
-/// pure mappings every layout variant renders — merged Claude row, F2 armed
-/// downgrade, severity classification, the iron rule (nothing non-nominal
-/// stays behind Details), the collapsed badge, the hero line — plus the model's
-/// panel state (style re-read on every open, in-memory disclosure).
+/// pure mappings the panel renders — merged Claude row, F2 armed downgrade,
+/// severity classification, the iron rule (nothing non-nominal stays behind
+/// Details), the collapsed badge — plus the model's panel state (in-memory
+/// disclosure). The design froze on one layout the same day.
 struct MenuPanelPresentationTests {
     // MARK: - Merged Claude row (tier 1)
 
@@ -214,21 +214,16 @@ struct MenuPanelPresentationTests {
         for status: SMAppService.Status in [.notRegistered, .enabled, .requiresApproval, .notFound] {
             if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
         }
-        // Variant C keeps the nominal Claude row in Details.
-        for inFlight in [false, true] {
-            for holding in [false, true] {
-                for paused in [false, true] {
-                    lines.append(MenuStateModel.claudeStatusLine(inFlight: inFlight, holdingAwake: holding, paused: paused))
-                }
-            }
-        }
+        // The Claude status row is NOT a Details line since the design freeze:
+        // only the deleted Status Hero variant tucked it there. It is always
+        // top level (its full truth table is `claudeStatusLineTruthTable`).
         return lines
     }
 
     @Test func noNonNominalLineStaysBehindTheDisclosure() {
         let lines = Self.everyDetailsHomeLine()
-        // 8 hook + 5 topic + 6 server + 10 last-send + 2 login captions + 8 Claude rows.
-        #expect(lines.count == 39, "vacuity guard — update when the input set changes")
+        // 8 hook + 5 topic + 6 server + 10 last-send + 2 login captions.
+        #expect(lines.count == 31, "vacuity guard — update when the input set changes")
         var surfaced = 0
         for line in lines {
             let problem = Self.readsLikeAProblem(line.text)
@@ -310,63 +305,6 @@ struct MenuPanelPresentationTests {
         #expect(PanelMetrics.titleIndent == PanelMetrics.symbolColumn + PanelMetrics.regular)
     }
 
-    // MARK: - Variant C hero line
-
-    @Test func heroActivityLineShowsActiveFactsOnly() {
-        #expect(MenuStateModel.heroActivityLine(stayAwakeObserved: false, claudeTaskInFlight: false,
-                                                detectionPaused: false, lidArming: .off, lastOutcome: nil) == "Idle")
-        #expect(MenuStateModel.heroActivityLine(stayAwakeObserved: nil, claudeTaskInFlight: false,
-                                                detectionPaused: false, lidArming: .off, lastOutcome: nil) == "Idle",
-                "unknown sleep state is never reported as an active lock")
-        #expect(MenuStateModel.heroActivityLine(stayAwakeObserved: true, claudeTaskInFlight: true,
-                                                detectionPaused: false, lidArming: .armed, lastOutcome: .accepted)
-                == "Awake lock on · Claude running · Lid alert armed")
-        #expect(MenuStateModel.heroActivityLine(stayAwakeObserved: false, claudeTaskInFlight: true,
-                                                detectionPaused: false, lidArming: .needsTestSend, lastOutcome: nil)
-                == "Claude running")
-    }
-
-    /// The hero can never be more optimistic than the status line: "Lid alert
-    /// armed" appears exactly when the lid status is nominal-armed.
-    @Test func heroNeverClaimsArmedWhenTheAlertCannotFire() {
-        for row in Self.lidRows {
-            let hero = MenuStateModel.heroActivityLine(stayAwakeObserved: false, claudeTaskInFlight: false,
-                                                       detectionPaused: row.paused, lidArming: row.state,
-                                                       lastOutcome: row.outcome)
-            let canFire = row.state == .armed && row.severity == .nominal
-            #expect(hero.contains("Lid alert armed") == canFire, "\(row.testDescription) → \(hero)")
-        }
-        #expect(!MenuStateModel.heroActivityLine(stayAwakeObserved: false, claudeTaskInFlight: true,
-                                                 detectionPaused: true, lidArming: .off, lastOutcome: nil)
-            .contains("Claude running"))
-    }
-
-    // MARK: - MenuPanelStyle (curation scaffold)
-
-    /// Curation round 1 scrapped B: unset, junk, non-string AND the retired
-    /// "b" (which a live plist may still hold) all fall back to A.
-    @Test func panelStyleResolvesStoredValuesSafely() {
-        #expect(MenuPanelStyle.default == .a)
-        #expect(MenuPanelStyle.resolve(nil) == .a, "unset ⇒ default")
-        #expect(MenuPanelStyle.resolve("a") == .a)
-        #expect(MenuPanelStyle.resolve("C") == .c)
-        #expect(MenuPanelStyle.resolve(" c ") == .c)
-        #expect(MenuPanelStyle.resolve("b") == .a, "scrapped variant B ⇒ default")
-        #expect(MenuPanelStyle.resolve(" B ") == .a, "scrapped variant B, any spelling ⇒ default")
-        #expect(MenuPanelStyle.resolve("z") == .a, "unknown ⇒ default")
-        #expect(MenuPanelStyle.resolve(42) == .a, "non-string ⇒ default")
-        #expect(MenuPanelStyle.allCases.map(\.rawValue) == ["a", "c"], "raw values are the stored strings")
-    }
-
-    @Test func panelStyleTogglesBetweenAAndC() {
-        #expect(MenuPanelStyle.a.next == .c)
-        #expect(MenuPanelStyle.c.next == .a)
-        for style in MenuPanelStyle.allCases {
-            #expect(style.next != style && style.next.next == style, "the preview button is a two-way toggle")
-        }
-        #expect(Set(MenuPanelStyle.allCases.map(\.title)).count == MenuPanelStyle.allCases.count)
-    }
-
     // MARK: - Model panel state
 
     @MainActor
@@ -381,44 +319,8 @@ struct MenuPanelPresentationTests {
         let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
         let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
         let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter,
-                                   detection: detection, lidGuard: lidGuard, defaults: defaults)
+                                   detection: detection, lidGuard: lidGuard)
         try body(model, defaults, suite)
-    }
-
-    /// Observed-state ADR: the stored style is re-read on every refresh (hence
-    /// every menu open) — an external `defaults write` needs no restart.
-    @Test @MainActor func panelStyleIsReReadOnRefreshNoRestart() {
-        withModel { model, defaults, _ in
-            #expect(model.panelStyle == .a)
-            defaults.set("c", forKey: DefaultsKey.menuPanelStyle)
-            #expect(model.panelStyle == .a, "picked up on refresh, not by magic")
-            model.refresh()
-            #expect(model.panelStyle == .c)
-            defaults.set("junk", forKey: DefaultsKey.menuPanelStyle)
-            model.refresh()
-            #expect(model.panelStyle == .a)
-            defaults.set("c", forKey: DefaultsKey.menuPanelStyle)
-            model.refresh()
-            #expect(model.panelStyle == .c)
-            // The scrapped variant, as a pre-round-1 plist may still store it.
-            defaults.set("b", forKey: DefaultsKey.menuPanelStyle)
-            model.refresh()
-            #expect(model.panelStyle == .a)
-        }
-    }
-
-    /// The preview button toggles A ↔ C and persists each choice.
-    @Test @MainActor func cyclingPersistsTheStyle() {
-        withModel { model, defaults, _ in
-            model.cyclePanelStyle()
-            #expect(model.panelStyle == .c)
-            #expect(defaults.string(forKey: DefaultsKey.menuPanelStyle) == "c")
-            model.refresh()
-            #expect(model.panelStyle == .c, "survives the next open")
-            model.cyclePanelStyle()
-            #expect(model.panelStyle == .a, "back to A — there is no third variant")
-            #expect(defaults.string(forKey: DefaultsKey.menuPanelStyle) == "a")
-        }
     }
 
     /// The disclosure is in-memory UI state: it survives refreshes (menu
@@ -437,20 +339,18 @@ struct MenuPanelPresentationTests {
     }
 
     /// debugBattery wiring (no detection, no lid guard): absent subsystems
-    /// cannot raise the badge or reach the hero line.
-    @Test @MainActor func absentSubsystemsNeverReachTheBadgeOrHero() {
+    /// cannot raise the badge.
+    @Test @MainActor func absentSubsystemsNeverRaiseTheBadge() {
         withModel { model, _, _ in
             #expect(!model.claudeDetectionVisible && !model.lidGuardVisible)
             #expect(model.detailsBadge == .nominal)
-            #expect(!model.heroActivity.contains("Claude"))
-            #expect(!model.heroActivity.contains("Lid alert"))
         }
     }
 
     /// F2 end to end: the DISABLED flag read by the detection controller is
     /// threaded into the lid status the panel renders — armed + paused shows
-    /// the downgrade, the Claude row says "Detection paused", the badge and the
-    /// hero agree. Removing the flag restores plain "armed".
+    /// the downgrade, the Claude row says "Detection paused", and the badge
+    /// agrees. Removing the flag restores plain "armed".
     @Test @MainActor func pausedDetectionDowngradesTheArmedLineThroughTheModel() throws {
         let markerDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("napcat-menupanel-\(UUID().uuidString)")
@@ -472,7 +372,6 @@ struct MenuPanelPresentationTests {
                 #expect(model.lidStatus.text.contains("cannot fire"))
                 #expect(model.lidStatus.severity == .warning)
                 #expect(model.detailsBadge >= .warning, "the Pause toggle lives in Details")
-                #expect(!model.heroActivity.contains("Lid alert armed"))
 
                 detection.setPaused(false)
                 detection.sample()
@@ -485,8 +384,8 @@ struct MenuPanelPresentationTests {
 }
 
 // MARK: - Detection stubs (no filesystem scan, no process enumeration, no IOKit)
-// Module-internal: ScaffoldTests reuses them to wire a hermetic detection
-// controller into the real panel.
+// Module-internal, so any suite can wire a hermetic detection controller into
+// the real model or panel.
 
 final class StubMarkerStore: BusyMarkerStore {
     func markers() -> [BusyMarker] { [] }

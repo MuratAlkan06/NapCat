@@ -20,12 +20,11 @@ import SwiftUI
 /// heat warning, setup required, failure, the "ntfy settings…" editor —
 /// plus Lock Screen (the user is deliberately leaving the machine), and they
 /// all go through `closeMenuThenPresent` (dismiss cleanly first, then
-/// present). The Details disclosure and the style preview are pure model
-/// state and never reach this class at all.
+/// present). The Details disclosure is pure model state and never reaches
+/// this class at all.
 ///
 /// Height (2026-10-18 redesign): the panel's height changes while the menu
-/// is OPEN (Details disclosure, style switch, a caption appearing after an
-/// async outcome). `MenuPanelHostingView` re-fits its own frame in the first
+/// is OPEN (Details disclosure, a caption appearing after an async outcome). `MenuPanelHostingView` re-fits its own frame in the first
 /// layout pass that sees new content, and NSMenu follows a view-based item's
 /// frame live — see that class.
 @MainActor
@@ -83,8 +82,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             screenLock: screenLock,
             simulator: simulator,
             detection: detection,
-            lidGuard: lidGuard,
-            defaults: defaults
+            lidGuard: lidGuard
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -146,9 +144,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // touch the network.
         lidGuard?.refreshArming()
         model.refresh()
-        // Section visibility (charge limit, debug), the stored style and the
-        // Details state can change the height — pre-size before the menu lays
-        // out. If SwiftUI has not applied this refresh yet, the hosting view's
+        // Section visibility (charge limit, debug) and the Details state can
+        // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's
         // own first layout pass corrects it before anything is displayed.
         hostingView.refitToContent()
     }

@@ -12,7 +12,7 @@ struct ScaffoldTests {
     /// Isolated defaults suite so tests never touch com.muratalkan.napcat.
     private static let testSuite = "com.muratalkan.napcat.tests"
 
-    private func makeMenuContent(detection: ClaudeActivityController? = nil) -> MenuContentView {
+    private func makeMenuContent() -> MenuContentView {
         let defaults = UserDefaults(suiteName: Self.testSuite)!
         defaults.removePersistentDomain(forName: Self.testSuite)
         let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
@@ -23,7 +23,6 @@ struct ScaffoldTests {
             power: simulator,
             limiter: limiter,
             simulator: simulator,
-            detection: detection,
             defaults: defaults
         )
     }
@@ -66,7 +65,7 @@ struct ScaffoldTests {
     }
 
     /// 2026-10-18 redesign — the NSMenu height problem. The panel's height
-    /// changes while the menu is OPEN (Details disclosure, style switch); a
+    /// changes while the menu is OPEN (Details disclosure, async captions); a
     /// frame measured once at menuWillOpen used to clip. MenuPanelHostingView
     /// re-fits itself in the first layout pass that sees new content (NSMenu
     /// follows an item view's frame live — NSMenuItem.h). Driven headlessly in
@@ -89,33 +88,6 @@ struct ScaffoldTests {
         menuContent.model.setDetailsExpanded(false)
         Self.settle(view)
         #expect(abs(view.frame.height - collapsed) < 1, "collapsing must not leave dead space")
-    }
-
-    /// Same mechanism for the curation-only style switch: every variant ends
-    /// up exactly content-sized, without reopening the menu. Since curation
-    /// round 2 A and C share the hero-size header, so the height difference
-    /// that proves a real re-fit comes from the Claude row (top-level in A,
-    /// tucked in Details in C): detection is wired with stubs and a
-    /// nonexistent marker dir, and it is never sampled (no menu opens).
-    @Test func panelRefitsForEveryStyleWithoutReopening() throws {
-        let detection = ClaudeActivityController(
-            store: StubMarkerStore(), prober: StubProber(), assertions: StubAssertions(),
-            markerDirURL: URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("napcat-scaffold-\(UUID().uuidString)")
-        )
-        let menuContent = makeMenuContent(detection: detection)
-        let view = try #require(menuContent.menu.items[0].view)
-        let window = Self.offscreenHost(view)
-        defer { window.contentView = nil }
-        var heights: Set<Int> = []
-        for _ in MenuPanelStyle.allCases {
-            menuContent.model.cyclePanelStyle()
-            Self.settle(view)
-            #expect(abs(view.frame.height - view.fittingSize.height) < 1,
-                    "\(menuContent.model.panelStyle) is not content-sized")
-            heights.insert(Int(view.frame.height.rounded()))
-        }
-        #expect(heights.count > 1, "the variants differ in height — the re-fit was really exercised")
     }
 
     private static func offscreenHost(_ view: NSView) -> NSWindow {

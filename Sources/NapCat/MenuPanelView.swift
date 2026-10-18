@@ -12,20 +12,16 @@ import SwiftUI
 /// Details — `TuckedLine` / `SurfacedLine` split every Details-home line on
 /// `MenuStateModel.placement(ofDetailsLine:)`, so each renders exactly once.
 ///
-/// The layout variant (A/C, MenuPanelVariants.swift) is a curation-only
-/// scaffold; every variant composes the shared components below from the SAME
-/// model outputs. Views decide arrangement only — never what is a warning.
+/// Design freeze (2026-10-18): the panel is ONE fixed layout, `QuietRowsPanel`
+/// (MenuPanelVariants.swift), composed from the shared components below. The
+/// curation variants and their picker are gone. Views decide arrangement only —
+/// never what is a warning.
 struct MenuPanelView: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        Group {
-            switch model.panelStyle {
-            case .a: QuietRowsPanel(model: model)
-            case .c: StatusHeroPanel(model: model)
-            }
-        }
-        .frame(width: PanelMetrics.width)
+        QuietRowsPanel(model: model)
+            .frame(width: PanelMetrics.width)
     }
 }
 
@@ -47,7 +43,7 @@ enum PanelMetrics {
     static let symbolColumn: CGFloat = 28
     /// Captions under a symbol row align with the row title.
     static let titleIndent: CGFloat = symbolColumn + regular
-    /// Gap between feature blocks in the variants' main column.
+    /// Gap between feature blocks in the panel's main column.
     static let rowSpacing: CGFloat = loose
 }
 
@@ -70,7 +66,7 @@ struct PanelFeature<Content: View>: View {
 
 /// One status line. Non-nominal ⇒ severity icon + text (never color alone),
 /// with the severity spoken to VoiceOver. Nominal ⇒ a plain secondary caption,
-/// rendered only when the variant shows nominal captions.
+/// rendered only when the caller shows nominal captions.
 struct PanelCaptionLine: View {
     let line: PanelLine
     var showsNominal = true
@@ -348,8 +344,8 @@ struct LaunchAtLoginRow: View {
     }
 }
 
-/// The panel's LAST row in every variant (curation round 1, 2026-10-18): the
-/// ONE Details disclosure on the left, Quit on the right. Expanded Details
+/// The panel's LAST row (curation round 1, 2026-10-18): the ONE Details
+/// disclosure on the left, Quit on the right. Expanded Details
 /// content renders ABOVE this row, so the footer — and Quit — always close
 /// the panel.
 struct PanelFooterRow: View {
@@ -368,21 +364,14 @@ struct PanelFooterRow: View {
 
 // MARK: - Battery header
 
-/// Live battery gauge + charging state. Two independent knobs (curation
-/// round 2, 2026-10-18): `size` is the ring geometry ONLY — `.hero` is the
-/// full-size ring (~76pt header), `.compact` the classic 44pt one; `content`
-/// is what the header SAYS, in the text column AND inside the ring —
-/// `.headline` ("Battery N%" + charging line, charge-state glyph in the ring;
-/// variant A) or `.activity` (charging line + the composed activity line,
-/// percent in the ring; variant C). A and C both use `.hero` so the rings are
-/// the same size and the comparison is fair.
+/// Live battery gauge + charging state — the panel's header, frozen
+/// 2026-10-18 as the curated Quiet Rows header: the full-size ring of
+/// curation round 2 (~76pt header) with the charge-state glyph inside it, and
+/// the "Battery N%" headline + charging line beside it, so the percent is
+/// stated exactly once (in the headline). The 44pt compact ring and Status
+/// Hero's percent-in-ring / activity-line header were deleted at the freeze.
 struct BatteryHeader: View {
-    enum Size { case compact, hero }
-    enum Content { case headline, activity }
-
     @ObservedObject var model: MenuStateModel
-    var size: Size = .compact
-    var content: Content = .headline
 
     private var percent: String { MenuStateModel.percentText(model.batteryPercent) }
 
@@ -390,26 +379,16 @@ struct BatteryHeader: View {
         HStack(spacing: PanelMetrics.loose) {
             gauge
             VStack(alignment: .leading, spacing: 2) {
-                switch content {
-                case .headline:
-                    Text(MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))
-                        .font(.headline)
-                        .monospacedDigit()
-                    chargingLine
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case .activity:
-                    chargingLine
-                        .font(.headline)
-                    Text(model.heroActivity)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))
+                    .font(.headline)
+                    .monospacedDigit()
+                chargingLine
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }
-        .frame(minHeight: size == .hero ? 76 : nil)
+        .frame(minHeight: 76)
     }
 
     private var chargingLine: some View {
@@ -422,57 +401,35 @@ struct BatteryHeader: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// The ring. Its geometry follows `size` ONLY; what sits inside it is
-    /// `ringInterior`, which follows `content`.
+    /// The full-size ring (no desktop: the desktop symbol at the same
+    /// footprint). What sits inside the ring is `ringInterior`.
     @ViewBuilder private var gauge: some View {
         if model.hasBattery {
-            switch size {
-            case .compact:
-                Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
-                    EmptyView()
-                } currentValueLabel: {
-                    ringInterior
-                }
-                .gaugeStyle(.accessoryCircularCapacity)
-                .scaleEffect(0.8)
-                .frame(width: 44, height: 44)
-                .accessibilityLabel("Battery")
-                .accessibilityValue(percent)
-            case .hero:
-                Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
-                    EmptyView()
-                } currentValueLabel: {
-                    ringInterior
-                }
-                .gaugeStyle(.accessoryCircularCapacity)
-                .accessibilityLabel("Battery")
-                .accessibilityValue(percent)
+            Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
+                EmptyView()
+            } currentValueLabel: {
+                ringInterior
             }
+            .gaugeStyle(.accessoryCircularCapacity)
+            .accessibilityLabel("Battery")
+            .accessibilityValue(percent)
         } else {
             Image(systemName: PanelSymbol.desktop)
-                .font(size == .hero ? .largeTitle : .title2)
+                .font(.largeTitle)
                 .foregroundStyle(.secondary)
-                .frame(width: size == .hero ? 60 : 44, height: size == .hero ? 60 : 44)
+                .frame(width: 60, height: 60)
                 .accessibilityHidden(true)
         }
     }
 
-    /// Curation round 2 fix ("you removed the battery icon"): the interior
-    /// follows `content`, never `size`, so each variant states the percent
-    /// exactly once. `.headline` already says "Battery N%", so its ring holds
-    /// the pre-round-2 charge-state glyph — at the same 12pt, which keeps the
-    /// glyph-to-ring proportion of the old compact header (whose 0.8 scale
-    /// shrank ring and glyph alike). `.activity` text never says the percent,
-    /// so its ring does.
-    @ViewBuilder private var ringInterior: some View {
-        switch content {
-        case .headline:
-            Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        case .activity:
-            Text(percent).monospacedDigit()
-        }
+    /// Curation round 2 fix ("you removed the battery icon"): the headline
+    /// already says "Battery N%", so the ring holds the charge-state glyph,
+    /// never the percent — at 12pt, which keeps the glyph-to-ring proportion
+    /// of the old compact header (whose 0.8 scale shrank ring and glyph alike).
+    private var ringInterior: some View {
+        Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -522,13 +479,11 @@ struct PanelDetailsDisclosure: View {
     }
 }
 
-/// Tier-3 content — IDENTICAL in every variant. Details-home lines go through
-/// `TuckedLine`, so a non-nominal one is absent here (it renders above).
+/// Tier-3 content. Details-home lines go through `TuckedLine`, so a
+/// non-nominal one is absent here (it renders above). The Claude status row
+/// is NOT a Details line: it is always top level (`ClaudeStatusRow`).
 struct PanelDetailsContent: View {
     @ObservedObject var model: MenuStateModel
-    /// Variant C keeps the nominal Claude status here (its hero line already
-    /// says "Claude running"); A shows it at top level always.
-    var includesClaudeStatus: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.loose) {
@@ -570,9 +525,6 @@ struct PanelDetailsContent: View {
     private var claudeGroup: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.tight) {
             DetailsGroupHeader(title: "Claude detection")
-            if includesClaudeStatus {
-                TuckedLine(line: model.claudeStatus)
-            }
             TuckedLine(line: model.hookStatus)
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
@@ -602,7 +554,6 @@ struct PanelDetailsContent: View {
             if MenuStateModel.placement(ofDetailsLine: model.launchAtLoginCaption?.severity ?? .nominal) == .details {
                 LaunchAtLoginRow(model: model)
             }
-            PanelStylePreviewRow(model: model)
         }
     }
 }
@@ -616,24 +567,6 @@ struct DetailsGroupHeader: View {
             .fontWeight(.semibold)
             .foregroundStyle(.secondary)
             .accessibilityAddTraits(.isHeader)
-    }
-}
-
-/// CURATION-ONLY SCAFFOLD (remove at design freeze with MenuPanelStyle):
-/// toggles the layout variant A ↔ C, persisted to `menuPanelStyle`.
-struct PanelStylePreviewRow: View {
-    @ObservedObject var model: MenuStateModel
-
-    var body: some View {
-        HStack {
-            Text("Panel style (preview)").font(.caption)
-            Spacer(minLength: PanelMetrics.regular)
-            Button(model.panelStyle.title) { model.cyclePanelStyle() }
-                .controlSize(.small)
-                .accessibilityLabel("Panel style (preview)")
-                .accessibilityValue(model.panelStyle.title)
-                .accessibilityHint("Switches to \(model.panelStyle.next.title)")
-        }
     }
 }
 

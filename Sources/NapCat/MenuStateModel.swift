@@ -2,53 +2,7 @@ import ServiceManagement
 import SwiftUI
 
 // MARK: - Panel presentation types (UI redesign, 2026-10-18 — PLAN.md
-// "UI Redesign — Menu Panel (variant exploration)")
-
-/// Which layout variant renders the panel. Every variant renders the SAME
-/// model outputs; only the arrangement differs.
-///
-/// CURATION-ONLY SCAFFOLD: exists so the user can compare the variants live
-/// before the design freezes. Read from `DefaultsKey.menuPanelStyle` on every
-/// menu open (no restart). At freeze: delete the losing variants, this enum,
-/// the "Panel style (preview)" row and the key (moving it to
-/// `RetiredDefaultsKey` so it is cleaned out of the plist).
-///
-/// Curation round 1 (2026-10-18) SCRAPPED variant B "Grouped Cards": the
-/// user narrowed the choice to A vs C. A stored "b" is no longer a case, so it
-/// resolves to the default like any other junk value.
-enum MenuPanelStyle: String, CaseIterable, Sendable {
-    /// "Quiet Rows" — one column, symbol + title + trailing control, captions
-    /// only for non-nominal states.
-    case a
-    /// "Status Hero" — hero gauge + activity line, compact rows below.
-    case c
-
-    static let `default`: MenuPanelStyle = .a
-
-    /// Unset, junk, unknown, or retired ("b") stored values read back as the
-    /// default — a hand-edited or stale plist can never break the panel.
-    static func resolve(_ stored: Any?) -> MenuPanelStyle {
-        guard let raw = stored as? String,
-              let style = MenuPanelStyle(rawValue: raw.trimmingCharacters(in: .whitespaces).lowercased())
-        else { return .default }
-        return style
-    }
-
-    /// The preview row toggles A ↔ C.
-    var next: MenuPanelStyle {
-        switch self {
-        case .a: return .c
-        case .c: return .a
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .a: return "A — Quiet Rows"
-        case .c: return "C — Status Hero"
-        }
-    }
-}
+// "UI Redesign — Menu Panel"; design frozen the same day on one layout)
 
 /// How loud a panel line is. Decided ONLY by the pure mappings below — the
 /// view never classifies a string as a warning. Anything above `.nominal`
@@ -139,9 +93,6 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var lidGuardLastOutcomeAt: Double?
 
     // Panel redesign (2026-10-18).
-    /// Curation scaffold — re-read from defaults on every refresh (hence on
-    /// every menu open), so `defaults write … menuPanelStyle` needs no restart.
-    @Published private(set) var panelStyle: MenuPanelStyle = .default
     /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
     /// persisted to defaults: it survives menu close/reopen for the app's
     /// lifetime (so the height is measured with the right content before the
@@ -162,9 +113,6 @@ final class MenuStateModel: ObservableObject {
     private let detection: ClaudeActivityController?
     /// Non-nil outside debugBattery mode — drives the lid-alert controls (B2).
     private let lidGuard: LidGuardController?
-    /// Holds only the curation-only `menuPanelStyle` key. nil (tests, by
-    /// default) ⇒ the default style and nothing persisted.
-    private let defaults: UserDefaults?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -191,8 +139,7 @@ final class MenuStateModel: ObservableObject {
         screenLock: ScreenLockController? = nil,
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
-        lidGuard: LidGuardController? = nil,
-        defaults: UserDefaults? = nil
+        lidGuard: LidGuardController? = nil
     ) {
         self.power = power
         self.sleep = sleep
@@ -202,7 +149,6 @@ final class MenuStateModel: ObservableObject {
         self.simulator = simulator
         self.detection = detection
         self.lidGuard = lidGuard
-        self.defaults = defaults
         refresh()
     }
 
@@ -235,8 +181,6 @@ final class MenuStateModel: ObservableObject {
         lidGuardArming = lidGuard?.armingState ?? .off
         lidGuardLastOutcome = lidGuard?.lastSendOutcome
         lidGuardLastOutcomeAt = lidGuard?.lastSendOutcomeAt
-        // Observed, not cached: the stored style is re-read every time.
-        panelStyle = MenuPanelStyle.resolve(defaults?.object(forKey: DefaultsKey.menuPanelStyle))
     }
 
     // MARK: Actions (forwarded)
@@ -284,15 +228,8 @@ final class MenuStateModel: ObservableObject {
     /// through `MenuPanelHostingView`.
     func setDetailsExpanded(_ expanded: Bool) { detailsExpanded = expanded }
 
-    /// Curation scaffold: persist the next style and show it immediately.
-    func cyclePanelStyle() {
-        let next = panelStyle.next
-        defaults?.set(next.rawValue, forKey: DefaultsKey.menuPanelStyle)
-        panelStyle = next
-    }
-
-    // MARK: Panel presentation — EVERY variant renders these, so A and C are
-    // composed from identical outputs (thin wrappers over the pure mappings).
+    // MARK: Panel presentation — what the panel renders (thin wrappers over
+    // the pure mappings; the views compose these and never classify).
 
     var stayAwakeCaption: PanelLine? { Self.stayAwakeCaption(forObserved: stayAwakeObserved) }
     var lockScreenCaption: PanelLine? { Self.lockScreenCaption(available: lockScreenAvailable) }
@@ -335,16 +272,6 @@ final class MenuStateModel: ObservableObject {
 
     var lidAlertTestSendAvailable: Bool {
         Self.lidAlertTestSendAvailable(server: lidGuardServer, topic: lidGuardTopic)
-    }
-
-    var heroActivity: String {
-        Self.heroActivityLine(
-            stayAwakeObserved: stayAwakeObserved,
-            claudeTaskInFlight: claudeDetectionVisible && claudeTaskInFlight,
-            detectionPaused: claudeDetectionVisible && claudeDetectionPaused,
-            lidArming: lidGuardVisible ? lidGuardArming : .off,
-            lastOutcome: lidGuardLastOutcome
-        )
     }
 
     /// Badge on the collapsed "Details" row: the worst severity among the
@@ -778,24 +705,5 @@ final class MenuStateModel: ObservableObject {
     /// the Launch at Login row escapes Details while either is showing.
     nonisolated static func launchAtLoginCaption(for status: SMAppService.Status) -> PanelLine? {
         launchAtLoginPresentation(for: status).caption.map { PanelLine(text: $0, severity: .warning) }
-    }
-
-    /// Variant C's activity line: ACTIVE facts only, "Idle" when there are
-    /// none. "Lid alert armed" appears only when the alert can really fire —
-    /// exactly when its status line is nominal-armed (no paused / failed-send
-    /// downgrade), so the hero can never be more optimistic than the status.
-    nonisolated static func heroActivityLine(
-        stayAwakeObserved: Bool?,
-        claudeTaskInFlight: Bool,
-        detectionPaused: Bool,
-        lidArming: LidGuardArmingState,
-        lastOutcome: MessageSendOutcome?
-    ) -> String {
-        var facts: [String] = []
-        if stayAwakeObserved == true { facts.append("Awake lock on") }
-        if claudeTaskInFlight && !detectionPaused { facts.append("Claude running") }
-        let lid = lidAlertStatus(for: lidArming, lastOutcome: lastOutcome, detectionPaused: detectionPaused)
-        if lidArming == .armed && lid.severity == .nominal { facts.append("Lid alert armed") }
-        return facts.isEmpty ? "Idle" : facts.joined(separator: " · ")
     }
 }

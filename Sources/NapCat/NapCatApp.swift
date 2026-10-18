@@ -23,9 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         // Retired keys first: `lidGuardRecipient` held the user's own phone
-        // number / Apple ID before the B4 ntfy swap and nothing reads it any
-        // more, so it is deleted rather than left sitting in the preferences
-        // plist. Names only are logged — never the value.
+        // number / Apple ID before the B4 ntfy swap, and `menuPanelStyle` was
+        // the redesign's curation-only variant picker (retired at the design
+        // freeze). Nothing reads either any more, so they are deleted rather
+        // than left sitting in the preferences plist. Names only are logged —
+        // never the value.
         let removedKeys = DefaultsMigration.removeRetiredKeys(in: defaults)
         if !removedKeys.isEmpty {
             Self.logger.notice("startup migration: removed \(removedKeys.joined(separator: ", "), privacy: .public) — retired key(s), value not read")

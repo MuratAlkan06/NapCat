@@ -23,9 +23,8 @@ struct PersistenceTests {
         #expect(DefaultsKey.lidGuardNtfyTopic == "lidGuardNtfyTopic")
         #expect(DefaultsKey.lidGuardNtfyServer == "lidGuardNtfyServer")
         #expect(DefaultsKey.lidGuardPrimedAt == "lidGuardPrimedAt")
-        // 2026-10-18 menu-panel redesign — CURATION-ONLY scaffold, removed at
-        // design freeze (it then moves to RetiredDefaultsKey).
-        #expect(DefaultsKey.menuPanelStyle == "menuPanelStyle")
+        // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
+        // live key — retired at the design freeze (RetiredDefaultsKey).
     }
 
     /// Fresh isolated defaults per test; the suite file is removed again.
@@ -183,6 +182,28 @@ struct PersistenceTests {
         }
     }
 
+    /// Design freeze (2026-10-18): the curation-only `menuPanelStyle` picker
+    /// is retired — the panel is one fixed layout and nothing reads the key —
+    /// so a plist that still holds it ("a", "c", or a stale "b") is cleaned up
+    /// at startup, in the same run as every other retired key.
+    @Test func theRetiredPanelStyleKeyIsDeletedAtStartup() {
+        withDefaults { defaults in
+            defaults.set("c", forKey: RetiredDefaultsKey.menuPanelStyle)
+            defaults.set("+15550000000", forKey: RetiredDefaultsKey.lidGuardRecipient)
+            defaults.set(75, forKey: DefaultsKey.limit)
+
+            #expect(DefaultsMigration.removeRetiredKeys(in: defaults) == ["lidGuardRecipient", "menuPanelStyle"],
+                    "every retired key, in `RetiredDefaultsKey.all` order")
+            #expect(defaults.object(forKey: RetiredDefaultsKey.menuPanelStyle) == nil)
+            #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardRecipient) == nil)
+            #expect(defaults.integer(forKey: DefaultsKey.limit) == 75, "live settings are untouched")
+
+            defaults.set("b", forKey: RetiredDefaultsKey.menuPanelStyle)
+            #expect(DefaultsMigration.removeRetiredKeys(in: defaults) == ["menuPanelStyle"], "alone, too")
+            #expect(DefaultsMigration.removeRetiredKeys(in: defaults).isEmpty, "a second run is a no-op")
+        }
+    }
+
     /// Idempotent: the ordinary case (nothing retired stored) removes nothing
     /// and reports nothing, so the migration is silent on every later launch.
     @Test func theRetiredKeyMigrationIsIdempotentAndSilentWhenThereIsNothingToDo() {
@@ -194,17 +215,17 @@ struct PersistenceTests {
         }
     }
 
-    /// The retired key string is locked (a typo would leave the real one in
+    /// The retired key strings are locked (a typo would leave the real one in
     /// place forever) and must never collide with a LIVE key — the migration
     /// deletes what it lists.
     @Test func retiredKeyStringsAreLockedAndDisjointFromTheLiveSet() throws {
         #expect(RetiredDefaultsKey.lidGuardRecipient == "lidGuardRecipient")
-        #expect(RetiredDefaultsKey.all == ["lidGuardRecipient"])
+        #expect(RetiredDefaultsKey.menuPanelStyle == "menuPanelStyle")
+        #expect(RetiredDefaultsKey.all == ["lidGuardRecipient", "menuPanelStyle"])
         let live = [DefaultsKey.limit, DefaultsKey.limitEnabled, DefaultsKey.stayAwakeIntent,
                     DefaultsKey.heatWarningAcknowledged, DefaultsKey.debugBattery,
                     DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
-                    DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
-                    DefaultsKey.menuPanelStyle]
+                    DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt]
         for key in RetiredDefaultsKey.all {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }
