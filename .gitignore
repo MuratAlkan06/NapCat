@@ -5,3 +5,7 @@ dist/
 .swiftpm/
 Test.PNG
 .claude/
+
+# Private planning docs — kept locally, excluded from the public history
+PLAN.md
+CLAUDE.md
