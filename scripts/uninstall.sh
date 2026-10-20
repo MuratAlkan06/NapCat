@@ -91,10 +91,16 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
     && id -u "$TARGET_USER" >/dev/null 2>&1; then
     TARGET_UID="$(id -u "$TARGET_USER")"
     TARGET_HOME="$(/usr/bin/dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //')"
-    AGENT_FILE="$TARGET_HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+    AGENT_DIR="$TARGET_HOME/Library/LaunchAgents"
+    AGENT_FILE="$AGENT_DIR/$AGENT_LABEL.plist"
     /bin/launchctl bootout "gui/$TARGET_UID/$AGENT_LABEL" >/dev/null 2>&1 || true
-    if [ -n "$TARGET_HOME" ] && [ -f "$AGENT_FILE" ]; then
-        if rm -f "$AGENT_FILE"; then
+    # Same boundary as setup.sh (audit F2, 2026-10-19): everything under the
+    # user's home is user-controlled, so root never acts through it — refuse a
+    # symlinked ~/Library or ~/Library/LaunchAgents, and delete AS the user.
+    if [ -n "$TARGET_HOME" ] && { [ -L "$TARGET_HOME/Library" ] || [ -L "$AGENT_DIR" ]; }; then
+        FAILURES+=("$TARGET_HOME/Library or $AGENT_DIR is a symlink — refusing to remove the LaunchAgent through it; check it and remove $AGENT_LABEL.plist by hand")
+    elif [ -n "$TARGET_HOME" ] && [ -f "$AGENT_FILE" ]; then
+        if /usr/bin/sudo -u "$TARGET_USER" /bin/rm -f "$AGENT_FILE"; then
             echo "removed: $AGENT_FILE"
             REVERTED+=("failsafe LaunchAgent removed ($AGENT_FILE)")
         else
@@ -125,10 +131,11 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
     else
         echo "ok: no $DEFAULTS_DOMAIN settings for '$TARGET_USER' — nothing to remove"
     fi
-    # cfprefsd may leave the (now empty) plist behind; drop it too.
+    # cfprefsd may leave the (now empty) plist behind; drop it too — as the
+    # user, so a symlink under their home can only reach their own files.
     DEFAULTS_PLIST="$TARGET_HOME/Library/Preferences/$DEFAULTS_DOMAIN.plist"
     if [ -n "$TARGET_HOME" ] && [ -f "$DEFAULTS_PLIST" ]; then
-        rm -f "$DEFAULTS_PLIST" || FAILURES+=("could not remove $DEFAULTS_PLIST")
+        /usr/bin/sudo -u "$TARGET_USER" /bin/rm -f "$DEFAULTS_PLIST" || FAILURES+=("could not remove $DEFAULTS_PLIST")
     fi
 else
     FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist and run 'defaults delete $DEFAULTS_DOMAIN' manually")

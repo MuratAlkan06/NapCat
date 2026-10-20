@@ -13,7 +13,9 @@
 #   - /etc/sudoers.d/napcat   (0440 root:wheel) with EXACTLY the eight
 #     exact-argument entries from PLAN.md §4, scoped to the invoking user.
 #   - ~/Library/LaunchAgents/com.napcat.failsafe.plist (owned by the invoking
-#     USER, not root) — crash-failsafe layer (c), ADR §6c: RunAtLoad runs
+#     USER, not root, and written AS that user via `sudo -u`; setup refuses a
+#     symlinked ~/Library or ~/Library/LaunchAgents before writing anything)
+#     — crash-failsafe layer (c), ADR §6c: RunAtLoad runs
 #     `sudo -n pmset -a disablesleep 0` once at login, covering the
 #     crash-then-reboot case the in-session watchdog cannot. The agent is
 #     INSTALLED but deliberately NOT loaded into the running session:
@@ -57,6 +59,48 @@ if ! printf '%s' "$TARGET_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$'; then
 fi
 if ! id -u "$TARGET_USER" >/dev/null 2>&1; then
     echo "error: user '$TARGET_USER' does not exist on this system — refusing." >&2
+    exit 1
+fi
+
+# Security hardening (pre-publication audit F2, 2026-10-19): resolve and vet
+# the failsafe LaunchAgent destination BEFORE anything is written. Everything
+# under $TARGET_HOME is controlled by the invoking user — and so by any
+# process running as that user, no password needed. A root-run
+# `install -d -o USER "$AGENT_DIR"` follows a symlinked directory, so a planted
+# ~/Library/LaunchAgents -> /usr/local/napcat would make root chown the
+# NOPASSWD target's directory to the user. Two layers:
+#   1. refuse loudly (exit nonzero, nothing installed) if ~/Library,
+#      ~/Library/LaunchAgents or the agent plist itself is a symlink;
+#   2. root never writes under the user's home: the LaunchAgent directory and
+#      file are written AS the user (`sudo -u`, below), so even a symlink
+#      planted after this check reaches only what the user could already write.
+TARGET_UID="$(/usr/bin/id -u "$TARGET_USER")"
+TARGET_HOME="$(/usr/bin/dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //')"
+if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+    echo "error: could not determine home directory for '$TARGET_USER' (got '$TARGET_HOME')." >&2
+    exit 1
+fi
+TARGET_GROUP="$(/usr/bin/id -gn "$TARGET_USER")"
+AGENT_DIR="$TARGET_HOME/Library/LaunchAgents"
+AGENT_FILE="$AGENT_DIR/$AGENT_LABEL.plist"
+
+refuse_symlink() {
+    if [ -L "$1" ]; then
+        echo "error: $1 is a symlink — refusing to install the LaunchAgent through it" >&2
+        echo "       (a symlink here could redirect the install outside your home directory)." >&2
+        echo "       Remove it or replace it with a real directory/file, then re-run setup." >&2
+        exit 1
+    fi
+}
+refuse_symlink "$TARGET_HOME/Library"
+refuse_symlink "$AGENT_DIR"
+refuse_symlink "$AGENT_FILE"
+# The agent is written as the user, so an existing LaunchAgents directory must
+# be theirs — refuse now rather than fail after the sudoers file is installed.
+if [ -d "$AGENT_DIR" ] && [ "$(/usr/bin/stat -f '%u' "$AGENT_DIR")" -ne "$TARGET_UID" ]; then
+    echo "error: $AGENT_DIR is not owned by '$TARGET_USER' — the LaunchAgent is" >&2
+    echo "       written as that user, so the directory must be theirs. Fix with:" >&2
+    echo "           sudo chown $TARGET_USER:$TARGET_GROUP '$AGENT_DIR'" >&2
     exit 1
 fi
 
@@ -125,11 +169,15 @@ else
 fi
 
 TMP="$(mktemp)"
-TMP_AGENT="$(mktemp)"
+# Explicitly under /tmp (sticky, traversable): the agent is installed AS the
+# user below, so the user must be able to read this root-owned temp file.
+TMP_AGENT="$(mktemp /tmp/napcat-failsafe.XXXXXX)"
 trap 'rm -f "$TMP" "$TMP_AGENT"' EXIT
 
 # Exact-argument entries — the app execs these argv strings verbatim
-# (PLAN.md §4, locked by PrivilegedCommandTests). Do not reword.
+# (PLAN.md §4). SetupScriptTests parses this block at test time and locks
+# every entry to a PrivilegedCommand argv (per architecture branch, no
+# wildcards). Do not reword.
 {
     cat <<EOF
 # NapCat privileged commands (v1.0).
@@ -167,15 +215,10 @@ fi
 # runs in the user's gui session and only needs the pmset NOPASSWD entry
 # above — no privileged surface beyond what the sudoers file already grants.
 # See the header comment for why it is installed but NOT loaded here.
-TARGET_HOME="$(/usr/bin/dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //')"
-if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
-    echo "error: could not determine home directory for '$TARGET_USER' (got '$TARGET_HOME')." >&2
-    exit 1
-fi
-TARGET_GROUP="$(/usr/bin/id -gn "$TARGET_USER")"
-AGENT_DIR="$TARGET_HOME/Library/LaunchAgents"
-AGENT_FILE="$AGENT_DIR/$AGENT_LABEL.plist"
-
+# $TARGET_HOME, $AGENT_DIR and $AGENT_FILE were resolved and symlink-vetted
+# before the first write (audit F2, top of script).
+# SetupScriptTests parses this plist at test time: its ProgramArguments must
+# equal `sudo -n` + the stay-awake-off PrivilegedCommand argv exactly.
 cat > "$TMP_AGENT" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -203,11 +246,14 @@ if ! /usr/bin/plutil -lint -s "$TMP_AGENT"; then
     exit 1
 fi
 
-/usr/bin/install -d -m 755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$AGENT_DIR"
-if [ -f "$AGENT_FILE" ] && cmp -s "$TMP_AGENT" "$AGENT_FILE"; then
+# Every write under the user's home runs AS the user (audit F2): root never
+# creates, chowns or writes through a path the user controls.
+/bin/chmod 0644 "$TMP_AGENT"   # fixed, non-secret plist content
+/usr/bin/sudo -u "$TARGET_USER" /usr/bin/install -d -m 755 -g "$TARGET_GROUP" "$AGENT_DIR"
+if [ -f "$AGENT_FILE" ] && /usr/bin/sudo -u "$TARGET_USER" /usr/bin/cmp -s "$TMP_AGENT" "$AGENT_FILE"; then
     echo "ok: $AGENT_FILE already up to date — nothing changed."
 else
-    /usr/bin/install -m 0644 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TMP_AGENT" "$AGENT_FILE"
+    /usr/bin/sudo -u "$TARGET_USER" /usr/bin/install -m 0644 -g "$TARGET_GROUP" "$TMP_AGENT" "$AGENT_FILE"
     echo "installed: $AGENT_FILE (0644 $TARGET_USER:$TARGET_GROUP)"
     echo "           Takes effect at the next login (RunAtLoad); deliberately not"
     echo "           loaded now so an active Stay Awake session is not reverted."

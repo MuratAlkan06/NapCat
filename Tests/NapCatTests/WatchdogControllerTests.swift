@@ -82,9 +82,10 @@ struct WatchdogControllerTests {
     /// Lint-style lock on the watchdog script's privileged surface
     /// (ADR §6b): every sudo invocation in Resources/napcat-watchdog.sh must
     /// byte-match one of the granted sudoers argv strings (PLAN.md §4, via
-    /// PrivilegedCommand — the same source of truth PrivilegedCommandTests
-    /// locks against setup.sh), each revert command appears exactly once,
-    /// and NO other sudo invocation exists in the script.
+    /// PrivilegedCommand — PrivilegedCommandTests pins the enum to the §4
+    /// literals, and SetupScriptTests parses scripts/setup.sh and locks its
+    /// sudoers entries to the same enum), each revert command appears exactly
+    /// once, and NO other sudo invocation exists in the script.
     @Test func watchdogScriptSudoLinesByteMatchGrantedArgvStrings() throws {
         let scriptURL = URL(fileURLWithPath: #filePath)  // Tests/NapCatTests/<this file>
             .deletingLastPathComponent()                 // Tests/NapCatTests

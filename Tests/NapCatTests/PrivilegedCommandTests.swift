@@ -5,6 +5,8 @@ import Testing
 /// PLAN.md §4. The expected literals below ARE the sudoers command strings —
 /// if any expectation here changes, scripts/setup.sh and PLAN.md §4 must
 /// change in the same commit, and every user must re-run setup.
+/// (This suite never reads setup.sh; SetupScriptTests parses the script's
+/// sudoers heredoc + LaunchAgent and locks them to this enum.)
 struct PrivilegedCommandTests {
     @Test func pmsetArgvByteMatchesSudoersEntries() {
         #expect(PrivilegedCommand.stayAwakeOn.argv == ["/usr/bin/pmset", "-a", "disablesleep", "1"])
