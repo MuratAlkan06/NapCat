@@ -15,8 +15,8 @@
 # EXEC FORM is the security control: `/usr/bin/env -i HOME=<home> /bin/bash
 # <script>` strips $BASH_ENV and every exported BASH_FUNC_* before bash starts.
 # Registering the bare script path (shell form) would reopen that
-# pre-interpreter code-execution hole (the [redacted-tool] A5/A8 lesson), so the
-# printed registration is exec form only.
+# pre-interpreter code-execution hole, so the printed registration is exec
+# form only.
 
 umask 022
 

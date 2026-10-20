@@ -1,0 +1,10 @@
+# Default owner for everything in the repository.
+* @MuratAlkan06
+
+# Security-sensitive paths, listed explicitly so they stay owned (and review is
+# always requested) even if the catch-all above is ever narrowed. The last
+# matching pattern wins, so keep these below the catch-all.
+/scripts/ @MuratAlkan06
+/Resources/napcat-watchdog.sh @MuratAlkan06
+/Sources/NapCat/PrivilegedCommand.swift @MuratAlkan06
+/third_party/ @MuratAlkan06

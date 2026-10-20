@@ -37,8 +37,8 @@
 #   /usr/bin/env -i HOME=<home> /bin/bash <this script>
 # `env -i` strips $BASH_ENV and every exported BASH_FUNC_* function before bash
 # starts, closing the pre-interpreter code-execution hole that a bare
-# shell-form script path would reopen (the [redacted-tool] A5/A8 lesson). A side
-# effect of env -i is that the agent manager's env vars are stripped, so `src` is
+# shell-form script path would reopen. A side effect of env -i is that env vars
+# set by other agent-session managers are stripped too, so `src` is
 # best-effort (recorded `unknown` when SUPERCONDUCTOR_MANAGED_AGENT is absent);
 # `src` is DEBUG-ONLY and never a policy input.
 #
@@ -141,7 +141,8 @@ main() {
 
   sweep_markers "$now"
 
-  # Size-cap stdin before parsing (mirror the [redacted-tool] stdin bound).
+  # Size-cap stdin before parsing (an oversized payload is truncated, never
+  # read in full).
   payload=$(mktemp "$STATE_DIR/.payload.XXXXXX" 2>/dev/null) || return 0
   head -c "$MAX_STDIN" >"$payload" 2>/dev/null
   if ! plutil -convert xml1 -o /dev/null "$payload" 2>/dev/null; then

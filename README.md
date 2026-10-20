@@ -58,7 +58,7 @@ light/dark menu bars.
 ## Install
 
 ```sh
-git clone <this-repo> NapCat
+git clone https://github.com/MuratAlkan06/NapCat.git NapCat
 cd NapCat
 make            # swift build + assemble dist/NapCat.app (ad-hoc signed)
 open dist/NapCat.app
@@ -72,6 +72,24 @@ your password):
 make            # ensures dist/smc is built
 sudo ./scripts/setup.sh
 ```
+
+Before you run it:
+
+- **You need an administrator account.** On a stock macOS install only admin
+  users may use `sudo`; from a standard account setup.sh cannot run at all.
+- **Run it with `sudo` from your own account**, not from a root shell.
+  setup.sh scopes every entry to the user who invoked `sudo` (`$SUDO_USER`)
+  and refuses to run if that is unset or `root`.
+- **Your short user name must match `^[a-z_][a-z0-9_-]*$`**: lowercase
+  letters, digits, `_` and `-`, starting with a letter or `_`. The name is
+  written into a sudoers rule, so setup.sh refuses anything else (a short
+  name with a dot or an uppercase letter, for example) and also refuses a
+  user that does not exist. Check yours with `id -un`.
+- **Symlinked home folders are refused.** setup.sh will not write through a
+  symlinked `~/Library` or `~/Library/LaunchAgents` (a defense against
+  privilege-escalation traps), and it stops with a `chown` hint if your
+  `LaunchAgents` folder exists but is not owned by you — common with some
+  dotfiles setups. Fix the ownership or the symlink, then re-run.
 
 Until then, NapCat runs in a degraded mode: battery percentage and charging
 state still display (plain IOKit reads), and the toggles explain that setup
@@ -112,6 +130,28 @@ from your next login.
 
 The script is idempotent — run it again after updating and it only replaces
 what changed.
+
+### Verify what was installed
+
+Don't just trust the script's output. Check the result yourself:
+
+```sh
+sudo cat /etc/sudoers.d/napcat                          # root-only file, hence sudo
+ls -l /usr/local/napcat/smc                             # Apple Silicon only: root wheel, -rwxr-xr-x
+ls -l ~/Library/LaunchAgents/com.napcat.failsafe.plist  # owned by you
+```
+
+The sudoers file should contain a short comment header and then exactly the
+entries listed above, with your user name in place of `<you>` (two entries on
+Intel). Anything more means something other than setup.sh edited it.
+
+> **Never widen these entries by hand.** Do not "simplify" them to something
+> like `/usr/bin/pmset *` or `/usr/local/napcat/smc *`, and never add
+> wildcards or drop arguments. A wildcard turns a few fixed, harmless commands
+> into arbitrary `pmset` settings and arbitrary SMC writes as root, with no
+> password, for anything running as you. If an entry looks wrong, re-run
+> `sudo ./scripts/setup.sh` (it rewrites the file whenever it differs) or
+> remove everything with `sudo ./scripts/uninstall.sh`.
 
 ## Security model
 
@@ -239,8 +279,9 @@ sudo ./scripts/uninstall.sh
 
 Idempotent and thorough even after partial failures: clears `disablesleep`,
 re-enables charging (before deleting the helper it needs to do so), then
-removes the sudoers file, `/usr/local/napcat`, and the failsafe LaunchAgent,
-and prints a summary of everything it reverted. Then delete the repo /
+removes the sudoers file, `/usr/local/napcat`, the failsafe LaunchAgent, and
+NapCat's saved settings (including the ntfy topic), and prints a summary of
+everything it reverted. Then delete the repo /
 `dist/NapCat.app` and, if you enabled Launch at Login, remove the NapCat
 entry in System Settings › General › Login Items (or toggle it off in the
 menu before uninstalling).
@@ -254,7 +295,11 @@ sudo rm /etc/sudoers.d/napcat
 sudo rm -rf /usr/local/napcat
 launchctl bootout gui/$UID/com.napcat.failsafe 2>/dev/null
 rm -f ~/Library/LaunchAgents/com.napcat.failsafe.plist
+defaults delete com.muratalkan.napcat             # as yourself, not with sudo
 ```
+
+Don't skip the last line: NapCat's settings include the ntfy topic, which is a
+bearer credential (anyone who has it can read and post to your feed).
 
 ## Debug battery simulator
 
@@ -292,8 +337,7 @@ is running and removes it when the turn ends. When the main turn ends but a
 subagent finishes (it reconciles on the `background_tasks` the `Stop`/`SubagentStop`
 events carry), so NapCat still shows **running** during orchestrator-plus-subagent
 work. NapCat only reads those markers (cross-checked against the live process list,
-fail-open so it never falsely reports "idle"). This is separate from the standalone
-*[redacted-tool]* tool.
+fail-open so it never falsely reports "idle").
 
 ### Install and register — BY HAND
 
@@ -463,7 +507,13 @@ server named — so a redirected publish is reported as a failure.
 - **The lid alert can miss.** If NapCat cannot read the sleep state or sample
   Claude quickly enough as the machine goes down, it stays quiet rather than
   guessing — with one exception: if the sleep state is unreadable but a Claude
-  task *is* running, it errs toward texting you.
+  task *is* running, it errs toward sending the push.
+- **A phone on silent may stay silent.** Messages publish at ntfy's `urgent`
+  priority (5, alias `max`). The ntfy iOS app v1.8.0+ can deliver those as
+  Critical Alerts that bypass silent mode, once you grant it that permission.
+  That version was still unreleased as of October 2026 (check the
+  [ntfy release notes](https://docs.ntfy.sh/releases/)). Until you have it,
+  iOS shows a normal notification and silent mode applies.
 
 ## Development
 
@@ -489,9 +539,20 @@ Notes:
   emits byte-deterministic PNGs, so `make frames` leaves a clean
   `git status` unless the pixel grids actually changed.
 - History is tagged at phase boundaries (`v0.1.0` scaffold, `v0.2.0` stay
-  awake, `v0.3.0` charge limit, `v0.4.0` animation, `v1.0.0` polish); the
-  full build plan, architecture decisions, and verification matrix live in
-  [PLAN.md](PLAN.md).
+  awake, `v0.3.0` charge limit, `v0.4.0` animation, `v1.0.0` polish, and
+  later `v1.0.1` watchdog charging re-enable + MIT license, `v1.1.0`
+  menu-stays-open UX fix + hand-drawn sleep icon, `v1.2.0` lid-close ntfy
+  alert + hardware-validated sleep pipeline, and `v1.3.0` Lock Screen +
+  frozen menu redesign). Each annotated tag carries its release notes
+  (`git tag -n99`); the detailed build plan and verification matrix are
+  maintained privately.
+
+## Security
+
+Please report vulnerabilities privately through GitHub's private
+vulnerability reporting, not in a public issue. [SECURITY.md](SECURITY.md)
+covers how to report and which versions get fixes. The design rationale is
+in [Security model](#security-model) above.
 
 ## License and attribution
 
