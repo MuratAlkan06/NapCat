@@ -765,6 +765,62 @@ struct LidGuardControllerTests {
             #expect(harness.controller.finishAlertArmingState == .needsTestSend)
         }
     }
+
+    /// Track C wiring: the arming-refresh hook runs at the END of EVERY
+    /// `refreshArming()` — including the "already registered" early return
+    /// and the priming that completes inside the test-send callback — so any
+    /// toggle / topic / server / priming change reconciles the finish alert.
+    @Test func theArmingRefreshHookRunsAfterEveryRefresh() {
+        final class HookCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            private var sawRegistered: [Bool] = []
+            func bump(registered: Bool) {
+                lock.lock()
+                value += 1
+                sawRegistered.append(registered)
+                lock.unlock()
+            }
+            var count: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return value
+            }
+            var registrations: [Bool] {
+                lock.lock()
+                defer { lock.unlock() }
+                return sawRegistered
+            }
+        }
+        withLidGuardHarness { harness in
+            let counter = HookCounter()
+            let source = harness.source
+            harness.controller.setArmingRefreshHook { counter.bump(registered: source.isRunning) }
+
+            harness.controller.refreshArming()                    // not armed
+            #expect(counter.count == 1)
+            harness.arm()                                         // registers
+            #expect(counter.count == 2)
+            #expect(counter.registrations.last == true, "the hook runs AFTER the registration change")
+            harness.controller.refreshArming()                    // already registered (early return)
+            #expect(counter.count == 3)
+            harness.controller.setFinishAlertEnabled(true)
+            #expect(counter.count == 4)
+            harness.controller.setTopic("napcat-other-topic")     // clears priming
+            #expect(counter.count == 5)
+            harness.controller.sendTestMessage()                  // primes (inline completion)
+            #expect(counter.count == 6)
+            harness.controller.setServer("https://ntfy.example.com") // clears priming → deregisters
+            #expect(counter.count == 7)
+            #expect(counter.registrations.last == false)
+            harness.controller.setEnabled(false)                  // already deregistered (early return)
+            #expect(counter.count == 8)
+
+            harness.controller.setArmingRefreshHook(nil)
+            harness.controller.refreshArming()
+            #expect(counter.count == 8, "a cleared hook is never called")
+        }
+    }
 }
 
 /// Small shim so the mirror test reads like the real publish path.

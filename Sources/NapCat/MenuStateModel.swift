@@ -126,6 +126,9 @@ final class MenuStateModel: ObservableObject {
     var requestLidGuardToggle: ((Bool) -> Void)?
     var requestLidGuardSettingsPrompt: (() -> Void)?
     var requestLidGuardTestSend: (() -> Void)?
+    /// Track C: told after the detection pause flag flips, so the owner can
+    /// re-gate the finish alert (MenuContentView).
+    var onDetectionPausedChange: (() -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
@@ -212,6 +215,7 @@ final class MenuStateModel: ObservableObject {
     /// state dir is allowed — this NEVER touches ~/.claude/settings.json.
     func setDetectionPaused(_ paused: Bool) {
         detection?.setPaused(paused)
+        onDetectionPausedChange?()
         refresh()
     }
 

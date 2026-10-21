@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The ONE ntfy sender, shared by the lid guard and (Track C) the finish
     /// alert. Nil in debugBattery mode.
     private var ntfySender: NtfyMessageSender?
+    /// Track C finish alert + waiting buzz; nil in debugBattery mode. Watches
+    /// the marker dir only while armed.
+    private var finishAlert: FinishAlertController?
     private var signalSources: [DispatchSourceSignal] = []
     private var didRevertOnShutdown = false
 
@@ -85,6 +88,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.lidGuard = lidGuard
 
+        // Track C (finish alert + waiting buzz). Same wiring-predicate gate;
+        // shares the lid guard's destination/priming and the ONE sender. The
+        // kqueue watcher exists only while armed. Every lid-guard arming
+        // refresh (toggle / topic / server / priming — the last one completes
+        // off the main thread) re-runs the finish-alert reconciliation on main.
+        let finishAlert = FinishAlertController.makeIfEnabled(
+            debugBattery: isDebugBattery,
+            lidGuard: lidGuard,
+            sender: sender
+        )
+        self.finishAlert = finishAlert
+        lidGuard?.setArmingRefreshHook { [weak finishAlert] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { finishAlert?.reconcile() }
+            }
+        }
+
         statusItemController = StatusItemController(
             menuContent: MenuContentView(
                 sleep: sleepController,
@@ -94,12 +114,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 simulator: simulator,
                 detection: detection,
                 lidGuard: lidGuard,
+                finishAlert: finishAlert,
                 defaults: defaults
             )
         )
         // reconcileAtLaunch() has already refreshed the observed sleep state,
         // so the mirror the fire gate reads is primed before we may arm.
         lidGuard?.refreshArming()
+        finishAlert?.reconcile()
         // After the menu is wired (limiter.onChange set) so the first
         // evaluation is already visible in the UI.
         limiter.start()
@@ -141,6 +163,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Drop the IOKit power-notification registration (B2) so a quitting
         // NapCat leaves no sleep-path footprint at all.
         lidGuard?.disarmForShutdown()
+        // Track C: stop watching the marker dir; cancel any pending debounce,
+        // flush or retry.
+        finishAlert?.disarmForShutdown()
         watchdogController.stop()
     }
 

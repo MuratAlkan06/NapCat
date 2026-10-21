@@ -36,6 +36,18 @@ struct MenuStateModelTests {
         #expect(recorded == [true, false])
     }
 
+    /// Track C: flipping the detection pause tells the owner (MenuContentView
+    /// re-gates the finish alert there). No detection stack here, so no flag
+    /// file is written anywhere.
+    @Test @MainActor func aPauseToggleNotifiesTheOwner() {
+        let model = makeModel()
+        var calls = 0
+        model.onDetectionPausedChange = { calls += 1 }
+        model.setDetectionPaused(true)
+        model.setDetectionPaused(false)
+        #expect(calls == 2)
+    }
+
     /// refresh() re-reads every mirror from the controllers — this is the
     /// publish path that re-renders the OPEN panel (battery header, charging
     /// line, feature state) after an async command or power push completes.

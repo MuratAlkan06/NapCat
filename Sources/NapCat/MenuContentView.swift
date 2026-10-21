@@ -45,6 +45,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Track B / B2 lid-close alert; nil in debugBattery mode (structurally
     /// absent). Registers for IOKit power notifications only while armed.
     private let lidGuard: LidGuardController?
+    /// Track C finish alert + waiting buzz; nil in debugBattery mode
+    /// (structurally absent). Watches the marker dir only while armed.
+    private let finishAlert: FinishAlertController?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
@@ -63,6 +66,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
+        finishAlert: FinishAlertController? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.sleep = sleep
@@ -74,6 +78,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.defaults = defaults
         self.detection = detection
         self.lidGuard = lidGuard
+        self.finishAlert = finishAlert
         self.model = MenuStateModel(
             power: power,
             sleep: sleep,
@@ -119,6 +124,13 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         lidGuard?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
+        // Track C: arm/disarm and send outcomes republish the same way.
+        finishAlert?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
+        // A pause toggle (the DISABLED flag) re-gates the finish alert at
+        // once: pausing disarms it, resuming re-arms it with a fresh baseline.
+        model.onDetectionPausedChange = { [weak self] in self?.finishAlert?.reconcile() }
 
         model.refresh()
     }
@@ -143,6 +155,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // ntfy channel has no permission to check, and menu-open must never
         // touch the network.
         lidGuard?.refreshArming()
+        // Track C: arm or disarm the marker-dir watcher to match the config,
+        // the pause flag and the dir (a re-arm takes a fresh baseline — never
+        // a send).
+        finishAlert?.reconcile()
         model.refresh()
         // Section visibility (charge limit, debug) and the Details state can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's

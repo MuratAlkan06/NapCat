@@ -52,6 +52,7 @@ final class LidGuardController: @unchecked Sendable {
     private var lastOutcome: MessageSendOutcome?
     private var lastOutcomeAt: Double?
     private var changeHandler: (@Sendable () -> Void)?
+    private var armingRefreshHook: (@Sendable () -> Void)?
 
     init(
         defaults: UserDefaults,
@@ -131,6 +132,16 @@ final class LidGuardController: @unchecked Sendable {
         let handler = changeHandler
         lock.unlock()
         handler?()
+    }
+
+    /// Track C: invoked at the END of every `refreshArming()` — so a toggle,
+    /// topic, server or priming change also reconciles the finish alert. It
+    /// may run OFF the main thread (priming completes on the sender's queue),
+    /// so the installed hook must hop to the main actor itself.
+    func setArmingRefreshHook(_ hook: (@Sendable () -> Void)?) {
+        lock.lock()
+        armingRefreshHook = hook
+        lock.unlock()
     }
 
     // MARK: - Persistence (PLAN.md §11 — four lid-guard keys + the Track C
@@ -269,6 +280,14 @@ final class LidGuardController: @unchecked Sendable {
     /// `SleepStateController.refreshObservedState()` first), so an arming
     /// controller starts from an observed value rather than a stale one.
     func refreshArming() {
+        // Every exit path — including the "already registered" early
+        // returns — ends with the finish-alert hook.
+        defer {
+            lock.lock()
+            let hook = armingRefreshHook
+            lock.unlock()
+            hook?()
+        }
         if isArmed {
             guard !sleepSource.isRunning else { return }
             sleepSource.start { [weak self] event, ack in

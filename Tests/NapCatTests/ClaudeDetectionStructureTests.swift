@@ -48,6 +48,12 @@ struct ClaudeDetectionStructureTests {
             "proc_pidpath": ["ClaudeProcessProber.swift"],
             "proc_pidinfo": ["ClaudeProcessProber.swift", "SleepAssertionReader.swift"],
             "IOPMCopyAssertionsByProcess": ["SleepAssertionReader.swift"],
+            // Track C: the finish-alert watcher is the READER file for its
+            // own descriptor-level calls — the event-only open and the ONE
+            // filesystem-object source (B1 amendment). Registered here rather
+            // than widening any existing token's allowed set.
+            "O_EVTONLY": ["MarkerDirectoryWatcher.swift"],
+            "makeFileSystemObjectSource": ["MarkerDirectoryWatcher.swift"],
         ]
         let sources = try Self.swiftSources()
         for (token, allowedFiles) in allowed {
@@ -67,7 +73,8 @@ struct ClaudeDetectionStructureTests {
     @Test func nonReaderDetectionFilesAreSyscallFree() throws {
         let nonReaders = ["ClaudeActivityPolicy.swift", "ClaudeActivityController.swift",
                           "BusyMarkerStore.swift", "MenuStateModel.swift", "MenuPanelView.swift",
-                          "MenuPanelVariants.swift"]
+                          "MenuPanelVariants.swift", "FinishAlertPolicy.swift", "FinishAlertController.swift",
+                          "MarkerDirectoryWatcher.swift"]
         let dir = Self.sourcesDir()
         for file in nonReaders {
             let text = Self.codeOnly(try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8))
