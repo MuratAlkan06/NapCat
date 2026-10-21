@@ -358,14 +358,19 @@ prints the absolute paths for you):
 "StopFailure":     [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SubagentStop":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SessionEnd":      [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
-"Notification":    [ { "matcher":"idle_prompt", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
+"Notification":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
 ```
 
 The `SubagentStop` entry is what keeps NapCat showing **running** while a
 background subagent is still working after the main turn ends (the
-orchestrator-plus-subagents workflow). **If you registered an earlier version of
-this hook, add the `SubagentStop` entry** — the others are unchanged — and start a
-new Claude Code session so it loads.
+orchestrator-plus-subagents workflow). The `Notification` entry has **no
+matcher**: the hook tells waiting-on-you notifications (a permission prompt, an
+MCP input request) apart from idle ones, keeping the session busy while Claude
+waits for you, so it needs to receive every notification type. **If you
+registered an earlier version of this hook**, add the `SubagentStop` entry,
+remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
+`./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
+start a new Claude Code session so it loads.
 
 **The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
 not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`

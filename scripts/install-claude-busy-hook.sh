@@ -55,7 +55,7 @@ exec form (/usr/bin/env -i …) is a security requirement, not cosmetic:
   "StopFailure": [ { "hooks": [ $EXEC_CMD ] } ],
   "SubagentStop": [ { "hooks": [ $EXEC_CMD ] } ],
   "SessionEnd": [ { "hooks": [ $EXEC_CMD ] } ],
-  "Notification": [ { "matcher": "idle_prompt", "hooks": [ $EXEC_CMD ] } ]
+  "Notification": [ { "hooks": [ $EXEC_CMD ] } ]
 
 JSON
 
@@ -63,6 +63,12 @@ echo "UPDATE: SubagentStop is NEW in this version. If you registered an earlier"
 echo "        NapCat hook, ADD the SubagentStop entry above — it keeps NapCat"
 echo "        'busy' while a background subagent is still running after the main"
 echo "        turn ends. A NEW Claude Code session is needed to load it."
+echo "UPDATE: the Notification entry no longer has a matcher. If you registered an"
+echo "        earlier NapCat hook, REMOVE  \"matcher\": \"idle_prompt\",  from your"
+echo "        Notification entry — the hook now tells waiting-on-you notifications"
+echo "        (permission prompts, MCP input requests) apart from idle ones, so it"
+echo "        must receive every type. This run already refreshed the installed"
+echo "        script copy. A NEW Claude Code session is needed to load it."
 echo "NOTE: hooks load at session start — open a NEW Claude Code session for"
 echo "      this to take effect. Pause anytime by creating:"
 echo "          $MARKER_DIR/DISABLED"
