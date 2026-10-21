@@ -106,14 +106,14 @@ struct MenuPanelStructureTests {
 
     // MARK: - The iron rule, structurally
 
-    /// The layout must render the three surfaced-line components (the
-    /// top-level home of every Details line that can be a problem) plus the
-    /// Details content and the ONE footer row that carries the disclosure and
-    /// the always-visible Quit.
+    /// The layout must render the four surfaced-line components (the
+    /// top-level home of every Details line that can be a problem — Track C
+    /// added the session-alerts one) plus the Details content and the ONE
+    /// footer row that carries the disclosure and the always-visible Quit.
     @Test func thePanelGivesProblemLinesATopLevelHome() throws {
         let body = try Self.layoutBody()
-        for component in ["ClaudeSurfacedLines(", "LidAlertSurfacedLines(", "SurfacedLaunchAtLogin(",
-                          "PanelDetailsContent(", "PanelFooterRow("] {
+        for component in ["ClaudeSurfacedLines(", "LidAlertSurfacedLines(", "SessionAlertsSurfacedLines(",
+                          "SurfacedLaunchAtLogin(", "PanelDetailsContent(", "PanelFooterRow("] {
             #expect(body.contains(component), "\(Self.layout) is missing \(component)")
         }
         #expect(Self.occurrences(of: "PanelFooterRow(", in: body) == 1, "ONE footer row")
@@ -230,11 +230,13 @@ struct MenuPanelStructureTests {
         let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
         let claudeTwins = try #require(Self.structChunk("ClaudeSurfacedLines", in: source))
         let lidTwins = try #require(Self.structChunk("LidAlertSurfacedLines", in: source))
+        let sessionTwins = try #require(Self.structChunk("SessionAlertsSurfacedLines", in: source))
         let pairs: [(accessor: String, twinHome: String)] = [
             ("model.hookStatus", claudeTwins),
             ("model.lidTopicStatus", lidTwins),
             ("model.lidServerStatus", lidTwins),
             ("model.lidLastSend(", lidTwins),
+            ("model.finishAlertLastSend(", sessionTwins),
         ]
         for (accessor, twinHome) in pairs {
             let uses = Self.occurrences(of: accessor, in: details)
@@ -258,6 +260,44 @@ struct MenuPanelStructureTests {
         let surfaced = try #require(Self.structChunk("SurfacedLine", in: source))
         #expect(tucked.contains("placement(ofDetailsLine: line.severity) == .details"))
         #expect(surfaced.contains("placement(ofDetailsLine: line.severity) == .topLevel"))
+    }
+
+    /// Track C (C4): the "Session alerts" row is a controls-tier row DIRECTLY
+    /// under the Lid alert row — same PanelRow shape (symbol, title, toggle),
+    /// its status as a non-nominal-only caption, and its surfaced twin under
+    /// it. It sits above the Divider that opens the Details tier, and it is
+    /// the ONLY place the session toggle is rendered.
+    @Test func theSessionAlertsRowSitsDirectlyUnderTheLidRow() throws {
+        let body = try Self.layoutBody()
+        let lidRow = try #require(body.range(of: "PanelRow(symbol: PanelSymbol.lidAlert, title: \"Lid alert\")"))
+        let sessionRow = try #require(
+            body.range(of: "PanelRow(symbol: PanelSymbol.sessionAlerts, title: \"Session alerts\")"),
+            "the Session alerts row is missing from the layout")
+        #expect(lidRow.upperBound < sessionRow.lowerBound, "Session alerts renders below Lid alert")
+        // Nothing renders between the two rows except the lid row's own
+        // caption + surfaced lines: the next PanelRow after the lid row is the
+        // session row.
+        let between = body[lidRow.upperBound..<sessionRow.lowerBound]
+        #expect(!between.contains("PanelRow("), "another row sits between Lid alert and Session alerts")
+        #expect(!between.contains("Divider()"))
+        // The session feature: toggle, status caption, surfaced twin — in that order.
+        let tail = body[sessionRow.upperBound...]
+        let toggle = try #require(tail.range(of: "SessionAlertsToggle(model: model)"))
+        let caption = try #require(tail.range(of: "indentedCaption(model.finishAlertStatus)"))
+        let twin = try #require(tail.range(of: "SessionAlertsSurfacedLines(model: model)"))
+        #expect(toggle.lowerBound < caption.lowerBound && caption.lowerBound < twin.lowerBound)
+        // Still in the controls tier: above the Details tier's Divider, the
+        // Details content and the footer.
+        let detailsDivider = try #require(body.range(of: "Divider()", options: .backwards))
+        #expect(twin.upperBound <= detailsDivider.lowerBound, "the row must stay above the Details tier")
+        #expect(Self.occurrences(of: "SessionAlertsToggle(", in: try Self.allViewCode()) == 1,
+                "the session toggle is rendered exactly once, in the layout")
+        #expect(Self.occurrences(of: "SessionAlertsToggle(model: model)", in: body) == 1)
+        // The toggle forwards to the model (and MenuContentView), never to a
+        // panel-local or dismissing path.
+        let toggleView = try #require(Self.structChunk("SessionAlertsToggle", in: try Self.code("MenuPanelView.swift")))
+        #expect(toggleView.contains("set: { model.setFinishAlertEnabled($0) }"))
+        #expect(!toggleView.contains("cancelTracking") && !toggleView.contains("setDetailsExpanded"))
     }
 
     /// F3 (2026-10-18): the Pause detection kill switch exists ONCE, inside the

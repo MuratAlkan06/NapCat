@@ -33,6 +33,9 @@ enum PanelSymbol {
     static let chargeLimit = "battery.75percent"
     static let claude = "terminal"
     static let lidAlert = "bell"
+    /// Track C (finish + waiting pushes): a finish flag, distinct from the
+    /// lid alert's bell.
+    static let sessionAlerts = "flag.checkered"
     static let disclosure = "chevron.right"
     static let desktop = "desktopcomputer"
     static let charging = "bolt.fill"
@@ -41,7 +44,7 @@ enum PanelSymbol {
     static let warning = "exclamationmark.triangle.fill"
     static let error = "xmark.octagon.fill"
 
-    static let all = [stayAwake, lockScreen, chargeLimit, claude, lidAlert, disclosure,
+    static let all = [stayAwake, lockScreen, chargeLimit, claude, lidAlert, sessionAlerts, disclosure,
                       desktop, charging, battery, info, warning, error]
 }
 
@@ -92,6 +95,15 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var lidGuardLastOutcome: MessageSendOutcome?
     @Published private(set) var lidGuardLastOutcomeAt: Double?
 
+    // Track C (session alerts: finish + waiting buzz) mirrors. The toggle is
+    // the lid guard's `claudeFinishAlertEnabled`; the rest comes off the
+    // finish-alert controller, which exposes no topic at all.
+    @Published private(set) var finishAlertEnabled = false
+    @Published private(set) var finishAlertDisplayState: FinishAlertDisplayState = .off
+    @Published private(set) var finishAlertLastOutcome: MessageSendOutcome?
+    @Published private(set) var finishAlertLastOutcomeAt: Double?
+    @Published private(set) var finishAlertLastKind: LidGuardMessageKind?
+
     // Panel redesign (2026-10-18).
     /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
     /// persisted to defaults: it survives menu close/reopen for the app's
@@ -113,6 +125,9 @@ final class MenuStateModel: ObservableObject {
     private let detection: ClaudeActivityController?
     /// Non-nil outside debugBattery mode — drives the lid-alert controls (B2).
     private let lidGuard: LidGuardController?
+    /// Non-nil outside debugBattery mode — drives the session-alerts row
+    /// (Track C). Read only; arming is MenuContentView's job.
+    private let finishAlert: FinishAlertController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -126,6 +141,9 @@ final class MenuStateModel: ObservableObject {
     var requestLidGuardToggle: ((Bool) -> Void)?
     var requestLidGuardSettingsPrompt: (() -> Void)?
     var requestLidGuardTestSend: (() -> Void)?
+    /// Track C: the session-alerts toggle may kick off the shared priming test
+    /// send — owned by MenuContentView, like the lid toggle.
+    var requestFinishAlertToggle: ((Bool) -> Void)?
     /// Track C: told after the detection pause flag flips, so the owner can
     /// re-gate the finish alert (MenuContentView).
     var onDetectionPausedChange: (() -> Void)?
@@ -133,6 +151,9 @@ final class MenuStateModel: ObservableObject {
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
     var lidGuardVisible: Bool { lidGuard != nil }
+    /// The session-alerts row needs both halves: the lid guard owns the toggle
+    /// key + the shared destination/priming, the controller owns the state.
+    var finishAlertVisible: Bool { lidGuard != nil && finishAlert != nil }
 
     init(
         power: PowerInterface,
@@ -142,7 +163,8 @@ final class MenuStateModel: ObservableObject {
         screenLock: ScreenLockController? = nil,
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
-        lidGuard: LidGuardController? = nil
+        lidGuard: LidGuardController? = nil,
+        finishAlert: FinishAlertController? = nil
     ) {
         self.power = power
         self.sleep = sleep
@@ -152,6 +174,7 @@ final class MenuStateModel: ObservableObject {
         self.simulator = simulator
         self.detection = detection
         self.lidGuard = lidGuard
+        self.finishAlert = finishAlert
         refresh()
     }
 
@@ -184,6 +207,13 @@ final class MenuStateModel: ObservableObject {
         lidGuardArming = lidGuard?.armingState ?? .off
         lidGuardLastOutcome = lidGuard?.lastSendOutcome
         lidGuardLastOutcomeAt = lidGuard?.lastSendOutcomeAt
+        // Track C mirrors. No controller (debugBattery mode) ⇒ off, nothing
+        // sent — the stored toggle alone never makes the row claim "on".
+        finishAlertEnabled = finishAlert != nil && (lidGuard?.finishAlertEnabled ?? false)
+        finishAlertDisplayState = finishAlert?.displayState ?? .off
+        finishAlertLastOutcome = finishAlert?.lastSendOutcome
+        finishAlertLastOutcomeAt = finishAlert?.lastSendOutcomeAt
+        finishAlertLastKind = finishAlert?.lastSendKind
     }
 
     // MARK: Actions (forwarded)
@@ -224,6 +254,10 @@ final class MenuStateModel: ObservableObject {
     func setLidGuardEnabled(_ enabled: Bool) { requestLidGuardToggle?(enabled) }
     func editLidGuardSettings() { requestLidGuardSettingsPrompt?() }
     func sendLidGuardTestMessage() { requestLidGuardTestSend?() }
+
+    // MARK: Track C action (forwarded — same rule as the lid toggle)
+
+    func setFinishAlertEnabled(_ enabled: Bool) { requestFinishAlertToggle?(enabled) }
 
     // MARK: Panel-only actions (pure UI state — never dismiss the menu)
 
@@ -278,6 +312,15 @@ final class MenuStateModel: ObservableObject {
         Self.lidAlertTestSendAvailable(server: lidGuardServer, topic: lidGuardTopic)
     }
 
+    var finishAlertStatus: PanelLine {
+        Self.finishAlertStatus(for: finishAlertDisplayState, lastOutcome: finishAlertLastOutcome)
+    }
+
+    func finishAlertLastSend(now: Double) -> PanelLine {
+        Self.finishAlertLastSend(outcome: finishAlertLastOutcome, kind: finishAlertLastKind,
+                                 at: finishAlertLastOutcomeAt, now: now)
+    }
+
     /// Badge on the collapsed "Details" row: the worst severity among the
     /// items whose home or fix lives in Details (the problems themselves are
     /// already shown at top level — the badge says where the setting is).
@@ -289,6 +332,11 @@ final class MenuStateModel: ObservableObject {
         if lidGuardVisible {
             severities += [lidStatus.severity, lidTopicStatus.severity, lidServerStatus.severity,
                            Self.lidAlertLastSendSeverity(lidGuardLastOutcome, at: lidGuardLastOutcomeAt)]
+        }
+        // Session alerts share the ntfy settings + test send in Details.
+        if finishAlertVisible {
+            severities += [finishAlertStatus.severity,
+                           Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
         }
         return Self.detailsBadge(severities)
     }
@@ -411,9 +459,9 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Explanation under the Pause toggle inside Details: pausing is legitimate
-    /// but has a non-obvious consequence for the lid alert.
+    /// but has a non-obvious consequence for the lid and session alerts.
     nonisolated static let pauseDetectionCaption =
-        "Stops reading Claude busy markers. While paused the lid alert cannot fire."
+        "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
 
     /// Hook liveness with its severity: not installed / never seen are
     /// problems (they escape Details); "last seen …" is nominal. A long gap is
@@ -636,6 +684,123 @@ final class MenuStateModel: ObservableObject {
     /// The test send is offered only when there is something to publish TO.
     nonisolated static func lidAlertTestSendAvailable(server: String, topic: String) -> Bool {
         LidGuardPolicy.destination(server: server, topic: topic) != nil
+    }
+
+    // MARK: - Track C (session alerts: finish + waiting pushes) presentation
+
+    /// Primary line under the "Session alerts" toggle — the lid grammar
+    /// (off / set a topic / send the test message / armed / failed-send
+    /// downgrade) plus the two states only the finish alert has. `.armed` here
+    /// already means the marker-dir watcher is RUNNING (the controller reports
+    /// `.hookNotInstalled` otherwise), and `.paused` is the F2 downgrade: on,
+    /// but no busy marker can exist, so nothing can fire. A refused or failed
+    /// LAST session send must not read "armed" either — it names the fix.
+    nonisolated static func finishAlertStatusLine(
+        for state: FinishAlertDisplayState,
+        lastOutcome: MessageSendOutcome?
+    ) -> String {
+        switch state {
+        case .off:
+            return "Session alerts: off"
+        case .needsTopic:
+            return "Session alerts: set an ntfy topic to arm them"
+        case .needsTestSend:
+            return "Session alerts: send the test message to check your phone gets it"
+        case .paused:
+            return "Session alerts: on — but Claude detection is paused; alerts cannot fire"
+        case .hookNotInstalled:
+            return "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)"
+        case .armed:
+            switch lastOutcome {
+            case .rejected?, .sendFailed?:
+                return "Session alerts: the last message did not go out — re-run Send test message"
+            default:
+                return "Session alerts: armed — a push when a Claude session finishes or waits for you"
+            }
+        }
+    }
+
+    /// The status line with its severity. Off is a choice (nominal); switched
+    /// on but unable to fire (no topic, untested, paused, nothing to watch) is
+    /// a warning; armed with a refused / failed last send is an error.
+    nonisolated static func finishAlertStatus(
+        for state: FinishAlertDisplayState,
+        lastOutcome: MessageSendOutcome?
+    ) -> PanelLine {
+        let text = finishAlertStatusLine(for: state, lastOutcome: lastOutcome)
+        let severity: PanelSeverity
+        switch state {
+        case .off:
+            severity = .nominal
+        case .needsTopic, .needsTestSend, .paused, .hookNotInstalled:
+            severity = .warning
+        case .armed:
+            if case .rejected? = lastOutcome {
+                severity = .error
+            } else if case .sendFailed? = lastOutcome {
+                severity = .error
+            } else {
+                severity = .nominal
+            }
+        }
+        return PanelLine(text: text, severity: severity)
+    }
+
+    /// Same mapping as `lidAlertLastSendSeverity`: refused / failed ⇒ error,
+    /// unconfirmed ⇒ warning, accepted / none ⇒ nominal, and no timestamp ⇒
+    /// nominal (the caption then says "none").
+    nonisolated static func finishAlertLastSendSeverity(_ outcome: MessageSendOutcome?, at: Double?) -> PanelSeverity {
+        guard at != nil else { return .nominal }
+        switch outcome {
+        case nil, .accepted?: return .nominal
+        case .timedOutUnconfirmed?: return .warning
+        case .rejected?, .sendFailed?: return .error
+        }
+    }
+
+    nonisolated static func finishAlertLastSend(
+        outcome: MessageSendOutcome?,
+        kind: LidGuardMessageKind?,
+        at: Double?,
+        now: Double
+    ) -> PanelLine {
+        PanelLine(
+            text: finishAlertLastSendCaption(outcome: outcome, kind: kind, at: at, now: now),
+            severity: finishAlertLastSendSeverity(outcome, at: at)
+        )
+    }
+
+    /// The last SESSION alert (finish or waiting buzz), in the shape of
+    /// `lidAlertLastSendCaption`: outcome + when, plus which kind it was in a
+    /// closed word. In-memory like the lid's — nothing until a send this run.
+    nonisolated static func finishAlertLastSendCaption(
+        outcome: MessageSendOutcome?,
+        kind: LidGuardMessageKind?,
+        at: Double?,
+        now: Double
+    ) -> String {
+        guard let outcome, let at else { return "Last session alert: none since NapCat started" }
+        let when = ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - at))) + finishAlertKindLabel(kind)
+        switch outcome {
+        case .accepted:
+            return "Last session alert: accepted by ntfy \(when)"
+        case .rejected(let status):
+            return "Last session alert: refused by the server \(when) (HTTP \(status)) — check the topic and server"
+        case .timedOutUnconfirmed:
+            return "Last session alert: unconfirmed \(when) — it may still have gone out"
+        case .sendFailed(let detail):
+            return "Last session alert: failed \(when) — \(detail)"
+        }
+    }
+
+    /// Closed vocabulary: which session-alert kind went out. The lid kinds
+    /// never reach this controller; they get no label.
+    nonisolated static func finishAlertKindLabel(_ kind: LidGuardMessageKind?) -> String {
+        switch kind {
+        case .sessionFinished?: return " (finished)"
+        case .needsAttention?: return " (waiting)"
+        case .lidAlert?, .test?, nil: return ""
+        }
     }
 
     // MARK: - Panel tiers + severity (UI redesign 2026-10-18)
