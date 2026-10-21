@@ -35,9 +35,10 @@ protocol MarkerDirectoryWatching: AnyObject {
     func stop()
 }
 
-/// The production watcher: `open(O_EVTONLY)` + a dispatch filesystem-object
-/// source. `O_EVTONLY` asks only for event notifications — it never keeps the
-/// volume from unmounting and never blocks the directory's deletion.
+/// The production watcher: `open(O_EVTONLY | O_CLOEXEC)` + a dispatch
+/// filesystem-object source. `O_EVTONLY` asks only for event notifications —
+/// it never keeps the volume from unmounting and never blocks the directory's
+/// deletion; `O_CLOEXEC` keeps the descriptor out of any child process.
 final class KqueueMarkerDirectoryWatcher: MarkerDirectoryWatching, @unchecked Sendable {
     /// The kqueue bits observed: entries changing, and the directory itself
     /// going away. Computed: the option set is not `Sendable`, so it cannot
@@ -72,7 +73,7 @@ final class KqueueMarkerDirectoryWatcher: MarkerDirectoryWatching, @unchecked Se
         lock.lock()
         defer { lock.unlock() }
         guard source == nil else { return true }
-        let descriptor = open(directory.path, O_EVTONLY)
+        let descriptor = open(directory.path, O_EVTONLY | O_CLOEXEC)
         guard descriptor >= 0 else { return false }
         let newSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,

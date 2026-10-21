@@ -214,8 +214,9 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
     }
 
     /// Any error at all must produce a code, so an unexpected error domain is
-    /// classified as a failure rather than falling through to the
-    /// "no HTTP response" branch. The error's own message is deliberately
+    /// classified through the transport-error path (`URLError.unknown` is not
+    /// pre-connect, so it reads as unconfirmed and is never retried) rather
+    /// than the "no HTTP response" branch. The error's own message is deliberately
     /// discarded: `localizedDescription` can carry the failing URL, and the URL
     /// carries the topic.
     static func transportErrorCode(_ error: Error?) -> Int? {

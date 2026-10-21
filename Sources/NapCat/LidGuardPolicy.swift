@@ -238,10 +238,13 @@ enum MessageSendOutcome: Equatable, Sendable {
     /// The server answered with a non-2xx status (bad topic, auth required on
     /// a self-hosted instance, rate limit…). The status code is NOT a secret.
     case rejected(Int)
-    /// The request never reported an answer (timed out / the connection died
-    /// as the Mac went down): we do not know whether it left.
+    /// The request reported no usable answer — timed out, connection lost, or
+    /// the response could not be read: we do not know whether it left. Never
+    /// retried (a retry could duplicate a message ntfy already has).
     case timedOutUnconfirmed
-    /// Any other transport failure. The detail comes from a FIXED vocabulary
+    /// The publish provably never left the Mac: a pre-connect transport failure
+    /// (`LidGuardPolicy.preConnectTransportErrorCodes`) or an inline refusal by
+    /// the sender. The detail comes from a FIXED vocabulary
     /// (`LidGuardPolicy.transportErrorName`) so it can never echo the URL and
     /// therefore never the topic.
     case sendFailed(String)
@@ -501,7 +504,7 @@ enum LidGuardPolicy {
                 + " still running, and Stay Awake is off."
         case .test:
             return "NapCat test message (\(clockTime)). ntfy push works — "
-                + "this is what you'll get if your Mac sleeps mid-task."
+                + "this is how the lid-close and session alerts will reach you."
         case .sessionFinished(let minutes, let folded, let stillWorking):
             if folded >= 2 {
                 return "\(folded) Claude sessions finished — " + stillWorkingPhrase(stillWorking)
@@ -585,40 +588,85 @@ enum LidGuardPolicy {
         URLError.networkConnectionLost.rawValue,
     ]
 
+    /// ALLOW-LIST (security review M1, 2026-10-21): the transport failures that
+    /// are raised BEFORE the request body is sent — no network, no DNS answer,
+    /// no TCP connection, a failed TLS handshake / certificate check, or an
+    /// address URLSession would not even try. Only these are `sendFailed`,
+    /// the outcome that provably sent nothing and is therefore safe to retry.
+    /// Everything else — including codes raised while READING a response the
+    /// server may already have acted on (badServerResponse, zeroByteResource,
+    /// cannotDecode*, cannotParseResponse, dataLengthExceedsMaximum,
+    /// requestBodyStreamExhausted) and any code not listed here — is
+    /// `timedOutUnconfirmed`: an unknown phase fails toward NO retry.
+    static let preConnectTransportErrorCodes: Set<Int> = [
+        URLError.notConnectedToInternet.rawValue,
+        URLError.cannotFindHost.rawValue,
+        URLError.dnsLookupFailed.rawValue,
+        URLError.cannotConnectToHost.rawValue,
+        URLError.internationalRoamingOff.rawValue,
+        URLError.callIsActive.rawValue,
+        URLError.dataNotAllowed.rawValue,
+        URLError.appTransportSecurityRequiresSecureConnection.rawValue,
+        URLError.secureConnectionFailed.rawValue,
+        URLError.serverCertificateUntrusted.rawValue,
+        URLError.serverCertificateHasBadDate.rawValue,
+        URLError.serverCertificateNotYetValid.rawValue,
+        URLError.serverCertificateHasUnknownRoot.rawValue,
+        URLError.clientCertificateRejected.rawValue,
+        URLError.clientCertificateRequired.rawValue,
+        URLError.badURL.rawValue,
+        URLError.unsupportedURL.rawValue,
+    ]
+
     /// Pure classification of one ntfy publish (fixture-tested):
     /// - an "unknown outcome" transport code → `timedOutUnconfirmed`
-    /// - any other transport code → `sendFailed` with a FIXED-VOCABULARY
-    ///   detail (never the URL, hence never the topic)
+    /// - a PRE-CONNECT transport code (`preConnectTransportErrorCodes`) →
+    ///   `sendFailed` with a FIXED-VOCABULARY detail (never the URL, hence
+    ///   never the topic) — the only transport outcome that is retried
+    /// - ANY OTHER transport code → `timedOutUnconfirmed` (the phase is unknown
+    ///   or post-send: the request may well have landed)
+    /// - no transport error and no HTTP response → `timedOutUnconfirmed`
     /// - HTTP 2xx → `accepted` (NOT "delivered": ntfy has it, the push to the
     ///   phone is asynchronous)
     /// - any other status → `rejected(status)`
     static func classifySend(statusCode: Int?, transportErrorCode: Int?) -> MessageSendOutcome {
         if let transportErrorCode {
             if unconfirmedTransportErrorCodes.contains(transportErrorCode) { return .timedOutUnconfirmed }
-            return .sendFailed(transportErrorName(transportErrorCode))
+            if preConnectTransportErrorCodes.contains(transportErrorCode) {
+                return .sendFailed(transportErrorName(transportErrorCode))
+            }
+            return .timedOutUnconfirmed
         }
-        guard let statusCode else { return .sendFailed("the server sent no HTTP response") }
+        guard let statusCode else { return .timedOutUnconfirmed }
         if (200..<300).contains(statusCode) { return .accepted }
         return .rejected(statusCode)
     }
 
     /// URLError code → a fixed, SECRET-FREE sentence. Deliberately not
     /// `error.localizedDescription`: that string can carry the failing URL, and
-    /// the URL contains the topic (which is the password).
+    /// the URL contains the topic (which is the password). Every
+    /// `preConnectTransportErrorCodes` member has a sentence of its own.
     static func transportErrorName(_ code: Int) -> String {
         switch code {
-        case URLError.notConnectedToInternet.rawValue:
+        case URLError.notConnectedToInternet.rawValue,
+             URLError.internationalRoamingOff.rawValue,
+             URLError.callIsActive.rawValue,
+             URLError.dataNotAllowed.rawValue:
             return "this Mac had no internet connection"
         case URLError.cannotFindHost.rawValue, URLError.dnsLookupFailed.rawValue:
             return "the ntfy server name could not be resolved"
         case URLError.cannotConnectToHost.rawValue:
             return "the ntfy server refused the connection"
-        case URLError.secureConnectionFailed.rawValue:
+        case URLError.secureConnectionFailed.rawValue,
+             URLError.appTransportSecurityRequiresSecureConnection.rawValue:
             return "the secure connection to the ntfy server failed"
         case URLError.serverCertificateUntrusted.rawValue,
              URLError.serverCertificateHasBadDate.rawValue,
-             URLError.serverCertificateNotYetValid.rawValue:
+             URLError.serverCertificateNotYetValid.rawValue,
+             URLError.serverCertificateHasUnknownRoot.rawValue:
             return "the ntfy server certificate was not trusted"
+        case URLError.clientCertificateRejected.rawValue, URLError.clientCertificateRequired.rawValue:
+            return "the ntfy server asked for a client certificate"
         case URLError.badURL.rawValue, URLError.unsupportedURL.rawValue:
             return "the ntfy server address is not usable"
         default:

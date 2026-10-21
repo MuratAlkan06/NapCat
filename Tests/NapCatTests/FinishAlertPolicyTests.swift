@@ -509,6 +509,50 @@ struct FinishAlertPolicyTests {
                 == .retryAfter(FinishAlertTuning.retryDelaySeconds))
     }
 
+    /// FA-7 × security review M1, END TO END through the real classifier: a
+    /// transport failure that can strike AFTER ntfy already has the message
+    /// (or whose phase is unknown) is never retried — no duplicate push; a
+    /// provably pre-connect failure is retried once.
+    @Test(arguments: [
+        // (id, transport code, expected first-attempt decision)
+        ("FC1 badServerResponse", URLError.badServerResponse.rawValue, RetryDecision.done),
+        ("FC2 zeroByteResource", URLError.zeroByteResource.rawValue, .done),
+        ("FC3 cannotDecodeRawData", URLError.cannotDecodeRawData.rawValue, .done),
+        ("FC4 cannotDecodeContentData", URLError.cannotDecodeContentData.rawValue, .done),
+        ("FC5 cannotParseResponse", URLError.cannotParseResponse.rawValue, .done),
+        ("FC6 dataLengthExceedsMaximum", URLError.dataLengthExceedsMaximum.rawValue, .done),
+        ("FC7 requestBodyStreamExhausted", URLError.requestBodyStreamExhausted.rawValue, .done),
+        ("FC8 unknown code", -9999, .done),
+        ("FC9 no response and no error", nil, .done),
+        ("FC10 timedOut", URLError.timedOut.rawValue, .done),
+        ("FC11 notConnectedToInternet", URLError.notConnectedToInternet.rawValue, .retryAfter(30)),
+        ("FC12 cannotFindHost", URLError.cannotFindHost.rawValue, .retryAfter(30)),
+        ("FC13 serverCertificateHasUnknownRoot", URLError.serverCertificateHasUnknownRoot.rawValue, .retryAfter(30)),
+    ] as [(String, Int?, RetryDecision)])
+    func retryTableThroughTheClassifier(_ id: String, _ code: Int?, _ expected: RetryDecision) {
+        let outcome = LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code)
+        #expect(FinishAlertPolicy.retryDecision(outcome: outcome, attempt: .first) == expected, "\(id)")
+        #expect(FinishAlertPolicy.retryDecision(outcome: outcome, attempt: .retry) == .done, "\(id): one retry at most")
+    }
+
+    /// The whole pre-connect allow-list retries once — and nothing outside it
+    /// does (sampled across the URLError range, which covers every code above).
+    @Test func onlyThePreConnectAllowListIsRetried() {
+        for code in LidGuardPolicy.preConnectTransportErrorCodes {
+            let outcome = LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code)
+            #expect(FinishAlertPolicy.retryDecision(outcome: outcome, attempt: .first) == .retryAfter(30), "\(code)")
+        }
+        var retried = 0
+        for code in -3_100 ... 0 {
+            let outcome = LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code)
+            if FinishAlertPolicy.retryDecision(outcome: outcome, attempt: .first) != .done {
+                retried += 1
+                #expect(LidGuardPolicy.preConnectTransportErrorCodes.contains(code), "\(code) must not be retried")
+            }
+        }
+        #expect(retried == LidGuardPolicy.preConnectTransportErrorCodes.count)
+    }
+
     @Test(arguments: [
         // (id, armed, paused, dirExists, age, expected)
         ("G1", true, false, true, 0.0, true),

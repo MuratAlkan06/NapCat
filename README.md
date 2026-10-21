@@ -392,7 +392,8 @@ Pause detection at any time from the menu (**Details → Pause detection** — k
 behind the Details disclosure so it cannot be flipped by accident), or by hand.
 While it is paused the menu says **Detection paused** at the top, and an armed
 lid alert reads "armed — but Claude detection is paused; alerts cannot fire":
-with no busy markers, the alert can never fire.
+with no busy markers, the alert can never fire. Pausing detection silences
+**Session alerts** too — no finish or waiting push goes out until you resume.
 
 ```sh
 touch "$HOME/Library/Application Support/NapCat/claude-busy/DISABLED"   # pause
@@ -537,9 +538,11 @@ pushes, and the row says so.
   in". Both publish at ntfy priority `high`, tagged `white_check_mark`
   (finished) or `raised_hand` (waiting).
 - **The menu shows the outcome of the last session alert** under **Details**; a
-  refused or failed one moves up next to the toggle. A send that never left the
-  Mac is retried once; one the server refused (for example, rate-limited) is
-  not.
+  refused or failed one moves up next to the toggle. A failed send is retried
+  once only when it provably never left the Mac (no connection, DNS, TLS);
+  anything that may have reached ntfy — one the server refused (for example,
+  rate-limited), or one whose answer never came back — is never retried, so you
+  may occasionally miss one rather than get a duplicate.
 - **The marker folder has to exist.** Until the busy hook is installed — or
   after its folder is deleted — the row says it is waiting for the Claude hook.
   After the folder is created or recreated, the feature re-arms on the next
@@ -573,6 +576,10 @@ pushes, and the row says so.
 - **Lid and finish can overlap.** If the finish send is in flight when the lid
   closes, the lid alert still goes out (separate lanes) — best-effort, like
   every push.
+- **One rate-limit budget for both.** ntfy.sh rate-limits per IP, so session
+  alerts and the lid alert draw on one daily budget; if a session alert is
+  refused with HTTP 429, turn Session alerts off for the rest of the day so the
+  lid alert keeps its headroom.
 
 ## Development
 

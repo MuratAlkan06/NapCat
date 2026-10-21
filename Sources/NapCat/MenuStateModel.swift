@@ -313,7 +313,9 @@ final class MenuStateModel: ObservableObject {
     }
 
     var finishAlertStatus: PanelLine {
-        Self.finishAlertStatus(for: finishAlertDisplayState, lastOutcome: finishAlertLastOutcome)
+        Self.finishAlertStatus(for: finishAlertDisplayState, lastOutcome: finishAlertLastOutcome,
+                               lastOutcomeAt: finishAlertLastOutcomeAt,
+                               lidLastOutcome: lidGuardLastOutcome, lidLastOutcomeAt: lidGuardLastOutcomeAt)
     }
 
     func finishAlertLastSend(now: Double) -> PanelLine {
@@ -694,10 +696,17 @@ final class MenuStateModel: ObservableObject {
     /// already means the marker-dir watcher is RUNNING (the controller reports
     /// `.hookNotInstalled` otherwise), and `.paused` is the F2 downgrade: on,
     /// but no busy marker can exist, so nothing can fire. A refused or failed
-    /// LAST session send must not read "armed" either — it names the fix.
+    /// LAST session send must not read "armed" either — it names the fix
+    /// (re-run the test send), and a STRICTLY LATER accepted lid-lane send
+    /// (that test send, or a lid alert) clears the downgrade: see
+    /// `finishAlertSendDowngraded`. The Details "Last session alert" line is
+    /// unaffected — it stays the truthful history.
     nonisolated static func finishAlertStatusLine(
         for state: FinishAlertDisplayState,
-        lastOutcome: MessageSendOutcome?
+        lastOutcome: MessageSendOutcome?,
+        lastOutcomeAt: Double?,
+        lidLastOutcome: MessageSendOutcome?,
+        lidLastOutcomeAt: Double?
     ) -> String {
         switch state {
         case .off:
@@ -711,23 +720,27 @@ final class MenuStateModel: ObservableObject {
         case .hookNotInstalled:
             return "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)"
         case .armed:
-            switch lastOutcome {
-            case .rejected?, .sendFailed?:
+            if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
+                                         lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {
                 return "Session alerts: the last message did not go out — re-run Send test message"
-            default:
-                return "Session alerts: armed — a push when a Claude session finishes or waits for you"
             }
+            return "Session alerts: armed — a push when a Claude session finishes or waits for you"
         }
     }
 
     /// The status line with its severity. Off is a choice (nominal); switched
     /// on but unable to fire (no topic, untested, paused, nothing to watch) is
-    /// a warning; armed with a refused / failed last send is an error.
+    /// a warning; armed with a refused / failed last send (not yet recovered
+    /// by a later accepted lid-lane send) is an error.
     nonisolated static func finishAlertStatus(
         for state: FinishAlertDisplayState,
-        lastOutcome: MessageSendOutcome?
+        lastOutcome: MessageSendOutcome?,
+        lastOutcomeAt: Double?,
+        lidLastOutcome: MessageSendOutcome?,
+        lidLastOutcomeAt: Double?
     ) -> PanelLine {
-        let text = finishAlertStatusLine(for: state, lastOutcome: lastOutcome)
+        let text = finishAlertStatusLine(for: state, lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
+                                         lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt)
         let severity: PanelSeverity
         switch state {
         case .off:
@@ -735,15 +748,32 @@ final class MenuStateModel: ObservableObject {
         case .needsTopic, .needsTestSend, .paused, .hookNotInstalled:
             severity = .warning
         case .armed:
-            if case .rejected? = lastOutcome {
-                severity = .error
-            } else if case .sendFailed? = lastOutcome {
-                severity = .error
-            } else {
-                severity = .nominal
-            }
+            let downgraded = finishAlertSendDowngraded(
+                lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
+                lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt)
+            severity = downgraded ? .error : .nominal
         }
         return PanelLine(text: text, severity: severity)
+    }
+
+    /// The armed-line downgrade: the last SESSION send was refused or failed
+    /// and has not been RECOVERED since. The caption tells the user to re-run
+    /// the test send, so doing that — or any lid-lane send ntfy ACCEPTED (both
+    /// lanes publish to the one shared destination) — STRICTLY LATER than the
+    /// failed session send proves the path works again. Equal timestamps, an unconfirmed / refused / failed
+    /// lid send, or a missing timestamp on either side never count.
+    nonisolated static func finishAlertSendDowngraded(
+        lastOutcome: MessageSendOutcome?,
+        lastOutcomeAt: Double?,
+        lidLastOutcome: MessageSendOutcome?,
+        lidLastOutcomeAt: Double?
+    ) -> Bool {
+        switch lastOutcome {
+        case .rejected?, .sendFailed?: break
+        case nil, .accepted?, .timedOutUnconfirmed?: return false
+        }
+        guard lidLastOutcome == .accepted, let lidLastOutcomeAt, let lastOutcomeAt else { return true }
+        return !(lidLastOutcomeAt > lastOutcomeAt)
     }
 
     /// Same mapping as `lidAlertLastSendSeverity`: refused / failed ⇒ error,

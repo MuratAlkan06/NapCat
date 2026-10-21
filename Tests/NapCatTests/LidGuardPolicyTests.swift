@@ -476,12 +476,30 @@ struct LidGuardPolicyTests {
         #expect(!body.contains("nil"))
     }
 
+    /// The test message primes BOTH features (lid alert and session alerts
+    /// share the destination and the priming), so it names both. Literal (C6).
     @Test func testMessageBodyIsSelfExplainingAndNamesTheChannel() {
         let body = LidGuardPolicy.messageBody(kind: .test, clockTime: "09:05")
+        #expect(body == "NapCat test message (09:05). ntfy push works — "
+                + "this is how the lid-close and session alerts will reach you.")
         #expect(body.contains("NapCat test message"))
         #expect(body.contains("09:05"))
         #expect(body.contains("ntfy"))
+        #expect(body.contains("lid-close") && body.contains("session alerts"))
         #expect(!body.contains("Messages"), "no iMessage wording survives the channel swap")
+    }
+
+    /// C6 changed only the TEST body: the lid alert stays byte-identical.
+    @Test func lidAlertBodyIsByteIdentical() {
+        #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 1), clockTime: "22:49")
+                == "NapCat: this Mac started going to sleep at 22:49 while 1 Claude Code task was still running, "
+                + "and Stay Awake is off.")
+        #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 3), clockTime: "07:05")
+                == "NapCat: this Mac started going to sleep at 07:05 while 3 Claude Code tasks were still running, "
+                + "and Stay Awake is off.")
+        #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 0), clockTime: "00:00")
+                == "NapCat: this Mac started going to sleep at 00:00 while a Claude Code task was still running, "
+                + "and Stay Awake is off.")
     }
 
     /// Every leaf of a kind's associated values, walked through tuples and
@@ -725,13 +743,96 @@ struct LidGuardPolicyTests {
         #expect(LidGuardPolicy.classifySend(
             statusCode: nil, transportErrorCode: URLError.secureConnectionFailed.rawValue)
             == .sendFailed("the secure connection to the ntfy server failed"))
+        // M1 (C6): an arbitrary code is NOT on the pre-connect allow-list, so
+        // its phase is unknown — unconfirmed, never a retryable failure. Was
+        // `.sendFailed("the request failed (network error -424242)")`.
         #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: -424_242)
-            == .sendFailed("the request failed (network error -424242)"))
+            == .timedOutUnconfirmed)
+        // The name table's catch-all stays a fixed, number-only sentence.
+        #expect(LidGuardPolicy.transportErrorName(-424_242) == "the request failed (network error -424242)")
     }
 
-    @Test func noResponseAndNoErrorIsAFailureNotASuccess() {
-        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: nil)
-                == .sendFailed("the server sent no HTTP response"))
+    /// M1 (C6): no transport error AND no HTTP response — nothing says whether
+    /// the POST left, so it is unconfirmed (never retried), neither a success
+    /// nor a retryable failure. Was `.sendFailed("the server sent no HTTP
+    /// response")`.
+    @Test func noResponseAndNoErrorIsUnconfirmedNotASuccess() {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: nil) == .timedOutUnconfirmed)
+    }
+
+    /// M1 allow-list, literal: every code raised BEFORE the request body is
+    /// sent, with the fixed-vocabulary sentence it must surface as.
+    static let preConnectFixtures: [(Int, String)] = [
+        (URLError.notConnectedToInternet.rawValue, "this Mac had no internet connection"),
+        (URLError.internationalRoamingOff.rawValue, "this Mac had no internet connection"),
+        (URLError.callIsActive.rawValue, "this Mac had no internet connection"),
+        (URLError.dataNotAllowed.rawValue, "this Mac had no internet connection"),
+        (URLError.cannotFindHost.rawValue, "the ntfy server name could not be resolved"),
+        (URLError.dnsLookupFailed.rawValue, "the ntfy server name could not be resolved"),
+        (URLError.cannotConnectToHost.rawValue, "the ntfy server refused the connection"),
+        (URLError.secureConnectionFailed.rawValue, "the secure connection to the ntfy server failed"),
+        (URLError.appTransportSecurityRequiresSecureConnection.rawValue,
+         "the secure connection to the ntfy server failed"),
+        (URLError.serverCertificateUntrusted.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.serverCertificateHasBadDate.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.serverCertificateNotYetValid.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.serverCertificateHasUnknownRoot.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.clientCertificateRejected.rawValue, "the ntfy server asked for a client certificate"),
+        (URLError.clientCertificateRequired.rawValue, "the ntfy server asked for a client certificate"),
+        (URLError.badURL.rawValue, "the ntfy server address is not usable"),
+        (URLError.unsupportedURL.rawValue, "the ntfy server address is not usable"),
+    ]
+
+    /// Every pre-connect code is `sendFailed` with its OWN sentence (never the
+    /// numeric catch-all) — and only these are, so only these are retried.
+    @Test(arguments: preConnectFixtures)
+    func preConnectTransportErrorsAreSendFailedWithTheirFixedName(code: Int, name: String) {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code) == .sendFailed(name))
+        #expect(LidGuardPolicy.transportErrorName(code) == name)
+        #expect(!name.contains("network error"), "\(code) must have a sentence of its own")
+    }
+
+    /// The allow-list is EXACTLY the reviewed set (adding a code is a conscious
+    /// change here), and it never overlaps the unknown-outcome set.
+    @Test func thePreConnectAllowListIsExactlyTheReviewedSet() {
+        #expect(LidGuardPolicy.preConnectTransportErrorCodes == Set(Self.preConnectFixtures.map(\.0)))
+        #expect(LidGuardPolicy.preConnectTransportErrorCodes.count == 17)
+        #expect(Self.preConnectFixtures.count == 17, "no fixture duplicated")
+        #expect(LidGuardPolicy.preConnectTransportErrorCodes
+                    .isDisjoint(with: LidGuardPolicy.unconfirmedTransportErrorCodes))
+    }
+
+    /// M1: codes that can fire AFTER ntfy already has the message (the
+    /// response could not be read or was malformed) and codes of unknown phase
+    /// are all unconfirmed — so the finish-alert retry can never duplicate a
+    /// push that landed. Literal values, as the security review named them.
+    @Test(arguments: [
+        -1011,    // badServerResponse
+        -1014,    // zeroByteResource
+        -1015,    // cannotDecodeRawData
+        -1016,    // cannotDecodeContentData
+        -1017,    // cannotParseResponse
+        -1103,    // dataLengthExceedsMaximum
+        -1021,    // requestBodyStreamExhausted
+        -1,       // URLError.unknown — also what a foreign error domain maps to
+        -9999,    // a code nobody listed
+    ])
+    func postConnectAndUnknownTransportErrorsAreUnconfirmed(code: Int) {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code) == .timedOutUnconfirmed)
+        #expect(LidGuardPolicy.classifySend(statusCode: 200, transportErrorCode: code) == .timedOutUnconfirmed)
+        #expect(!LidGuardPolicy.preConnectTransportErrorCodes.contains(code))
+    }
+
+    /// The literals above really are the URLError codes the review named.
+    @Test func theReviewedPostConnectCodesHaveTheirDocumentedValues() {
+        #expect(URLError.badServerResponse.rawValue == -1011)
+        #expect(URLError.zeroByteResource.rawValue == -1014)
+        #expect(URLError.cannotDecodeRawData.rawValue == -1015)
+        #expect(URLError.cannotDecodeContentData.rawValue == -1016)
+        #expect(URLError.cannotParseResponse.rawValue == -1017)
+        #expect(URLError.dataLengthExceedsMaximum.rawValue == -1103)
+        #expect(URLError.requestBodyStreamExhausted.rawValue == -1021)
+        #expect(URLError.unknown.rawValue == -1)
     }
 
     /// SECURITY: the failure detail must be drawn from a fixed vocabulary, not
@@ -739,14 +840,18 @@ struct LidGuardPolicyTests {
     /// failing URL — and the URL contains the topic, which is the password.
     @Test func noClassifiedFailureDetailCanEverCarryAUrlOrTopic() {
         let codes = [-1, 0, -999, -1001, -1003, -1004, -1005, -1009, -1200, -1202, -424_242]
+            + LidGuardPolicy.preConnectTransportErrorCodes.sorted()
+        var failures = 0
         for code in codes {
             let outcome = LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code)
             guard case .sendFailed(let detail) = outcome else { continue }
+            failures += 1
             for forbidden in ["http", "://", "ntfy.sh/", "/napcat"] {
                 #expect(!detail.lowercased().contains(forbidden),
                         "the detail for \(code) must never look like a URL: \(detail)")
             }
         }
+        #expect(failures >= LidGuardPolicy.preConnectTransportErrorCodes.count, "vacuity guard")
         for code in codes {
             let name = LidGuardPolicy.transportErrorName(code)
             #expect(!name.contains("://"))

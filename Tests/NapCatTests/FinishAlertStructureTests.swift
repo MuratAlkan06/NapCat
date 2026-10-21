@@ -20,11 +20,13 @@ struct FinishAlertStructureTests {
 
     /// Banned in code (comments are stripped first — doc comments may NAME a
     /// boundary). Matched case-sensitively; the log-call tokens below are
-    /// additionally matched case-INSENSITIVELY.
+    /// additionally matched case-INSENSITIVELY. `.topic` / `.server` (security
+    /// review L3): no member access can read either half of a destination, so
+    /// the topic is unreachable from this file outside log lines too.
     static let bannedTokens = [
         "FileManager", "FileHandle", "DispatchSource", "DispatchQueue", "URLSession", "URLRequest",
         "Process(", "ProcessInfo", "proc_", "IOPM", "IORegisterForSystemPower", "Logger", "Timer",
-        "UserDefaults", "NotificationCenter", "Date()", "lidGuardNtfyTopic", "storedTopic",
+        "UserDefaults", "NotificationCenter", "Date()", "lidGuardNtfyTopic", "storedTopic", ".topic", ".server",
     ]
 
     /// Every lint failure for one policy-file text (empty = clean).
@@ -83,6 +85,8 @@ struct FinishAlertStructureTests {
             ("os_log call", "    static func canary() { os_log(\"x\") }"),
             ("defaults read", "    static let canary = UserDefaults.standard.string(forKey: \"x\")"),
             ("topic read", "    static let canary = DefaultsKeys.lidGuardNtfyTopic"),
+            ("destination topic read", "    static func canary(_ d: NtfyDestination) -> String { d.topic }"),
+            ("destination server read", "    static func canary(_ d: NtfyDestination) -> String { d.server }"),
             ("dispatch timer", "    static let canary = DispatchSource.makeTimerSource()"),
             ("wall clock read", "    static let canary = Date().timeIntervalSince1970"),
         ]
@@ -121,11 +125,13 @@ struct FinishAlertStructureTests {
     /// way out), no process probing or B1 sampling, no IOKit power, no
     /// timers or anything periodic (B1 amendment: one-shot callbacks only, via
     /// the injected scheduler), no reach into the B1 snapshot or the menu,
-    /// and no way to read the stored topic.
+    /// and no way to read the stored topic — not even through the destination
+    /// the controller hands to the sender (`.topic` / `.server`, security
+    /// review L3: unreadable outside log lines too).
     static let shellBannedTokens = [
         "URLSession", "URLRequest", "proc_", "ClaudeProcessProber", "IOPM", "IORegisterForSystemPower",
         "Process(", "Timer", "makeTimerSource", "repeating", "lidGuardNtfyTopic", "storedTopic",
-        ".sample()", "sampleBusyNow", "ClaudeActivityController", "MenuStateModel",
+        ".sample()", "sampleBusyNow", "ClaudeActivityController", "MenuStateModel", ".topic", ".server",
     ]
 
     /// The watcher is a pure observer: it does not log at all.
@@ -271,6 +277,8 @@ struct FinishAlertStructureTests {
                  "    func canary() { Self.logger.notice(\"\\(destination, privacy: .private)\") }"),
                 ("renamed logger", "    func canary() { osLogger.notice(\"\\(tracked.keys, privacy: .public)\") }"),
                 ("print", "    func canary() { print(\"\\(id)\") }"),
+                ("destination topic read", "    func canary() -> String? { config.storedDestination?.topic }"),
+                ("destination server read", "    func canary() -> String? { config.storedDestination?.server }"),
             ]
             if file == Self.watcherFile {
                 mutants += [
@@ -283,6 +291,14 @@ struct FinishAlertStructureTests {
                 #expect(mutant != original, "canary setup '\(name)' in \(file)")
                 #expect(!Self.shellLintFailures(mutant, file: file).isEmpty,
                         "canary '\(name)' was NOT caught in \(file)")
+            }
+            // L3: the destination reads are caught BY the new tokens (nothing
+            // else on those lines is banned).
+            for (member, token) in [("topic", "'.topic'"), ("server", "'.server'")] {
+                let mutant = original.replacingOccurrences(
+                    of: anchor, with: anchor + "\n    func canary() -> String? { config.storedDestination?.\(member) }")
+                #expect(Self.shellLintFailures(mutant, file: file).contains { $0.contains(token) },
+                        "\(token) did not catch a destination read in \(file)")
             }
             let commented = original.replacingOccurrences(
                 of: anchor, with: anchor + "\n    // never Timer, URLSession, storedTopic, Logger, sampleBusyNow")

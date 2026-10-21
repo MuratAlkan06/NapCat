@@ -88,6 +88,10 @@ struct LidGuardStructureTests {
 
     /// Each externally-visible capability may appear in ONE file only, repo
     /// wide. Vacuity is guarded: the token must really be present there.
+    /// `session(for:` (security review L4): the sender's internal per-lane
+    /// accessor hands out a live URLSession, so no other Sources file may call
+    /// it — that would reach `downloadTask` / `data(from:)` without ever naming
+    /// `URLSession`. (Tests are not scanned; they may invalidate the sessions.)
     @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
         let allowed: [String: String] = [
             "URLSession": "NtfyMessageSender.swift",
@@ -95,6 +99,7 @@ struct LidGuardStructureTests {
             "dataTask": "NtfyMessageSender.swift",
             "httpBody": "NtfyMessageSender.swift",
             "setValue": "NtfyMessageSender.swift",
+            "session(for:": "NtfyMessageSender.swift",
             "IORegisterForSystemPower": "SystemSleepSource.swift",
             "IODeregisterForSystemPower": "SystemSleepSource.swift",
             "IOAllowPowerChange": "SystemSleepSource.swift",

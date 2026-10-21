@@ -304,10 +304,14 @@ enum FinishAlertPolicy {
         return .sendNow
     }
 
-    /// FA-7: retry ONCE, and only when nothing left the Mac (`.sendFailed`,
-    /// which includes an inline lane refusal). NEVER retry `.accepted`,
-    /// `.rejected` (the server answered — e.g. a 429 quota) or
-    /// `.timedOutUnconfirmed` (it may have been delivered: duplicate risk).
+    /// FA-7: retry ONCE, iff `.sendFailed` — which is now an ALLOW-LIST of
+    /// pre-connect failures (`LidGuardPolicy.preConnectTransportErrorCodes`:
+    /// no network, DNS, TCP connect, TLS/certificate, unusable address) plus
+    /// the sender's inline refusals (lane busy, unusable address), so nothing
+    /// left the Mac. NEVER retry `.accepted`, `.rejected` (the server answered
+    /// — e.g. a 429 quota) or `.timedOutUnconfirmed` (timed out, connection
+    /// lost, unreadable response, or an unknown transport code: it may have
+    /// been delivered — duplicate risk).
     static func retryDecision(outcome: MessageSendOutcome, attempt: SendAttempt) -> RetryDecision {
         switch (outcome, attempt) {
         case (.sendFailed, .first): return .retryAfter(FinishAlertTuning.retryDelaySeconds)
