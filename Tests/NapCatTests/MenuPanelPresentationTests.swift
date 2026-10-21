@@ -389,6 +389,7 @@ struct MenuPanelPresentationTests {
 
 final class StubMarkerStore: BusyMarkerStore {
     func markers() -> [BusyMarker] { [] }
+    func identifiedMarkers() -> [IdentifiedBusyMarker] { [] }
     func markerDirExists() -> Bool { true }
     func hookLogExists() -> Bool { true }
     func lastActivityEpoch() -> Int? { Int(Date().timeIntervalSince1970) - 60 }

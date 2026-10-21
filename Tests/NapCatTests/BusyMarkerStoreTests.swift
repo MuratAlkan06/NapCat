@@ -125,5 +125,81 @@ struct BusyMarkerStoreTests {
         #expect(!store.hookLogExists())
         #expect(store.lastActivityEpoch() == nil)
         #expect(store.markers().isEmpty)
+        #expect(store.identifiedMarkers().isEmpty)
+    }
+
+    // MARK: Track C — identified read (session id = file name) + F12 size cap
+
+    private static let idA = "aaaa1111-0002-4abc-8def-000000000002"
+    private static let idB = "bbbb2222-0003-4abc-8def-000000000003"
+    private static let idOversized = "cccc3333-0004-4abc-8def-000000000004"
+    private static let idAtCap = "dddd4444-0005-4abc-8def-000000000005"
+
+    private static func write(_ root: URL, _ name: String, _ contents: String) {
+        try? contents.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+    }
+
+    /// A valid marker line padded with trailing spaces to exactly `bytes`
+    /// bytes — it WOULD parse if read (whitespace adds no token), so only the
+    /// size cap can reject it.
+    private static func paddedMarker(pid: Int, bytes: Int) -> String {
+        let line = "v1 ts=1730000000 event=UserPromptSubmit pid=\(pid) src=unknown"
+        return line + String(repeating: " ", count: bytes - line.utf8.count)
+    }
+
+    @Test func identifiedMarkersCarryTheSessionIDAndFeedMarkers() {
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            Self.write(root, Self.idB, "v1 ts=200 event=waiting pid=20 src=sc\n")
+            Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
+            Self.write(root, "README.txt", "v1 ts=300 event=UserPromptSubmit pid=30 src=sc\n")    // foreign name
+            Self.write(root, "eeee5555-0006-4abc-8def-000000000006", "not a marker\n")         // malformed
+
+            let identified = store.identifiedMarkers()
+            #expect(identified == [
+                IdentifiedBusyMarker(sessionID: Self.idA,
+                                     marker: BusyMarker(ts: 100, event: "UserPromptSubmit", pid: 10, src: "unknown")),
+                IdentifiedBusyMarker(sessionID: Self.idB,
+                                     marker: BusyMarker(ts: 200, event: "waiting", pid: 20, src: "sc")),
+            ], "only session-shaped parseable files, keyed by file name, sorted by id")
+            // One read path: markers() is exactly the identified read minus ids.
+            #expect(store.markers() == identified.map(\.marker))
+        }
+    }
+
+    @Test func oversizedMarkerIsSkippedByBothAPIs() {
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            let cap = ClaudeBusyConstants.maxMarkerBytes
+            #expect(cap == 4096, "F12 cap is a few KB; a real marker is ~60 bytes")
+            Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
+            Self.write(root, Self.idOversized, Self.paddedMarker(pid: 66, bytes: cap + 1))
+            Self.write(root, Self.idAtCap, Self.paddedMarker(pid: 44, bytes: cap))
+
+            let identified = store.identifiedMarkers()
+            #expect(identified.map(\.sessionID) == [Self.idA, Self.idAtCap],
+                    "cap + 1 bytes is skipped; exactly the cap still parses")
+            #expect(!identified.contains { $0.marker.pid == 66 })
+            #expect(store.markers().map(\.pid) == [10, 44], "markers() applies the same cap")
+        }
+    }
+
+    /// The hook writes markers with mktemp + mv — always a regular file. A
+    /// session-shaped directory or symlink is never read (a FIFO could block).
+    @Test func nonRegularSessionShapedEntriesAreSkipped() {
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            let elsewhere = root.appendingPathComponent("target.txt")
+            try? "v1 ts=100 event=UserPromptSubmit pid=77 src=unknown\n"
+                .write(to: elsewhere, atomically: true, encoding: .utf8)
+            try? FileManager.default.createSymbolicLink(at: root.appendingPathComponent(Self.idA),
+                                                        withDestinationURL: elsewhere)
+            try? FileManager.default.createDirectory(at: root.appendingPathComponent(Self.idB),
+                                                     withIntermediateDirectories: false)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(Self.idA).path),
+                    "setup: the symlink must exist")
+            #expect(store.identifiedMarkers().isEmpty)
+            #expect(store.markers().isEmpty)
+        }
     }
 }

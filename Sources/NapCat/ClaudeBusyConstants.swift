@@ -98,6 +98,13 @@ enum ClaudeBusyConstants {
     /// and is swept. MUST match the shell `CAP`.
     static let freshnessCapSeconds = 43_200
 
+    /// Track C (risk F12): read cap for ONE marker file. A real marker line is
+    /// ~60 bytes; anything larger than this is not a marker the hook wrote and
+    /// is skipped WITHOUT being read in full (the store checks the size before
+    /// opening and reads at most `maxMarkerBytes + 1` bytes). App-side only —
+    /// the shell hook never writes anything near this size.
+    static let maxMarkerBytes = 4096
+
     /// Stable installed hook path, relative to home. The installer copies the
     /// script here (NOT under dist/, so `make clean` never removes it).
     static let installedHookRelativePath = ".claude/hooks/napcat-busy-hook.sh"
