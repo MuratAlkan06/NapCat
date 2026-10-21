@@ -560,9 +560,11 @@ pushes, and the row says so.
   Claude quickly enough as the machine goes down, it stays quiet rather than
   guessing — with one exception: if the sleep state is unreadable but a Claude
   task *is* running, it errs toward sending the push.
-- **A phone on silent may stay silent.** Messages publish at ntfy's `urgent`
-  priority (5, alias `max`). The ntfy iOS app v1.8.0+ can deliver those as
-  Critical Alerts that bypass silent mode, once you grant it that permission.
+- **A phone on silent may stay silent.** Lid alerts publish at ntfy's `urgent`
+  priority (5, alias `max`); session alerts publish at `high` (4), so silent
+  mode still applies to them. The ntfy iOS app v1.8.0+ can deliver `urgent`
+  messages as Critical Alerts that bypass silent mode, once you grant it that
+  permission.
   That version was still unreleased as of October 2026 (check the
   [ntfy release notes](https://docs.ntfy.sh/releases/)). Until you have it,
   iOS shows a normal notification and silent mode applies.
