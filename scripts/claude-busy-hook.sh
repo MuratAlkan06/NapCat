@@ -1,5 +1,5 @@
 #!/bin/bash
-# NapCat "Claude is busy" companion hook (Track B, slices B1 + B3).
+# NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1).
 #
 # Registered in ~/.claude/settings.json for six events and maintains a
 # per-session "work is in flight" marker under
@@ -17,6 +17,22 @@
 # SubagentStop (empirically confirmed on this machine); an absent, non-array or
 # unparseable field is treated as NONE running (fail toward the original
 # clear-on-Stop behavior — never a crash).
+#
+# C1 — a Notification is reconciled by its `notification_type` FIRST (the
+# Notification entry is registered WITHOUT a matcher so every type arrives):
+#   * WAITING types (Claude is blocked on the user — a permission prompt, an
+#     MCP elicitation, a background session needing input, a usage-limit wait
+#     that will not continue on its own) KEEP the marker, rewritten with the
+#     synthetic event token `waiting` so NapCat can tell "waiting on you" from
+#     a background-task keep without new marker grammar;
+#   * RESUME types (work continues — quota auto-resume fired, an elicitation
+#     answered/completed) KEEP it with the real event name;
+#   * everything else — the idle / auth / agent-completed types and ANY
+#     unknown, missing, non-string or malformed type — falls through to the
+#     B3 background-task check and otherwise CLEARS (the original behavior).
+# The type is UNTRUSTED input: it must pass a strict whole-string check before
+# it is matched or logged; a value failing it is logged only as `invalid`,
+# never echoed.
 #
 # HARD UX-SAFETY LAYERS (a buggy hook must never be able to break the user's
 # Claude Code experience — lint-enforced by ClaudeBusyHookScriptTests):
@@ -61,6 +77,8 @@ DISABLED_FLAG="$STATE_DIR/DISABLED"
 LOG_FILE="$STATE_DIR/hook.log"
 CAP=43200
 SESSION_RE='^[0-9a-f][0-9a-f-]{7,63}$'
+NTYPE_RE='^[a-z_]{1,32}$'
+WAITING_EVENT=waiting
 MAX_STDIN=262144
 NL=$'\n'
 CR=$'\r'
@@ -130,11 +148,40 @@ has_running_background_task() {
   printf '%s' "$tasks" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"running"'
 }
 
+# C1 — read-only, VALIDATED notification-type probe. Prints exactly one of:
+#   * the type itself, iff it is a STRING passing the whole-string NTYPE_RE
+#     check (lowercase letters and underscore, 1-32 chars);
+#   * `invalid` — a string is present but fails that check (the raw value is
+#     never printed, so it can never reach hook.log or a `case`);
+#   * `?` — absent, not a string, or unparseable.
+# `-expect string` makes plutil refuse every non-string (a dictionary would
+# otherwise print its KEYS in raw form, an array its count). plutil's raw
+# output ends in one newline; the `x` sentinel stops $(…) from also stripping
+# a newline that is part of the VALUE, so a "permission_prompt<LF>" value
+# fails the newline guard instead of silently passing as permission_prompt.
+# On failure plutil writes its error to stdout, so the capture is discarded.
+#   $1 payload file
+notification_type() {
+  local t
+  t=$(plutil -extract notification_type raw -expect string -o - "$1" 2>/dev/null && printf x) || { printf '?'; return 0; }
+  t=${t%x}
+  t=${t%"$NL"}
+  case "$t" in
+    *"$NL"*|*"$CR"*) printf invalid; return 0 ;;
+  esac
+  if [[ $t =~ $NTYPE_RE ]]; then
+    printf '%s' "$t"
+  else
+    printf invalid
+  fi
+  return 0
+}
+
 main() {
   mkdir -p "$STATE_DIR" 2>/dev/null
   chmod 700 "$STATE_DIR" 2>/dev/null
 
-  local now src payload event session marker bg_running
+  local now src payload event session marker bg_running ntype tclass tinfo
   now=$(date +%s)
   src=unknown
   [ -n "${SUPERCONDUCTOR_MANAGED_AGENT:-}" ] && src=sc
@@ -154,6 +201,10 @@ main() {
   session=$(plutil -extract session_id raw -o - "$payload" 2>/dev/null) || session=""
   bg_running=no
   has_running_background_task "$payload" && bg_running=yes
+  # Only a Notification carries a type worth reading (no extra plutil process
+  # on the latency-sensitive UserPromptSubmit path).
+  ntype=""
+  [ "$event" = Notification ] && ntype=$(notification_type "$payload")
   rm -f "$payload" 2>/dev/null
 
   if ! valid_session "$session"; then
@@ -168,14 +219,36 @@ main() {
       log "set session=$session pid=$PPID src=$src"
       ;;
     Stop|StopFailure|SessionEnd|Notification|SubagentStop)
-      # Reconcile: a still-running background subagent keeps the session busy
-      # (work in flight); otherwise the turn is done and the marker is cleared.
-      if [ "$bg_running" = yes ]; then
+      # C1 — classify a Notification by its (validated) type. Precedence:
+      # waiting > resume > background-task keep (B3) > clear. Any other type
+      # (idle_prompt, auth_success, agent_completed, unknown, `invalid`, `?`)
+      # leaves tclass empty, so it reconciles exactly as before C1.
+      tclass=""
+      tinfo=""
+      if [ "$event" = Notification ]; then
+        tinfo=" type=$ntype"
+        case "$ntype" in
+          permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|quota_auto_resume_stale|quota_auto_resume_disabled)
+            tclass=waiting ;;
+          quota_auto_resume_fired|elicitation_complete|elicitation_response)
+            tclass=resume ;;
+        esac
+      fi
+      # Reconcile: a session blocked on the user, or whose work resumes, or
+      # with a still-running background subagent stays busy (work in flight);
+      # otherwise the turn is done and the marker is cleared.
+      if [ "$tclass" = waiting ]; then
+        ( write_marker "$marker" "$now" "$WAITING_EVENT" "$src" ) &
+        log "keep session=$session event=$event$tinfo reason=waiting-on-user pid=$PPID src=$src"
+      elif [ "$tclass" = resume ]; then
         ( write_marker "$marker" "$now" "$event" "$src" ) &
-        log "keep session=$session event=$event reason=background-task-running pid=$PPID src=$src"
+        log "keep session=$session event=$event$tinfo reason=work-continues pid=$PPID src=$src"
+      elif [ "$bg_running" = yes ]; then
+        ( write_marker "$marker" "$now" "$event" "$src" ) &
+        log "keep session=$session event=$event$tinfo reason=background-task-running pid=$PPID src=$src"
       else
         rm -f "$marker" 2>/dev/null
-        log "clear session=$session event=$event"
+        log "clear session=$session event=$event$tinfo"
       fi
       ;;
     *)

@@ -6,12 +6,12 @@ import SwiftUI
 // C "Status Hero" (freeze) were deleted. The file name is kept from that
 // exploration so the scanned-file lints stay stable.
 // The layout arranges the shared components (MenuPanelView.swift) and never
-// decides what is a warning. It MUST include the three surfaced-line
+// decides what is a warning. It MUST include the four surfaced-line
 // components (`ClaudeSurfacedLines`, `LidAlertSurfacedLines`,
-// `SurfacedLaunchAtLogin`) so that a non-nominal Details line always has a
-// top-level home, and must END with `PanelFooterRow` (the one Details
-// disclosure + Quit), with expanded Details content above it (lint-locked in
-// MenuPanelStructureTests).
+// `SessionAlertsSurfacedLines`, `SurfacedLaunchAtLogin`) so that a non-nominal
+// Details line always has a top-level home, and must END with `PanelFooterRow`
+// (the one Details disclosure + Quit), with expanded Details content above it
+// (lint-locked in MenuPanelStructureTests).
 
 // MARK: - Quiet Rows
 
@@ -72,6 +72,17 @@ struct QuietRowsPanel: View {
                         }
                         indentedCaption(model.lidStatus)
                         LidAlertSurfacedLines(model: model)
+                            .padding(.leading, PanelMetrics.titleIndent)
+                    }
+                }
+                // Track C: directly under the Lid alert row — same shape.
+                if model.finishAlertVisible {
+                    PanelFeature {
+                        PanelRow(symbol: PanelSymbol.sessionAlerts, title: "Session alerts") {
+                            SessionAlertsToggle(model: model)
+                        }
+                        indentedCaption(model.finishAlertStatus)
+                        SessionAlertsSurfacedLines(model: model)
                             .padding(.leading, PanelMetrics.titleIndent)
                     }
                 }

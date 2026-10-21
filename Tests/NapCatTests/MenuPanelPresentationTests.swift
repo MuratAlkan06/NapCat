@@ -139,6 +139,242 @@ struct MenuPanelPresentationTests {
         #expect(untimed.severity == .nominal)
     }
 
+    // MARK: - Track C: session alerts (finish + waiting pushes)
+
+    struct SessionRow: CustomTestStringConvertible, Sendable {
+        let state: FinishAlertDisplayState
+        let outcome: MessageSendOutcome?
+        let text: String
+        let severity: PanelSeverity
+        /// A session outcome always carries its timestamp. The grammar table
+        /// has NO lid-lane send, so no row in it can count as recovered (the
+        /// recovery rule has its own table below).
+        var outcomeAt: Double? { outcome == nil ? nil : MenuPanelPresentationTests.sessionSendAt }
+        var testDescription: String { "\(state) / \(String(describing: outcome))" }
+    }
+
+    static let sessionSendAt = 1_000_000.0
+
+    static let sessionOutcomes: [MessageSendOutcome?] =
+        [nil, .accepted, .timedOutUnconfirmed, .rejected(429), .sendFailed("boom")]
+
+    /// Every display state × every last outcome (6 × 5 = 30 rows), exact
+    /// strings. Only `.armed` reads the last outcome.
+    static let sessionRows: [SessionRow] = sessionOutcomes.flatMap { outcome -> [SessionRow] in
+        let armed: SessionRow
+        switch outcome {
+        case .rejected?, .sendFailed?:
+            armed = SessionRow(state: .armed, outcome: outcome,
+                               text: "Session alerts: the last message did not go out — re-run Send test message",
+                               severity: .error)
+        default:
+            armed = SessionRow(state: .armed, outcome: outcome,
+                               text: "Session alerts: armed — a push when a Claude session finishes or waits for you",
+                               severity: .nominal)
+        }
+        return [
+            SessionRow(state: .off, outcome: outcome, text: "Session alerts: off", severity: .nominal),
+            SessionRow(state: .needsTopic, outcome: outcome,
+                       text: "Session alerts: set an ntfy topic to arm them", severity: .warning),
+            SessionRow(state: .needsTestSend, outcome: outcome,
+                       text: "Session alerts: send the test message to check your phone gets it", severity: .warning),
+            SessionRow(state: .paused, outcome: outcome,
+                       text: "Session alerts: on — but Claude detection is paused; alerts cannot fire",
+                       severity: .warning),
+            SessionRow(state: .hookNotInstalled, outcome: outcome,
+                       text: "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)",
+                       severity: .warning),
+            armed,
+        ]
+    }
+
+    @Test func sessionRowsCoverEveryStateAndOutcome() {
+        #expect(Self.sessionRows.count == 30, "vacuity guard — 6 states × 5 outcomes")
+    }
+
+    @Test(arguments: sessionRows)
+    func sessionAlertsStatusGrammarTable(_ row: SessionRow) {
+        #expect(MenuStateModel.finishAlertStatusLine(
+            for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcomeAt,
+            lidLastOutcome: nil, lidLastOutcomeAt: nil) == row.text)
+        #expect(MenuStateModel.finishAlertStatus(
+            for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcomeAt,
+            lidLastOutcome: nil, lidLastOutcomeAt: nil).text == row.text)
+    }
+
+    static let sessionDegradedPhrases = ["set an ntfy topic", "send the test message", "cannot fire",
+                                         "waiting for the Claude hook", "did not go out"]
+
+    /// Severity per row, cross-checked against the text in BOTH directions (a
+    /// degraded line is never nominal; a nominal one never reads degraded),
+    /// and only a nominal armed line may claim "armed".
+    @Test(arguments: sessionRows)
+    func sessionAlertsStatusSeverityTable(_ row: SessionRow) {
+        let line = MenuStateModel.finishAlertStatus(
+            for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcomeAt,
+            lidLastOutcome: nil, lidLastOutcomeAt: nil)
+        #expect(line.severity == row.severity)
+        #expect(Self.sessionDegradedPhrases.contains { line.text.contains($0) } == (line.severity != .nominal),
+                "\(line.text)")
+        #expect(line.text.contains("armed —") == (row.state == .armed && row.severity == .nominal))
+    }
+
+    // MARK: Session caption recovery (C6)
+
+    /// The failed-send caption tells the user to re-run the test send, so an
+    /// ACCEPTED lid-lane send (that test send, or a lid alert) STRICTLY LATER
+    /// than the failed session send clears the armed downgrade. Nothing else
+    /// does. The Details "Last session alert" line never changes (history).
+    struct SessionRecoveryRow: CustomTestStringConvertible, Sendable {
+        let id: String
+        var state: FinishAlertDisplayState = .armed
+        let outcome: MessageSendOutcome?
+        let outcomeAt: Double?
+        let lidOutcome: MessageSendOutcome?
+        let lidOutcomeAt: Double?
+        let text: String
+        let severity: PanelSeverity
+        var testDescription: String { id }
+    }
+
+    static let sessionArmedText = "Session alerts: armed — a push when a Claude session finishes or waits for you"
+    static let sessionFailedText = "Session alerts: the last message did not go out — re-run Send test message"
+
+    static let sessionRecoveryRows: [SessionRecoveryRow] = {
+        let t = sessionSendAt
+        return [
+            SessionRecoveryRow(id: "R1 failed session send, then a LATER accepted test send ⇒ armed",
+                               outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t + 60,
+                               text: sessionArmedText, severity: .nominal),
+            SessionRecoveryRow(id: "R2 refused (429) session send, then a later accepted test send ⇒ armed",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t + 1,
+                               text: sessionArmedText, severity: .nominal),
+            SessionRecoveryRow(id: "R3 accepted test send BEFORE the failure ⇒ still error",
+                               outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t - 60,
+                               text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R4 equal timestamps ⇒ still error (strictly later only)",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t,
+                               text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R5 later lid send only unconfirmed ⇒ still error",
+                               outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .timedOutUnconfirmed,
+                               lidOutcomeAt: t + 60, text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R6 later lid send refused ⇒ still error",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .rejected(429), lidOutcomeAt: t + 60,
+                               text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R7 later lid send failed ⇒ still error",
+                               outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .sendFailed("boom"),
+                               lidOutcomeAt: t + 60, text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R8 accepted lid send without a timestamp ⇒ still error",
+                               outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: nil,
+                               text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R9 failed session send without a timestamp ⇒ still error",
+                               outcome: .sendFailed("boom"), outcomeAt: nil, lidOutcome: .accepted,
+                               lidOutcomeAt: t + 60, text: sessionFailedText, severity: .error),
+            SessionRecoveryRow(id: "R10 recovery never overrides a non-armed state", state: .paused,
+                               outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t + 60,
+                               text: "Session alerts: on — but Claude detection is paused; alerts cannot fire",
+                               severity: .warning),
+            SessionRecoveryRow(id: "R11 a failed LID send never downgrades a healthy session line",
+                               outcome: .accepted, outcomeAt: t, lidOutcome: .sendFailed("boom"), lidOutcomeAt: t + 60,
+                               text: sessionArmedText, severity: .nominal),
+            SessionRecoveryRow(id: "R12 an unconfirmed session send stays nominal whatever the lid did",
+                               outcome: .timedOutUnconfirmed, outcomeAt: t, lidOutcome: .rejected(403),
+                               lidOutcomeAt: t + 60, text: sessionArmedText, severity: .nominal),
+        ]
+    }()
+
+    @Test(arguments: sessionRecoveryRows)
+    func sessionAlertsCaptionRecoveryTable(_ row: SessionRecoveryRow) {
+        let line = MenuStateModel.finishAlertStatus(
+            for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcomeAt,
+            lidLastOutcome: row.lidOutcome, lidLastOutcomeAt: row.lidOutcomeAt)
+        #expect(line == PanelLine(text: row.text, severity: row.severity))
+        #expect(line.text == MenuStateModel.finishAlertStatusLine(
+            for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcomeAt,
+            lidLastOutcome: row.lidOutcome, lidLastOutcomeAt: row.lidOutcomeAt))
+        // Same text ⇔ severity cross-check as the grammar table.
+        #expect(Self.sessionDegradedPhrases.contains { line.text.contains($0) } == (line.severity != .nominal))
+        #expect(line.text.contains("armed —") == (row.state == .armed && row.severity == .nominal))
+        // The Details history line takes no lid input: a refused / failed
+        // session send stays an error there even once the caption recovered.
+        let history = MenuStateModel.finishAlertLastSend(outcome: row.outcome, kind: Self.finishedKind,
+                                                         at: row.outcomeAt, now: Self.sessionSendAt + 120)
+        #expect(history.severity == MenuStateModel.finishAlertLastSendSeverity(row.outcome, at: row.outcomeAt))
+    }
+
+    @Test func sessionRecoveryRowsAreUniqueAndCoverBothVerdicts() {
+        #expect(Self.sessionRecoveryRows.count == 12)
+        #expect(Set(Self.sessionRecoveryRows.map(\.id)).count == Self.sessionRecoveryRows.count)
+        let downgradable = Self.sessionRecoveryRows.filter {
+            $0.state == .armed && ($0.outcome == .sendFailed("boom") || $0.outcome == .rejected(429))
+        }
+        #expect(downgradable.contains { $0.severity == .nominal } && downgradable.contains { $0.severity == .error },
+                "vacuity guard — the table must show recovery AND non-recovery")
+    }
+
+    struct SessionLastSendRow: CustomTestStringConvertible, Sendable {
+        let name: String
+        let outcome: MessageSendOutcome?
+        let kind: LidGuardMessageKind?
+        let at: Double?
+        let text: String
+        let severity: PanelSeverity
+        var testDescription: String { name }
+    }
+
+    static let lastSendNow = 1_000_000.0
+    static let finishedKind = LidGuardMessageKind.sessionFinished(minutes: 42, folded: 1, stillWorking: 0)
+    static let waitingKind = LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 1)
+
+    static let sessionLastSendRows: [SessionLastSendRow] = [
+        SessionLastSendRow(name: "none", outcome: nil, kind: nil, at: nil,
+                           text: "Last session alert: none since NapCat started", severity: .nominal),
+        SessionLastSendRow(name: "accepted finished", outcome: .accepted, kind: finishedKind, at: lastSendNow - 120,
+                           text: "Last session alert: accepted by ntfy 2m ago (finished)", severity: .nominal),
+        SessionLastSendRow(name: "accepted waiting", outcome: .accepted, kind: waitingKind, at: lastSendNow - 120,
+                           text: "Last session alert: accepted by ntfy 2m ago (waiting)", severity: .nominal),
+        SessionLastSendRow(name: "unconfirmed", outcome: .timedOutUnconfirmed, kind: finishedKind, at: lastSendNow - 120,
+                           text: "Last session alert: unconfirmed 2m ago (finished) — it may still have gone out",
+                           severity: .warning),
+        SessionLastSendRow(name: "rejected 429", outcome: .rejected(429), kind: finishedKind, at: lastSendNow - 120,
+                           text: "Last session alert: refused by the server 2m ago (finished) (HTTP 429) — check the topic and server",
+                           severity: .error),
+        SessionLastSendRow(name: "failed", outcome: .sendFailed("boom"), kind: waitingKind, at: lastSendNow - 120,
+                           text: "Last session alert: failed 2m ago (waiting) — boom", severity: .error),
+        // Same guard as the lid line: no timestamp ⇒ "none", and nominal.
+        SessionLastSendRow(name: "untimed rejected", outcome: .rejected(429), kind: finishedKind, at: nil,
+                           text: "Last session alert: none since NapCat started", severity: .nominal),
+        // The lid kinds never reach the finish controller; they get no label.
+        SessionLastSendRow(name: "lid kind unlabelled", outcome: .accepted, kind: .lidAlert(busySessionCount: 1),
+                           at: lastSendNow - 120, text: "Last session alert: accepted by ntfy 2m ago", severity: .nominal),
+        SessionLastSendRow(name: "test kind unlabelled", outcome: .accepted, kind: .test,
+                           at: lastSendNow - 120, text: "Last session alert: accepted by ntfy 2m ago", severity: .nominal),
+    ]
+
+    /// FA-4 (panel half): a refused (429) or failed last session send is an
+    /// error and ESCAPES Details; unconfirmed is a warning and escapes too.
+    @Test(arguments: sessionLastSendRows)
+    func sessionAlertsLastSendTable(_ row: SessionLastSendRow) {
+        let line = MenuStateModel.finishAlertLastSend(outcome: row.outcome, kind: row.kind, at: row.at,
+                                                      now: Self.lastSendNow)
+        #expect(line == PanelLine(text: row.text, severity: row.severity))
+        #expect(line.text == MenuStateModel.finishAlertLastSendCaption(outcome: row.outcome, kind: row.kind,
+                                                                       at: row.at, now: Self.lastSendNow))
+        #expect(MenuStateModel.placement(ofDetailsLine: line.severity)
+                == (row.severity == .nominal ? .details : .topLevel))
+    }
+
+    /// Mirrors the lid mapping exactly: same severity for every outcome, with
+    /// and without a timestamp.
+    @Test func sessionLastSendSeverityMatchesTheLidMapping() {
+        for outcome in Self.everyOutcome {
+            for at: Double? in [nil, 999_880] {
+                #expect(MenuStateModel.finishAlertLastSendSeverity(outcome, at: at)
+                        == MenuStateModel.lidAlertLastSendSeverity(outcome, at: at))
+            }
+        }
+    }
+
     @Test func topLevelCaptionSeverity() throws {
         #expect(MenuStateModel.stayAwakeCaption(forObserved: true) == nil)
         #expect(MenuStateModel.stayAwakeCaption(forObserved: false) == nil)
@@ -211,6 +447,15 @@ struct MenuPanelPresentationTests {
                 lines.append(MenuStateModel.lidAlertLastSend(outcome: outcome, at: at, now: 1_000_000))
             }
         }
+        // Track C: the last session alert lives in the same Details group.
+        for outcome in everyOutcome {
+            for at: Double? in [nil, 999_880] {
+                for kind: LidGuardMessageKind? in [nil, finishedKind, waitingKind] {
+                    lines.append(MenuStateModel.finishAlertLastSend(outcome: outcome, kind: kind, at: at,
+                                                                    now: 1_000_000))
+                }
+            }
+        }
         for status: SMAppService.Status in [.notRegistered, .enabled, .requiresApproval, .notFound] {
             if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
         }
@@ -222,8 +467,9 @@ struct MenuPanelPresentationTests {
 
     @Test func noNonNominalLineStaysBehindTheDisclosure() {
         let lines = Self.everyDetailsHomeLine()
-        // 8 hook + 5 topic + 6 server + 10 last-send + 2 login captions.
-        #expect(lines.count == 31, "vacuity guard — update when the input set changes")
+        // 8 hook + 5 topic + 6 server + 10 last-send + 30 last-session-alert
+        // + 2 login captions.
+        #expect(lines.count == 61, "vacuity guard — update when the input set changes")
         var surfaced = 0
         for line in lines {
             let problem = Self.readsLikeAProblem(line.text)
@@ -292,8 +538,8 @@ struct MenuPanelPresentationTests {
     @Test func leadingSymbolsFitTheSymbolColumn() throws {
         let config = NSImage.SymbolConfiguration(pointSize: PanelMetrics.symbolSize, weight: .regular)
         let leading = [PanelSymbol.stayAwake, PanelSymbol.lockScreen, PanelSymbol.chargeLimit,
-                       PanelSymbol.claude, PanelSymbol.lidAlert, PanelSymbol.info, PanelSymbol.warning,
-                       PanelSymbol.error]
+                       PanelSymbol.claude, PanelSymbol.lidAlert, PanelSymbol.sessionAlerts, PanelSymbol.info,
+                       PanelSymbol.warning, PanelSymbol.error]
         for name in leading {
             let image = try #require(NSImage(systemSymbolName: name, accessibilityDescription: nil)?
                 .withSymbolConfiguration(config), "\(name) does not resolve")
@@ -311,6 +557,7 @@ struct MenuPanelPresentationTests {
     private func withModel(
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
+        finishAlert: FinishAlertController? = nil,
         _ body: (MenuStateModel, UserDefaults, String) throws -> Void
     ) rethrows {
         let suite = "com.muratalkan.napcat.tests.menupanel.\(UUID().uuidString)"
@@ -319,7 +566,7 @@ struct MenuPanelPresentationTests {
         let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
         let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
         let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter,
-                                   detection: detection, lidGuard: lidGuard)
+                                   detection: detection, lidGuard: lidGuard, finishAlert: finishAlert)
         try body(model, defaults, suite)
     }
 
@@ -381,6 +628,79 @@ struct MenuPanelPresentationTests {
             }
         }
     }
+
+    /// FA-4 end to end: a session alert refused with 429 (never retried — the
+    /// controller's half) reaches the panel as an error status, a last-send
+    /// line that ESCAPES Details, and an error badge — while the lid half is
+    /// perfectly healthy, so the badge can only come from the session send.
+    /// C6: re-running the test send as the caption says clears the status
+    /// downgrade only once ntfy accepts it LATER than the refusal; the
+    /// history line stays truthful.
+    @Test @MainActor func aRefusedSessionAlertSurfacesAndRaisesTheBadge() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(429))) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.lastSendOutcome == .rejected(429))
+            #expect(h.pendingRetries.isEmpty)
+
+            let lidSuite = "com.muratalkan.napcat.tests.menupanel.session.\(UUID().uuidString)"
+            let lidDefaults = UserDefaults(suiteName: lidSuite)!
+            defer { lidDefaults.removePersistentDomain(forName: lidSuite) }
+            let lid = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+            lid.arm()
+            lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+
+            withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
+                #expect(model.finishAlertVisible)
+                #expect(model.lidStatus.severity == .nominal)
+                #expect(model.finishAlertStatus == PanelLine(
+                    text: "Session alerts: the last message did not go out — re-run Send test message",
+                    severity: .error))
+                let last = model.finishAlertLastSend(now: Double(H.t0) + 120)
+                #expect(last == PanelLine(
+                    text: "Last session alert: refused by the server 2m ago (finished) (HTTP 429) — check the topic and server",
+                    severity: .error))
+                #expect(MenuStateModel.placement(ofDetailsLine: last.severity) == .topLevel)
+                #expect(model.detailsBadge == .error)
+
+                // An accepted test send that PREDATES the refusal is no
+                // recovery (the lid clock starts far before H.t0).
+                lid.controller.sendTestMessage()
+                model.refresh()
+                #expect(lid.controller.lastSendOutcome == .accepted)
+                #expect((lid.controller.lastSendOutcomeAt ?? .infinity) < Double(H.t0))
+                #expect(model.finishAlertStatus.severity == .error)
+
+                // Re-run it a minute AFTER the refusal: the caption recovers.
+                lid.clock.advance(Double(H.t0) - lid.clock.now + 60)
+                lid.controller.sendTestMessage()
+                model.refresh()
+                #expect(model.finishAlertStatus == PanelLine(
+                    text: "Session alerts: armed — a push when a Claude session finishes or waits for you",
+                    severity: .nominal))
+                // …while the Details history line is untouched and still
+                // escapes Details (so the badge stays an error).
+                #expect(model.finishAlertLastSend(now: Double(H.t0) + 120) == last)
+                #expect(model.detailsBadge == .error)
+            }
+        }
+    }
+
+    /// Without the controller (debugBattery wiring) the session row cannot
+    /// raise the badge — even with the stored toggle on.
+    @Test @MainActor func anAbsentFinishAlertNeverRaisesTheBadge() {
+        withLidGuardHarness { lid in
+            lid.arm()
+            lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            withModel(lidGuard: lid.controller) { model, _, _ in
+                #expect(!model.finishAlertVisible)
+                #expect(model.detailsBadge == .nominal)
+            }
+        }
+    }
 }
 
 // MARK: - Detection stubs (no filesystem scan, no process enumeration, no IOKit)
@@ -389,6 +709,7 @@ struct MenuPanelPresentationTests {
 
 final class StubMarkerStore: BusyMarkerStore {
     func markers() -> [BusyMarker] { [] }
+    func identifiedMarkers() -> [IdentifiedBusyMarker] { [] }
     func markerDirExists() -> Bool { true }
     func hookLogExists() -> Bool { true }
     func lastActivityEpoch() -> Int? { Int(Date().timeIntervalSince1970) - 60 }

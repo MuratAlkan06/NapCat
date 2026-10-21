@@ -18,8 +18,9 @@ enum DefaultsKey {
     /// for DebugPowerSimulator — restart the app to change modes.
     static let debugBattery = "debugBattery"
 
-    // MARK: Track B / B2 — lid-close alert (the ONLY keys the feature adds;
-    // cooldown, budgets, and marker paths are code constants, not settings).
+    // MARK: Track B / B2 — lid-close alert (the ONLY keys the lid-guard feature
+    // adds; cooldown, budgets, and marker paths are code constants, not
+    // settings). Track C below shares the topic / server / primed-at keys.
 
     /// Whether the lid-close alert feature is switched on. Armed additionally
     /// requires a usable ntfy topic AND a successful test send.
@@ -36,6 +37,15 @@ enum DefaultsKey {
     /// never primed. Priming is what proves the topic is really subscribed on
     /// the user's phone, so the first message on it is never the lid-close one.
     static let lidGuardPrimedAt = "lidGuardPrimedAt"
+
+    // MARK: Track C — Claude finish alert
+
+    /// Whether the Claude session alerts (finish + waiting buzz) are switched
+    /// on (Bool, default false). The finish alert reuses the lid-guard topic /
+    /// server / primed-at — one ntfy destination, one priming test send — so
+    /// this toggle is the only key it adds; its tunables are code constants,
+    /// not settings.
+    static let claudeFinishAlertEnabled = "claudeFinishAlertEnabled"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

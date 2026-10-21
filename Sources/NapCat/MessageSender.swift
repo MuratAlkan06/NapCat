@@ -7,15 +7,17 @@ struct RecordedMessageSend: Equatable, Sendable {
     let firedAt: Date
 }
 
-/// How the lid guard hands a message to the outside world.
+/// How the lid guard — and, since Track C, the session alerts, through the
+/// SAME shared instance — hands a message to the outside world.
 ///
 /// BODY IS APP-GENERATED, ENFORCED BY THE API SHAPE: there is exactly one entry
 /// point and it takes NO free-text parameter — not even a String. The caller
-/// passes a `LidGuardMessageKind` (a closed enum carrying at most an Int count)
-/// plus a pre-validated `NtfyDestination`; the body itself is built by
-/// `LidGuardPolicy.messageBody` from a fixed template. Nothing from a Claude
-/// session, transcript, prompt, or working directory can reach an outgoing
-/// message. `LidGuardStructureTests` byte-locks this signature.
+/// passes a `LidGuardMessageKind` (a closed enum of four kinds whose ONLY
+/// associated values are Int counts and Int minutes) plus a pre-validated
+/// `NtfyDestination`; the body itself is built by `LidGuardPolicy.messageBody`
+/// from a fixed template. Nothing from a Claude session, transcript, prompt,
+/// or working directory can reach an outgoing message.
+/// `LidGuardStructureTests` byte-locks this signature.
 protocol MessageSender: AnyObject, Sendable {
     func send(
         _ kind: LidGuardMessageKind,

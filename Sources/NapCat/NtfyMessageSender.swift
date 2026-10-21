@@ -10,10 +10,32 @@ import os
 ///
 ///     POST <server>/<topic>
 ///     Title: NapCat
-///     Priority: urgent
-///     Tags: zzz,warning
+///     Priority: <per kind>
+///     Tags: <per kind>
+///     Content-Type: text/plain; charset=utf-8
 ///
 ///     <app-generated body>
+///
+/// PER-KIND HEADERS (Track C; chosen ONLY by `LidGuardPolicy.ntfyHeaders(for:)`
+/// from fixed ASCII constants in `LidGuardTuning` — never from any input):
+///
+///     kind              lane      Priority  Tags
+///     lidAlert          lid       urgent    zzz,warning
+///     test              lid       urgent    zzz,warning
+///     sessionFinished   session   high      white_check_mark
+///     needsAttention    session   high      raised_hand
+///
+/// PER-LANE SINGLE FLIGHT (risk F2): each `NtfySendLane` has its own in-flight
+/// claim, so a session alert (which may run for the full
+/// `LidGuardTuning.requestTimeout`) can never make the WillSleep lid publish
+/// be refused inline. Only a send whose OWN lane is busy is refused.
+///
+/// ONE URLSession PER LANE: every session is built by the same `makeSession`
+/// (ephemeral, redirect-refusing, `httpMaximumConnectionsPerHost = 1`). That
+/// connection cap would otherwise QUEUE the lid POST behind an in-flight
+/// session-alert POST at the transport level even with separate claims; with
+/// a session per lane the lid lane's connection state is never shared with
+/// session-alert traffic.
 ///
 /// SECRET HANDLING: the ntfy topic is the ONLY password on the feed, and it
 /// travels inside the URL. So the URL is never logged, never surfaced in an
@@ -26,17 +48,32 @@ import os
 final class NtfyMessageSender: MessageSender, @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "lidguard")
 
-    private let session: URLSession
+    /// One session per lane (see the header) — never shared between lanes.
+    private let lidSession: URLSession
+    private let sessionAlertSession: URLSession
     private let lock = NSLock()
-    /// SINGLE FLIGHT. `generation` identifies the live request so a late
-    /// completion from an older one cannot clear a newer one's claim. No strong
-    /// reference to the task is needed (unlike the old `Process`): URLSession
-    /// retains its tasks until they complete.
-    private var sending = false
-    private var generation: UInt64 = 0
+    /// SINGLE FLIGHT, PER LANE. `generation[lane]` identifies that lane's live
+    /// request so a late completion from an older one cannot clear a newer
+    /// one's claim. No strong reference to the task is needed (unlike the old
+    /// `Process`): URLSession retains its tasks until they complete.
+    private var sending: [NtfySendLane: Bool] = [:]
+    private var generation: [NtfySendLane: UInt64] = [:]
 
-    init(session: URLSession = NtfyMessageSender.makeSession()) {
-        self.session = session
+    /// `makeLaneSession` is called once per lane. Production uses the default;
+    /// it exists as a TEST SEAM so a test can hand every lane a session whose
+    /// only protocol class is an in-memory stub (no request can leave the
+    /// process).
+    init(makeLaneSession: (NtfySendLane) -> URLSession = { _ in NtfyMessageSender.makeSession() }) {
+        self.lidSession = makeLaneSession(.lid)
+        self.sessionAlertSession = makeLaneSession(.session)
+    }
+
+    /// The session that carries `lane`'s requests.
+    func session(for lane: NtfySendLane) -> URLSession {
+        switch lane {
+        case .lid: return lidSession
+        case .session: return sessionAlertSession
+        }
     }
 
     /// EPHEMERAL configuration: no disk cache, no cookies, no credential
@@ -47,8 +84,14 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
     /// REDIRECTS ARE REFUSED (`NtfyRedirectRefuser`): the URL carries the topic,
     /// which is the password, so following a 3xx would hand it to whatever host
     /// the server named. A redirected publish is a FAILED publish.
-    static func makeSession() -> URLSession {
+    ///
+    /// `protocolClasses` is a TEST SEAM only: nil (production) leaves
+    /// Foundation's own protocol list untouched; a test passes an in-memory
+    /// `URLProtocol` stub here — never via the process-global
+    /// `URLProtocol.registerClass`.
+    static func makeSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.timeoutIntervalForRequest = LidGuardTuning.requestTimeout
         configuration.timeoutIntervalForResource = LidGuardTuning.requestTimeout
         configuration.waitsForConnectivity = false
@@ -65,7 +108,9 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
 
     /// Builds the publish request from a VALIDATED destination: the URL is
     /// `<server>/<topic>`, concatenated from the two already-normalized
-    /// components and nothing else.
+    /// components and nothing else. Priority and Tags come from the per-kind
+    /// table (`LidGuardPolicy.ntfyHeaders(for:)`); Title and Content-Type are
+    /// fixed.
     ///
     /// The parsed URL must render back BYTE-IDENTICALLY to what we asked for:
     /// if Foundation had to percent-escape or otherwise rewrite anything, the
@@ -96,7 +141,7 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
     /// ntfy grammar `^[A-Za-z0-9_-]{1,64}$` through the same pure validator the
     /// first layer uses. Only then does the path comparison mean what it says:
     /// one segment, and that segment is a well-formed topic.
-    static func makeRequest(destination: NtfyDestination, body: String) -> URLRequest? {
+    static func makeRequest(destination: NtfyDestination, kind: LidGuardMessageKind, body: String) -> URLRequest? {
         let address = "\(destination.server)/\(destination.topic)"
         guard let endpoint = URL(string: address), endpoint.absoluteString == address else { return nil }
         guard let parts = URLComponents(string: address) else { return nil }
@@ -114,9 +159,10 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
         request.httpMethod = "POST"
         request.timeoutInterval = LidGuardTuning.requestTimeout
         request.httpBody = Data(body.utf8)
+        let headers = LidGuardPolicy.ntfyHeaders(for: kind)
         request.setValue(LidGuardTuning.ntfyTitleValue, forHTTPHeaderField: LidGuardTuning.ntfyTitleHeader)
-        request.setValue(LidGuardTuning.ntfyPriorityValue, forHTTPHeaderField: LidGuardTuning.ntfyPriorityHeader)
-        request.setValue(LidGuardTuning.ntfyTagsValue, forHTTPHeaderField: LidGuardTuning.ntfyTagsHeader)
+        request.setValue(headers.priority, forHTTPHeaderField: LidGuardTuning.ntfyPriorityHeader)
+        request.setValue(headers.tags, forHTTPHeaderField: LidGuardTuning.ntfyTagsHeader)
         request.setValue(LidGuardTuning.ntfyContentTypeValue, forHTTPHeaderField: LidGuardTuning.ntfyContentTypeHeader)
         return request
     }
@@ -133,29 +179,31 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
         // No caller-supplied text exists anywhere on this path.
         let body = LidGuardPolicy.messageBody(kind: kind, clockTime: LidGuardPolicy.clockTime(firedAt))
 
-        guard let request = Self.makeRequest(destination: destination, body: body) else {
+        guard let request = Self.makeRequest(destination: destination, kind: kind, body: body) else {
             Self.logger.error("lid guard: the stored ntfy address could not be turned into a request")
             completion(.sendFailed("the ntfy server address is not usable"))
             return
         }
 
-        // SINGLE-FLIGHT: never a second publish while one is alive.
+        // SINGLE-FLIGHT PER LANE: never a second publish while one is alive IN
+        // THE SAME LANE. A busy session lane never refuses a lid publish.
+        let lane = LidGuardPolicy.lane(for: kind)
         lock.lock()
-        guard !sending else {
+        guard !sending[lane, default: false] else {
             lock.unlock()
             completion(.sendFailed("another message is still being sent"))
             return
         }
-        sending = true
-        generation &+= 1
-        let claim = generation
+        sending[lane] = true
+        let claim = generation[lane, default: 0] &+ 1
+        generation[lane] = claim
         lock.unlock()
 
         // Fire and forget from the caller's perspective: `resume()` returns
         // immediately, so the WillSleep handler is never blocked by the network
         // — only by its own explicit `ackHoldBudget` wait.
-        let task = session.dataTask(with: request) { [weak self] _, response, error in
-            self?.clear(claim)
+        let task = session(for: lane).dataTask(with: request) { [weak self] _, response, error in
+            self?.clear(claim, on: lane)
             let status = (response as? HTTPURLResponse)?.statusCode
             completion(LidGuardPolicy.classifySend(
                 statusCode: status,
@@ -166,8 +214,9 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
     }
 
     /// Any error at all must produce a code, so an unexpected error domain is
-    /// classified as a failure rather than falling through to the
-    /// "no HTTP response" branch. The error's own message is deliberately
+    /// classified through the transport-error path (`URLError.unknown` is not
+    /// pre-connect, so it reads as unconfirmed and is never retried) rather
+    /// than the "no HTTP response" branch. The error's own message is deliberately
     /// discarded: `localizedDescription` can carry the failing URL, and the URL
     /// carries the topic.
     static func transportErrorCode(_ error: Error?) -> Int? {
@@ -176,12 +225,12 @@ final class NtfyMessageSender: MessageSender, @unchecked Sendable {
         return nsError.domain == NSURLErrorDomain ? nsError.code : URLError.unknown.rawValue
     }
 
-    /// Releases the single-flight claim ONLY when `claim` is still the live
-    /// one. A late completion from a previous publish must never unlock a
-    /// newer one.
-    private func clear(_ claim: UInt64) {
+    /// Releases `lane`'s single-flight claim ONLY when `claim` is still that
+    /// lane's live one. A late completion from a previous publish must never
+    /// unlock a newer one — and a completion can never touch another lane.
+    private func clear(_ claim: UInt64, on lane: NtfySendLane) {
         lock.lock()
-        if generation == claim { sending = false }
+        if generation[lane] == claim { sending[lane] = false }
         lock.unlock()
     }
 }

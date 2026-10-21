@@ -191,7 +191,8 @@ struct ScaffoldTests {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         try #require(source.contains("final class MenuContentView"))
 
-        let happyPathFunctions = ["toggleLidAlert", "sendLidAlertTestMessage"]
+        // Track C: the Session alerts toggle (shared priming) keeps it open too.
+        let happyPathFunctions = ["toggleLidAlert", "sendLidAlertTestMessage", "toggleSessionAlerts"]
         let forbidden = ["cancelTracking", "NSAlert", "runModal", "NSApp.activate", "activate("]
         for function in happyPathFunctions {
             let body = try #require(Self.functionChunk(named: function, in: source),

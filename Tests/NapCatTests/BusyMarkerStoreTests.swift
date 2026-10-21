@@ -68,12 +68,12 @@ struct BusyMarkerStoreTests {
 
     // MARK: MarkerDirectoryStore against a temp dir
 
-    private func withTempDir(_ body: (URL) -> Void) {
+    private func withTempDir(_ body: (URL) throws -> Void) rethrows {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("napcat-b1-store-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        body(root)
+        try body(root)
     }
 
     @Test func storeReadsOnlySessionShapedParseableFiles() {
@@ -125,5 +125,137 @@ struct BusyMarkerStoreTests {
         #expect(!store.hookLogExists())
         #expect(store.lastActivityEpoch() == nil)
         #expect(store.markers().isEmpty)
+        #expect(store.identifiedMarkers().isEmpty)
+    }
+
+    // MARK: Track C — identified read (session id = file name) + F12 size cap
+
+    private static let idA = "aaaa1111-0002-4abc-8def-000000000002"
+    private static let idB = "bbbb2222-0003-4abc-8def-000000000003"
+    private static let idOversized = "cccc3333-0004-4abc-8def-000000000004"
+    private static let idAtCap = "dddd4444-0005-4abc-8def-000000000005"
+
+    private static func write(_ root: URL, _ name: String, _ contents: String) {
+        try? contents.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+    }
+
+    /// A valid marker line padded with trailing spaces to exactly `bytes`
+    /// bytes — it WOULD parse if read (whitespace adds no token), so only the
+    /// size cap can reject it.
+    private static func paddedMarker(pid: Int, bytes: Int) -> String {
+        let line = "v1 ts=1730000000 event=UserPromptSubmit pid=\(pid) src=unknown"
+        return line + String(repeating: " ", count: bytes - line.utf8.count)
+    }
+
+    @Test func identifiedMarkersCarryTheSessionIDAndFeedMarkers() {
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            Self.write(root, Self.idB, "v1 ts=200 event=waiting pid=20 src=sc\n")
+            Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
+            Self.write(root, "README.txt", "v1 ts=300 event=UserPromptSubmit pid=30 src=sc\n")    // foreign name
+            Self.write(root, "eeee5555-0006-4abc-8def-000000000006", "not a marker\n")         // malformed
+
+            let identified = store.identifiedMarkers()
+            #expect(identified == [
+                IdentifiedBusyMarker(sessionID: Self.idA,
+                                     marker: BusyMarker(ts: 100, event: "UserPromptSubmit", pid: 10, src: "unknown")),
+                IdentifiedBusyMarker(sessionID: Self.idB,
+                                     marker: BusyMarker(ts: 200, event: "waiting", pid: 20, src: "sc")),
+            ], "only session-shaped parseable files, keyed by file name, sorted by id")
+            // One read path: markers() is exactly the identified read minus ids.
+            #expect(store.markers() == identified.map(\.marker))
+        }
+    }
+
+    @Test func oversizedMarkerIsSkippedByBothAPIs() {
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            let cap = ClaudeBusyConstants.maxMarkerBytes
+            #expect(cap == 4096, "F12 cap is a few KB; a real marker is ~60 bytes")
+            Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
+            Self.write(root, Self.idOversized, Self.paddedMarker(pid: 66, bytes: cap + 1))
+            Self.write(root, Self.idAtCap, Self.paddedMarker(pid: 44, bytes: cap))
+
+            let identified = store.identifiedMarkers()
+            #expect(identified.map(\.sessionID) == [Self.idA, Self.idAtCap],
+                    "cap + 1 bytes is skipped; exactly the cap still parses")
+            #expect(!identified.contains { $0.marker.pid == 66 })
+            #expect(store.markers().map(\.pid) == [10, 44], "markers() applies the same cap")
+        }
+    }
+
+    /// The hook writes markers with mktemp + mv — always a regular file. A
+    /// session-shaped directory or symlink is never read (a FIFO could block).
+    @Test func nonRegularSessionShapedEntriesAreSkipped() {
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            let elsewhere = root.appendingPathComponent("target.txt")
+            try? "v1 ts=100 event=UserPromptSubmit pid=77 src=unknown\n"
+                .write(to: elsewhere, atomically: true, encoding: .utf8)
+            try? FileManager.default.createSymbolicLink(at: root.appendingPathComponent(Self.idA),
+                                                        withDestinationURL: elsewhere)
+            try? FileManager.default.createDirectory(at: root.appendingPathComponent(Self.idB),
+                                                     withIntermediateDirectories: false)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(Self.idA).path),
+                    "setup: the symlink must exist")
+            #expect(store.identifiedMarkers().isEmpty)
+            #expect(store.markers().isEmpty)
+        }
+    }
+
+    // MARK: Security review L1 — checks on the OPENED descriptor
+
+    /// A session-shaped SYMLINK whose target is itself a valid, session-shaped
+    /// REGULAR marker: the target is read under its own name, the link is
+    /// refused by the open itself (`O_NOFOLLOW`) — never read through.
+    @Test func aSessionShapedSymlinkToAValidMarkerIsRefusedByTheOpen() throws {
+        try withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            Self.write(root, Self.idB, "v1 ts=200 event=UserPromptSubmit pid=20 src=sc\n")
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(Self.idA),
+                                                       withDestinationURL: root.appendingPathComponent(Self.idB))
+            let linkType = try FileManager.default.attributesOfItem(
+                atPath: root.appendingPathComponent(Self.idA).path)[.type] as? FileAttributeType
+            #expect(linkType == .typeSymbolicLink, "setup: idA must be a symlink")
+
+            let identified = store.identifiedMarkers()
+            #expect(identified == [IdentifiedBusyMarker(
+                sessionID: Self.idB, marker: BusyMarker(ts: 200, event: "UserPromptSubmit", pid: 20, src: "sc"))],
+                "only the regular file is read; the link to it is skipped")
+            #expect(store.markers().map(\.pid) == [20])
+        }
+    }
+
+    /// A session-shaped FIFO — and a session-shaped symlink to it — must be
+    /// skipped WITHOUT blocking: `O_NONBLOCK` keeps the open from waiting for
+    /// a writer and `fstat` of the descriptor refuses a non-regular file. A
+    /// regression would hang here (hence the time limit), not fail quietly.
+    @Test(.timeLimit(.minutes(1)))
+    func aSessionShapedFifoIsSkippedWithoutBlocking() throws {
+        try withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            let fifo = root.appendingPathComponent(Self.idB)
+            try #require(mkfifo(fifo.path, 0o600) == 0, "setup: mkfifo failed (errno \(errno))")
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(Self.idOversized),
+                                                       withDestinationURL: fifo)
+            Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
+
+            #expect(store.identifiedMarkers().map(\.sessionID) == [Self.idA],
+                    "the FIFO and the link to it are skipped; the real marker still parses")
+            #expect(store.markers().map(\.pid) == [10])
+        }
+    }
+
+    /// The bounded read decodes strictly as UTF-8: invalid bytes are skipped
+    /// (as before), an empty file is skipped, a normal marker parses.
+    @Test func undecodableAndEmptyMarkersAreSkipped() throws {
+        try withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            try Data([0x76, 0x31, 0x20, 0xFF, 0xFE]).write(to: root.appendingPathComponent(Self.idB))
+            try Data().write(to: root.appendingPathComponent(Self.idOversized))
+            Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
+            #expect(store.identifiedMarkers() == [IdentifiedBusyMarker(
+                sessionID: Self.idA, marker: BusyMarker(ts: 100, event: "UserPromptSubmit", pid: 10, src: "unknown"))])
+        }
     }
 }

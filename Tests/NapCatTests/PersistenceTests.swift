@@ -16,15 +16,42 @@ struct PersistenceTests {
         #expect(DefaultsKey.stayAwakeIntent == "stayAwakeIntent")
         #expect(DefaultsKey.heatWarningAcknowledged == "heatWarningAcknowledged")
         #expect(DefaultsKey.debugBattery == "debugBattery")
-        // Track B / B2 (lid-close alert) — the only four keys the feature
-        // adds; cooldown, budgets, and paths stay code constants. The topic and
+        // Track B / B2 (lid-close alert) — the only four keys the lid-guard
+        // feature adds; cooldown, budgets, and paths stay code constants. The topic and
         // server keys replaced `lidGuardRecipient` in the B4 ntfy swap.
         #expect(DefaultsKey.lidGuardEnabled == "lidGuardEnabled")
         #expect(DefaultsKey.lidGuardNtfyTopic == "lidGuardNtfyTopic")
         #expect(DefaultsKey.lidGuardNtfyServer == "lidGuardNtfyServer")
         #expect(DefaultsKey.lidGuardPrimedAt == "lidGuardPrimedAt")
+        // Track C (Claude finish alert) — ONE toggle; it shares the lid-guard
+        // topic / server / primed-at above instead of adding its own.
+        #expect(DefaultsKey.claudeFinishAlertEnabled == "claudeFinishAlertEnabled")
         // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
         // live key — retired at the design freeze (RetiredDefaultsKey).
+    }
+
+    /// Track C toggle: unset reads as OFF (the feature never auto-arms), the
+    /// default is computed rather than eagerly written, and a stored value
+    /// survives a relaunch (a second controller on the same defaults).
+    @Test func claudeFinishAlertDefaultsFalseAndRoundTrips() {
+        withDefaults { defaults in
+            let first = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+            #expect(!first.controller.finishAlertEnabled)
+            #expect(first.controller.finishAlertArmingState == .off)
+            #expect(defaults.object(forKey: DefaultsKey.claudeFinishAlertEnabled) == nil,
+                    "the default is computed, not eagerly written")
+
+            first.controller.setFinishAlertEnabled(true)
+            #expect(defaults.bool(forKey: DefaultsKey.claudeFinishAlertEnabled))
+            #expect(LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+                .controller.finishAlertEnabled, "survives a relaunch")
+            // Its own key: the lid-guard toggle is untouched.
+            #expect(defaults.object(forKey: DefaultsKey.lidGuardEnabled) == nil)
+
+            first.controller.setFinishAlertEnabled(false)
+            #expect(!LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+                .controller.finishAlertEnabled)
+        }
     }
 
     /// Fresh isolated defaults per test; the suite file is removed again.
@@ -225,7 +252,8 @@ struct PersistenceTests {
         let live = [DefaultsKey.limit, DefaultsKey.limitEnabled, DefaultsKey.stayAwakeIntent,
                     DefaultsKey.heatWarningAcknowledged, DefaultsKey.debugBattery,
                     DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
-                    DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt]
+                    DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
+                    DefaultsKey.claudeFinishAlertEnabled]
         for key in RetiredDefaultsKey.all {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }

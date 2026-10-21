@@ -44,6 +44,10 @@ light/dark menu bars.
   turn is running, and NapCat can push a notification to your phone (via ntfy)
   if the Mac starts sleeping while one still is — see
   [Claude busy detection](#claude-busy-detection-track-b--optional-read-only).
+- **Session alerts (ntfy)** — a push when a Claude Code session finishes (main
+  turn plus any background subagents) or stops to wait for your input; same
+  topic as the lid alert — see
+  [Session alerts](#session-alerts--finish-and-waiting-pushes).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
 - No Dock icon, no windows. Quit from the menu (⌘Q while it is open works).
@@ -358,14 +362,19 @@ prints the absolute paths for you):
 "StopFailure":     [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SubagentStop":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SessionEnd":      [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
-"Notification":    [ { "matcher":"idle_prompt", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
+"Notification":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
 ```
 
 The `SubagentStop` entry is what keeps NapCat showing **running** while a
 background subagent is still working after the main turn ends (the
-orchestrator-plus-subagents workflow). **If you registered an earlier version of
-this hook, add the `SubagentStop` entry** — the others are unchanged — and start a
-new Claude Code session so it loads.
+orchestrator-plus-subagents workflow). The `Notification` entry has **no
+matcher**: the hook tells waiting-on-you notifications (a permission prompt, an
+MCP input request) apart from idle ones, keeping the session busy while Claude
+waits for you, so it needs to receive every notification type. **If you
+registered an earlier version of this hook**, add the `SubagentStop` entry,
+remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
+`./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
+start a new Claude Code session so it loads.
 
 **The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
 not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`
@@ -383,7 +392,8 @@ Pause detection at any time from the menu (**Details → Pause detection** — k
 behind the Details disclosure so it cannot be flipped by accident), or by hand.
 While it is paused the menu says **Detection paused** at the top, and an armed
 lid alert reads "armed — but Claude detection is paused; alerts cannot fire":
-with no busy markers, the alert can never fire.
+with no busy markers, the alert can never fire. Pausing detection silences
+**Session alerts** too — no finish or waiting push goes out until you resume.
 
 ```sh
 touch "$HOME/Library/Application Support/NapCat/claude-busy/DISABLED"   # pause
@@ -496,6 +506,48 @@ re-checked to be exactly “that origin plus one path segment”. HTTP redirects
 refused outright — following one would hand your topic to whatever host the
 server named — so a redirected publish is reported as a failure.
 
+### Session alerts — finish and waiting pushes
+
+Two more pushes ride the same ntfy feed, behind one **Session alerts** toggle
+(right under **Lid alert** in the menu). **Finished:** the busy hook keeps a
+session's marker until the main turn *and* every background subagent it started
+have ended, so the marker going away *is* the finish — NapCat pushes then.
+**Waiting:** when Claude stops mid-turn to wait for you (a permission prompt, an
+MCP input request, a usage-limit wait), the hook marks the session as waiting
+and NapCat pushes once for that wait.
+
+While armed, NapCat watches the marker folder with a file-system notification on
+that one folder — nothing polls, and with the toggle off the watcher does not
+exist. Detection being paused (**Details → Pause detection**) silences both
+pushes, and the row says so.
+
+- **Same topic, server and test message as the lid alert** (set under
+  **Details → ntfy settings…**). Switching Session alerts on with a topic that
+  has never been tested sends the test message first, and nothing arms until it
+  is accepted — a session alert is never the first thing your topic is trusted
+  with. The two toggles are otherwise independent.
+- **At least 30 seconds of work** (since the prompt that started the turn)
+  before either push fires: a quick answer, or a permission prompt seconds after
+  you hit Enter, stays quiet — you are still looking.
+- **Finishes close together fold into one message** ("3 Claude sessions finished
+  — none still working"), which also keeps the feed clear of ntfy's rate limit.
+- **One waiting push per turn**, unless the session stops or resumes in between.
+- **The message vocabulary is closed** — counts and minutes only; nothing from
+  your session ever leaves the Mac. For example: "A Claude session finished
+  after 42 min — 1 still working", "Claude is waiting for your approval — 12 min
+  in". Both publish at ntfy priority `high`, tagged `white_check_mark`
+  (finished) or `raised_hand` (waiting).
+- **The menu shows the outcome of the last session alert** under **Details**; a
+  refused or failed one moves up next to the toggle. A failed send is retried
+  once only when it provably never left the Mac (no connection, DNS, TLS);
+  anything that may have reached ntfy — one the server refused (for example,
+  rate-limited), or one whose answer never came back — is never retried, so you
+  may occasionally miss one rather than get a duplicate.
+- **The marker folder has to exist.** Until the busy hook is installed — or
+  after its folder is deleted — the row says it is waiting for the Claude hook.
+  After the folder is created or recreated, the feature re-arms on the next
+  menu open.
+
 ### Honest limitations
 
 - **Best-effort markers.** If a Claude session ends uncleanly a marker may linger;
@@ -508,12 +560,28 @@ server named — so a redirected publish is reported as a failure.
   Claude quickly enough as the machine goes down, it stays quiet rather than
   guessing — with one exception: if the sleep state is unreadable but a Claude
   task *is* running, it errs toward sending the push.
-- **A phone on silent may stay silent.** Messages publish at ntfy's `urgent`
-  priority (5, alias `max`). The ntfy iOS app v1.8.0+ can deliver those as
-  Critical Alerts that bypass silent mode, once you grant it that permission.
+- **A phone on silent may stay silent.** Lid alerts publish at ntfy's `urgent`
+  priority (5, alias `max`); session alerts publish at `high` (4), so silent
+  mode still applies to them. The ntfy iOS app v1.8.0+ can deliver `urgent`
+  messages as Critical Alerts that bypass silent mode, once you grant it that
+  permission.
   That version was still unreleased as of October 2026 (check the
   [ntfy release notes](https://docs.ntfy.sh/releases/)). Until you have it,
   iOS shows a normal notification and silent mode applies.
+- **Session alerts have a horizon.** Detectable run length is capped at 12 h
+  since the session's last hook event.
+- **Session alerts reveal when you work.** Every alert adds a little
+  work-pattern metadata (when you start and stop) to your topic feed — the topic
+  is the password, keep it private.
+- **A finish alert can come early.** Rarely, a subagent finishing mid-turn can
+  clear the busy marker early and trigger a premature finish alert.
+- **Lid and finish can overlap.** If the finish send is in flight when the lid
+  closes, the lid alert still goes out (separate lanes) — best-effort, like
+  every push.
+- **One rate-limit budget for both.** ntfy.sh rate-limits per IP, so session
+  alerts and the lid alert draw on one daily budget; if a session alert is
+  refused with HTTP 429, turn Session alerts off for the rest of the day so the
+  lid alert keeps its headroom.
 
 ## Development
 

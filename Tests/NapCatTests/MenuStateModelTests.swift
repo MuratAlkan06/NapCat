@@ -36,6 +36,18 @@ struct MenuStateModelTests {
         #expect(recorded == [true, false])
     }
 
+    /// Track C: flipping the detection pause tells the owner (MenuContentView
+    /// re-gates the finish alert there). No detection stack here, so no flag
+    /// file is written anywhere.
+    @Test @MainActor func aPauseToggleNotifiesTheOwner() {
+        let model = makeModel()
+        var calls = 0
+        model.onDetectionPausedChange = { calls += 1 }
+        model.setDetectionPaused(true)
+        model.setDetectionPaused(false)
+        #expect(calls == 2)
+    }
+
     /// refresh() re-reads every mirror from the controllers — this is the
     /// publish path that re-renders the OPEN panel (battery header, charging
     /// line, feature state) after an async command or power push completes.
@@ -266,5 +278,160 @@ struct MenuStateModelTests {
     /// debugBattery mode) — same rule as the B1 detection section.
     @Test @MainActor func lidAlertSectionIsHiddenWithoutTheController() {
         #expect(!makeModel().lidGuardVisible)
+    }
+
+    // MARK: Track C — session alerts (finish + waiting pushes)
+
+    /// refresh() mirrors the finish-alert controller: its live display state
+    /// (`.armed` only once the watcher runs) and its last send — outcome,
+    /// time and kind — with the toggle read off the lid guard.
+    @Test @MainActor func refreshMirrorsTheFinishAlertController() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness { h in
+            let suite = "com.muratalkan.napcat.tests.menustatemodel.finish.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let lid = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+            defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
+            h.store.put(H.s1, ts: H.t0 - 600)
+            let model = MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter,
+                                       lidGuard: lid.controller, finishAlert: h.controller)
+
+            #expect(model.finishAlertVisible)
+            #expect(model.finishAlertEnabled)
+            #expect(model.finishAlertDisplayState == .hookNotInstalled,
+                    "armable but not watching yet — never shown as armed")
+            #expect(model.finishAlertLastOutcome == nil && model.finishAlertLastOutcomeAt == nil
+                    && model.finishAlertLastKind == nil)
+
+            h.controller.reconcile()
+            #expect(model.finishAlertDisplayState == .hookNotInstalled, "mirrors update on refresh(), not by magic")
+            model.refresh()
+            #expect(model.finishAlertDisplayState == .armed)
+            #expect(model.finishAlertStatus.severity == .nominal)
+
+            h.store.remove(H.s1)
+            await h.settle()
+            model.refresh()
+            #expect(model.finishAlertLastOutcome == .accepted)
+            #expect(model.finishAlertLastOutcomeAt == Double(H.t0))
+            #expect(model.finishAlertLastKind == .sessionFinished(minutes: 10, folded: 1, stillWorking: 0))
+            #expect(model.finishAlertLastSend(now: Double(H.t0) + 60)
+                    == PanelLine(text: "Last session alert: accepted by ntfy 1m ago (finished)", severity: .nominal))
+
+            defaults.set(false, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            model.refresh()
+            #expect(!model.finishAlertEnabled)
+        }
+    }
+
+    /// No controller (debugBattery wiring): the row is absent and everything
+    /// reads off/none, even with the stored toggle on.
+    @Test @MainActor func withoutTheControllerTheSessionAlertsRowIsAbsentAndOff() {
+        withLidGuardHarness { lid in
+            lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: lid.defaults)
+            let model = MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter,
+                                       lidGuard: lid.controller)
+            #expect(!model.finishAlertVisible)
+            #expect(!model.finishAlertEnabled)
+            #expect(model.finishAlertDisplayState == .off)
+            #expect(model.finishAlertLastOutcome == nil && model.finishAlertLastOutcomeAt == nil
+                    && model.finishAlertLastKind == nil)
+        }
+        #expect(!makeModel().finishAlertVisible)
+    }
+
+    /// The real owner wired to fakes: a MenuContentView whose finish alert
+    /// reads the REAL lid guard's config (shared destination + priming) but
+    /// watches a fake store / temp dir — never the real marker dir.
+    @MainActor
+    private func withSessionAlertsMenu(
+        topic: String?,
+        _ body: (MenuContentView, LidGuardHarness, RecordingMessageSender, FinishAlertController) throws -> Void
+    ) throws {
+        let suite = "com.muratalkan.napcat.tests.menustatemodel.toggle.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("napcat-sessiontoggle-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let sender = RecordingMessageSender()
+        let lid = LidGuardHarness(defaults: defaults, sender: sender)
+        if let topic { defaults.set(topic, forKey: DefaultsKey.lidGuardNtfyTopic) }
+        let factory = WatcherFactory()
+        let finish = FinishAlertController(
+            store: FakeMarkerStore(),
+            markerDirURL: dir,
+            config: lid.controller,
+            sender: sender,
+            makeWatcher: { factory.make($0) },
+            scheduler: ManualScheduler(),
+            now: { 1_800_000_000 }
+        )
+        let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let menu = MenuContentView(
+            sleep: SleepStateController(),
+            watchdog: WatchdogController(),
+            power: simulator,
+            limiter: ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults),
+            lidGuard: lid.controller,
+            finishAlert: finish,
+            defaults: defaults
+        )
+        try body(menu, lid, sender, finish)
+    }
+
+    /// The toggle persists `claudeFinishAlertEnabled` and, against a usable
+    /// but never-tested topic, fires the SHARED priming test send — so the
+    /// first message on the topic is never a session alert. Once primed,
+    /// re-toggling sends nothing; the lid alert's own toggle is untouched.
+    @Test @MainActor func theSessionAlertsTogglePersistsAndPrimesThroughTheSharedTestSend() throws {
+        try withSessionAlertsMenu(topic: "napcat-session-7h2k9q") { menu, lid, sender, finish in
+            let model = menu.model
+            #expect(model.finishAlertVisible)
+            #expect(!model.finishAlertEnabled)
+            #expect(model.finishAlertDisplayState == .off)
+            #expect(lid.controller.storedDestination != nil && lid.controller.primedAt == 0,
+                    "usable topic, never primed")
+
+            model.setFinishAlertEnabled(true)
+            #expect(lid.defaults.object(forKey: DefaultsKey.claudeFinishAlertEnabled) as? Bool == true)
+            #expect(sender.sends.map(\.kind) == [.test], "the shared test send — never a session alert first")
+            #expect(lid.controller.primedAt > 0, "an accepted test send primes the shared destination")
+            #expect(!lid.controller.isEnabled, "the lid alert's own toggle is untouched")
+            #expect(finish.isWatching)
+            #expect(model.finishAlertEnabled)
+            #expect(model.finishAlertDisplayState == .armed, "no not-watching flash after the toggle")
+
+            model.setFinishAlertEnabled(false)
+            #expect(lid.defaults.object(forKey: DefaultsKey.claudeFinishAlertEnabled) as? Bool == false)
+            #expect(!finish.isWatching)
+            #expect(!model.finishAlertEnabled)
+            #expect(model.finishAlertDisplayState == .off)
+
+            model.setFinishAlertEnabled(true)
+            #expect(sender.sends.count == 1, "already primed — no second test send")
+            #expect(model.finishAlertDisplayState == .armed)
+        }
+    }
+
+    /// Without a usable topic there is nothing to test: the toggle persists,
+    /// sends nothing, and the row names the next step.
+    @Test @MainActor func theSessionAlertsToggleWithoutATopicSendsNothing() throws {
+        try withSessionAlertsMenu(topic: nil) { menu, lid, sender, finish in
+            menu.model.setFinishAlertEnabled(true)
+            #expect(lid.defaults.bool(forKey: DefaultsKey.claudeFinishAlertEnabled))
+            #expect(sender.sends.isEmpty)
+            #expect(!finish.isWatching)
+            #expect(menu.model.finishAlertDisplayState == .needsTopic)
+            #expect(menu.model.finishAlertStatus == PanelLine(text: "Session alerts: set an ntfy topic to arm them",
+                                                              severity: .warning))
+        }
     }
 }

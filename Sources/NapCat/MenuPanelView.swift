@@ -7,7 +7,8 @@ import SwiftUI
 ///
 /// UI redesign (2026-10-18, PLAN.md "UI Redesign — Menu Panel"): three tiers —
 /// glance (battery, Stay Awake, the merged Claude row), controls (Lock Screen,
-/// Charge Limit, Lid alert + its one-line status), and everything else behind
+/// Charge Limit, Lid alert and Session alerts, each with its one-line status),
+/// and everything else behind
 /// ONE "Details" disclosure. IRON RULE: a non-nominal line never stays inside
 /// Details — `TuckedLine` / `SurfacedLine` split every Details-home line on
 /// `MenuStateModel.placement(ofDetailsLine:)`, so each renders exactly once.
@@ -149,6 +150,16 @@ struct LidAlertSurfacedLines: View {
         SurfacedLine(line: model.lidTopicStatus)
         SurfacedLine(line: model.lidServerStatus)
         SurfacedLine(line: model.lidLastSend(now: Date().timeIntervalSince1970))
+    }
+}
+
+/// Top-level home for the session-alerts Details line that can be a problem
+/// (a refused / failed / unconfirmed last session alert).
+struct SessionAlertsSurfacedLines: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        SurfacedLine(line: model.finishAlertLastSend(now: Date().timeIntervalSince1970))
     }
 }
 
@@ -317,6 +328,23 @@ struct LidAlertToggle: View {
     }
 }
 
+/// Track C: the finish alert + waiting buzz behind ONE toggle. Forwards to
+/// MenuContentView (shared priming test send); the menu stays open.
+struct SessionAlertsToggle: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Toggle("Session alerts", isOn: Binding(
+            get: { model.finishAlertEnabled },
+            set: { model.setFinishAlertEnabled($0) }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .accessibilityLabel("Session alerts — notify me when a Claude session finishes or waits for me")
+    }
+}
+
 /// SMAppService is the source of truth — the checkbox renders the OBSERVED
 /// status (refreshed on menu open), never a stored flag.
 struct LaunchAtLoginRow: View {
@@ -473,7 +501,7 @@ struct PanelDetailsDisclosure: View {
         .accessibilityLabel("Details")
         .accessibilityValue(expanded ? "Expanded" : "Collapsed")
         .accessibilityHint(badge == .nominal
-            ? "Shows lid-alert settings, Claude hook status, Pause detection and Launch at Login"
+            ? "Shows ntfy alert settings, Claude hook status, Pause detection and Launch at Login"
             : "Holds the setting for an item that needs attention, shown above")
         .accessibilityAddTraits(.isButton)
     }
@@ -488,7 +516,7 @@ struct PanelDetailsContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.loose) {
             if model.lidGuardVisible {
-                lidAlertGroup
+                ntfyAlertsGroup
             }
             if model.claudeDetectionVisible {
                 claudeGroup
@@ -497,14 +525,19 @@ struct PanelDetailsContent: View {
         }
     }
 
-    private var lidAlertGroup: some View {
+    /// The lid alert and the session alerts share one destination, one
+    /// settings editor and one priming test send — so one group.
+    private var ntfyAlertsGroup: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.tight) {
-            DetailsGroupHeader(title: "Lid alert")
+            DetailsGroupHeader(title: "ntfy alerts")
             // The topic itself is never rendered — it is the password to the
             // feed. The model does not even expose it to views.
             TuckedLine(line: model.lidServerStatus)
             TuckedLine(line: model.lidTopicStatus)
             TuckedLine(line: model.lidLastSend(now: Date().timeIntervalSince1970))
+            if model.finishAlertVisible {
+                TuckedLine(line: model.finishAlertLastSend(now: Date().timeIntervalSince1970))
+            }
             HStack(spacing: PanelMetrics.regular) {
                 Button("ntfy settings…") { model.editLidGuardSettings() }
                     .controlSize(.small)

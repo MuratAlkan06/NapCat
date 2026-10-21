@@ -667,6 +667,160 @@ struct LidGuardControllerTests {
             #expect(sender.sends.isEmpty)
         }
     }
+
+    // MARK: Track C finish alert — own toggle, SHARED destination + priming
+
+    /// The two toggles are independent: lid OFF + finish ON with a valid,
+    /// primed destination arms the finish alert only — and the finish toggle
+    /// never registers the lid guard's IOKit sleep hook.
+    @Test func theFinishAlertArmsOnItsOwnToggleWithTheLidGuardOff() {
+        withLidGuardHarness { harness in
+            harness.defaults.set("napcat-lid-8f3k2p", forKey: DefaultsKey.lidGuardNtfyTopic)
+            harness.defaults.set(harness.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
+            harness.controller.setFinishAlertEnabled(true)
+
+            #expect(harness.controller.finishAlertArmingState == .armed)
+            #expect(harness.controller.armingState == .off, "the lid guard keeps its own toggle")
+            #expect(!harness.source.isRunning, "the finish toggle must not register the sleep hook")
+        }
+    }
+
+    @Test func theFinishAlertNeedsTheSharedTestSend() {
+        withLidGuardHarness { harness in
+            harness.controller.setFinishAlertEnabled(true)
+            harness.controller.setTopic("napcat-lid-8f3k2p")
+            #expect(harness.controller.primedAt == 0)
+            #expect(harness.controller.finishAlertArmingState == .needsTestSend)
+
+            // The ONE priming test send arms both features.
+            harness.controller.setEnabled(true)
+            harness.controller.sendTestMessage()
+            #expect(harness.controller.finishAlertArmingState == .armed)
+            #expect(harness.controller.armingState == .armed)
+        }
+    }
+
+    @Test func theFinishAlertNeedsTheSharedTopic() {
+        withLidGuardHarness { harness in
+            harness.controller.setFinishAlertEnabled(true)
+            #expect(harness.controller.finishAlertArmingState == .needsTopic)
+            // An unusable stored server is "no destination" for both features.
+            harness.defaults.set("napcat-lid-8f3k2p", forKey: DefaultsKey.lidGuardNtfyTopic)
+            harness.defaults.set(harness.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
+            harness.defaults.set("http://ntfy.sh", forKey: DefaultsKey.lidGuardNtfyServer)
+            #expect(harness.controller.finishAlertArmingState == .needsTopic)
+        }
+    }
+
+    /// Finish toggle off ⇒ `.off`, even with the lid guard fully armed.
+    @Test func theFinishAlertIsOffWhenItsToggleIsOff() {
+        withLidGuardHarness { harness in
+            harness.arm()
+            #expect(harness.controller.armingState == .armed)
+            #expect(!harness.controller.finishAlertEnabled)
+            #expect(harness.controller.finishAlertArmingState == .off)
+
+            harness.controller.setFinishAlertEnabled(true)
+            #expect(harness.controller.finishAlertArmingState == .armed)
+            harness.controller.setFinishAlertEnabled(false)
+            #expect(harness.controller.finishAlertArmingState == .off)
+            #expect(harness.controller.armingState == .armed, "the lid guard is unaffected")
+            #expect(harness.source.isRunning, "…and so is its sleep registration")
+        }
+    }
+
+    /// The toggle persists under its own key and round-trips across a
+    /// relaunch (a second controller on the same defaults).
+    @Test func theFinishAlertTogglePersistsAndRoundTrips() {
+        withLidGuardHarness { harness in
+            harness.controller.setFinishAlertEnabled(true)
+            #expect(harness.defaults.bool(forKey: DefaultsKey.claudeFinishAlertEnabled))
+            #expect(harness.defaults.object(forKey: DefaultsKey.lidGuardEnabled) == nil)
+            let relaunched = LidGuardHarness(defaults: harness.defaults, sender: RecordingMessageSender())
+            #expect(relaunched.controller.finishAlertEnabled)
+
+            harness.controller.setFinishAlertEnabled(false)
+            #expect(harness.defaults.object(forKey: DefaultsKey.claudeFinishAlertEnabled) as? Bool == false)
+            #expect(!relaunched.controller.finishAlertEnabled)
+        }
+    }
+
+    /// SHARED priming: changing the topic or the server clears `primedAt`, so
+    /// both features disarm together until the next successful test send.
+    @Test func changingTheSharedDestinationDisarmsBothFeatures() {
+        withLidGuardHarness { harness in
+            harness.arm()
+            harness.controller.setFinishAlertEnabled(true)
+            #expect(harness.controller.finishAlertArmingState == .armed)
+
+            harness.controller.setTopic("napcat-other-topic")
+            #expect(harness.controller.armingState == .needsTestSend)
+            #expect(harness.controller.finishAlertArmingState == .needsTestSend)
+
+            harness.controller.sendTestMessage()
+            #expect(harness.controller.finishAlertArmingState == .armed)
+
+            harness.controller.setServer("https://ntfy.example.com")
+            #expect(harness.controller.armingState == .needsTestSend)
+            #expect(harness.controller.finishAlertArmingState == .needsTestSend)
+        }
+    }
+
+    /// Track C wiring: the arming-refresh hook runs at the END of EVERY
+    /// `refreshArming()` — including the "already registered" early return
+    /// and the priming that completes inside the test-send callback — so any
+    /// toggle / topic / server / priming change reconciles the finish alert.
+    @Test func theArmingRefreshHookRunsAfterEveryRefresh() {
+        final class HookCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            private var sawRegistered: [Bool] = []
+            func bump(registered: Bool) {
+                lock.lock()
+                value += 1
+                sawRegistered.append(registered)
+                lock.unlock()
+            }
+            var count: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return value
+            }
+            var registrations: [Bool] {
+                lock.lock()
+                defer { lock.unlock() }
+                return sawRegistered
+            }
+        }
+        withLidGuardHarness { harness in
+            let counter = HookCounter()
+            let source = harness.source
+            harness.controller.setArmingRefreshHook { counter.bump(registered: source.isRunning) }
+
+            harness.controller.refreshArming()                    // not armed
+            #expect(counter.count == 1)
+            harness.arm()                                         // registers
+            #expect(counter.count == 2)
+            #expect(counter.registrations.last == true, "the hook runs AFTER the registration change")
+            harness.controller.refreshArming()                    // already registered (early return)
+            #expect(counter.count == 3)
+            harness.controller.setFinishAlertEnabled(true)
+            #expect(counter.count == 4)
+            harness.controller.setTopic("napcat-other-topic")     // clears priming
+            #expect(counter.count == 5)
+            harness.controller.sendTestMessage()                  // primes (inline completion)
+            #expect(counter.count == 6)
+            harness.controller.setServer("https://ntfy.example.com") // clears priming → deregisters
+            #expect(counter.count == 7)
+            #expect(counter.registrations.last == false)
+            harness.controller.setEnabled(false)                  // already deregistered (early return)
+            #expect(counter.count == 8)
+
+            harness.controller.setArmingRefreshHook(nil)
+            harness.controller.refreshArming()
+            #expect(counter.count == 8, "a cleared hook is never called")
+        }
+    }
 }
 
 /// Small shim so the mirror test reads like the real publish path.

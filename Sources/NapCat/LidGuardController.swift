@@ -52,6 +52,7 @@ final class LidGuardController: @unchecked Sendable {
     private var lastOutcome: MessageSendOutcome?
     private var lastOutcomeAt: Double?
     private var changeHandler: (@Sendable () -> Void)?
+    private var armingRefreshHook: (@Sendable () -> Void)?
 
     init(
         defaults: UserDefaults,
@@ -69,23 +70,37 @@ final class LidGuardController: @unchecked Sendable {
         self.now = now
     }
 
+    /// The ONE construction site of the real ntfy sender, gated by the same
+    /// debug-sim wiring predicate: nil in debugBattery mode, so no URLSession
+    /// and no network request can exist there. AppDelegate builds it ONCE and
+    /// injects the same instance into the lid guard and (Track C) the finish
+    /// alert, so both share one sender — and its per-kind lanes keep a session
+    /// alert from ever starving the lid publish.
+    static func makeSharedSender(debugBattery: Bool) -> NtfyMessageSender? {
+        guard LidGuardPolicy.lidGuardMayBeConstructed(debugBattery: debugBattery) else { return nil }
+        return NtfyMessageSender()
+    }
+
     /// The single construction site, gated by the debug-sim wiring predicate
     /// (ADR §8 mirror, same shape as B1's `makeIfEnabled`). Returns nil in
     /// debugBattery mode — nothing in this subsystem is built there, so no
-    /// IOKit registration and no network request can exist. Also nil without
-    /// the B1 detection stack (there would be nothing to notify about).
+    /// IOKit registration and no network request can exist (the predicate is
+    /// checked FIRST, so even a supplied sender cannot bypass it). Also nil
+    /// without the B1 detection stack (there would be nothing to notify about)
+    /// and without a sender (`makeSharedSender` returned nil).
     static func makeIfEnabled(
         debugBattery: Bool,
         defaults: UserDefaults = .standard,
         stayAwakeMirror: ObservedStayAwakeMirror,
-        detection: ClaudeActivityController?
+        detection: ClaudeActivityController?,
+        sender: MessageSender?
     ) -> LidGuardController? {
         guard LidGuardPolicy.lidGuardMayBeConstructed(debugBattery: debugBattery) else { return nil }
-        guard let detection else { return nil }
+        guard let detection, let sender else { return nil }
         return LidGuardController(
             defaults: defaults,
             sleepSource: IOKitSystemSleepSource(),
-            sender: NtfyMessageSender(),
+            sender: sender,
             stayAwakeMirror: stayAwakeMirror,
             busyProvider: busyProvider(detection: detection)
         )
@@ -119,7 +134,18 @@ final class LidGuardController: @unchecked Sendable {
         handler?()
     }
 
-    // MARK: - Persistence (PLAN.md §11 — four keys, nothing else)
+    /// Track C: invoked at the END of every `refreshArming()` — so a toggle,
+    /// topic, server or priming change also reconciles the finish alert. It
+    /// may run OFF the main thread (priming completes on the sender's queue),
+    /// so the installed hook must hop to the main actor itself.
+    func setArmingRefreshHook(_ hook: (@Sendable () -> Void)?) {
+        lock.lock()
+        armingRefreshHook = hook
+        lock.unlock()
+    }
+
+    // MARK: - Persistence (PLAN.md §11 — four lid-guard keys + the Track C
+    // finish-alert toggle, nothing else)
 
     var isEnabled: Bool { defaults.bool(forKey: DefaultsKey.lidGuardEnabled) }
     /// The ntfy topic — A SECRET (it is the only password on the feed). Stored
@@ -214,6 +240,34 @@ final class LidGuardController: @unchecked Sendable {
 
     var isArmed: Bool { armingState == .armed }
 
+    // MARK: - Track C finish alert (own toggle, SHARED destination + priming)
+
+    /// The finish-alert toggle (`claudeFinishAlertEnabled`, default false).
+    /// Independent of `isEnabled`: the lid guard may be off while the finish
+    /// alert is on, and vice versa.
+    var finishAlertEnabled: Bool { defaults.bool(forKey: DefaultsKey.claudeFinishAlertEnabled) }
+
+    /// Persists the toggle, then re-runs the arming reconciliation (the hook
+    /// the Track C watcher attaches to). It never registers the lid guard's
+    /// sleep notification on its own — that still follows `armingState`.
+    func setFinishAlertEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: DefaultsKey.claudeFinishAlertEnabled)
+        refreshArming()
+    }
+
+    /// The finish alert reuses the lid-guard arming grammar with ITS OWN
+    /// toggle and the SHARED topic / server / primed-at: one destination, one
+    /// priming test send. Changing the topic or server clears `primedAt`, so
+    /// both features disarm together until the next successful test send.
+    var finishAlertArmingState: LidGuardArmingState {
+        LidGuardPolicy.armingState(
+            enabled: finishAlertEnabled,
+            server: storedServer,
+            topic: storedTopic,
+            primedAt: primedAt
+        )
+    }
+
     /// True while the IOKit power notification is registered. The OFF /
     /// not-armed states must leave ZERO sleep-path footprint.
     var isObservingSleep: Bool { sleepSource.isRunning }
@@ -226,6 +280,14 @@ final class LidGuardController: @unchecked Sendable {
     /// `SleepStateController.refreshObservedState()` first), so an arming
     /// controller starts from an observed value rather than a stale one.
     func refreshArming() {
+        // Every exit path — including the "already registered" early
+        // returns — ends with the finish-alert hook.
+        defer {
+            lock.lock()
+            let hook = armingRefreshHook
+            lock.unlock()
+            hook?()
+        }
         if isArmed {
             guard !sleepSource.isRunning else { return }
             sleepSource.start { [weak self] event, ack in

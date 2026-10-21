@@ -45,6 +45,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Track B / B2 lid-close alert; nil in debugBattery mode (structurally
     /// absent). Registers for IOKit power notifications only while armed.
     private let lidGuard: LidGuardController?
+    /// Track C finish alert + waiting buzz; nil in debugBattery mode
+    /// (structurally absent). Watches the marker dir only while armed.
+    private let finishAlert: FinishAlertController?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
@@ -63,6 +66,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
+        finishAlert: FinishAlertController? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.sleep = sleep
@@ -74,6 +78,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.defaults = defaults
         self.detection = detection
         self.lidGuard = lidGuard
+        self.finishAlert = finishAlert
         self.model = MenuStateModel(
             power: power,
             sleep: sleep,
@@ -82,7 +87,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             screenLock: screenLock,
             simulator: simulator,
             detection: detection,
-            lidGuard: lidGuard
+            lidGuard: lidGuard,
+            finishAlert: finishAlert
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -113,12 +119,20 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         model.requestLidGuardToggle = { [weak self] enabled in self?.toggleLidAlert(enabled) }
         model.requestLidGuardSettingsPrompt = { [weak self] in self?.promptForLidAlertSettings() }
         model.requestLidGuardTestSend = { [weak self] in self?.sendLidAlertTestMessage() }
+        model.requestFinishAlertToggle = { [weak self] enabled in self?.toggleSessionAlerts(enabled) }
 
         // The lid guard's own async events (send outcome, wake) republish
         // through the same refresh path as every other controller.
         lidGuard?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
+        // Track C: arm/disarm and send outcomes republish the same way.
+        finishAlert?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
+        // A pause toggle (the DISABLED flag) re-gates the finish alert at
+        // once: pausing disarms it, resuming re-arms it with a fresh baseline.
+        model.onDetectionPausedChange = { [weak self] in self?.finishAlert?.reconcile() }
 
         model.refresh()
     }
@@ -143,6 +157,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // ntfy channel has no permission to check, and menu-open must never
         // touch the network.
         lidGuard?.refreshArming()
+        // Track C: arm or disarm the marker-dir watcher to match the config,
+        // the pause flag and the dir (a re-arm takes a fresh baseline — never
+        // a send).
+        finishAlert?.reconcile()
         model.refresh()
         // Section visibility (charge limit, debug) and the Details state can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's
@@ -277,6 +295,23 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         if enabled, lidGuard.armingState == .needsTestSend {
             lidGuard.sendTestMessage()
         }
+        model.refresh()
+    }
+
+    /// Track C — the "Session alerts" toggle. Happy path: the menu STAYS OPEN.
+    /// The finish alert shares the lid guard's destination AND priming, so
+    /// switching it on against a never-tested topic kicks off the SAME
+    /// config-time test send — the first message on a topic is never a
+    /// session alert. The reconcile is the arming-refresh hook's, run here
+    /// synchronously too (idempotent) so the panel never flashes the
+    /// not-watching caption for a turn before the hook lands.
+    private func toggleSessionAlerts(_ enabled: Bool) {
+        guard let lidGuard else { return }
+        lidGuard.setFinishAlertEnabled(enabled)
+        if enabled, lidGuard.finishAlertArmingState == .needsTestSend {
+            lidGuard.sendTestMessage()
+        }
+        finishAlert?.reconcile()
         model.refresh()
     }
 
@@ -419,8 +454,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         up to 64 characters.
 
         NapCat posts to that topic only when this Mac starts sleeping while a Claude Code \
-        task is still running. It never sends anything else, and never any of your Claude \
-        conversation.
+        task is still running (Lid alert) and, if Session alerts is on, when a Claude Code \
+        session finishes or stops to wait for you. It never sends anything else, and never \
+        any of your Claude conversation.
         """
 
     /// Raw, UNVALIDATED text from one pass of the ntfy settings editor. It

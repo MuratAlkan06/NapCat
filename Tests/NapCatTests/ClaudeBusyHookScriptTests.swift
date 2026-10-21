@@ -359,6 +359,217 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    // MARK: - C1: Notification-type discrimination (keep-on-wait / keep-on-resume / clear)
+
+    /// A Notification payload for `session`. `notificationType` is the RAW JSON
+    /// literal for the `notification_type` field (e.g. `quoted("idle_prompt")`,
+    /// `"123"`), or nil to omit the field; `backgroundTasks` likewise.
+    private func notificationJSON(_ session: String, notificationType: String?, backgroundTasks: String? = nil) -> String {
+        var fields = [#""hook_event_name":"Notification""#, #""session_id":"\#(session)""#]
+        if let notificationType { fields.append(#""notification_type":\#(notificationType)"#) }
+        if let backgroundTasks { fields.append(#""background_tasks":\#(backgroundTasks)"#) }
+        return "{" + fields.joined(separator: ",") + "}"
+    }
+
+    /// `s` as a JSON string literal (callers pass only plain ASCII).
+    private func quoted(_ s: String) -> String { "\"\(s)\"" }
+
+    private func hookLog(_ home: URL) -> String {
+        let url = markerDir(home).appendingPathComponent(ClaudeBusyConstants.logFileName)
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    /// Every WAITING type keeps the marker, rewritten with the synthetic
+    /// `waiting` token in the unchanged v1 grammar (and readable by the Swift
+    /// parser), and hook.log records reason=waiting-on-user.
+    @Test func waitingNotificationTypesKeepTheMarkerAsWaiting() {
+        let token = ClaudeBusyConstants.waitingEventToken
+        for notificationType in ClaudeBusyConstants.waitingNotificationTypes {
+            withHome { home in
+                let session = "c1000001-0021-4abc-8def-000000000021"
+                primeMarker(session, home: home)
+                let result = runHook(json: notificationJSON(session, notificationType: quoted(notificationType)), home: home)
+                #expect(result.exitCode == 0, "\(notificationType): exit 0")
+                #expect(result.stdout.isEmpty, "\(notificationType): stdout must stay empty")
+                let marker = markerDir(home).appendingPathComponent(session)
+                let contents = waitForMarkerEvent(marker, event: token)
+                let pattern = "^v1 ts=[0-9]+ event=\(token) pid=[0-9]+ src=unknown\n$"
+                #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                        "\(notificationType): kept marker \(String(reflecting: contents)) must record event=\(token)")
+                #expect(ClaudeActivityPolicy.parseMarker(contents)?.event == token,
+                        "\(notificationType): the Swift reader must parse the waiting marker")
+                #expect(hookLog(home).contains(
+                    "keep session=\(session) event=Notification type=\(notificationType) reason=waiting-on-user pid="),
+                        "\(notificationType): hook.log must record the waiting keep")
+            }
+        }
+    }
+
+    /// Every RESUME type keeps the marker with the REAL event name (work
+    /// continues — not a wait) and logs reason=work-continues.
+    @Test func resumeNotificationTypesKeepTheMarkerWithTheRealEvent() {
+        for notificationType in ClaudeBusyConstants.resumeNotificationTypes {
+            withHome { home in
+                let session = "c1000002-0022-4abc-8def-000000000022"
+                primeMarker(session, home: home)
+                let result = runHook(json: notificationJSON(session, notificationType: quoted(notificationType)), home: home)
+                #expect(result.exitCode == 0, "\(notificationType): exit 0")
+                #expect(result.stdout.isEmpty, "\(notificationType): stdout must stay empty")
+                let marker = markerDir(home).appendingPathComponent(session)
+                let contents = waitForMarkerEvent(marker, event: "Notification")
+                let pattern = "^v1 ts=[0-9]+ event=Notification pid=[0-9]+ src=unknown\n$"
+                #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                        "\(notificationType): kept marker \(String(reflecting: contents)) must record event=Notification")
+                #expect(hookLog(home).contains(
+                    "keep session=\(session) event=Notification type=\(notificationType) reason=work-continues pid="),
+                        "\(notificationType): hook.log must record the resume keep")
+            }
+        }
+    }
+
+    /// The documented CLEAR types, and every unknown / missing / non-string
+    /// type, fall through to the original behavior: the marker is CLEARED and
+    /// hook.log names the (validated) type, `?` when no string type exists.
+    @Test func clearAndUnrecognizedNotificationTypesClearTheMarker() {
+        let cap = String(repeating: "q", count: 32)  // longest well-formed type
+        var cases: [(json: String?, logged: String)] = ClaudeBusyConstants.clearNotificationTypes.map {
+            (json: Optional(quoted($0)), logged: $0)
+        }
+        cases += [
+            (json: quoted("foo"), logged: "foo"),                    // unknown, well-formed
+            (json: quoted(cap), logged: cap),                        // unknown, at the 32-char cap
+            (json: nil, logged: "?"),                                // field absent
+            (json: "123", logged: "?"),                              // number
+            (json: "true", logged: "?"),                             // bool
+            // (A JSON null never reaches C1: plist has no null, so the whole
+            // payload fails the pre-existing stdin JSON gate and is ignored.)
+            (json: #"{"permission_prompt":1}"#, logged: "?"),        // dict (raw form would print its KEY)
+            (json: #"["permission_prompt"]"#, logged: "?"),          // array
+            (json: quoted(""), logged: "invalid"),                   // empty string fails {1,32}
+        ]
+        for (json, logged) in cases {
+            withHome { home in
+                let session = "c1000003-0023-4abc-8def-000000000023"
+                primeMarker(session, home: home)
+                let label = json ?? "absent"
+                let result = runHook(json: notificationJSON(session, notificationType: json), home: home)
+                #expect(result.exitCode == 0, "exit 0 on \(label)")
+                #expect(result.stdout.isEmpty, "stdout empty on \(label)")
+                #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                        "notification_type \(label) must CLEAR the marker")
+                #expect(hookLog(home).contains("clear session=\(session) event=Notification type=\(logged)\n"),
+                        "notification_type \(label) must be logged as type=\(logged)")
+            }
+        }
+    }
+
+    /// A string type failing the strict whole-string check (newline, CR,
+    /// uppercase, a non-[a-z_] char, over 32 chars) is treated as unknown: the
+    /// marker CLEARS, hook.log says `type=invalid`, and the raw value NEVER
+    /// reaches the log (log-forgery guard). The trailing-newline case proves a
+    /// newline in the value cannot be stripped into a valid waiting type.
+    @Test func malformedNotificationTypeIsLoggedAsInvalidAndNeverEchoed() {
+        let long = String(repeating: "q", count: 41)
+        let overCap = String(repeating: "q", count: 33)
+        let cases: [(json: String, raw: String)] = [
+            (#""permission\nprompt""#, "prompt"),             // interior newline
+            (#""permission_prompt\n""#, "permission_prompt"),  // trailing newline
+            (#""permission_prompt\r""#, "permission_prompt"),  // trailing CR
+            (#""x\nkeep session=forged""#, "forged"),          // forged log line
+            (quoted("Permission_Prompt"), "Permission_Prompt"), // uppercase
+            (quoted("permission-prompt"), "permission-prompt"), // char outside [a-z_]
+            (quoted(long), long),                               // 41 chars
+            (quoted(overCap), overCap),                         // one past the 32 cap
+        ]
+        for (json, raw) in cases {
+            withHome { home in
+                let session = "c1000004-0024-4abc-8def-000000000024"
+                primeMarker(session, home: home)
+                let result = runHook(json: notificationJSON(session, notificationType: json), home: home)
+                #expect(result.exitCode == 0, "exit 0 on \(json)")
+                #expect(result.stdout.isEmpty, "stdout empty on \(json)")
+                #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                        "malformed type \(json) must CLEAR the marker")
+                let log = hookLog(home)
+                #expect(log.contains("clear session=\(session) event=Notification type=invalid\n"),
+                        "malformed type \(json) must be logged as type=invalid")
+                #expect(!log.contains(raw), "the raw value of \(json) must never reach hook.log")
+                #expect(log.split(separator: "\n").count == 2,
+                        "exactly the set + clear lines — no injected line (\(json))")
+            }
+        }
+    }
+
+    /// Precedence: a WAITING type wins over a running background task — the
+    /// session is blocked on the user, which is what the waiting token says.
+    @Test func waitingTypeWinsOverARunningBackgroundTask() {
+        withHome { home in
+            let session = "c1000005-0025-4abc-8def-000000000025"
+            primeMarker(session, home: home)
+            let tasks = #"[{"id":"a","type":"subagent","status":"running"}]"#
+            let json = notificationJSON(session, notificationType: quoted("permission_prompt"), backgroundTasks: tasks)
+            #expect(runHook(json: json, home: home).exitCode == 0)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let contents = waitForMarkerEvent(marker, event: ClaudeBusyConstants.waitingEventToken)
+            #expect(contents.contains("event=\(ClaudeBusyConstants.waitingEventToken) "),
+                    "waiting must win over a running background task, got \(String(reflecting: contents))")
+            let log = hookLog(home)
+            #expect(log.contains("type=permission_prompt reason=waiting-on-user"))
+            #expect(!log.contains("reason=background-task-running"))
+        }
+    }
+
+    /// B3 is unchanged under C1: a CLEAR-class type with a running background
+    /// task still KEEPS the marker with the real event name. Non-Notification
+    /// log lines carry no `type=` field (byte-identical to pre-C1).
+    @Test func clearClassTypeWithARunningBackgroundTaskKeepsViaB3() {
+        withHome { home in
+            let session = "c1000006-0026-4abc-8def-000000000026"
+            primeMarker(session, home: home)
+            let tasks = #"[{"id":"a","type":"subagent","status":"running"}]"#
+            let json = notificationJSON(session, notificationType: quoted("idle_prompt"), backgroundTasks: tasks)
+            #expect(runHook(json: json, home: home).exitCode == 0)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let contents = waitForMarkerEvent(marker, event: "Notification")
+            let pattern = "^v1 ts=[0-9]+ event=Notification pid=[0-9]+ src=unknown\n$"
+            #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                    "idle_prompt + running task must KEEP with event=Notification, got \(String(reflecting: contents))")
+            #expect(hookLog(home).contains(
+                "keep session=\(session) event=Notification type=idle_prompt reason=background-task-running pid="))
+
+            // The turn really ends: a plain Stop clears, logged exactly as before C1.
+            _ = runHook(json: eventJSON("Stop", session), home: home)
+            #expect(waitForFile(marker, present: false), "Stop with nothing running CLEARS")
+            #expect(hookLog(home).contains("clear session=\(session) event=Stop\n"),
+                    "non-Notification log lines carry no type= field")
+        }
+    }
+
+    /// Canary: prove the waiting keep has teeth. Neuter the waiting branch and
+    /// run the permission-prompt scenario against the mutant — the marker MUST
+    /// be lost (it falls through to clear).
+    @Test func keepOnWaitingNotificationCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(
+            of: #"if [ "$tclass" = waiting ]; then"#,
+            with: "if false; then")
+        #expect(mutant != original, "canary setup: the waiting keep guard must exist to be neutered")
+
+        withHome { home in
+            let session = "c1000007-0027-4abc-8def-000000000027"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+
+            _ = runScript(mutantURL, json: promptJSON(session), home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            #expect(waitForFile(marker, present: true), "canary setup: marker must be set first")
+
+            _ = runScript(mutantURL, json: notificationJSON(session, notificationType: quoted("permission_prompt")), home: home)
+            #expect(waitForFile(marker, present: false),
+                    "mutant that drops the waiting keep must CLEAR the marker (so the waiting test has teeth)")
+        }
+    }
+
     @Test func garbageInputWritesNothingAndStaysSilent() {
         withHome { home in
             for bad in ["not json at all", #"{"no_event":true}"#, "", "[1,2,3]"] {
@@ -460,6 +671,46 @@ struct ClaudeBusyHookScriptTests {
         #expect(!installer.contains("PreToolUse"), "PreToolUse must not be registered")
     }
 
+    /// C1 parity: the shell's two KEEP case patterns byte-match the Swift
+    /// waiting / resume lists (same members, same order, nothing extra — a
+    /// clear type may never appear in a keep pattern), the synthetic waiting
+    /// token byte-matches `WAITING_EVENT`, and every listed type can actually
+    /// pass the shell's strict type check (else its branch would be dead code).
+    @Test func notificationTypeClassesMatchSwiftConstants() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        let codeLines = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        let waiting = ClaudeBusyConstants.waitingNotificationTypes
+        let resume = ClaudeBusyConstants.resumeNotificationTypes
+        let clear = ClaudeBusyConstants.clearNotificationTypes
+        let documented = waiting + resume + clear
+
+        // Synthetic token + strict type check, verbatim.
+        let token = ClaudeBusyConstants.waitingEventToken
+        #expect(codeLines.contains("WAITING_EVENT=\(token)"), "WAITING_EVENT must byte-match waitingEventToken")
+        let typeRegex = "^[a-z_]{1,32}$"
+        #expect(codeLines.contains("NTYPE_RE='\(typeRegex)'"), "the strict type check must be ^[a-z_]{1,32}$")
+
+        // Every case-pattern line naming a documented type, in file order.
+        let casePatterns = codeLines.filter { line in
+            line.hasSuffix(")") && documented.contains(where: { line.contains($0) })
+        }
+        #expect(casePatterns == [waiting.joined(separator: "|") + ")", resume.joined(separator: "|") + ")"],
+                "shell keep patterns \(casePatterns) must byte-match the Swift waiting/resume lists")
+
+        // The three classes are disjoint, and each type is reachable.
+        #expect(Set(documented).count == documented.count, "a type may belong to one class only")
+        for type in documented {
+            #expect(type.range(of: typeRegex, options: .regularExpression) != nil,
+                    "'\(type)' can never pass the shell's type check")
+        }
+
+        // The token is not a real hook event and parses as a marker event.
+        #expect(!(ClaudeBusyConstants.allEvents + ["SubagentStop"]).contains(token),
+                "the synthetic token must not collide with a real hook event name")
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=\(token) pid=1 src=unknown\n")?.event == token)
+    }
+
     // MARK: - Installer registration is EXEC FORM only (no shell-form path)
 
     @Test func installerPrintsExecFormRegistration() throws {
@@ -469,7 +720,21 @@ struct ClaudeBusyHookScriptTests {
         #expect(installer.contains("\"/bin/bash\""))
         #expect(installer.contains(ClaudeBusyConstants.installedHookRelativePath), "references the stable installed path")
         #expect(installer.contains("\"timeout\":5"))
-        #expect(installer.contains("idle_prompt"), "the Notification entry adds matcher idle_prompt")
+
+        // C1: the Notification entry has NO matcher (the hook needs every type
+        // to tell waiting-on-user apart from idle), and no printed registration
+        // line carries one.
+        #expect(installer.contains(#""Notification": [ { "hooks": [ $EXEC_CMD ] } ]"#),
+                "the Notification entry is registered without a matcher")
+        let registrationLines = installer.split(separator: "\n").filter { $0.contains("$EXEC_CMD ]") }
+        #expect(registrationLines.count == 6, "six printed registrations, found \(registrationLines.count)")
+        for line in registrationLines {
+            #expect(!line.contains("matcher"), "printed registration must not carry a matcher: \(line)")
+        }
+        // ...and the UPDATE note tells earlier installs to drop the old matcher.
+        #expect(installer.split(separator: "\n").contains(where: {
+            $0.hasPrefix("echo") && $0.contains("REMOVE") && $0.contains("idle_prompt")
+        }), "the installer must tell earlier installs to REMOVE the idle_prompt matcher")
 
         // NO shell-form: the ONLY "command" value is /usr/bin/env, and the
         // script path never appears as a command (only inside args).
@@ -477,6 +742,19 @@ struct ClaudeBusyHookScriptTests {
         #expect(commandOccurrences == 1, "exactly one command literal (the exec-form env), found \(commandOccurrences)")
         #expect(!installer.contains("\"command\":\"/bin/bash\""), "shell-form (bash as command) is forbidden")
         #expect(!installer.contains("\"command\":\"$HOOK_DEST\""), "bare-script-path command is forbidden")
+    }
+
+    /// The README registration the user pastes by hand must match the
+    /// installer: its Notification entry has no matcher (with one, the C1
+    /// waiting/resume branches would never receive their types).
+    @Test func readmeNotificationRegistrationHasNoMatcher() throws {
+        let readme = try Self.read(Self.repoRoot().appendingPathComponent("README.md"))
+        let entries = readme.split(separator: "\n").filter { $0.hasPrefix("\"Notification\":") }
+        #expect(entries.count == 1, "README documents exactly one Notification registration")
+        for entry in entries {
+            #expect(!entry.contains("matcher"), "README Notification registration must not carry a matcher")
+            #expect(entry.contains(ClaudeBusyConstants.installedHookRelativePath))
+        }
     }
 
     /// Neither installer nor uninstaller may EDIT settings.json (they only

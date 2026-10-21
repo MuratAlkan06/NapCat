@@ -476,26 +476,235 @@ struct LidGuardPolicyTests {
         #expect(!body.contains("nil"))
     }
 
+    /// The test message primes BOTH features (lid alert and session alerts
+    /// share the destination and the priming), so it names both. Literal (C6).
     @Test func testMessageBodyIsSelfExplainingAndNamesTheChannel() {
         let body = LidGuardPolicy.messageBody(kind: .test, clockTime: "09:05")
+        #expect(body == "NapCat test message (09:05). ntfy push works — "
+                + "this is how the lid-close and session alerts will reach you.")
         #expect(body.contains("NapCat test message"))
         #expect(body.contains("09:05"))
         #expect(body.contains("ntfy"))
+        #expect(body.contains("lid-close") && body.contains("session alerts"))
         #expect(!body.contains("Messages"), "no iMessage wording survives the channel swap")
     }
 
-    /// The set of message kinds is CLOSED and carries no free text: the only
-    /// associated value in the whole enum is an Int count.
+    /// C6 changed only the TEST body: the lid alert stays byte-identical.
+    @Test func lidAlertBodyIsByteIdentical() {
+        #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 1), clockTime: "22:49")
+                == "NapCat: this Mac started going to sleep at 22:49 while 1 Claude Code task was still running, "
+                + "and Stay Awake is off.")
+        #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 3), clockTime: "07:05")
+                == "NapCat: this Mac started going to sleep at 07:05 while 3 Claude Code tasks were still running, "
+                + "and Stay Awake is off.")
+        #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 0), clockTime: "00:00")
+                == "NapCat: this Mac started going to sleep at 00:00 while a Claude Code task was still running, "
+                + "and Stay Awake is off.")
+    }
+
+    /// Every leaf of a kind's associated values, walked through tuples and
+    /// optionals (`nil` carries nothing). A payload-free case has no leaves.
+    static func payloadLeaves(_ kind: LidGuardMessageKind) -> [Any] {
+        func leaves(_ value: Any) -> [Any] {
+            let mirror = Mirror(reflecting: value)
+            if mirror.displayStyle == .optional || mirror.displayStyle == .tuple {
+                return mirror.children.flatMap { leaves($0.value) }
+            }
+            return [value]
+        }
+        return Mirror(reflecting: kind).children.flatMap { leaves($0.value) }
+    }
+
+    /// The set of message kinds is CLOSED — exactly four kinds since Track C —
+    /// and carries no free text: every associated value in the whole enum is
+    /// an Int (a count or minutes), walked down through tuples and optionals so
+    /// a String hidden inside a multi-value payload cannot slip past.
     @Test func messageKindsCarryNoFreeText() {
-        let kinds: [LidGuardMessageKind] = [.test, .lidAlert(busySessionCount: 3)]
-        for kind in kinds {
-            let mirrored = Mirror(reflecting: kind)
-            for child in mirrored.children {
-                #expect(!(child.value is String), "a message kind must never carry a String payload")
+        let kinds: [(kind: LidGuardMessageKind, leafCount: Int)] = [
+            (.test, 0),
+            (.lidAlert(busySessionCount: 3), 1),
+            (.sessionFinished(minutes: 42, folded: 2, stillWorking: 1), 3),
+            (.sessionFinished(minutes: nil, folded: 1, stillWorking: 0), 2),
+            (.needsAttention(minutes: 12, stillWorking: 1), 2),
+            (.needsAttention(minutes: nil, stillWorking: 0), 1),
+        ]
+        for (kind, leafCount) in kinds {
+            let leaves = Self.payloadLeaves(kind)
+            #expect(leaves.count == leafCount, "\(kind): the payload walk must see every value (non-vacuous)")
+            for leaf in leaves {
+                #expect(!(leaf is String), "a message kind must never carry a String payload")
+                #expect(leaf is Int, "\(kind): only Int counts / minutes may ride in a message kind")
             }
         }
-        // A count is all that distinguishes two lid alerts.
+        // EXHAUSTIVE on purpose — a fifth kind will not compile here until it
+        // is consciously added to this closed-set lock (and to the walk above).
+        for (kind, _) in kinds {
+            switch kind {
+            case .lidAlert, .test, .sessionFinished, .needsAttention: break
+            }
+        }
+        // Counts / minutes are all that distinguish two messages of one kind.
         #expect(LidGuardMessageKind.lidAlert(busySessionCount: 3) != .lidAlert(busySessionCount: 4))
+        #expect(LidGuardMessageKind.sessionFinished(minutes: 42, folded: 1, stillWorking: 0)
+                != .sessionFinished(minutes: nil, folded: 1, stillWorking: 0))
+        #expect(LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 0)
+                != .needsAttention(minutes: 12, stillWorking: 1))
+    }
+
+    // MARK: - Track C bodies (closed vocabulary: counts + minutes only)
+
+    struct BodyRow: Sendable, CustomTestStringConvertible {
+        let kind: LidGuardMessageKind
+        let expected: String
+        var testDescription: String { expected }
+    }
+
+    /// Literal expected strings — deliberately NOT recomputed from the
+    /// implementation's helpers, so a wording change has to be made here too.
+    static let sessionFinishedRows: [BodyRow] = [
+        // One session, minutes known.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 1),
+                expected: "A Claude session finished after 42 min — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished after 42 min — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 3),
+                expected: "A Claude session finished after 42 min — 3 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 1, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished after 1 min — none still working"),
+        // One session, minutes unknown / non-positive ⇒ omitted.
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 1, stillWorking: 3),
+                expected: "A Claude session finished — 3 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 0, folded: 1, stillWorking: 1),
+                expected: "A Claude session finished — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: -5, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished — none still working"),
+        // folded 0 (cannot happen) degrades to the single form.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 0, stillWorking: 1),
+                expected: "A Claude session finished after 42 min — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 0, stillWorking: 0),
+                expected: "A Claude session finished — none still working"),
+        // Folded ⇒ the count leads, minutes are omitted even when known.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 2, stillWorking: 0),
+                expected: "2 Claude sessions finished — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 2, stillWorking: 1),
+                expected: "2 Claude sessions finished — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 1, folded: 3, stillWorking: 0),
+                expected: "3 Claude sessions finished — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: 0, folded: 5, stillWorking: 3),
+                expected: "5 Claude sessions finished — 3 still working"),
+        // A negative still-working count (cannot happen) reads as none.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 5, stillWorking: -2),
+                expected: "5 Claude sessions finished — none still working"),
+    ]
+
+    static let needsAttentionRows: [BodyRow] = [
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0),
+                expected: "Claude is waiting for your approval — 12 min in"),
+        BodyRow(kind: .needsAttention(minutes: 1, stillWorking: 0),
+                expected: "Claude is waiting for your approval — 1 min in"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 0),
+                expected: "Claude is waiting for your approval"),
+        BodyRow(kind: .needsAttention(minutes: 0, stillWorking: 0),
+                expected: "Claude is waiting for your approval"),
+        BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 1),
+                expected: "Claude is waiting for your approval — 42 min in — 1 other still working"),
+        BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 3),
+                expected: "Claude is waiting for your approval — 42 min in — 3 others still working"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 1),
+                expected: "Claude is waiting for your approval — 1 other still working"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 2),
+                expected: "Claude is waiting for your approval — 2 others still working"),
+        BodyRow(kind: .needsAttention(minutes: -3, stillWorking: -1),
+                expected: "Claude is waiting for your approval"),
+    ]
+
+    @Test(arguments: sessionFinishedRows + needsAttentionRows)
+    func trackCBodiesAreTheExactClosedVocabulary(row: BodyRow) {
+        #expect(LidGuardPolicy.messageBody(kind: row.kind, clockTime: "22:49") == row.expected)
+    }
+
+    /// Property sweep over the whole folded × stillWorking × minutes grid: no
+    /// placeholder, no clock time (counts + minutes ONLY), never a "0 min" or a
+    /// negative number, and the folded form never names minutes.
+    @Test func trackCBodiesHoldTheirInvariantsAcrossTheGrid() {
+        let minutesValues: [Int?] = [nil, -1, 0, 1, 42]
+        for folded in [0, 1, 2, 5] {
+            for stillWorking in [-1, 0, 1, 3] {
+                for minutes in minutesValues {
+                    let finished = LidGuardPolicy.messageBody(
+                        kind: .sessionFinished(minutes: minutes, folded: folded, stillWorking: stillWorking),
+                        clockTime: "22:49")
+                    let waiting = LidGuardPolicy.messageBody(
+                        kind: .needsAttention(minutes: minutes, stillWorking: stillWorking),
+                        clockTime: "22:49")
+                    for body in [finished, waiting] {
+                        #expect(!body.contains("22:49"), "Track C bodies carry no clock time: \(body)")
+                        #expect(!body.contains("nil") && !body.contains("%") && !body.contains("Optional"))
+                        #expect(!body.contains(" 0 min") && !body.contains("-"), "\(body)")
+                    }
+                    #expect(finished.hasSuffix(LidGuardPolicy.stillWorkingPhrase(stillWorking)))
+                    if folded >= 2 {
+                        #expect(finished.hasPrefix("\(folded) Claude sessions finished — "))
+                        #expect(!finished.contains("min"), "the folded form omits minutes: \(finished)")
+                    } else {
+                        #expect(finished.hasPrefix("A Claude session finished"))
+                    }
+                    #expect(waiting.hasPrefix("Claude is waiting for your approval"))
+                }
+            }
+        }
+    }
+
+    @Test func stillWorkingPhraseTable() {
+        #expect(LidGuardPolicy.stillWorkingPhrase(-1) == "none still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(0) == "none still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(1) == "1 still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(2) == "2 still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(3) == "3 still working")
+    }
+
+    // MARK: - Per-kind headers and send lanes
+
+    struct KindTableRow: Sendable, CustomTestStringConvertible {
+        let kind: LidGuardMessageKind
+        let lane: NtfySendLane
+        let priority: String
+        let tags: String
+        var testDescription: String { "\(kind)" }
+    }
+
+    /// THE per-kind table (literal values). The lid alert and the test send
+    /// keep the B2 headers byte-for-byte and stay in the LID lane; both Track C
+    /// kinds travel in the SESSION lane.
+    static let kindTable: [KindTableRow] = [
+        KindTableRow(kind: .lidAlert(busySessionCount: 2), lane: .lid, priority: "urgent", tags: "zzz,warning"),
+        KindTableRow(kind: .test, lane: .lid, priority: "urgent", tags: "zzz,warning"),
+        KindTableRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 1), lane: .session,
+                     priority: "high", tags: "white_check_mark"),
+        KindTableRow(kind: .sessionFinished(minutes: nil, folded: 3, stillWorking: 0), lane: .session,
+                     priority: "high", tags: "white_check_mark"),
+        KindTableRow(kind: .needsAttention(minutes: 12, stillWorking: 0), lane: .session,
+                     priority: "high", tags: "raised_hand"),
+        KindTableRow(kind: .needsAttention(minutes: nil, stillWorking: 2), lane: .session,
+                     priority: "high", tags: "raised_hand"),
+    ]
+
+    @Test(arguments: kindTable)
+    func eachKindHasItsFixedHeadersAndLane(row: KindTableRow) {
+        #expect(LidGuardPolicy.ntfyHeaders(for: row.kind) == NtfyHeaders(priority: row.priority, tags: row.tags))
+        #expect(LidGuardPolicy.lane(for: row.kind) == row.lane)
+    }
+
+    /// Every lane is used by some kind (no dead lane), and the lid lane is
+    /// NEVER shared with a session alert — the F2 starvation fix.
+    @Test func theLidLaneIsNeverSharedWithASessionAlert() {
+        for lane in NtfySendLane.allCases {
+            #expect(Self.kindTable.contains { $0.lane == lane }, "\(lane) carries no kind")
+        }
+        #expect(LidGuardPolicy.lane(for: .sessionFinished(minutes: 1, folded: 1, stillWorking: 0)) != .lid)
+        #expect(LidGuardPolicy.lane(for: .needsAttention(minutes: 1, stillWorking: 0)) != .lid)
     }
 
     // MARK: - Send-outcome classifier (fixtures)
@@ -534,13 +743,96 @@ struct LidGuardPolicyTests {
         #expect(LidGuardPolicy.classifySend(
             statusCode: nil, transportErrorCode: URLError.secureConnectionFailed.rawValue)
             == .sendFailed("the secure connection to the ntfy server failed"))
+        // M1 (C6): an arbitrary code is NOT on the pre-connect allow-list, so
+        // its phase is unknown — unconfirmed, never a retryable failure. Was
+        // `.sendFailed("the request failed (network error -424242)")`.
         #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: -424_242)
-            == .sendFailed("the request failed (network error -424242)"))
+            == .timedOutUnconfirmed)
+        // The name table's catch-all stays a fixed, number-only sentence.
+        #expect(LidGuardPolicy.transportErrorName(-424_242) == "the request failed (network error -424242)")
     }
 
-    @Test func noResponseAndNoErrorIsAFailureNotASuccess() {
-        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: nil)
-                == .sendFailed("the server sent no HTTP response"))
+    /// M1 (C6): no transport error AND no HTTP response — nothing says whether
+    /// the POST left, so it is unconfirmed (never retried), neither a success
+    /// nor a retryable failure. Was `.sendFailed("the server sent no HTTP
+    /// response")`.
+    @Test func noResponseAndNoErrorIsUnconfirmedNotASuccess() {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: nil) == .timedOutUnconfirmed)
+    }
+
+    /// M1 allow-list, literal: every code raised BEFORE the request body is
+    /// sent, with the fixed-vocabulary sentence it must surface as.
+    static let preConnectFixtures: [(Int, String)] = [
+        (URLError.notConnectedToInternet.rawValue, "this Mac had no internet connection"),
+        (URLError.internationalRoamingOff.rawValue, "this Mac had no internet connection"),
+        (URLError.callIsActive.rawValue, "this Mac had no internet connection"),
+        (URLError.dataNotAllowed.rawValue, "this Mac had no internet connection"),
+        (URLError.cannotFindHost.rawValue, "the ntfy server name could not be resolved"),
+        (URLError.dnsLookupFailed.rawValue, "the ntfy server name could not be resolved"),
+        (URLError.cannotConnectToHost.rawValue, "the ntfy server refused the connection"),
+        (URLError.secureConnectionFailed.rawValue, "the secure connection to the ntfy server failed"),
+        (URLError.appTransportSecurityRequiresSecureConnection.rawValue,
+         "the secure connection to the ntfy server failed"),
+        (URLError.serverCertificateUntrusted.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.serverCertificateHasBadDate.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.serverCertificateNotYetValid.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.serverCertificateHasUnknownRoot.rawValue, "the ntfy server certificate was not trusted"),
+        (URLError.clientCertificateRejected.rawValue, "the ntfy server asked for a client certificate"),
+        (URLError.clientCertificateRequired.rawValue, "the ntfy server asked for a client certificate"),
+        (URLError.badURL.rawValue, "the ntfy server address is not usable"),
+        (URLError.unsupportedURL.rawValue, "the ntfy server address is not usable"),
+    ]
+
+    /// Every pre-connect code is `sendFailed` with its OWN sentence (never the
+    /// numeric catch-all) — and only these are, so only these are retried.
+    @Test(arguments: preConnectFixtures)
+    func preConnectTransportErrorsAreSendFailedWithTheirFixedName(code: Int, name: String) {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code) == .sendFailed(name))
+        #expect(LidGuardPolicy.transportErrorName(code) == name)
+        #expect(!name.contains("network error"), "\(code) must have a sentence of its own")
+    }
+
+    /// The allow-list is EXACTLY the reviewed set (adding a code is a conscious
+    /// change here), and it never overlaps the unknown-outcome set.
+    @Test func thePreConnectAllowListIsExactlyTheReviewedSet() {
+        #expect(LidGuardPolicy.preConnectTransportErrorCodes == Set(Self.preConnectFixtures.map(\.0)))
+        #expect(LidGuardPolicy.preConnectTransportErrorCodes.count == 17)
+        #expect(Self.preConnectFixtures.count == 17, "no fixture duplicated")
+        #expect(LidGuardPolicy.preConnectTransportErrorCodes
+                    .isDisjoint(with: LidGuardPolicy.unconfirmedTransportErrorCodes))
+    }
+
+    /// M1: codes that can fire AFTER ntfy already has the message (the
+    /// response could not be read or was malformed) and codes of unknown phase
+    /// are all unconfirmed — so the finish-alert retry can never duplicate a
+    /// push that landed. Literal values, as the security review named them.
+    @Test(arguments: [
+        -1011,    // badServerResponse
+        -1014,    // zeroByteResource
+        -1015,    // cannotDecodeRawData
+        -1016,    // cannotDecodeContentData
+        -1017,    // cannotParseResponse
+        -1103,    // dataLengthExceedsMaximum
+        -1021,    // requestBodyStreamExhausted
+        -1,       // URLError.unknown — also what a foreign error domain maps to
+        -9999,    // a code nobody listed
+    ])
+    func postConnectAndUnknownTransportErrorsAreUnconfirmed(code: Int) {
+        #expect(LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code) == .timedOutUnconfirmed)
+        #expect(LidGuardPolicy.classifySend(statusCode: 200, transportErrorCode: code) == .timedOutUnconfirmed)
+        #expect(!LidGuardPolicy.preConnectTransportErrorCodes.contains(code))
+    }
+
+    /// The literals above really are the URLError codes the review named.
+    @Test func theReviewedPostConnectCodesHaveTheirDocumentedValues() {
+        #expect(URLError.badServerResponse.rawValue == -1011)
+        #expect(URLError.zeroByteResource.rawValue == -1014)
+        #expect(URLError.cannotDecodeRawData.rawValue == -1015)
+        #expect(URLError.cannotDecodeContentData.rawValue == -1016)
+        #expect(URLError.cannotParseResponse.rawValue == -1017)
+        #expect(URLError.dataLengthExceedsMaximum.rawValue == -1103)
+        #expect(URLError.requestBodyStreamExhausted.rawValue == -1021)
+        #expect(URLError.unknown.rawValue == -1)
     }
 
     /// SECURITY: the failure detail must be drawn from a fixed vocabulary, not
@@ -548,14 +840,18 @@ struct LidGuardPolicyTests {
     /// failing URL — and the URL contains the topic, which is the password.
     @Test func noClassifiedFailureDetailCanEverCarryAUrlOrTopic() {
         let codes = [-1, 0, -999, -1001, -1003, -1004, -1005, -1009, -1200, -1202, -424_242]
+            + LidGuardPolicy.preConnectTransportErrorCodes.sorted()
+        var failures = 0
         for code in codes {
             let outcome = LidGuardPolicy.classifySend(statusCode: nil, transportErrorCode: code)
             guard case .sendFailed(let detail) = outcome else { continue }
+            failures += 1
             for forbidden in ["http", "://", "ntfy.sh/", "/napcat"] {
                 #expect(!detail.lowercased().contains(forbidden),
                         "the detail for \(code) must never look like a URL: \(detail)")
             }
         }
+        #expect(failures >= LidGuardPolicy.preConnectTransportErrorCodes.count, "vacuity guard")
         for code in codes {
             let name = LidGuardPolicy.transportErrorName(code)
             #expect(!name.contains("://"))
