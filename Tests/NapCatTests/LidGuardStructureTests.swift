@@ -135,7 +135,10 @@ struct LidGuardStructureTests {
         }
     }
 
-    /// Every B2 type is constructed through the one gated factory.
+    /// Every B2 type is constructed through the gated factories in
+    /// LidGuardController.swift. Since Track C the ntfy sender is SHARED: it
+    /// is built exactly once, by `makeSharedSender` (same debug-sim gate), and
+    /// injected — `makeIfEnabled` no longer constructs one privately.
     @Test func theSubsystemHasASingleConstructionSite() throws {
         let sources = try Self.swiftSources()
         let constructors = [
@@ -146,13 +149,19 @@ struct LidGuardStructureTests {
         for token in constructors {
             for (name, text) in sources where text.contains(token) {
                 #expect(name == "LidGuardController.swift",
-                        "'\(token)' in \(name) — construction must go through LidGuardController.makeIfEnabled")
+                        "'\(token)' in \(name) — construction must go through LidGuardController.makeIfEnabled / makeSharedSender")
             }
         }
-        // NapCatApp must reach the feature only through the gated factory.
+        // ONE sender construction site, inside the gated shared factory.
+        let controller = try #require(sources.first { $0.name == "LidGuardController.swift" })
+        #expect(controller.text.components(separatedBy: "NtfyMessageSender(").count - 1 == 1,
+                "the ntfy sender must be constructed exactly once (makeSharedSender) and injected")
+        // NapCatApp must reach the feature only through the gated factories.
         let app = try #require(sources.first { $0.name == "NapCatApp.swift" })
         #expect(app.text.contains("LidGuardController.makeIfEnabled("))
         #expect(!app.text.contains("LidGuardController("))
+        #expect(app.text.contains("LidGuardController.makeSharedSender("))
+        #expect(!app.text.contains("NtfyMessageSender("), "the app injects the shared sender — it never builds one")
     }
 
     /// A `NtfyDestination` is the ONLY thing that ever becomes a URL, so it
@@ -177,21 +186,53 @@ struct LidGuardStructureTests {
         let suite = "com.muratalkan.napcat.tests.lidguard.structure"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
+        // No sender — hence no URLSession, no network — in debugBattery mode.
+        #expect(LidGuardController.makeSharedSender(debugBattery: true) == nil,
+                "debugBattery mode must not construct the ntfy sender")
+
         let detection = ClaudeActivityController.makeIfEnabled(debugBattery: false)
+        // The predicate is checked FIRST: even an injected sender cannot
+        // bring the lid guard into debugBattery mode.
         #expect(LidGuardController.makeIfEnabled(
             debugBattery: true,
             defaults: defaults,
             stayAwakeMirror: ObservedStayAwakeMirror(),
-            detection: detection
+            detection: detection,
+            sender: RecordingMessageSender()
         ) == nil, "debugBattery mode must not construct the lid guard")
+        #expect(LidGuardController.makeIfEnabled(
+            debugBattery: true,
+            defaults: defaults,
+            stayAwakeMirror: ObservedStayAwakeMirror(),
+            detection: detection,
+            sender: LidGuardController.makeSharedSender(debugBattery: true)
+        ) == nil)
 
         // Without the B1 detection stack there is nothing to notify about.
         #expect(LidGuardController.makeIfEnabled(
             debugBattery: false,
             defaults: defaults,
             stayAwakeMirror: ObservedStayAwakeMirror(),
-            detection: nil
+            detection: nil,
+            sender: RecordingMessageSender()
         ) == nil)
+
+        // Without a sender there is nothing to deliver with.
+        #expect(LidGuardController.makeIfEnabled(
+            debugBattery: false,
+            defaults: defaults,
+            stayAwakeMirror: ObservedStayAwakeMirror(),
+            detection: detection,
+            sender: nil
+        ) == nil)
+
+        // Outside debugBattery mode the shared sender IS built (two idle
+        // URLSessions — no task is created, nothing touches the network).
+        let shared = LidGuardController.makeSharedSender(debugBattery: false)
+        #expect(shared != nil)
+        if let shared {
+            for lane in NtfySendLane.allCases { shared.session(for: lane).invalidateAndCancel() }
+        }
     }
 
     /// The panel and model stay free of every low-level symbol (extends the B1
@@ -311,16 +352,27 @@ struct LidGuardStructureTests {
         }
     }
 
-    /// The dry-run sender proves the produced body really is the template.
+    /// The dry-run sender proves the produced body really is the template —
+    /// for all four closed kinds.
     @Test func theDryRunSenderProducesOnlyTemplateBodies() {
         let destination = NtfyDestination(server: "https://ntfy.sh", topic: "napcat-structure")
         let sender = RecordingMessageSender()
-        sender.send(.lidAlert(busySessionCount: 2), to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
-        sender.send(.test, to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
+        let kinds: [LidGuardMessageKind] = [
+            .lidAlert(busySessionCount: 2),
+            .test,
+            .sessionFinished(minutes: 42, folded: 1, stillWorking: 1),
+            .needsAttention(minutes: 12, stillWorking: 0),
+        ]
+        for kind in kinds {
+            sender.send(kind, to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
+        }
         let bodies = sender.bodies(clockTime: "22:49")
-        #expect(bodies.count == 2)
-        #expect(bodies[0] == LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 2), clockTime: "22:49"))
-        #expect(bodies[1] == LidGuardPolicy.messageBody(kind: .test, clockTime: "22:49"))
+        #expect(bodies.count == kinds.count)
+        for (body, kind) in zip(bodies, kinds) {
+            #expect(body == LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49"))
+        }
+        #expect(bodies[2] == "A Claude session finished after 42 min — 1 still working")
+        #expect(bodies[3] == "Claude is waiting for your approval — 12 min in")
     }
 
     // MARK: - What B4 removed (regression locks)

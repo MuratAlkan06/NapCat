@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chargeLimiter: ChargeLimiter?
     private var statusItemController: StatusItemController?
     private var lidGuard: LidGuardController?
+    /// The ONE ntfy sender, shared by the lid guard and (Track C) the finish
+    /// alert. Nil in debugBattery mode.
+    private var ntfySender: NtfyMessageSender?
     private var signalSources: [DispatchSourceSignal] = []
     private var didRevertOnShutdown = false
 
@@ -68,12 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // in this subsystem exists in debugBattery mode, so no IOKit power
         // registration and no network request is reachable there. The IOKit
         // registration itself happens only when the feature is ARMED
-        // (refreshArming below and on every menu open).
+        // (refreshArming below and on every menu open). The ntfy sender is
+        // built ONCE behind the same gate and injected, so the lid guard and
+        // the Track C finish alert share one instance (per-kind lanes inside).
+        let sender = LidGuardController.makeSharedSender(debugBattery: isDebugBattery)
+        ntfySender = sender
         let lidGuard = LidGuardController.makeIfEnabled(
             debugBattery: isDebugBattery,
             defaults: defaults,
             stayAwakeMirror: sleepController.observedMirror,
-            detection: detection
+            detection: detection,
+            sender: sender
         )
         self.lidGuard = lidGuard
 

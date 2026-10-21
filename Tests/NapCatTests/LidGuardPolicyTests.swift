@@ -484,18 +484,209 @@ struct LidGuardPolicyTests {
         #expect(!body.contains("Messages"), "no iMessage wording survives the channel swap")
     }
 
-    /// The set of message kinds is CLOSED and carries no free text: the only
-    /// associated value in the whole enum is an Int count.
+    /// Every leaf of a kind's associated values, walked through tuples and
+    /// optionals (`nil` carries nothing). A payload-free case has no leaves.
+    static func payloadLeaves(_ kind: LidGuardMessageKind) -> [Any] {
+        func leaves(_ value: Any) -> [Any] {
+            let mirror = Mirror(reflecting: value)
+            if mirror.displayStyle == .optional || mirror.displayStyle == .tuple {
+                return mirror.children.flatMap { leaves($0.value) }
+            }
+            return [value]
+        }
+        return Mirror(reflecting: kind).children.flatMap { leaves($0.value) }
+    }
+
+    /// The set of message kinds is CLOSED — exactly four kinds since Track C —
+    /// and carries no free text: every associated value in the whole enum is
+    /// an Int (a count or minutes), walked down through tuples and optionals so
+    /// a String hidden inside a multi-value payload cannot slip past.
     @Test func messageKindsCarryNoFreeText() {
-        let kinds: [LidGuardMessageKind] = [.test, .lidAlert(busySessionCount: 3)]
-        for kind in kinds {
-            let mirrored = Mirror(reflecting: kind)
-            for child in mirrored.children {
-                #expect(!(child.value is String), "a message kind must never carry a String payload")
+        let kinds: [(kind: LidGuardMessageKind, leafCount: Int)] = [
+            (.test, 0),
+            (.lidAlert(busySessionCount: 3), 1),
+            (.sessionFinished(minutes: 42, folded: 2, stillWorking: 1), 3),
+            (.sessionFinished(minutes: nil, folded: 1, stillWorking: 0), 2),
+            (.needsAttention(minutes: 12, stillWorking: 1), 2),
+            (.needsAttention(minutes: nil, stillWorking: 0), 1),
+        ]
+        for (kind, leafCount) in kinds {
+            let leaves = Self.payloadLeaves(kind)
+            #expect(leaves.count == leafCount, "\(kind): the payload walk must see every value (non-vacuous)")
+            for leaf in leaves {
+                #expect(!(leaf is String), "a message kind must never carry a String payload")
+                #expect(leaf is Int, "\(kind): only Int counts / minutes may ride in a message kind")
             }
         }
-        // A count is all that distinguishes two lid alerts.
+        // EXHAUSTIVE on purpose — a fifth kind will not compile here until it
+        // is consciously added to this closed-set lock (and to the walk above).
+        for (kind, _) in kinds {
+            switch kind {
+            case .lidAlert, .test, .sessionFinished, .needsAttention: break
+            }
+        }
+        // Counts / minutes are all that distinguish two messages of one kind.
         #expect(LidGuardMessageKind.lidAlert(busySessionCount: 3) != .lidAlert(busySessionCount: 4))
+        #expect(LidGuardMessageKind.sessionFinished(minutes: 42, folded: 1, stillWorking: 0)
+                != .sessionFinished(minutes: nil, folded: 1, stillWorking: 0))
+        #expect(LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 0)
+                != .needsAttention(minutes: 12, stillWorking: 1))
+    }
+
+    // MARK: - Track C bodies (closed vocabulary: counts + minutes only)
+
+    struct BodyRow: Sendable, CustomTestStringConvertible {
+        let kind: LidGuardMessageKind
+        let expected: String
+        var testDescription: String { expected }
+    }
+
+    /// Literal expected strings — deliberately NOT recomputed from the
+    /// implementation's helpers, so a wording change has to be made here too.
+    static let sessionFinishedRows: [BodyRow] = [
+        // One session, minutes known.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 1),
+                expected: "A Claude session finished after 42 min — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished after 42 min — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 3),
+                expected: "A Claude session finished after 42 min — 3 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 1, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished after 1 min — none still working"),
+        // One session, minutes unknown / non-positive ⇒ omitted.
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 1, stillWorking: 3),
+                expected: "A Claude session finished — 3 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 0, folded: 1, stillWorking: 1),
+                expected: "A Claude session finished — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: -5, folded: 1, stillWorking: 0),
+                expected: "A Claude session finished — none still working"),
+        // folded 0 (cannot happen) degrades to the single form.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 0, stillWorking: 1),
+                expected: "A Claude session finished after 42 min — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 0, stillWorking: 0),
+                expected: "A Claude session finished — none still working"),
+        // Folded ⇒ the count leads, minutes are omitted even when known.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 2, stillWorking: 0),
+                expected: "2 Claude sessions finished — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: nil, folded: 2, stillWorking: 1),
+                expected: "2 Claude sessions finished — 1 still working"),
+        BodyRow(kind: .sessionFinished(minutes: 1, folded: 3, stillWorking: 0),
+                expected: "3 Claude sessions finished — none still working"),
+        BodyRow(kind: .sessionFinished(minutes: 0, folded: 5, stillWorking: 3),
+                expected: "5 Claude sessions finished — 3 still working"),
+        // A negative still-working count (cannot happen) reads as none.
+        BodyRow(kind: .sessionFinished(minutes: 42, folded: 5, stillWorking: -2),
+                expected: "5 Claude sessions finished — none still working"),
+    ]
+
+    static let needsAttentionRows: [BodyRow] = [
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0),
+                expected: "Claude is waiting for your approval — 12 min in"),
+        BodyRow(kind: .needsAttention(minutes: 1, stillWorking: 0),
+                expected: "Claude is waiting for your approval — 1 min in"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 0),
+                expected: "Claude is waiting for your approval"),
+        BodyRow(kind: .needsAttention(minutes: 0, stillWorking: 0),
+                expected: "Claude is waiting for your approval"),
+        BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 1),
+                expected: "Claude is waiting for your approval — 42 min in — 1 other still working"),
+        BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 3),
+                expected: "Claude is waiting for your approval — 42 min in — 3 others still working"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 1),
+                expected: "Claude is waiting for your approval — 1 other still working"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 2),
+                expected: "Claude is waiting for your approval — 2 others still working"),
+        BodyRow(kind: .needsAttention(minutes: -3, stillWorking: -1),
+                expected: "Claude is waiting for your approval"),
+    ]
+
+    @Test(arguments: sessionFinishedRows + needsAttentionRows)
+    func trackCBodiesAreTheExactClosedVocabulary(row: BodyRow) {
+        #expect(LidGuardPolicy.messageBody(kind: row.kind, clockTime: "22:49") == row.expected)
+    }
+
+    /// Property sweep over the whole folded × stillWorking × minutes grid: no
+    /// placeholder, no clock time (counts + minutes ONLY), never a "0 min" or a
+    /// negative number, and the folded form never names minutes.
+    @Test func trackCBodiesHoldTheirInvariantsAcrossTheGrid() {
+        let minutesValues: [Int?] = [nil, -1, 0, 1, 42]
+        for folded in [0, 1, 2, 5] {
+            for stillWorking in [-1, 0, 1, 3] {
+                for minutes in minutesValues {
+                    let finished = LidGuardPolicy.messageBody(
+                        kind: .sessionFinished(minutes: minutes, folded: folded, stillWorking: stillWorking),
+                        clockTime: "22:49")
+                    let waiting = LidGuardPolicy.messageBody(
+                        kind: .needsAttention(minutes: minutes, stillWorking: stillWorking),
+                        clockTime: "22:49")
+                    for body in [finished, waiting] {
+                        #expect(!body.contains("22:49"), "Track C bodies carry no clock time: \(body)")
+                        #expect(!body.contains("nil") && !body.contains("%") && !body.contains("Optional"))
+                        #expect(!body.contains(" 0 min") && !body.contains("-"), "\(body)")
+                    }
+                    #expect(finished.hasSuffix(LidGuardPolicy.stillWorkingPhrase(stillWorking)))
+                    if folded >= 2 {
+                        #expect(finished.hasPrefix("\(folded) Claude sessions finished — "))
+                        #expect(!finished.contains("min"), "the folded form omits minutes: \(finished)")
+                    } else {
+                        #expect(finished.hasPrefix("A Claude session finished"))
+                    }
+                    #expect(waiting.hasPrefix("Claude is waiting for your approval"))
+                }
+            }
+        }
+    }
+
+    @Test func stillWorkingPhraseTable() {
+        #expect(LidGuardPolicy.stillWorkingPhrase(-1) == "none still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(0) == "none still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(1) == "1 still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(2) == "2 still working")
+        #expect(LidGuardPolicy.stillWorkingPhrase(3) == "3 still working")
+    }
+
+    // MARK: - Per-kind headers and send lanes
+
+    struct KindTableRow: Sendable, CustomTestStringConvertible {
+        let kind: LidGuardMessageKind
+        let lane: NtfySendLane
+        let priority: String
+        let tags: String
+        var testDescription: String { "\(kind)" }
+    }
+
+    /// THE per-kind table (literal values). The lid alert and the test send
+    /// keep the B2 headers byte-for-byte and stay in the LID lane; both Track C
+    /// kinds travel in the SESSION lane.
+    static let kindTable: [KindTableRow] = [
+        KindTableRow(kind: .lidAlert(busySessionCount: 2), lane: .lid, priority: "urgent", tags: "zzz,warning"),
+        KindTableRow(kind: .test, lane: .lid, priority: "urgent", tags: "zzz,warning"),
+        KindTableRow(kind: .sessionFinished(minutes: 42, folded: 1, stillWorking: 1), lane: .session,
+                     priority: "high", tags: "white_check_mark"),
+        KindTableRow(kind: .sessionFinished(minutes: nil, folded: 3, stillWorking: 0), lane: .session,
+                     priority: "high", tags: "white_check_mark"),
+        KindTableRow(kind: .needsAttention(minutes: 12, stillWorking: 0), lane: .session,
+                     priority: "high", tags: "raised_hand"),
+        KindTableRow(kind: .needsAttention(minutes: nil, stillWorking: 2), lane: .session,
+                     priority: "high", tags: "raised_hand"),
+    ]
+
+    @Test(arguments: kindTable)
+    func eachKindHasItsFixedHeadersAndLane(row: KindTableRow) {
+        #expect(LidGuardPolicy.ntfyHeaders(for: row.kind) == NtfyHeaders(priority: row.priority, tags: row.tags))
+        #expect(LidGuardPolicy.lane(for: row.kind) == row.lane)
+    }
+
+    /// Every lane is used by some kind (no dead lane), and the lid lane is
+    /// NEVER shared with a session alert — the F2 starvation fix.
+    @Test func theLidLaneIsNeverSharedWithASessionAlert() {
+        for lane in NtfySendLane.allCases {
+            #expect(Self.kindTable.contains { $0.lane == lane }, "\(lane) carries no kind")
+        }
+        #expect(LidGuardPolicy.lane(for: .sessionFinished(minutes: 1, folded: 1, stillWorking: 0)) != .lid)
+        #expect(LidGuardPolicy.lane(for: .needsAttention(minutes: 1, stillWorking: 0)) != .lid)
     }
 
     // MARK: - Send-outcome classifier (fixtures)

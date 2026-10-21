@@ -2,8 +2,9 @@ import Foundation
 
 /// Tunables for the Track B lid guard (slice B2, ntfy delivery since B4).
 /// These are CODE CONSTANTS, not UserDefaults keys — PLAN.md §11 gains exactly
-/// four persisted lid-guard keys (enable / topic / server / primed-at) and
-/// nothing else.
+/// four persisted lid-guard keys (enable / topic / server / primed-at) plus,
+/// since Track C, ONE finish-alert toggle (`claudeFinishAlertEnabled`), which
+/// reuses that same destination and priming; nothing else.
 enum LidGuardTuning {
     /// How long the WillSleep handler may hold the power-change acknowledgment
     /// while the alert POST is handed to URLSession (user-chosen 2026-08-24,
@@ -55,7 +56,9 @@ enum LidGuardTuning {
     static let maxServerLength = 300
 
     /// Fixed publish headers. ASCII only — HTTP header values must be, and
-    /// ntfy would otherwise need RFC 2047 encoding.
+    /// ntfy would otherwise need RFC 2047 encoding. Title and Content-Type are
+    /// the same for every message; Priority and Tags are PER KIND and chosen
+    /// only by `LidGuardPolicy.ntfyHeaders(for:)` from the constants below.
     static let ntfyTitleHeader = "Title"
     static let ntfyTitleValue = "NapCat"
     static let ntfyPriorityHeader = "Priority"
@@ -65,10 +68,18 @@ enum LidGuardTuning {
     /// alert needs p5 to be heard at all the moment that app version ships.
     /// On Android (and on iOS before 1.8.0) it only means a longer vibration
     /// burst plus a pop-over. Was `high` (p4) until curation round 1,
-    /// 2026-10-18 (PLAN.md decision log).
+    /// 2026-10-18 (PLAN.md decision log). The LID constants: the lid alert
+    /// and the test message (which proves exactly that delivery) use them.
     static let ntfyPriorityValue = "urgent"
     static let ntfyTagsHeader = "Tags"
     static let ntfyTagsValue = "zzz,warning"
+    /// Track C session alerts. `high` = ntfy priority 4: a long vibration
+    /// burst + pop-over, deliberately BELOW the lid alert's critical-alert p5 —
+    /// a finished or waiting Claude session is news, not an emergency.
+    static let finishPriorityValue = "high"
+    static let finishTagsValue = "white_check_mark"
+    static let attentionPriorityValue = "high"
+    static let attentionTagsValue = "raised_hand"
     static let ntfyContentTypeHeader = "Content-Type"
     static let ntfyContentTypeValue = "text/plain; charset=utf-8"
 }
@@ -181,13 +192,41 @@ struct LidGuardGateInputs: Equatable, Sendable {
 
 // MARK: - Message shape
 
-/// The only two messages NapCat can ever send. There is deliberately no
-/// free-text case: every body is built by `LidGuardPolicy.messageBody` from a
-/// fixed template plus the event clock time and the busy-session COUNT, so
-/// nothing from a Claude session, transcript, or working directory is reachable.
+/// The messages NapCat can ever send: exactly four closed kinds. There is
+/// deliberately no free-text case: every body is built by
+/// `LidGuardPolicy.messageBody` from a fixed template plus, at most, the event
+/// clock time and Int COUNTS / MINUTES, so nothing from a Claude session,
+/// transcript, prompt, or working directory is reachable. Every associated
+/// value is an `Int` (or `Int?`) — `LidGuardPolicyTests` locks that.
 enum LidGuardMessageKind: Equatable, Sendable {
+    /// Track B: the Mac started sleeping mid-task (lid lane).
     case lidAlert(busySessionCount: Int)
+    /// The config-time priming send (lid lane).
     case test
+    /// Track C: `folded` sessions' work fully ended (main turn AND background
+    /// subagents) inside one batch window; `minutes` is the run length when
+    /// exactly one finished and it is known, `stillWorking` the sessions
+    /// still busy (session lane).
+    case sessionFinished(minutes: Int?, folded: Int, stillWorking: Int)
+    /// Track C waiting buzz: a session stopped to ask for approval/input
+    /// `minutes` into its run (session lane).
+    case needsAttention(minutes: Int?, stillWorking: Int)
+}
+
+/// The two per-kind ntfy headers. Both values are FIXED ASCII constants from
+/// `LidGuardTuning` — never derived from any input.
+struct NtfyHeaders: Equatable, Sendable {
+    let priority: String
+    let tags: String
+}
+
+/// Independent single-flight lanes in `NtfyMessageSender` (risk F2). A Track C
+/// session alert may hold its lane for up to `LidGuardTuning.requestTimeout`;
+/// it must NEVER cause the WillSleep lid publish to be refused, so the lid
+/// alert (and the test send that primes it) get a lane of their own.
+enum NtfySendLane: CaseIterable, Sendable {
+    case lid
+    case session
 }
 
 /// Outcome of one publish attempt. `accepted` deliberately does NOT claim the
@@ -209,8 +248,9 @@ enum MessageSendOutcome: Equatable, Sendable {
 }
 
 /// Pure Track B / B2 decision logic: arming, the fire gate, topic/server
-/// validation, the app-generated message bodies, the send-outcome classifier,
-/// and the debug-sim wiring predicate. No I/O, no subprocess, no syscalls —
+/// validation, the app-generated message bodies (Track C kinds included), the
+/// per-kind headers and send lanes, the send-outcome classifier, and the
+/// debug-sim wiring predicate. No I/O, no subprocess, no syscalls —
 /// `LidGuardStructureTests` keeps `URLSession`, `URLRequest`, `Process`, and
 /// `IORegisterForSystemPower` out of this file. Table-tested like
 /// `HysteresisEngine`.
@@ -445,7 +485,14 @@ enum LidGuardPolicy {
     }
 
     /// The ONLY place a message body is produced. Inputs are a fixed template,
-    /// the event clock time, and a COUNT — never any text from a session.
+    /// the event clock time, and Int COUNTS / MINUTES — never any text from a
+    /// session. The Track C kinds carry counts + minutes only (no clock time):
+    /// - `sessionFinished`, one session: "A Claude session finished after
+    ///   42 min — 1 still working" (the "after N min" part only when known);
+    /// - `sessionFinished`, folded ≥ 2: "3 Claude sessions finished — none
+    ///   still working" (minutes deliberately omitted — they differ per session);
+    /// - `needsAttention`: "Claude is waiting for your approval — 12 min in"
+    ///   (+ " — 1 other still working" / " — N others still working").
     static func messageBody(kind: LidGuardMessageKind, clockTime: String) -> String {
         switch kind {
         case .lidAlert(let busySessionCount):
@@ -455,6 +502,64 @@ enum LidGuardPolicy {
         case .test:
             return "NapCat test message (\(clockTime)). ntfy push works — "
                 + "this is what you'll get if your Mac sleeps mid-task."
+        case .sessionFinished(let minutes, let folded, let stillWorking):
+            if folded >= 2 {
+                return "\(folded) Claude sessions finished — " + stillWorkingPhrase(stillWorking)
+            }
+            let after = knownMinutes(minutes).map { " after \($0) min" } ?? ""
+            return "A Claude session finished" + after + " — " + stillWorkingPhrase(stillWorking)
+        case .needsAttention(let minutes, let stillWorking):
+            let elapsed = knownMinutes(minutes).map { " — \($0) min in" } ?? ""
+            let others: String
+            switch stillWorking {
+            case ..<1: others = ""
+            case 1: others = " — 1 other still working"
+            default: others = " — \(stillWorking) others still working"
+            }
+            return "Claude is waiting for your approval" + elapsed + others
+        }
+    }
+
+    /// Minutes worth printing. Non-positive minutes render exactly like
+    /// unknown ones (defensive — the caller passes nil under a minute), so a
+    /// body can never read "after 0 min" or "-3 min in".
+    static func knownMinutes(_ minutes: Int?) -> Int? {
+        guard let minutes, minutes > 0 else { return nil }
+        return minutes
+    }
+
+    /// Still-busy count → phrase. A negative count cannot happen but degrades
+    /// to "none" rather than printing "-1 still working".
+    static func stillWorkingPhrase(_ count: Int) -> String {
+        switch count {
+        case ..<1: return "none still working"
+        case 1: return "1 still working"
+        default: return "\(count) still working"
+        }
+    }
+
+    // MARK: Per-kind headers and send lanes (pure, table-tested)
+
+    /// Priority + Tags for one kind — the ONLY place they are chosen. The lid
+    /// alert and the test message keep the B2 values byte-for-byte.
+    static func ntfyHeaders(for kind: LidGuardMessageKind) -> NtfyHeaders {
+        switch kind {
+        case .lidAlert, .test:
+            return NtfyHeaders(priority: LidGuardTuning.ntfyPriorityValue, tags: LidGuardTuning.ntfyTagsValue)
+        case .sessionFinished:
+            return NtfyHeaders(priority: LidGuardTuning.finishPriorityValue, tags: LidGuardTuning.finishTagsValue)
+        case .needsAttention:
+            return NtfyHeaders(priority: LidGuardTuning.attentionPriorityValue, tags: LidGuardTuning.attentionTagsValue)
+        }
+    }
+
+    /// Which single-flight lane a kind travels in. The test send shares the
+    /// LID lane on purpose: it primes exactly that delivery path, and the B2
+    /// single-flight between it and the lid alert is unchanged.
+    static func lane(for kind: LidGuardMessageKind) -> NtfySendLane {
+        switch kind {
+        case .lidAlert, .test: return .lid
+        case .sessionFinished, .needsAttention: return .session
         }
     }
 
