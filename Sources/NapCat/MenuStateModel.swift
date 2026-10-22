@@ -29,9 +29,10 @@ enum PanelTier: Equatable, Sendable {
 /// each resolves on this macOS (a missing symbol renders as nothing at all).
 enum PanelSymbol {
     static let stayAwake = "cup.and.saucer"
+    /// The icon-only Lock Screen button in the footer row (2026-10-21
+    /// declutter) — no longer a leading-column row symbol.
     static let lockScreen = "lock.display"
     static let chargeLimit = "battery.75percent"
-    static let claude = "terminal"
     static let lidAlert = "bell"
     /// Track C (finish + waiting pushes): a finish flag, distinct from the
     /// lid alert's bell.
@@ -44,7 +45,7 @@ enum PanelSymbol {
     static let warning = "exclamationmark.triangle.fill"
     static let error = "xmark.octagon.fill"
 
-    static let all = [stayAwake, lockScreen, chargeLimit, claude, lidAlert, sessionAlerts, disclosure,
+    static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts, disclosure,
                       desktop, charging, battery, info, warning, error]
 }
 
@@ -270,19 +271,21 @@ final class MenuStateModel: ObservableObject {
     // the pure mappings; the views compose these and never classify).
 
     var stayAwakeCaption: PanelLine? { Self.stayAwakeCaption(forObserved: stayAwakeObserved) }
-    var lockScreenCaption: PanelLine? { Self.lockScreenCaption(available: lockScreenAvailable) }
+    var lockScreenStatus: PanelLine { Self.lockScreenStatus(available: lockScreenAvailable) }
     var chargeLimitCaption: PanelLine? { Self.chargeLimitCaption(for: featureState) }
     var launchAtLoginCaption: PanelLine? { Self.launchAtLoginCaption(for: loginItemStatus) }
 
-    var claudeStatus: PanelLine {
-        Self.claudeStatusLine(
-            inFlight: claudeTaskInFlight,
-            holdingAwake: claudeHoldingAwake,
-            paused: claudeDetectionPaused
-        )
+    /// The footer disclosure's text (2026-10-21 "status-as-disclosure"): the
+    /// Claude status. Without the detection stack (debugBattery mode) there is
+    /// no Claude state to report, so it keeps its plain "Details" name rather
+    /// than claim an "idle" nobody observed.
+    var detailsLabel: PanelLine {
+        guard claudeDetectionVisible else { return Self.plainDetailsLabel }
+        return Self.claudeFooterLabel(inFlight: claudeTaskInFlight, paused: claudeDetectionPaused)
     }
 
-    var claudeStatusHint: String? { Self.claudeStatusHint(paused: claudeDetectionPaused) }
+    /// Tucked under Details › Claude detection; present only while true.
+    var claudeAwakeLine: PanelLine? { Self.claudeHoldingAwakeLine(holdingAwake: claudeHoldingAwake) }
 
     var hookStatus: PanelLine {
         Self.claudeHookStatus(
@@ -326,18 +329,28 @@ final class MenuStateModel: ObservableObject {
     /// Badge on the collapsed "Details" row: the worst severity among the
     /// items whose home or fix lives in Details (the problems themselves are
     /// already shown at top level — the badge says where the setting is).
+    /// The Claude status is NOT aggregated (2026-10-21): it is the
+    /// disclosure's own text and carries its own warning there, so the badge
+    /// summarises only the OTHER items — and a paused Claude never raises it,
+    /// not even through its echoes: the lid line counts with the severity it
+    /// would have WITHOUT the pause, and the session line's `.paused` (only
+    /// ever armed-but-paused) counts as nominal. Every non-pause problem still
+    /// counts (a failed send, a missing topic, a missing hook, …).
     var detailsBadge: PanelSeverity {
-        var severities = [launchAtLoginCaption?.severity ?? .nominal]
+        var severities = [launchAtLoginCaption?.severity ?? .nominal, lockScreenStatus.severity]
         if claudeDetectionVisible {
-            severities += [claudeStatus.severity, hookStatus.severity]
+            severities += [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal]
         }
         if lidGuardVisible {
-            severities += [lidStatus.severity, lidTopicStatus.severity, lidServerStatus.severity,
+            let lidWithoutThePause = Self.lidAlertStatus(
+                for: lidGuardArming, lastOutcome: lidGuardLastOutcome, detectionPaused: false)
+            severities += [lidWithoutThePause.severity, lidTopicStatus.severity, lidServerStatus.severity,
                            Self.lidAlertLastSendSeverity(lidGuardLastOutcome, at: lidGuardLastOutcomeAt)]
         }
         // Session alerts share the ntfy settings + test send in Details.
         if finishAlertVisible {
-            severities += [finishAlertStatus.severity,
+            let sessionWithoutThePause = finishAlertDisplayState == .paused ? .nominal : finishAlertStatus.severity
+            severities += [sessionWithoutThePause,
                            Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
         }
         return Self.detailsBadge(severities)
@@ -383,11 +396,11 @@ final class MenuStateModel: ObservableObject {
         }
     }
 
-    /// Lock Screen row from the OBSERVED capability of this OS: the button is
-    /// live only when the private lock entry point actually resolved. When it
-    /// did not, the row is disabled and says so instead of failing on click —
-    /// there is no alternative mechanism to fall back to (PLAN.md decision
-    /// log 2026-08-13).
+    /// Lock Screen button from the OBSERVED capability of this OS: the button
+    /// is live only when the private lock entry point actually resolved. When
+    /// it did not, the button is disabled and the panel says so instead of
+    /// failing on click — there is no alternative mechanism to fall back to
+    /// (PLAN.md decision log 2026-08-13).
     nonisolated static func lockScreenPresentation(
         available: Bool
     ) -> (enabled: Bool, caption: String?) {
@@ -441,23 +454,30 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - Track B (Claude detection) presentation (READ-ONLY display)
 
-    /// The ONE top-level Claude row (merged 2026-10-18 from the old task line +
-    /// awake line). Paused (the kill switch) wins over everything: it is a
-    /// non-nominal state the user must be able to see without opening Details,
+    /// The Claude status as the TEXT of the footer's Details disclosure
+    /// (2026-10-21 declutter, "status-as-disclosure" — it replaced the tier-1
+    /// Claude row). A short FIXED vocabulary: these three strings are the only
+    /// ones ever rendered there, so the footer can never be pushed out of
+    /// shape by free-form text. Paused (the kill switch) wins over everything:
+    /// it is a non-nominal state the user must see without opening Details,
     /// because while paused no busy marker exists and the lid alert can never
-    /// fire (the 2026-10-18 root cause). "Keeping Mac awake" comes from the
-    /// sleep-assertion reader, which is NOT the busy signal — so it can be true
-    /// while the task is idle, and both facts are kept.
-    nonisolated static func claudeStatusLine(inFlight: Bool, holdingAwake: Bool, paused: Bool) -> PanelLine {
-        if paused { return PanelLine(text: "Detection paused", severity: .warning) }
-        let task = inFlight ? "Claude: running" : "Claude: idle"
-        return PanelLine(text: holdingAwake ? task + " — keeping Mac awake" : task, severity: .nominal)
+    /// fire (the 2026-10-18 root cause). Clicking the label opens Details,
+    /// where the Pause toggle lives (F3).
+    nonisolated static func claudeFooterLabel(inFlight: Bool, paused: Bool) -> PanelLine {
+        if paused { return PanelLine(text: "Claude: paused", severity: .warning) }
+        return PanelLine(text: inFlight ? "Claude: running" : "Claude: idle", severity: .nominal)
     }
 
-    /// Where to undo the pause — the toggle itself sits in Details (F3), so the
-    /// top-level row has to say where it went.
-    nonisolated static func claudeStatusHint(paused: Bool) -> String? {
-        paused ? "Busy markers are ignored. Turn it back on under Details › Pause detection." : nil
+    /// The disclosure's text when there is no Claude detection to report
+    /// (debugBattery mode, where the detection stack is structurally absent).
+    nonisolated static let plainDetailsLabel = PanelLine(text: "Details", severity: .nominal)
+
+    /// "Claude is holding the Mac awake" left the glance tier on 2026-10-21:
+    /// a nominal Details line, present ONLY while the sleep-assertion reader
+    /// says so. That reader is NOT the busy signal, so this can be true while
+    /// the task is idle — the line is independent of the footer label.
+    nonisolated static func claudeHoldingAwakeLine(holdingAwake: Bool) -> PanelLine? {
+        holdingAwake ? PanelLine(text: "Claude is holding the Mac awake", severity: .nominal) : nil
     }
 
     /// Explanation under the Pause toggle inside Details: pausing is legitimate
@@ -875,9 +895,17 @@ final class MenuStateModel: ObservableObject {
         stayAwakeToggle(forObserved: observed).caption.map { PanelLine(text: $0, severity: .warning) }
     }
 
-    /// The disabled-lock explanation is a warning (the button cannot work).
-    nonisolated static func lockScreenCaption(available: Bool) -> PanelLine? {
-        lockScreenPresentation(available: available).caption.map { PanelLine(text: $0, severity: .warning) }
+    /// Lock Screen availability as a Details-home line (Details › General)
+    /// since the 2026-10-21 declutter made the button an icon in the footer:
+    /// nominal while the lock entry point resolved; the disabled-lock
+    /// explanation is a warning (the button cannot work), so it escapes
+    /// Details to top level.
+    nonisolated static func lockScreenStatus(available: Bool) -> PanelLine {
+        if let caption = lockScreenPresentation(available: available).caption {
+            return PanelLine(text: caption, severity: .warning)
+        }
+        return PanelLine(text: "Lock Screen: available — locks and turns the display off; the Mac keeps running",
+                         severity: .nominal)
     }
 
     /// Charge-limit message with severity: a write/verify error is an error,

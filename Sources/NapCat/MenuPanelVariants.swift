@@ -6,12 +6,14 @@ import SwiftUI
 // C "Status Hero" (freeze) were deleted. The file name is kept from that
 // exploration so the scanned-file lints stay stable.
 // The layout arranges the shared components (MenuPanelView.swift) and never
-// decides what is a warning. It MUST include the four surfaced-line
+// decides what is a warning. It MUST include the five surfaced-line
 // components (`ClaudeSurfacedLines`, `LidAlertSurfacedLines`,
-// `SessionAlertsSurfacedLines`, `SurfacedLaunchAtLogin`) so that a non-nominal
-// Details line always has a top-level home, and must END with `PanelFooterRow`
-// (the one Details disclosure + Quit), with expanded Details content above it
-// (lint-locked in MenuPanelStructureTests).
+// `SessionAlertsSurfacedLines`, `GeneralSurfacedLines`,
+// `SurfacedLaunchAtLogin`) so that a non-nominal Details line always has a
+// top-level home, and must END with `PanelFooterRow` (the one Details
+// disclosure — whose text is the Claude status — then Lock Screen and Quit),
+// with expanded Details content above it (lint-locked in
+// MenuPanelStructureTests).
 
 // MARK: - Quiet Rows
 
@@ -34,12 +36,6 @@ struct QuietRowsPanel: View {
                 }
                 indentedCaption(model.stayAwakeCaption)
             }
-            PanelFeature {
-                PanelRow(symbol: PanelSymbol.lockScreen, title: "Lock Screen") {
-                    LockScreenButton(model: model)
-                }
-                indentedCaption(model.lockScreenCaption)
-            }
 
             // ADR §12: no battery → the charge-limit section is hidden
             // entirely, not disabled.
@@ -58,13 +54,9 @@ struct QuietRowsPanel: View {
                 }
             }
 
-            // Track B (absent in debugBattery mode).
+            // Track B (absent in debugBattery mode). The Claude status itself
+            // is the footer disclosure's text (2026-10-21), not a row here.
             if model.claudeDetectionVisible {
-                PanelFeature {
-                    ClaudeStatusRow(model: model)
-                    ClaudeSurfacedLines(model: model)
-                        .padding(.leading, PanelMetrics.titleIndent)
-                }
                 if model.lidGuardVisible {
                     PanelFeature {
                         PanelRow(symbol: PanelSymbol.lidAlert, title: "Lid alert") {
@@ -99,6 +91,15 @@ struct QuietRowsPanel: View {
                 PanelDetailsContent(model: model)
                     .padding(.leading, PanelMetrics.titleIndent)
             }
+            // Top-level twins of the Details lines whose own control sits in
+            // the footer (the Claude status label, Lock Screen), aligned with
+            // the footer label's text.
+            if model.claudeDetectionVisible {
+                ClaudeSurfacedLines(model: model)
+                    .padding(.leading, PanelMetrics.titleIndent)
+            }
+            GeneralSurfacedLines(model: model)
+                .padding(.leading, PanelMetrics.titleIndent)
             SurfacedLaunchAtLogin(model: model)
                 .padding(.leading, PanelMetrics.titleIndent)
             PanelFooterRow(model: model)

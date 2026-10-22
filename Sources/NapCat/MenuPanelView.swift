@@ -6,12 +6,14 @@ import SwiftUI
 /// dark/light appearance follows automatically.
 ///
 /// UI redesign (2026-10-18, PLAN.md "UI Redesign — Menu Panel"): three tiers —
-/// glance (battery, Stay Awake, the merged Claude row), controls (Lock Screen,
-/// Charge Limit, Lid alert and Session alerts, each with its one-line status),
-/// and everything else behind
-/// ONE "Details" disclosure. IRON RULE: a non-nominal line never stays inside
-/// Details — `TuckedLine` / `SurfacedLine` split every Details-home line on
-/// `MenuStateModel.placement(ofDetailsLine:)`, so each renders exactly once.
+/// glance (battery, Stay Awake), controls (Charge Limit, Lid alert and Session
+/// alerts, each with its one-line status), and everything else behind ONE
+/// "Details" disclosure. Declutter amendment (2026-10-21): the Claude status
+/// is the disclosure's own text in the footer ("Claude: running ●"), and Lock
+/// Screen is an icon button beside Quit. IRON RULE: a non-nominal line never
+/// stays inside Details — `TuckedLine` / `SurfacedLine` split every
+/// Details-home line on `MenuStateModel.placement(ofDetailsLine:)`, so each
+/// renders exactly once.
 ///
 /// Design freeze (2026-10-18): the panel is ONE fixed layout, `QuietRowsPanel`
 /// (MenuPanelVariants.swift), composed from the shared components below. The
@@ -111,12 +113,13 @@ enum PanelSeverityTint {
     }
 }
 
-/// A Details-home line, rendered inside Details ONLY while nominal.
+/// A Details-home line, rendered inside Details ONLY while nominal. An absent
+/// line (nil — e.g. "holding the Mac awake" while it is not) renders nowhere.
 struct TuckedLine: View {
-    let line: PanelLine
+    let line: PanelLine?
 
     var body: some View {
-        if MenuStateModel.placement(ofDetailsLine: line.severity) == .details {
+        if let line, MenuStateModel.placement(ofDetailsLine: line.severity) == .details {
             PanelCaptionLine(line: line, showsNominal: true)
         }
     }
@@ -124,21 +127,34 @@ struct TuckedLine: View {
 
 /// The same Details-home line at TOP LEVEL, rendered ONLY while non-nominal.
 struct SurfacedLine: View {
-    let line: PanelLine
+    let line: PanelLine?
 
     var body: some View {
-        if MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel {
+        if let line, MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel {
             PanelCaptionLine(line: line)
         }
     }
 }
 
 /// Top-level home for the Claude-section Details lines that can be problems.
+/// (The awake line is always nominal today, so its twin never renders — it
+/// exists so the iron rule holds by construction, not by the mapping.)
 struct ClaudeSurfacedLines: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
         SurfacedLine(line: model.hookStatus)
+        SurfacedLine(line: model.claudeAwakeLine)
+    }
+}
+
+/// Top-level home for the General-group Details line that can be a problem
+/// (2026-10-21): the Lock Screen API being unavailable on this macOS.
+struct GeneralSurfacedLines: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        SurfacedLine(line: model.lockScreenStatus)
     }
 }
 
@@ -203,43 +219,6 @@ struct PanelRow<Trailing: View>: View {
     }
 }
 
-/// The merged Claude row (tier 1). Paused renders the warning icon in the
-/// leading column plus the "where to undo it" hint.
-struct ClaudeStatusRow: View {
-    @ObservedObject var model: MenuStateModel
-
-    var body: some View {
-        let status = model.claudeStatus
-        VStack(alignment: .leading, spacing: PanelMetrics.tight) {
-            HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.regular) {
-                if let warning = MenuStateModel.severitySymbol(status.severity) {
-                    Image(systemName: warning)
-                        .font(.system(size: PanelMetrics.symbolSize))
-                        .foregroundStyle(PanelSeverityTint.color(status.severity))
-                        .frame(width: PanelMetrics.symbolColumn)
-                } else {
-                    Image(systemName: PanelSymbol.claude)
-                        .font(.system(size: PanelMetrics.symbolSize))
-                        .foregroundStyle(.secondary)
-                        .frame(width: PanelMetrics.symbolColumn)
-                }
-                Text(status.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(PanelSeverityTint.spoken(status))
-            if let hint = model.claudeStatusHint {
-                Text(hint)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, PanelMetrics.titleIndent)
-            }
-        }
-    }
-}
-
 // MARK: - Controls (bindings render OBSERVED state; actions forward to the model)
 
 struct StayAwakeToggle: View {
@@ -258,16 +237,22 @@ struct StayAwakeToggle: View {
 
 /// One click: lock the session AND turn the display off, with the Mac still
 /// running. The menu closes first (the user is walking away) — handled by
-/// MenuContentView through the single dismissal gateway.
+/// MenuContentView through the single dismissal gateway. Since the
+/// 2026-10-21 declutter it is an ICON-ONLY button in the footer row, just
+/// left of Quit; its availability line lives in Details › General (and
+/// surfaces when the lock API is unavailable).
 struct LockScreenButton: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        Button("Lock") { model.lockScreen() }
-            .controlSize(.small)
-            .disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)
-            .accessibilityLabel("Lock Screen")
-            .accessibilityHint("Locks now and turns the display off — the Mac keeps running")
+        Button { model.lockScreen() } label: {
+            Image(systemName: PanelSymbol.lockScreen)
+        }
+        .controlSize(.small)
+        .disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)
+        .help("Lock Screen")
+        .accessibilityLabel("Lock Screen")
+        .accessibilityHint("Locks now and turns the display off — the Mac keeps running")
     }
 }
 
@@ -373,19 +358,27 @@ struct LaunchAtLoginRow: View {
 }
 
 /// The panel's LAST row (curation round 1, 2026-10-18): the ONE Details
-/// disclosure on the left, Quit on the right. Expanded Details
-/// content renders ABOVE this row, so the footer — and Quit — always close
-/// the panel.
+/// disclosure on the left, Quit on the right — and, since the 2026-10-21
+/// declutter, the icon-only Lock Screen button immediately left of Quit.
+/// Expanded Details content renders ABOVE this row, so the footer — and
+/// Quit — always close the panel.
 struct PanelFooterRow: View {
     @ObservedObject var model: MenuStateModel
 
+    /// Width budget (measured 2026-10-21 at the 300pt panel): the two buttons
+    /// take ~110pt, so the row spends no stack gap around the Spacer (which
+    /// alone keeps ≥8pt between the label and the buttons) and holds the
+    /// button pair `tight` — otherwise "⚠︎ Claude: paused" truncates.
     var body: some View {
-        HStack(alignment: .center, spacing: PanelMetrics.regular) {
+        HStack(alignment: .center, spacing: 0) {
             PanelDetailsDisclosure(model: model)
             Spacer(minLength: PanelMetrics.regular)
-            Button("Quit NapCat") { model.quit() }
-                .controlSize(.small)
-                .keyboardShortcut("q", modifiers: .command)
+            HStack(spacing: PanelMetrics.tight) {
+                LockScreenButton(model: model)
+                Button("Quit NapCat") { model.quit() }
+                    .controlSize(.small)
+                    .keyboardShortcut("q", modifiers: .command)
+            }
         }
     }
 }
@@ -463,12 +456,17 @@ struct BatteryHeader: View {
 
 // MARK: - The ONE "Details" disclosure (tier 3)
 
-/// The single disclosure control (chevron + "Details" + badge), placed by
-/// `PanelFooterRow` on the left of the panel's last row. Toggling is pure
-/// model state (never dismisses the menu); the height change snaps
-/// (MenuPanelHostingView) and only the chevron turns — ≤150ms ease-out, none
-/// under Reduce Motion. The content opens ABOVE the footer, so the expanded
-/// chevron points UP at it (right ▸ collapsed, up ▴ expanded).
+/// The single disclosure control (chevron + the Claude status as its text +
+/// badge), placed by `PanelFooterRow` on the left of the panel's last row.
+/// Status-as-disclosure (2026-10-21): the text is `model.detailsLabel` — the
+/// fixed vocabulary of `MenuStateModel.claudeFooterLabel` ("Claude: paused" /
+/// "running" / "idle"; plain "Details" without detection). A paused label
+/// carries the severity icon + tint right here, at top level; the badge then
+/// summarises only the OTHER tucked lines. Toggling is pure model state (never
+/// dismisses the menu); the height change snaps (MenuPanelHostingView) and
+/// only the chevron turns — ≤150ms ease-out, none under Reduce Motion. The
+/// content opens ABOVE the footer, so the expanded chevron points UP at it
+/// (right ▸ collapsed, up ▴ expanded).
 struct PanelDetailsDisclosure: View {
     @ObservedObject var model: MenuStateModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -476,10 +474,12 @@ struct PanelDetailsDisclosure: View {
     var body: some View {
         let expanded = model.detailsExpanded
         let badge = model.detailsBadge
+        let label = model.detailsLabel
         Button {
             model.setDetailsExpanded(!expanded)
         } label: {
-            // Hugs its content: the footer's Spacer separates it from Quit.
+            // Hugs its content: the footer's Spacer separates it from the
+            // Lock and Quit buttons.
             HStack(spacing: PanelMetrics.regular) {
                 Image(systemName: PanelSymbol.disclosure)
                     .font(.caption.weight(.semibold))
@@ -487,11 +487,12 @@ struct PanelDetailsDisclosure: View {
                     .rotationEffect(.degrees(expanded ? -90 : 0))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
                     .frame(width: PanelMetrics.symbolColumn)
-                Text("Details")
-                if let symbol = MenuStateModel.severitySymbol(badge) {
-                    Image(systemName: symbol)
-                        .font(.caption)
-                        .foregroundStyle(PanelSeverityTint.color(badge))
+                // The status text never truncates to make room for the badge:
+                // if both do not fit beside the buttons, the badge yields (the
+                // problems it points at are already surfaced above it).
+                ViewThatFits(in: .horizontal) {
+                    statusLine(label, badge: badge)
+                    statusLine(label, badge: .nominal)
                 }
             }
             .contentShape(Rectangle())
@@ -499,17 +500,36 @@ struct PanelDetailsDisclosure: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Details")
-        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+        .accessibilityValue("\(PanelSeverityTint.spoken(label)), \(expanded ? "expanded" : "collapsed")")
         .accessibilityHint(badge == .nominal
-            ? "Shows ntfy alert settings, Claude hook status, Pause detection and Launch at Login"
+            ? "Shows detection, alert and app settings"
             : "Holds the setting for an item that needs attention, shown above")
         .accessibilityAddTraits(.isButton)
+    }
+
+    /// The label (with its own severity icon + tint) and, when not nominal,
+    /// the badge — held `tight`.
+    private func statusLine(_ label: PanelLine, badge: PanelSeverity) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.tight) {
+            if let symbol = MenuStateModel.severitySymbol(label.severity) {
+                Image(systemName: symbol)
+                    .foregroundStyle(PanelSeverityTint.color(label.severity))
+            }
+            Text(label.text)
+                .lineLimit(1)
+            if let symbol = MenuStateModel.severitySymbol(badge) {
+                Image(systemName: symbol)
+                    .font(.caption)
+                    .foregroundStyle(PanelSeverityTint.color(badge))
+            }
+        }
     }
 }
 
 /// Tier-3 content. Details-home lines go through `TuckedLine`, so a
-/// non-nominal one is absent here (it renders above). The Claude status row
-/// is NOT a Details line: it is always top level (`ClaudeStatusRow`).
+/// non-nominal one is absent here (it renders above). The Claude status is
+/// NOT a Details line: it is the disclosure's own text, always visible in the
+/// footer (`PanelDetailsDisclosure`).
 struct PanelDetailsContent: View {
     @ObservedObject var model: MenuStateModel
 
@@ -554,11 +574,12 @@ struct PanelDetailsContent: View {
     }
 
     /// F3 (2026-10-18): the Pause detection kill switch lives HERE, out of
-    /// casual reach; while paused, the top-level Claude row says so.
+    /// casual reach; while paused, the footer's disclosure label says so.
     private var claudeGroup: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.tight) {
             DetailsGroupHeader(title: "Claude detection")
             TuckedLine(line: model.hookStatus)
+            TuckedLine(line: model.claudeAwakeLine)
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Pause detection").font(.callout)
@@ -584,6 +605,7 @@ struct PanelDetailsContent: View {
     private var generalGroup: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.tight) {
             DetailsGroupHeader(title: "General")
+            TuckedLine(line: model.lockScreenStatus)
             if MenuStateModel.placement(ofDetailsLine: model.launchAtLoginCaption?.severity ?? .nominal) == .details {
                 LaunchAtLoginRow(model: model)
             }

@@ -240,27 +240,28 @@ struct ClaudeActivityPolicyTests {
         #expect(ClaudeActivityPolicy.relativeTime(seconds: -5) == "just now", "negative skew clamps")
     }
 
-    /// Migrated 1:1 from the old `claudeTaskLine` + `claudeAwakeLine` pair
-    /// (2026-10-18 redesign merged them into the single top-level row).
-    @Test func statusLineCoversTheOldTaskFacts() {
-        #expect(MenuStateModel.claudeStatusLine(inFlight: true, holdingAwake: false, paused: false)
+    /// The task facts (migrated from the 2026-10-18 merged row to the
+    /// 2026-10-21 footer label — status-as-disclosure).
+    @Test func footerLabelCoversTheTaskFacts() {
+        #expect(MenuStateModel.claudeFooterLabel(inFlight: true, paused: false)
                 == PanelLine(text: "Claude: running", severity: .nominal))
-        #expect(MenuStateModel.claudeStatusLine(inFlight: false, holdingAwake: false, paused: false)
+        #expect(MenuStateModel.claudeFooterLabel(inFlight: false, paused: false)
                 == PanelLine(text: "Claude: idle", severity: .nominal))
-        #expect(MenuStateModel.claudeStatusLine(inFlight: true, holdingAwake: true, paused: true).text
-                == "Detection paused", "pause takes precedence over running")
+        #expect(MenuStateModel.claudeFooterLabel(inFlight: true, paused: true).text
+                == "Claude: paused", "pause takes precedence over running")
     }
 
-    /// The sleep-assertion reader is NOT the busy signal: "keeping Mac awake"
-    /// is reported whether or not a task is in flight, and never invented.
-    @Test func statusLineCoversTheOldAwakeFacts() {
-        #expect(MenuStateModel.claudeStatusLine(inFlight: true, holdingAwake: true, paused: false).text
-                == "Claude: running — keeping Mac awake")
-        #expect(MenuStateModel.claudeStatusLine(inFlight: false, holdingAwake: true, paused: false).text
-                == "Claude: idle — keeping Mac awake")
+    /// The sleep-assertion reader is NOT the busy signal: the awake fact is
+    /// its own Details line (2026-10-21), independent of the task state by
+    /// construction (its mapping never sees `inFlight`), and never invented.
+    @Test func theAwakeFactIsItsOwnLine() {
+        #expect(MenuStateModel.claudeHoldingAwakeLine(holdingAwake: true)?.text == "Claude is holding the Mac awake")
+        #expect(MenuStateModel.claudeHoldingAwakeLine(holdingAwake: false) == nil)
         for inFlight in [true, false] {
-            #expect(!MenuStateModel.claudeStatusLine(inFlight: inFlight, holdingAwake: false, paused: false)
-                .text.contains("awake"))
+            for paused in [true, false] {
+                #expect(!MenuStateModel.claudeFooterLabel(inFlight: inFlight, paused: paused).text.contains("awake"),
+                        "the awake fact left the footer label")
+            }
         }
     }
 
