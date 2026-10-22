@@ -76,6 +76,13 @@ struct MenuPanelStructureTests {
                       "Panel style (preview)", "heroActivity", "includesClaudeStatus", "menuPanelStyle"] {
             #expect(!panelCode.contains(token), "'\(token)' — scrapped at the design freeze")
         }
+        // Declutter amendment (2026-10-21): the tier-1 Claude row (with its
+        // "where to undo it" hint and its "— keeping Mac awake" mapping) and
+        // the titled Lock Screen row + caption are gone, not merely unused.
+        for token in ["ClaudeStatusRow", "claudeStatus", "PanelSymbol.claude",
+                      "PanelRow(symbol: PanelSymbol.lockScreen", "Button(\"Lock\")", "lockScreenCaption"] {
+            #expect(!panelCode.contains(token), "'\(token)' — scrapped at the 2026-10-21 declutter")
+        }
 
         for (name, text) in try LidGuardStructureTests.swiftSources() where text.contains("menuPanelStyle") {
             #expect(name == "DefaultsKeys.swift", "'menuPanelStyle' is read or written in \(name)")
@@ -106,15 +113,18 @@ struct MenuPanelStructureTests {
 
     // MARK: - The iron rule, structurally
 
-    /// The layout must render the four surfaced-line components (the
+    /// The layout must render the five surfaced-line components (the
     /// top-level home of every Details line that can be a problem — Track C
-    /// added the session-alerts one) plus the Details content and the ONE
-    /// footer row that carries the disclosure and the always-visible Quit.
+    /// added the session-alerts one, the 2026-10-21 declutter the General one
+    /// for the Lock Screen line) plus the Details content and the ONE footer
+    /// row that carries the disclosure and the always-visible Quit.
     @Test func thePanelGivesProblemLinesATopLevelHome() throws {
         let body = try Self.layoutBody()
         for component in ["ClaudeSurfacedLines(", "LidAlertSurfacedLines(", "SessionAlertsSurfacedLines(",
-                          "SurfacedLaunchAtLogin(", "PanelDetailsContent(", "PanelFooterRow("] {
+                          "GeneralSurfacedLines(", "SurfacedLaunchAtLogin(", "PanelDetailsContent(",
+                          "PanelFooterRow("] {
             #expect(body.contains(component), "\(Self.layout) is missing \(component)")
+            #expect(Self.occurrences(of: component, in: body) == 1, "\(component) rendered more than once")
         }
         #expect(Self.occurrences(of: "PanelFooterRow(", in: body) == 1, "ONE footer row")
         #expect(Self.occurrences(of: "PanelDetailsContent(", in: body) == 1, "ONE Details content")
@@ -125,26 +135,38 @@ struct MenuPanelStructureTests {
     }
 
     /// Curation round 1 (2026-10-18): Details sits on the LEFT of the panel's
-    /// last row with Quit on the RIGHT. The footer holds the ONLY disclosure
-    /// and the ONLY Quit button in the panel, and it is the LAST thing —
-    /// expanded Details content (and a surfaced Launch at Login) render above
-    /// it, so Quit can never be pushed out of view.
+    /// last row with Quit on the RIGHT. Declutter (2026-10-21): the icon-only
+    /// Lock Screen button sits IMMEDIATELY left of Quit, and Quit stays the
+    /// last control. The footer holds the ONLY disclosure, the ONLY Lock Screen
+    /// button and the ONLY Quit button in the panel, and it is the LAST thing —
+    /// expanded Details content and the surfaced twins (Claude, General,
+    /// Launch at Login) render above it, so Quit can never be pushed out of
+    /// view.
     @Test func theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast() throws {
         let views = try Self.allViewCode()
         #expect(Self.occurrences(of: "PanelDetailsDisclosure(", in: views) == 1, "exactly ONE disclosure in the panel")
         #expect(Self.occurrences(of: "Button(\"Quit NapCat\")", in: views) == 1, "exactly ONE Quit button")
+        #expect(Self.occurrences(of: "LockScreenButton(", in: views) == 1, "exactly ONE Lock Screen button")
         let footer = try #require(Self.structChunk("PanelFooterRow", in: try Self.code("MenuPanelView.swift")))
         let disclosure = try #require(footer.range(of: "PanelDetailsDisclosure("), "the disclosure lives in the footer")
         let spacer = try #require(footer.range(of: "Spacer("))
+        let lock = try #require(footer.range(of: "LockScreenButton(model: model)"), "Lock Screen lives in the footer")
         let quit = try #require(footer.range(of: "Button(\"Quit NapCat\")"), "Quit lives in the footer")
         #expect(footer.contains("HStack("), "one row")
-        #expect(disclosure.lowerBound < spacer.lowerBound && spacer.lowerBound < quit.lowerBound,
-                "Details on the left, Spacer, Quit on the right")
+        #expect(disclosure.lowerBound < spacer.lowerBound && spacer.lowerBound < lock.lowerBound
+                && lock.lowerBound < quit.lowerBound,
+                "Details on the left, Spacer, then Lock Screen, then Quit on the right")
+        #expect(footer[lock.upperBound..<quit.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "Lock Screen sits IMMEDIATELY left of Quit")
+        let afterQuit = footer[quit.upperBound...]
+        #expect(!afterQuit.contains("Button") && !afterQuit.contains("(model: model)"),
+                "Quit stays the last (rightmost) control")
         #expect(footer.contains(".keyboardShortcut(\"q\", modifiers: .command)"))
 
         let body = try Self.layoutBody()
         let footerCall = try #require(body.range(of: "PanelFooterRow(model: model)"), "no footer row")
-        for above in ["PanelDetailsContent(", "SurfacedLaunchAtLogin("] {
+        for above in ["PanelDetailsContent(", "ClaudeSurfacedLines(", "GeneralSurfacedLines(",
+                      "SurfacedLaunchAtLogin("] {
             let position = try #require(body.range(of: above), "missing \(above)")
             #expect(position.lowerBound < footerCall.lowerBound, "\(above) must render ABOVE the footer")
         }
@@ -231,12 +253,18 @@ struct MenuPanelStructureTests {
         let claudeTwins = try #require(Self.structChunk("ClaudeSurfacedLines", in: source))
         let lidTwins = try #require(Self.structChunk("LidAlertSurfacedLines", in: source))
         let sessionTwins = try #require(Self.structChunk("SessionAlertsSurfacedLines", in: source))
+        let generalTwins = try #require(Self.structChunk("GeneralSurfacedLines", in: source))
         let pairs: [(accessor: String, twinHome: String)] = [
             ("model.hookStatus", claudeTwins),
+            // 2026-10-21: the awake fact left the glance tier (always nominal,
+            // so its twin never renders — it gets one anyway, no special case).
+            ("model.claudeAwakeLine", claudeTwins),
             ("model.lidTopicStatus", lidTwins),
             ("model.lidServerStatus", lidTwins),
             ("model.lidLastSend(", lidTwins),
             ("model.finishAlertLastSend(", sessionTwins),
+            // 2026-10-21: Lock Screen availability moved to Details › General.
+            ("model.lockScreenStatus", generalTwins),
         ]
         for (accessor, twinHome) in pairs {
             let uses = Self.occurrences(of: accessor, in: details)
@@ -244,22 +272,72 @@ struct MenuPanelStructureTests {
             #expect(details.contains("TuckedLine(line: \(accessor)"), "\(accessor) is rendered raw inside Details")
             #expect(twinHome.contains("SurfacedLine(line: \(accessor)"), "\(accessor) has no top-level twin")
         }
-        // The Claude status row is never a Details line (only the deleted
-        // Status Hero tucked it): the layout renders it at top level,
-        // unconditionally — no placement filter that could ever hide it.
-        #expect(!details.contains("model.claudeStatus"), "the Claude row must stay top level")
-        let layout = try Self.layoutBody()
-        #expect(Self.occurrences(of: "ClaudeStatusRow(model: model)", in: layout) == 1)
-        #expect(!layout.contains("placement(ofDetailsLine: model.claudeStatus"))
+        // The Claude status is never a Details line (only the deleted Status
+        // Hero tucked it). Since 2026-10-21 it is the disclosure's own text:
+        // rendered ONCE, by the footer's disclosure, unconditionally — no
+        // placement filter and no expanded-only branch that could ever hide
+        // it — and a paused label carries the severity icon + tint itself.
+        let views = try Self.allViewCode()
+        #expect(Self.occurrences(of: "model.detailsLabel", in: views) == 1, "the label renders exactly once")
+        let disclosure = try #require(Self.structChunk("PanelDetailsDisclosure", in: source))
+        #expect(disclosure.contains("let label = model.detailsLabel"), "the footer disclosure renders the status")
+        #expect(disclosure.contains("Text(label.text)"))
+        #expect(disclosure.contains("MenuStateModel.severitySymbol(label.severity)"), "paused shows the ⚠︎ icon")
+        #expect(disclosure.contains("PanelSeverityTint.color(label.severity)"), "…in the warning tint")
+        for hiding in ["placement(ofDetailsLine:", "if expanded", "if model.detailsExpanded"] {
+            #expect(!disclosure.contains(hiding), "'\(hiding)' could hide the Claude status")
+        }
+        // Footer width (measured at the 300pt panel): when label + badge do
+        // not fit beside the Lock and Quit buttons, the BADGE yields — the
+        // status text is never the part that truncates.
+        #expect(disclosure.contains("ViewThatFits(in: .horizontal)"))
+        let withBadge = try #require(disclosure.range(of: "statusLine(label, badge: badge)"))
+        let withoutBadge = try #require(disclosure.range(of: "statusLine(label, badge: .nominal)"))
+        #expect(withBadge.lowerBound < withoutBadge.lowerBound, "prefer label + badge, then the label alone")
         // Launch at Login moves as a whole row on the same placement rule.
         #expect(details.contains("placement(ofDetailsLine: model.launchAtLoginCaption"))
         let surfacedLogin = try #require(Self.structChunk("SurfacedLaunchAtLogin", in: source))
         #expect(surfacedLogin.contains("placement(ofDetailsLine: caption.severity) == .topLevel"))
-        // The two filters are complementary by construction.
+        // The two filters are complementary by construction (an absent line
+        // renders in neither).
         let tucked = try #require(Self.structChunk("TuckedLine", in: source))
         let surfaced = try #require(Self.structChunk("SurfacedLine", in: source))
-        #expect(tucked.contains("placement(ofDetailsLine: line.severity) == .details"))
-        #expect(surfaced.contains("placement(ofDetailsLine: line.severity) == .topLevel"))
+        #expect(tucked.contains("if let line, MenuStateModel.placement(ofDetailsLine: line.severity) == .details"))
+        #expect(surfaced.contains("if let line, MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel"))
+    }
+
+    /// Declutter (2026-10-21): Lock Screen left the controls tier. It is an
+    /// ICON-ONLY button (tooltip + VoiceOver label carry its name) with the
+    /// same action and the same disabled rule, forwarding to the model only —
+    /// MenuContentView keeps the one dismissal gateway (locked in
+    /// ScreenLockControllerTests / ScaffoldTests). Its placement in the footer
+    /// is locked in `theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast`.
+    @Test func lockScreenIsAnIconOnlyButtonForwardingToTheModel() throws {
+        let button = try #require(Self.structChunk("LockScreenButton", in: try Self.code("MenuPanelView.swift")))
+        #expect(button.contains("Button { model.lockScreen() } label: {"))
+        #expect(button.contains("Image(systemName: PanelSymbol.lockScreen)"))
+        #expect(!button.contains("Text(") && !button.contains("Button(\""), "icon-only — no visible title")
+        #expect(button.contains(".help(\"Lock Screen\")"))
+        #expect(button.contains(".accessibilityLabel(\"Lock Screen\")"))
+        #expect(button.contains(".accessibilityHint("))
+        #expect(button.contains(
+            ".disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)"))
+        for token in ["cancelTracking", "setDetailsExpanded", "request"] {
+            #expect(!button.contains(token), "'\(token)' — the button only forwards to model.lockScreen()")
+        }
+        #expect(Self.occurrences(of: "model.lockScreen()", in: try Self.allViewCode()) == 1)
+    }
+
+    /// Declutter (2026-10-21): the controls tier is exactly Stay Awake ·
+    /// Charge Limit · Lid alert · Session alerts, in that order, between the
+    /// panel's (at most) two Dividers.
+    @Test func theControlsTierIsStayAwakeChargeLimitLidAndSession() throws {
+        let body = try Self.layoutBody()
+        let titles = body.components(separatedBy: "PanelRow(symbol: ").dropFirst().map { chunk in
+            chunk.components(separatedBy: "title: \"").dropFirst().first?.prefix { $0 != "\"" }.description ?? "?"
+        }
+        #expect(titles == ["Stay Awake", "Charge Limit", "Lid alert", "Session alerts"], "got \(titles)")
+        #expect(Self.occurrences(of: "Divider()", in: body) == 2, "at most two Dividers")
     }
 
     /// Track C (C4): the "Session alerts" row is a controls-tier row DIRECTLY
@@ -301,8 +379,8 @@ struct MenuPanelStructureTests {
     }
 
     /// F3 (2026-10-18): the Pause detection kill switch exists ONCE, inside the
-    /// Details content — out of casual reach. (The top-level "Detection paused"
-    /// row is the mapping's job, tested in MenuPanelPresentationTests.)
+    /// Details content — out of casual reach. (The top-level "Claude: paused"
+    /// footer label is the mapping's job, tested in MenuPanelPresentationTests.)
     @Test func pauseDetectionToggleLivesOnlyInDetails() throws {
         let views = try Self.allViewCode()
         #expect(Self.occurrences(of: "setDetectionPaused(", in: views) == 1)
@@ -358,12 +436,18 @@ struct MenuPanelStructureTests {
         #expect(row.contains("HStack(spacing: PanelMetrics.regular) { trailing() }\n                .fixedSize()"))
     }
 
+    /// Status-as-disclosure (2026-10-21): the control is still NAMED "Details"
+    /// for VoiceOver; its value speaks the Claude status (with the severity
+    /// prefix, e.g. "Warning: Claude: paused") plus the expanded state.
     @Test func theDisclosureIsLabelledForVoiceOver() throws {
         let source = try Self.code("MenuPanelView.swift")
         let disclosure = try #require(Self.structChunk("PanelDetailsDisclosure", in: source))
         #expect(disclosure.contains(".accessibilityLabel(\"Details\")"))
-        #expect(disclosure.contains(".accessibilityValue(expanded ? \"Expanded\" : \"Collapsed\")"))
+        #expect(disclosure.contains(
+            #".accessibilityValue("\(PanelSeverityTint.spoken(label)), \(expanded ? "expanded" : "collapsed")")"#))
         #expect(disclosure.contains(".accessibilityHint("))
+        #expect(disclosure.contains("\"Shows detection, alert and app settings\""))
+        #expect(disclosure.contains(".accessibilityElement(children: .ignore)"), "one element, not its parts")
     }
 
     // MARK: - Menu-stays-open

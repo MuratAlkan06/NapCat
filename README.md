@@ -18,7 +18,7 @@ light/dark menu bars.
 - **Stay awake with the lid closed**, on demand, from the menu bar. Verified
   by reading the system state back (`pmset -g`) — the menu never shows a
   cached guess.
-- **Lock Screen**, one click: NapCat locks your session, confirms the screen
+- **Lock Screen**, one click (the lock icon next to Quit): NapCat locks your session, confirms the screen
   really is locked, and only then turns the display off — your Mac keeps
   running the whole time, which is the point when Stay Awake is on (walk away
   or close the lid without stopping the work in progress). The order matters:
@@ -328,8 +328,9 @@ defaults delete com.muratalkan.napcat debugBattery   # and restart again
 ## Claude busy detection (Track B — optional, read-only)
 
 NapCat can show whether a Claude Code turn is in flight, whether Claude is
-holding your Mac awake, and how recently the companion hook last fired — a new
-**Claude** section in the menu. It can also **push a notification to your phone**
+holding your Mac awake, and how recently the companion hook last fired — the
+menu's bottom row reads **Claude: running**, **idle** or **paused**, and clicking
+it opens **Details** with the rest. It can also **push a notification to your phone**
 if the Mac starts sleeping while a Claude task is still running (see "Notify me
 if the Mac sleeps mid-task" below). Everything here is unprivileged: no `sudo`,
 no new privileged commands, no elevated helper.
@@ -390,7 +391,7 @@ and does nothing at all if a kill-switch flag is present.
 
 Pause detection at any time from the menu (**Details → Pause detection** — kept
 behind the Details disclosure so it cannot be flipped by accident), or by hand.
-While it is paused the menu says **Detection paused** at the top, and an armed
+While it is paused the menu's bottom row reads **Claude: paused** with a warning sign, and an armed
 lid alert reads "armed — but Claude detection is paused; alerts cannot fire":
 with no busy markers, the alert can never fire. Pausing detection silences
 **Session alerts** too — no finish or waiting push goes out until you resume.

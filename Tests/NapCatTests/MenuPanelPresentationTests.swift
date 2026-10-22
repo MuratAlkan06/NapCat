@@ -7,39 +7,85 @@ import Testing
 @testable import NapCat
 
 /// Menu-panel redesign (2026-10-18, PLAN.md "UI Redesign — Menu Panel"): the
-/// pure mappings the panel renders — merged Claude row, F2 armed downgrade,
-/// severity classification, the iron rule (nothing non-nominal stays behind
-/// Details), the collapsed badge — plus the model's panel state (in-memory
-/// disclosure). The design froze on one layout the same day.
+/// pure mappings the panel renders — the Claude status (since the 2026-10-21
+/// declutter: the footer disclosure's text), F2 armed downgrade, severity
+/// classification, the iron rule (nothing non-nominal stays behind Details),
+/// the collapsed badge — plus the model's panel state (in-memory disclosure).
+/// The design froze on one layout the same day.
 struct MenuPanelPresentationTests {
-    // MARK: - Merged Claude row (tier 1)
+    // MARK: - Status-as-disclosure: the footer label (2026-10-21)
 
-    /// Full truth table: 8 input combinations.
+    /// Full truth table: 4 input combinations. Paused wins over running.
     @Test(arguments: [
-        (false, false, false, "Claude: idle", PanelSeverity.nominal),
-        (true, false, false, "Claude: running", .nominal),
-        (false, true, false, "Claude: idle — keeping Mac awake", .nominal),
-        (true, true, false, "Claude: running — keeping Mac awake", .nominal),
-        (false, false, true, "Detection paused", .warning),
-        (true, false, true, "Detection paused", .warning),
-        (false, true, true, "Detection paused", .warning),
-        (true, true, true, "Detection paused", .warning),
+        (false, false, "Claude: idle", PanelSeverity.nominal),
+        (true, false, "Claude: running", .nominal),
+        (false, true, "Claude: paused", .warning),
+        (true, true, "Claude: paused", .warning),
     ])
-    func claudeStatusLineTruthTable(
-        inFlight: Bool, holdingAwake: Bool, paused: Bool, text: String, severity: PanelSeverity
-    ) {
-        #expect(MenuStateModel.claudeStatusLine(inFlight: inFlight, holdingAwake: holdingAwake, paused: paused)
+    func claudeFooterLabelTable(inFlight: Bool, paused: Bool, text: String, severity: PanelSeverity) {
+        #expect(MenuStateModel.claudeFooterLabel(inFlight: inFlight, paused: paused)
                 == PanelLine(text: text, severity: severity))
     }
 
-    /// F3: the toggle moved into Details, so the paused row says where it went.
-    @Test func pausedRowSaysWhereTheToggleWent() throws {
-        let hint = try #require(MenuStateModel.claudeStatusHint(paused: true))
-        #expect(hint.contains("Details"))
-        #expect(hint.contains("Pause detection"))
-        #expect(MenuStateModel.claudeStatusHint(paused: false) == nil)
+    /// The footer shares its row with two buttons, so its text is a SHORT
+    /// FIXED vocabulary — exactly these three strings, never anything else
+    /// (plus the plain "Details" name when detection is absent, see
+    /// `debugWiringKeepsThePlainDetailsLabel`).
+    @Test func theFooterLabelVocabularyIsFixed() {
+        var rendered = Set<String>()
+        for inFlight in [false, true] {
+            for paused in [false, true] {
+                rendered.insert(MenuStateModel.claudeFooterLabel(inFlight: inFlight, paused: paused).text)
+            }
+        }
+        #expect(rendered == ["Claude: paused", "Claude: running", "Claude: idle"])
+        #expect(MenuStateModel.plainDetailsLabel == PanelLine(text: "Details", severity: .nominal))
+        for text in rendered.union([MenuStateModel.plainDetailsLabel.text]) {
+            #expect(text.count <= 15, "'\(text)' is too long for the footer row")
+        }
+    }
+
+    /// The iron rule for the Claude status: paused is non-nominal, so the
+    /// footer renders it with the warning icon (and its tint, lint-locked in
+    /// MenuPanelStructureTests) — at top level, never behind Details. The old
+    /// "where to undo it" hint is gone by design: clicking the label opens
+    /// Details, where the Pause toggle explains its own consequence.
+    @Test func thePausedLabelWarnsAtTopLevel() {
+        let paused = MenuStateModel.claudeFooterLabel(inFlight: false, paused: true)
+        #expect(paused.severity == .warning)
+        #expect(MenuStateModel.severitySymbol(paused.severity) == PanelSymbol.warning)
+        #expect(MenuStateModel.severityAccessibilityPrefix(paused.severity) == "Warning")
+        #expect(Self.readsLikeAProblem(paused.text))
+        for inFlight in [false, true] {
+            let line = MenuStateModel.claudeFooterLabel(inFlight: inFlight, paused: false)
+            #expect(MenuStateModel.severitySymbol(line.severity) == nil)
+            #expect(!Self.readsLikeAProblem(line.text))
+        }
         #expect(MenuStateModel.pauseDetectionCaption.contains("cannot fire"),
                 "the toggle itself warns about the lid-alert consequence")
+    }
+
+    /// "Claude is holding the Mac awake" is a tucked Details line, present
+    /// ONLY while the sleep-assertion reader says so — never invented.
+    @Test func theHoldingAwakeLineExistsOnlyWhileHolding() {
+        #expect(MenuStateModel.claudeHoldingAwakeLine(holdingAwake: true)
+                == PanelLine(text: "Claude is holding the Mac awake", severity: .nominal))
+        #expect(MenuStateModel.claudeHoldingAwakeLine(holdingAwake: false) == nil)
+    }
+
+    /// Lock Screen availability as a Details › General line: nominal while
+    /// the lock entry point resolved, the unavailable explanation as a
+    /// warning (which surfaces) otherwise.
+    @Test func theLockScreenStatusLine() {
+        let available = MenuStateModel.lockScreenStatus(available: true)
+        #expect(available == PanelLine(
+            text: "Lock Screen: available — locks and turns the display off; the Mac keeps running",
+            severity: .nominal))
+        #expect(MenuStateModel.placement(ofDetailsLine: available.severity) == .details)
+        let unavailable = MenuStateModel.lockScreenStatus(available: false)
+        #expect(unavailable.severity == .warning)
+        #expect(unavailable.text == MenuStateModel.lockScreenPresentation(available: false).caption)
+        #expect(MenuStateModel.placement(ofDetailsLine: unavailable.severity) == .topLevel)
     }
 
     // MARK: - F2: the armed line downgrades while detection is paused
@@ -380,8 +426,8 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.stayAwakeCaption(forObserved: false) == nil)
         #expect(try #require(MenuStateModel.stayAwakeCaption(forObserved: nil)).severity == .warning)
 
-        #expect(MenuStateModel.lockScreenCaption(available: true) == nil)
-        #expect(try #require(MenuStateModel.lockScreenCaption(available: false)).severity == .warning)
+        // (The Lock Screen line moved to Details › General on 2026-10-21 —
+        // `theLockScreenStatusLine`.)
 
         #expect(MenuStateModel.chargeLimitCaption(for: .hidden) == nil)
         #expect(MenuStateModel.chargeLimitCaption(for: .off) == nil)
@@ -417,7 +463,7 @@ struct MenuPanelPresentationTests {
     /// a problem string must never be nominal (it would hide in Details), and a
     /// nominal string must never read like a problem.
     static let problemPhrases = ["not installed", "not seen yet", "not usable", "refused", "failed",
-                                 "unconfirmed", "Waiting for approval", "not found", "paused"]
+                                 "unconfirmed", "Waiting for approval", "not found", "paused", "unavailable"]
 
     static func readsLikeAProblem(_ text: String) -> Bool {
         problemPhrases.contains { text.contains($0) }
@@ -459,17 +505,24 @@ struct MenuPanelPresentationTests {
         for status: SMAppService.Status in [.notRegistered, .enabled, .requiresApproval, .notFound] {
             if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
         }
-        // The Claude status row is NOT a Details line since the design freeze:
-        // only the deleted Status Hero variant tucked it there. It is always
-        // top level (its full truth table is `claudeStatusLineTruthTable`).
+        // 2026-10-21 declutter: the awake fact and the Lock Screen
+        // availability became Details-home lines.
+        for holding in [false, true] {
+            if let line = MenuStateModel.claudeHoldingAwakeLine(holdingAwake: holding) { lines.append(line) }
+        }
+        for available in [false, true] {
+            lines.append(MenuStateModel.lockScreenStatus(available: available))
+        }
+        // The Claude status is NOT a Details line: it is the footer
+        // disclosure's own text, always visible (`claudeFooterLabelTable`).
         return lines
     }
 
     @Test func noNonNominalLineStaysBehindTheDisclosure() {
         let lines = Self.everyDetailsHomeLine()
         // 8 hook + 5 topic + 6 server + 10 last-send + 30 last-session-alert
-        // + 2 login captions.
-        #expect(lines.count == 61, "vacuity guard — update when the input set changes")
+        // + 2 login captions + 1 holding-awake + 2 lock-screen.
+        #expect(lines.count == 64, "vacuity guard — update when the input set changes")
         var surfaced = 0
         for line in lines {
             let problem = Self.readsLikeAProblem(line.text)
@@ -531,15 +584,18 @@ struct MenuPanelPresentationTests {
     }
 
     /// Density pass (curation round 1): every glyph that can sit in the
-    /// leading symbol column — the feature symbols, plus the severity symbols
-    /// that replace the Claude glyph while it is not nominal — fits the column
-    /// at the panel's symbol size, so no symbol crowds into the gap before its
-    /// title. OS-drift canary: a wider glyph in a future macOS fails here.
+    /// leading symbol column — the feature-row symbols, plus (conservatively)
+    /// the severity symbols, which sat there in the deleted Claude row — fits
+    /// the column at the panel's symbol size, so no symbol crowds into the gap
+    /// before its title. OS-drift canary: a wider glyph in a future macOS
+    /// fails here. Since the 2026-10-21 declutter the Lock Screen glyph is a
+    /// footer button, not a leading symbol (it stays in `PanelSymbol.all`, so
+    /// it still must resolve), and the Claude glyph is gone.
     @Test func leadingSymbolsFitTheSymbolColumn() throws {
         let config = NSImage.SymbolConfiguration(pointSize: PanelMetrics.symbolSize, weight: .regular)
-        let leading = [PanelSymbol.stayAwake, PanelSymbol.lockScreen, PanelSymbol.chargeLimit,
-                       PanelSymbol.claude, PanelSymbol.lidAlert, PanelSymbol.sessionAlerts, PanelSymbol.info,
-                       PanelSymbol.warning, PanelSymbol.error]
+        let leading = [PanelSymbol.stayAwake, PanelSymbol.chargeLimit, PanelSymbol.lidAlert,
+                       PanelSymbol.sessionAlerts, PanelSymbol.info, PanelSymbol.warning, PanelSymbol.error]
+        #expect(PanelSymbol.all.contains(PanelSymbol.lockScreen), "the footer's lock glyph must still resolve")
         for name in leading {
             let image = try #require(NSImage(systemSymbolName: name, accessibilityDescription: nil)?
                 .withSymbolConfiguration(config), "\(name) does not resolve")
@@ -553,8 +609,14 @@ struct MenuPanelPresentationTests {
 
     // MARK: - Model panel state
 
+    /// `lockAvailable` wires the REAL ScreenLockController (resolution only —
+    /// side-effect-free, and canary-locked to resolve on this machine by
+    /// `lockSymbolResolvesOnThisMachine`), so the Lock Screen line is nominal
+    /// and cannot mask what a test asserts about the badge. `false` wires none
+    /// (the model then reports the lock as unavailable — never assumed).
     @MainActor
     private func withModel(
+        lockAvailable: Bool = true,
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
@@ -566,8 +628,53 @@ struct MenuPanelPresentationTests {
         let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
         let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
         let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter,
+                                   screenLock: lockAvailable ? ScreenLockController() : nil,
                                    detection: detection, lidGuard: lidGuard, finishAlert: finishAlert)
         try body(model, defaults, suite)
+    }
+
+    /// A hermetic detection controller over a temp marker dir (the DISABLED
+    /// flag lands there, never in the real state dir).
+    @MainActor
+    private func withDetection(
+        hookInstalled: Bool = true,
+        holdingAwake: Bool = false,
+        _ body: (ClaudeActivityController) throws -> Void
+    ) throws {
+        let markerDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("napcat-menupanel-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: markerDir) }
+        let detection = ClaudeActivityController(
+            store: StubMarkerStore(hookInstalled: hookInstalled), prober: StubProber(),
+            assertions: StubAssertions(holdingAwake: holdingAwake), markerDirURL: markerDir)
+        try body(detection)
+    }
+
+    /// An armed lid guard + a REAL finish-alert controller on its shared
+    /// config, both on, watching a temp marker dir that holds the DISABLED
+    /// flag — so the session row reads `.paused`. Fakes only: no network, no
+    /// real marker dir, no watcher.
+    @MainActor
+    private func withPausedSessionAlerts(_ body: (LidGuardHarness, FinishAlertController) throws -> Void) throws {
+        let suite = "com.muratalkan.napcat.tests.menupanel.sessionpaused.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("napcat-sessionpaused-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try #require(FileManager.default.createFile(
+            atPath: dir.appendingPathComponent(ClaudeBusyConstants.disabledFlagName).path, contents: nil))
+        let sender = RecordingMessageSender()
+        let lid = LidGuardHarness(defaults: defaults, sender: sender)
+        lid.arm()
+        defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+        let factory = WatcherFactory()
+        let finish = FinishAlertController(
+            store: FakeMarkerStore(), markerDirURL: dir, config: lid.controller, sender: sender,
+            makeWatcher: { factory.make($0) }, scheduler: ManualScheduler(), now: { 1_800_000_000 })
+        try body(lid, finish)
     }
 
     /// The disclosure is in-memory UI state: it survives refreshes (menu
@@ -587,44 +694,129 @@ struct MenuPanelPresentationTests {
 
     /// debugBattery wiring (no detection, no lid guard): absent subsystems
     /// cannot raise the badge.
-    @Test @MainActor func absentSubsystemsNeverRaiseTheBadge() {
-        withModel { model, _, _ in
+    @Test @MainActor func absentSubsystemsNeverRaiseTheBadge() throws {
+        try withModel { model, _, _ in
             #expect(!model.claudeDetectionVisible && !model.lidGuardVisible)
+            try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
             #expect(model.detailsBadge == .nominal)
         }
     }
 
+    /// Without the detection stack there is no Claude state to report, so the
+    /// footer keeps its plain "Details" name instead of claiming "idle".
+    @Test @MainActor func debugWiringKeepsThePlainDetailsLabel() throws {
+        withModel { model, _, _ in
+            #expect(!model.claudeDetectionVisible)
+            #expect(model.detailsLabel == MenuStateModel.plainDetailsLabel)
+            #expect(model.claudeAwakeLine == nil)
+        }
+        try withDetection { detection in
+            detection.sample()
+            withModel(detection: detection) { model, _, _ in
+                #expect(model.detailsLabel == PanelLine(text: "Claude: idle", severity: .nominal))
+            }
+        }
+    }
+
+    /// THE BADGE RULE (2026-10-21): the Claude status is the disclosure's own
+    /// text and carries its own warning, so a PAUSED Claude does not raise
+    /// the badge — neither directly nor through its echoes in the lid and
+    /// session lines — but every OTHER problem still does: a hook problem, an
+    /// unavailable Lock Screen, and a lid / session send failure.
+    @Test @MainActor func aPausedClaudeDoesNotRaiseTheBadgeButOtherTuckedProblemsDo() throws {
+        // Paused with the lid alert AND session alerts armed (the realistic
+        // paused panel): both status captions warn at top level, the label
+        // warns, the badge stays nominal.
+        try withDetection { detection in
+            detection.setPaused(true)
+            detection.sample()
+            try withPausedSessionAlerts { lid, finish in
+                try withModel(detection: detection, lidGuard: lid.controller, finishAlert: finish) { model, _, _ in
+                    try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
+                    #expect(model.detailsLabel.severity == .warning)
+                    #expect(model.lidStatus.severity == .warning && model.lidStatus.text.contains("cannot fire"))
+                    #expect(model.finishAlertDisplayState == .paused)
+                    #expect(model.finishAlertStatus.severity == .warning)
+                    #expect(model.detailsBadge == .nominal, "the pause's echoes must not raise the badge")
+                }
+            }
+        }
+        // Paused, hook healthy, lock available, no lid guard: label warns,
+        // badge stays nominal.
+        try withDetection(holdingAwake: true) { detection in
+            detection.setPaused(true)
+            detection.sample()
+            try withModel(detection: detection) { model, _, _ in
+                try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
+                #expect(model.detailsLabel == PanelLine(text: "Claude: paused", severity: .warning))
+                #expect(model.hookStatus.severity == .nominal)
+                #expect(model.claudeAwakeLine == PanelLine(text: "Claude is holding the Mac awake",
+                                                           severity: .nominal),
+                        "the awake fact is still reported while paused")
+                #expect(model.detailsBadge == .nominal, "a paused Claude must not raise the badge")
+            }
+        }
+        // A hook problem raises it (and still surfaces through its twin).
+        try withDetection(hookInstalled: false) { detection in
+            detection.sample()
+            withModel(detection: detection) { model, _, _ in
+                #expect(model.detailsLabel.severity == .nominal)
+                #expect(model.hookStatus.severity == .warning)
+                #expect(model.detailsBadge == .warning)
+            }
+        }
+        // An unavailable Lock Screen raises it.
+        withModel(lockAvailable: false) { model, _, _ in
+            #expect(model.lockScreenStatus.severity == .warning)
+            #expect(model.detailsBadge == .warning)
+        }
+        // A refused lid send raises it (to an error), paused Claude or not.
+        try withDetection { detection in
+            detection.setPaused(true)
+            detection.sample()
+            withLidGuardHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { lid in
+                lid.arm()
+                lid.controller.sendTestMessage()
+                withModel(detection: detection, lidGuard: lid.controller) { model, _, _ in
+                    #expect(model.lidLastSend(now: lid.clock.now).severity == .error)
+                    #expect(model.detailsBadge == .error)
+                }
+            }
+        }
+        // (A refused SESSION send: `aRefusedSessionAlertSurfacesAndRaisesTheBadge`.)
+    }
+
     /// F2 end to end: the DISABLED flag read by the detection controller is
     /// threaded into the lid status the panel renders — armed + paused shows
-    /// the downgrade, the Claude row says "Detection paused", and the badge
-    /// agrees. Removing the flag restores plain "armed".
+    /// the downgrade (still a top-level warning caption), and the footer label
+    /// says "Claude: paused". The badge does NOT rise: the downgrade is the
+    /// pause's echo, which the label already carries (2026-10-21 badge rule).
+    /// Removing the flag restores plain "armed".
     @Test @MainActor func pausedDetectionDowngradesTheArmedLineThroughTheModel() throws {
-        let markerDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("napcat-menupanel-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: markerDir) }
-        let detection = ClaudeActivityController(store: StubMarkerStore(), prober: StubProber(),
-                                                 assertions: StubAssertions(), markerDirURL: markerDir)
-        let lidSuite = "com.muratalkan.napcat.tests.menupanel.lid.\(UUID().uuidString)"
-        let lidDefaults = UserDefaults(suiteName: lidSuite)!
-        defer { lidDefaults.removePersistentDomain(forName: lidSuite) }
-        let harness = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
-        harness.arm()
-        do {
+        try withDetection { detection in
+            let lidSuite = "com.muratalkan.napcat.tests.menupanel.lid.\(UUID().uuidString)"
+            let lidDefaults = UserDefaults(suiteName: lidSuite)!
+            defer { lidDefaults.removePersistentDomain(forName: lidSuite) }
+            let harness = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+            harness.arm()
             try withModel(detection: detection, lidGuard: harness.controller) { model, _, _ in
                 detection.setPaused(true)
                 detection.sample()
                 model.refresh()
-                #expect(model.claudeStatus == PanelLine(text: "Detection paused", severity: .warning))
+                #expect(model.detailsLabel == PanelLine(text: "Claude: paused", severity: .warning))
                 #expect(model.lidStatus.text.contains("cannot fire"))
                 #expect(model.lidStatus.severity == .warning)
-                #expect(model.detailsBadge >= .warning, "the Pause toggle lives in Details")
+                #expect(MenuStateModel.placement(ofDetailsLine: model.lidStatus.severity) == .topLevel)
+                try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
+                #expect(model.detailsBadge == .nominal, "the pause's echo in the lid line must not raise the badge")
 
                 detection.setPaused(false)
                 detection.sample()
                 model.refresh()
+                #expect(model.detailsLabel == PanelLine(text: "Claude: idle", severity: .nominal))
                 #expect(model.lidStatus.text.contains("best-effort push"))
                 #expect(model.lidStatus.severity == .nominal)
+                #expect(model.detailsBadge == .nominal)
             }
         }
     }
@@ -708,11 +900,14 @@ struct MenuPanelPresentationTests {
 // the real model or panel.
 
 final class StubMarkerStore: BusyMarkerStore {
+    /// false ⇒ no marker dir: the hook reads "not installed" (a warning).
+    let hookInstalled: Bool
+    init(hookInstalled: Bool = true) { self.hookInstalled = hookInstalled }
     func markers() -> [BusyMarker] { [] }
     func identifiedMarkers() -> [IdentifiedBusyMarker] { [] }
-    func markerDirExists() -> Bool { true }
-    func hookLogExists() -> Bool { true }
-    func lastActivityEpoch() -> Int? { Int(Date().timeIntervalSince1970) - 60 }
+    func markerDirExists() -> Bool { hookInstalled }
+    func hookLogExists() -> Bool { hookInstalled }
+    func lastActivityEpoch() -> Int? { hookInstalled ? Int(Date().timeIntervalSince1970) - 60 : nil }
 }
 
 final class StubProber: ClaudeProcessProber {
@@ -720,5 +915,7 @@ final class StubProber: ClaudeProcessProber {
 }
 
 final class StubAssertions: SleepAssertionReader {
-    func claudeIsHoldingAwake() -> Bool { false }
+    let holdingAwake: Bool
+    init(holdingAwake: Bool = false) { self.holdingAwake = holdingAwake }
+    func claudeIsHoldingAwake() -> Bool { holdingAwake }
 }
