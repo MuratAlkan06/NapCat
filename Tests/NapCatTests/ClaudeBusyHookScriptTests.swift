@@ -68,10 +68,13 @@ struct ClaudeBusyHookScriptTests {
                 failures.append("network token 'nc'")
             }
         }
-        // 6. The DISABLED kill switch is checked before ANY write op.
+        // 6. The DISABLED kill switch is checked before ANY write op — a
+        //    deletion (`rm -f`) and the sweep call (which deletes stale
+        //    markers AND stale temp files) count as writes too.
         let firstGuard = codeLines.firstIndex(where: { $0.contains("-e \"$DISABLED_FLAG\"") })
         let firstWrite = codeLines.firstIndex(where: {
             $0.contains("mkdir") || $0.hasPrefix("mv ") || $0.contains("printf 'v1")
+                || $0.contains("rm -f") || $0.contains("sweep_markers \"")
         })
         if let guardIdx = firstGuard, let writeIdx = firstWrite {
             if guardIdx >= writeIdx { failures.append("DISABLED checked after a write op") }
@@ -103,6 +106,21 @@ struct ClaudeBusyHookScriptTests {
         #expect(mutant != original, "canary setup: the redirect line must exist to be removed")
         #expect(Self.hookLintFailures(mutant).contains(where: { $0.contains("stdout") }),
                 "removing the stdout redirect must fail the lint")
+    }
+
+    /// Canary (H4): the sweep deletes files, so it must stay behind the kill
+    /// switch — a sweep call (or any `rm -f`) hoisted above the DISABLED
+    /// check MUST be caught.
+    @Test func hookLintCatchesASweepOrDeleteBeforeTheKillSwitch() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let guardLine = #"if [ -e "$DISABLED_FLAG" ]; then"#
+        #expect(original.contains(guardLine), "canary setup: the kill-switch line must exist")
+        for hoisted in [#"sweep_markers "$(date +%s)""#, #"rm -f "$STATE_DIR/.payload.x""#] {
+            let mutant = original.replacingOccurrences(of: guardLine, with: hoisted + "\n" + guardLine)
+            #expect(mutant != original)
+            #expect(Self.hookLintFailures(mutant).contains(where: { $0.contains("DISABLED checked after a write op") }),
+                    "'\(hoisted)' above the kill switch must fail the lint")
+        }
     }
 
     // MARK: - Behavioral run against the shipped script (no real Claude)
@@ -480,6 +498,11 @@ struct ClaudeBusyHookScriptTests {
             (quoted("permission-prompt"), "permission-prompt"), // char outside [a-z_]
             (quoted(long), long),                               // 41 chars
             (quoted(overCap), overCap),                         // one past the 32 cap
+            // H2 — bash 3.2 drops NUL inside $(…): without the NUL mapping
+            // these would collapse into the WAITING type permission_prompt.
+            (#""permission\u0000_prompt""#, "_prompt"),        // interior NUL
+            (#""permission_prompt\u0000""#, "permission_prompt"), // trailing NUL
+            (#""\u0000permission_prompt""#, "permission_prompt"), // leading NUL
         ]
         for (json, raw) in cases {
             withHome { home in
@@ -497,6 +520,119 @@ struct ClaudeBusyHookScriptTests {
                 #expect(log.split(separator: "\n").count == 2,
                         "exactly the set + clear lines — no injected line (\(json))")
             }
+        }
+    }
+
+    /// H2 contrast: the SAME bytes minus the NUL still keep the marker as
+    /// waiting — the NUL mapping rejects only the poisoned value.
+    @Test func aNulBytePoisonsOnlyItsOwnNotificationType() {
+        let token = ClaudeBusyConstants.waitingEventToken
+        withHome { home in
+            let session = "c1000008-0028-4abc-8def-000000000028"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            _ = runHook(json: notificationJSON(session, notificationType: #""permission\u0000_prompt""#), home: home)
+            #expect(waitForFile(marker, present: false), "the NUL-poisoned type must CLEAR the marker")
+            #expect(hookLog(home).contains("clear session=\(session) event=Notification type=invalid\n"))
+
+            primeMarker(session, home: home)
+            _ = runHook(json: notificationJSON(session, notificationType: quoted("permission_prompt")), home: home)
+            #expect(waitForMarkerEvent(marker, event: token).contains("event=\(token) "),
+                    "the clean permission_prompt must still KEEP the marker as waiting")
+        }
+    }
+
+    /// Canary (H2): drop the NUL mapping and the poisoned value collapses into
+    /// permission_prompt again — the marker is KEPT as waiting. Proves the
+    /// NUL rows above have teeth (bash 3.2 really does drop the byte).
+    @Test func nulMappingCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mapping = " | LC_ALL=C /usr/bin/tr '\\000' '#'"
+        let mutant = original.replacingOccurrences(of: mapping, with: "")
+        #expect(mutant != original, "canary setup: the NUL mapping must exist to be removed")
+
+        withHome { home in
+            let session = "c1000009-0029-4abc-8def-000000000029"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            _ = runScript(mutantURL, json: promptJSON(session), home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            #expect(waitForFile(marker, present: true), "canary setup: marker must be set first")
+
+            let poisoned = notificationJSON(session, notificationType: #""permission\u0000_prompt""#)
+            _ = runScript(mutantURL, json: poisoned, home: home)
+            let token = ClaudeBusyConstants.waitingEventToken
+            #expect(waitForMarkerEvent(marker, event: token).contains("event=\(token) "),
+                    "without the NUL mapping the poisoned type must pass as waiting (so the H2 rows have teeth)")
+        }
+    }
+
+    // MARK: - H3: the event name is validated before it can reach hook.log
+
+    /// A hook_event_name failing the whole-string `^[A-Za-z]{1,32}$` check
+    /// (newline, CR, digit, space, over 32 chars) is logged on BOTH ignore
+    /// paths as `event=invalid` — the raw text never reaches hook.log, and a
+    /// forged second line cannot be injected.
+    @Test func malformedEventNameIsLoggedAsInvalidAndNeverEchoed() {
+        let valid = "e3000001-0031-4abc-8def-000000000031"
+        let cases: [(event: String, raw: String, session: String, reason: String)] = [
+            (#""Foo\nclear session=forged event=Stop""#, "forged", valid, "unhandled-event"),
+            (#""Foo\nclear session=forged event=Stop""#, "forged", "not-a-session", "bad-session"),
+            (#""Foo\r""#, "Foo", valid, "unhandled-event"),
+            (#""Foo1""#, "Foo1", valid, "unhandled-event"),
+            (#""Foo Bar""#, "Foo Bar", "not-a-session", "bad-session"),
+            (quoted(String(repeating: "A", count: 33)), String(repeating: "A", count: 33), valid, "unhandled-event"),
+        ]
+        for (event, raw, session, reason) in cases {
+            withHome { home in
+                let json = #"{"hook_event_name":\#(event),"session_id":"\#(session)"}"#
+                let result = runHook(json: json, home: home)
+                #expect(result.exitCode == 0, "exit 0 on \(event)")
+                #expect(result.stdout.isEmpty, "stdout empty on \(event)")
+                let log = hookLog(home)
+                let lines = log.split(separator: "\n", omittingEmptySubsequences: false).dropLast()
+                #expect(lines.count == 1, "exactly one log line for \(event), got \(String(reflecting: log))")
+                #expect(log.hasSuffix(" ignore reason=\(reason) event=invalid\n"),
+                        "\(event) must be logged as event=invalid, got \(String(reflecting: log))")
+                #expect(!log.contains(raw), "the raw event name of \(event) must never reach hook.log")
+                #expect(sessionShapedFiles(in: markerDir(home)).isEmpty, "an ignored event writes no marker")
+            }
+        }
+    }
+
+    /// The well-formed cases still log the name: an unknown plain-letters
+    /// event (`Foo`) on both ignore paths, and `?` when the field is absent.
+    @Test func wellFormedUnknownEventNamesAreStillLogged() {
+        let valid = "e3000002-0032-4abc-8def-000000000032"
+        let cases: [(json: String, expected: String)] = [
+            (#"{"hook_event_name":"Foo","session_id":"\#(valid)"}"#, " ignore reason=unhandled-event event=Foo\n"),
+            (#"{"hook_event_name":"Foo","session_id":"bad"}"#, " ignore reason=bad-session event=Foo\n"),
+            (#"{"session_id":"\#(valid)"}"#, " ignore reason=unhandled-event event=?\n"),
+        ]
+        for (json, expected) in cases {
+            withHome { home in
+                #expect(runHook(json: json, home: home).exitCode == 0)
+                let log = hookLog(home)
+                #expect(log.hasSuffix(expected), "\(json) must log '\(expected)', got \(String(reflecting: log))")
+                #expect(log.split(separator: "\n").count == 1)
+            }
+        }
+    }
+
+    /// Canary (H3): log the raw event again and the forged line lands in
+    /// hook.log — proves the event=invalid rows have teeth.
+    @Test func rawEventLoggingCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(of: "event=$logevent", with: "event=${event:-?}")
+        #expect(mutant != original, "canary setup: the validated event field must exist to be reverted")
+        withHome { home in
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            let json = #"{"hook_event_name":"Foo\nclear session=forged event=Stop","session_id":"e3000003-0033-4abc-8def-000000000033"}"#
+            _ = runScript(mutantURL, json: json, home: home)
+            let log = hookLog(home)
+            #expect(log.contains("forged") && log.split(separator: "\n").count == 2,
+                    "the raw-logging mutant must inject the forged line, got \(String(reflecting: log))")
         }
     }
 
@@ -623,6 +759,80 @@ struct ClaudeBusyHookScriptTests {
             #expect(!FileManager.default.fileExists(atPath: stale.path), ">12h marker swept")
             #expect(FileManager.default.fileExists(atPath: fresh.path), "fresh marker kept")
             #expect(FileManager.default.fileExists(atPath: foreign.path), "non-marker file never deleted")
+        }
+    }
+
+    /// Plants `name` in `dir` with `contents`, backdated by `age` seconds
+    /// (0 = fresh). Returns its URL.
+    @discardableResult
+    private func plant(_ name: String, in dir: URL, age: Double, contents: String = "x") -> URL {
+        let url = dir.appendingPathComponent(name)
+        try? contents.write(to: url, atomically: false, encoding: .utf8)
+        if age > 0 {
+            try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -age)],
+                                                   ofItemAtPath: url.path)
+        }
+        return url
+    }
+
+    /// H4: a run killed at Claude's 5 s timeout leaves `.payload.*` /
+    /// `.marker.*` behind. The next run removes those older than 60 s; a fresh
+    /// one (a concurrent run's) stays, and the sweep never touches hook.log, a
+    /// foreign dotfile, or a session marker inside the 12 h cap.
+    @Test func sweepRemovesStaleTempFilesKeepsFreshAndForeignFiles() {
+        withHome { home in
+            let dir = markerDir(home)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let twoMinutes = 120.0
+            let stalePayload = plant(".payload.abc123", in: dir, age: twoMinutes)
+            let staleMarkerTemp = plant(".marker.def456", in: dir, age: twoMinutes)
+            let freshPayload = plant(".payload.fresh", in: dir, age: 0)
+            let foreignDotfile = plant(".other.abc123", in: dir, age: twoMinutes)
+            let log = plant(ClaudeBusyConstants.logFileName, in: dir, age: twoMinutes, contents: "planted line\n")
+            let youngMarker = plant("44440000-0007-4abc-8def-000000000007", in: dir, age: twoMinutes,
+                                    contents: "v1 ts=1 event=UserPromptSubmit pid=1 src=unknown\n")
+
+            // Any invocation sweeps; an unrelated session leaves the others be.
+            let result = runHook(json: #"{"hook_event_name":"Stop","session_id":"55550000-0008-4abc-8def-000000000008"}"#,
+                                 home: home)
+            #expect(result.exitCode == 0)
+
+            let fm = FileManager.default
+            #expect(!fm.fileExists(atPath: stalePayload.path), "a .payload.* older than 60 s is swept")
+            #expect(!fm.fileExists(atPath: staleMarkerTemp.path), "a .marker.* older than 60 s is swept")
+            #expect(fm.fileExists(atPath: freshPayload.path), "a fresh temp file (a live run's) is kept")
+            #expect(fm.fileExists(atPath: foreignDotfile.path), "only .payload.* / .marker.* are temp files")
+            #expect(fm.fileExists(atPath: youngMarker.path), "a session marker inside the 12 h cap is kept")
+            #expect(hookLog(home).hasPrefix("planted line\n"), "hook.log is appended to, never swept")
+            #expect(fm.fileExists(atPath: log.path))
+        }
+    }
+
+    /// H4: the DISABLED kill switch still short-circuits BEFORE the sweep —
+    /// a paused hook deletes nothing, not even stale temp files or a marker
+    /// past the 12 h cap (lint order is locked by rule 6 of hookLintFailures).
+    @Test func disabledFlagShortCircuitsBeforeTheSweep() {
+        withHome { home in
+            let dir = markerDir(home)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let old = Double(ClaudeBusyConstants.freshnessCapSeconds) + 3600
+            let flag = plant(ClaudeBusyConstants.disabledFlagName, in: dir, age: 120, contents: "")
+            let stalePayload = plant(".payload.abc123", in: dir, age: 120)
+            let staleMarkerTemp = plant(".marker.def456", in: dir, age: 120)
+            let staleMarker = plant("66660000-0009-4abc-8def-000000000009", in: dir, age: old,
+                                    contents: "v1 ts=1 event=UserPromptSubmit pid=1 src=unknown\n")
+
+            let result = runHook(json: #"{"hook_event_name":"Stop","session_id":"77770000-0010-4abc-8def-000000000010"}"#,
+                                 home: home)
+            #expect(result.exitCode == 0)
+            Thread.sleep(forTimeInterval: 0.1)
+
+            let fm = FileManager.default
+            for url in [flag, stalePayload, staleMarkerTemp, staleMarker] {
+                #expect(fm.fileExists(atPath: url.path), "\(url.lastPathComponent) must survive a paused run")
+            }
+            #expect(!fm.fileExists(atPath: dir.appendingPathComponent(ClaudeBusyConstants.logFileName).path),
+                    "a paused hook does not even log")
         }
     }
 

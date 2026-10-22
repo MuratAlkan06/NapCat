@@ -84,6 +84,164 @@ struct LidGuardStructureTests {
     /// files contain none of them today.
     static let logCallTokens = ["logger.", "print(", "nslog", "os_log"]
 
+    // MARK: - Log-call extraction (H1 — shared with FinishAlertStructureTests)
+
+    /// Log-emitting METHODS — every `os.Logger` level — matched as `.name(`
+    /// (case-insensitive, spaces/tabs allowed before the paren) on ANY
+    /// receiver, so an aliased or renamed logger is still found.
+    static let logMethodNames = ["notice", "error", "fault", "log", "debug", "info", "warning", "critical", "trace"]
+
+    /// Log-emitting free FUNCTIONS (no `privacy:` support at all), matched as
+    /// `name(` the same way.
+    static let logFunctionNames = ["print", "nslog", "os_log"]
+
+    /// One extracted log call: the 1-based line it starts on, and its text
+    /// from the opener (`.notice(`, `print(` …) through the balanced closing
+    /// parenthesis — ACROSS lines — or to end of input when it never closes.
+    struct LogCall {
+        let line: Int
+        let text: String
+        let closed: Bool
+        var isSingleLine: Bool { closed && !text.contains("\n") }
+    }
+
+    /// Every log call in comment-stripped `code`. Over-inclusive by design
+    /// (an enum pattern like `case .error(let m)` is extracted too and simply
+    /// passes the content rules); it must never MISS a call.
+    static func logCalls(in code: String) -> [LogCall] {
+        let chars = Array(code)
+        let lower = chars.map { $0.isASCII ? Character($0.lowercased()) : $0 }
+        let methods = logMethodNames.map { Array($0) }
+        let functions = logFunctionNames.map { Array($0) }
+        func word(_ pattern: [Character], at index: Int) -> Bool {
+            guard index + pattern.count <= lower.count else { return false }
+            for k in pattern.indices where lower[index + k] != pattern[k] { return false }
+            return true
+        }
+        func paren(after index: Int) -> Int? {
+            var i = index
+            while i < chars.count, chars[i] == " " || chars[i] == "\t" { i += 1 }
+            return i < chars.count && chars[i] == "(" ? i : nil
+        }
+        var calls: [LogCall] = []
+        var line = 1
+        for start in chars.indices {
+            if chars[start] == "\n" {
+                line += 1
+                continue
+            }
+            let open: Int? = chars[start] == "."
+                ? methods.lazy.compactMap { word($0, at: start + 1) ? paren(after: start + 1 + $0.count) : nil }.first
+                : functions.lazy.compactMap { word($0, at: start) ? paren(after: start + $0.count) : nil }.first
+            guard let open else { continue }
+            let end = callEnd(chars, open: open)
+            calls.append(LogCall(line: line, text: String(chars[start...(end ?? chars.count - 1)]), closed: end != nil))
+        }
+        return calls
+    }
+
+    /// Index of the `)` closing the call whose `(` is at `open`, or nil. Code
+    /// parentheses are balanced; string literals (`"…"`, `"""…"""`) are
+    /// skipped, so a `(` or `)` inside a message cannot end the call early or
+    /// late — but each `\( … )` interpolation inside one is code again.
+    static func callEnd(_ chars: [Character], open: Int) -> Int? {
+        enum Mode { case code(depth: Int), string(multiline: Bool) }
+        func tripleQuote(at i: Int) -> Bool {
+            i + 2 < chars.count && chars[i] == "\"" && chars[i + 1] == "\"" && chars[i + 2] == "\""
+        }
+        var stack: [Mode] = [.code(depth: 0)]
+        var i = open
+        while i < chars.count, let mode = stack.last {
+            switch mode {
+            case .code(let depth):
+                if chars[i] == "(" {
+                    stack[stack.count - 1] = .code(depth: depth + 1)
+                } else if chars[i] == ")" {
+                    if depth > 1 {
+                        stack[stack.count - 1] = .code(depth: depth - 1)
+                    } else if stack.count == 1 {
+                        return i                                   // the call's own `)`
+                    } else {
+                        stack.removeLast()                         // an interpolation ends
+                    }
+                } else if chars[i] == "\"" {
+                    let triple = tripleQuote(at: i)
+                    stack.append(.string(multiline: triple))
+                    if triple { i += 2 }
+                }
+            case .string(let multiline):
+                if chars[i] == "\\" {
+                    if i + 1 < chars.count, chars[i + 1] == "(" { stack.append(.code(depth: 1)) }
+                    i += 1                                         // the escaped char / the `(`
+                } else if multiline ? tripleQuote(at: i) : chars[i] == "\"" {
+                    stack.removeLast()
+                    if multiline { i += 2 }
+                }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// The ONE logger declaration a scanned file may carry.
+    static let loggerDeclarationPattern =
+        #"^[ \t]*private static let logger = Logger\(subsystem: "com\.muratalkan\.napcat", category: "[a-z]+"\)[ \t]*$"#
+
+    /// H1 shape rules, shared by both log lints (comment-stripped `code`):
+    ///  1. every log call starts AND ends on one physical line;
+    ///  2. at most one logger declaration, exactly `loggerDeclarationPattern`;
+    ///  3. outside it, `Logger` never appears, and `logger` (any identifier
+    ///     containing it, any case) appears ONLY as the receiver of a log call
+    ///     (`logger.notice(` …): no alias (`let l = Self.logger`), no escape
+    ///     (`f(Self.logger)`), no second logger.
+    static func logShapeFailures(_ code: String, file: String) -> [String] {
+        var failures: [String] = []
+        for call in logCalls(in: code) where !call.isSingleLine {
+            let head = call.text.prefix { $0 != "\n" }
+            failures.append(call.closed
+                ? "\(file):\(call.line): log call spans lines — every log call must start and end on one physical line: \(head)"
+                : "\(file):\(call.line): log call never closes: \(head)")
+        }
+        var declarations = 0
+        for (offset, line) in code.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            let text = String(line)
+            if text.range(of: loggerDeclarationPattern, options: .regularExpression) != nil {
+                declarations += 1
+                continue
+            }
+            var cursor = text.startIndex
+            while let range = text.range(of: "[A-Za-z_][A-Za-z0-9_]*", options: .regularExpression,
+                                         range: cursor..<text.endIndex) {
+                cursor = range.upperBound
+                let identifier = String(text[range])
+                guard identifier.lowercased().contains("logger") else { continue }
+                let tail = text[range.upperBound...]
+                let isReceiver = identifier == "logger" && logMethodNames.contains { name in
+                    tail.hasPrefix("." + name)
+                        && tail.dropFirst(name.count + 1).drop(while: { $0 == " " || $0 == "\t" }).first == "("
+                }
+                if !isReceiver {
+                    failures.append("\(file):\(offset + 1): '\(identifier)' outside the single logger declaration "
+                        + "and not a log-call receiver (logger alias / escape): \(text)")
+                }
+            }
+        }
+        if declarations > 1 {
+            failures.append("\(file): \(declarations) logger declarations — at most one per file")
+        }
+        return failures
+    }
+
+    /// What the content rules scan: every line holding a `logCallTokens`
+    /// token (the pre-H1 unit) PLUS the full text of every extracted log call
+    /// — so a secret or an unannotated interpolation on a continuation line is
+    /// seen as well.
+    static func logScanUnits(_ code: String) -> [String] {
+        code.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            .filter { line in logCallTokens.contains { line.lowercased().contains($0) } }
+            + logCalls(in: code).map(\.text)
+    }
+
     // MARK: - Symbol confinement
 
     /// Each externally-visible capability may appear in ONE file only, repo
@@ -256,38 +414,112 @@ struct LidGuardStructureTests {
     // MARK: - The topic is a password
 
     /// The ntfy topic is the ONLY access control on the feed and it rides
-    /// inside the request URL. So no B2 output line — `Logger`, `print`,
-    /// `NSLog` or `os_log`, see `logCallTokens` — may name a topic or a URL, and
-    /// every interpolation in one must carry an explicit `privacy:` annotation
-    /// (all B2 log statements are single-line by construction).
+    /// inside the request URL. So no B2 output — `Logger`, `print`, `NSLog`
+    /// or `os_log` — may name a topic or a URL, and every interpolation in it
+    /// must carry an explicit `privacy:` annotation.
+    ///
+    /// Scanned units (H1): every line holding a `logCallTokens` token, AND the
+    /// whole text of every log call (`logCalls`, extracted across lines on any
+    /// receiver) — plus the shared shape rules: one physical line per call,
+    /// one logger declaration, no logger alias. Case-INSENSITIVE throughout: a
+    /// differently-named logger (`osLogger`, `alertLogger`, …) must not slip
+    /// past (canary-caught in the 2026-09-09 security review).
+    static func logLintFailures(_ code: String, file: String) -> [String] {
+        var failures = logShapeFailures(code, file: file)
+        for unit in logScanUnits(code) {
+            for secret in ["topic", "Topic", "absoluteString", ".url", "request.url", "endpoint"]
+            where unit.contains(secret) {
+                failures.append("\(file): a log call must never carry '\(secret)' — the ntfy topic is a password: \(unit)")
+            }
+            let interpolations = unit.components(separatedBy: "\\(").count - 1
+            let annotations = unit.components(separatedBy: "privacy:").count - 1
+            if interpolations != annotations {
+                failures.append("\(file): every interpolation in a log call needs an explicit privacy level: \(unit)")
+            }
+        }
+        return failures
+    }
+
     @Test func noLidGuardLogLineCanEchoTheTopicOrTheUrl() throws {
         let sources = try Self.swiftSources()
         var scanned = 0
         for (name, text) in sources where Self.logScannedFiles.contains(name) {
-            // Case-INSENSITIVE: a differently-named logger (`osLogger`,
-            // `alertLogger`, …) must not slip past the scan. Caught by a canary
-            // during the 2026-09-09 security review, when an injected
-            // `canaryLogger.notice("…topic…")` was not matched.
-            for line in text.split(separator: "\n", omittingEmptySubsequences: false)
-            where Self.logCallTokens.contains(where: { line.lowercased().contains($0) }) {
-                scanned += 1
-                for secret in ["topic", "Topic", "absoluteString", ".url", "request.url", "endpoint"] {
-                    #expect(!line.contains(secret),
-                            "\(name): a log line must never carry '\(secret)' — the ntfy topic is a password")
-                }
-                let interpolations = line.components(separatedBy: "\\(").count - 1
-                let annotations = line.components(separatedBy: "privacy:").count - 1
-                #expect(interpolations == annotations,
-                        "\(name): every interpolation in a log line needs an explicit privacy level: \(line)")
-            }
+            scanned += Self.logCalls(in: text).count
+            let failures = Self.logLintFailures(text, file: name)
+            #expect(failures.isEmpty, "\(failures)")
         }
-        #expect(scanned > 0, "no log lines scanned — this lint would be vacuous")
+        #expect(scanned >= 10, "only \(scanned) log calls scanned — this lint would be (nearly) vacuous")
         // Every scanned file must really exist under that name, or a rename
         // would silently drop it out of the lint.
         for name in Self.logScannedFiles {
             #expect(sources.contains { $0.name == name },
                     "\(name) is not in Sources/NapCat — update the lint's file list")
         }
+    }
+
+    /// H1 canaries, injected into EVERY scanned file: a call split across
+    /// lines with the topic on the continuation line, an aliased / escaped /
+    /// second logger, and an unannotated interpolation hidden on a
+    /// continuation line (a line-based scan sees none of them) must each be
+    /// caught BY THE RULE THAT TARGETS IT; a clean one-line call must pass.
+    @Test func lidGuardLogLintCatchesMutants() throws {
+        let sources = try Self.swiftSources()
+        let split = "func canary() {\n    Self.logger.notice(\n        \"lid guard: \\(destination.topic, privacy: .private)\")\n}"
+        let hidden = "func canary() {\n    Self.logger.notice(\"\"\"\n        lid guard: \\(reason.rawValue)\n        \"\"\")\n}"
+        let mutants: [(name: String, code: String, expected: [String])] = [
+            ("multi-line split", split, ["spans lines", "'topic'"]),
+            ("aliased logger", "func canary() { let l = Self.logger; l.notice(\"lid guard\") }", ["logger alias"]),
+            ("aliased bare logger", "func canary() { let l = logger; l.notice(\"lid guard\") }", ["logger alias"]),
+            ("escaped logger", "func canary() { relay(Self.logger) }", ["logger alias"]),
+            ("second logger", "let other = Logger(subsystem: \"x\", category: \"y\")", ["logger alias"]),
+            ("renamed logger", "func canary() { osLogger.notice(\"lid guard\") }", ["logger alias"]),
+            ("hidden interpolation", hidden, ["explicit privacy level", "spans lines"]),
+            ("never closes", "func canary() { Self.logger.notice(\"lid guard\"", ["never closes"]),
+        ]
+        var checked = 0
+        for (file, text) in sources where Self.logScannedFiles.contains(file) {
+            try #require(Self.logLintFailures(text, file: file).isEmpty, "canary baseline must be clean")
+            for (name, code, expected) in mutants {
+                let failures = Self.logLintFailures(text + "\n" + code + "\n", file: file)
+                for marker in expected {
+                    #expect(failures.contains { $0.contains(marker) },
+                            "canary '\(name)' in \(file) was NOT caught by the '\(marker)' rule: \(failures)")
+                }
+            }
+            let clean = "func canary() { Self.logger.notice(\"lid guard: \\(count, privacy: .public)\") }"
+            #expect(Self.logLintFailures(text + "\n" + clean + "\n", file: file).isEmpty,
+                    "a clean one-line call must not trip the lint in \(file)")
+            checked += 1
+        }
+        #expect(checked == Self.logScannedFiles.count)
+    }
+
+    /// The extractor itself: string-aware balancing (a `(`/`)` inside a
+    /// message neither ends nor extends the call), interpolations scanned as
+    /// code, any receiver, spaces before the paren, and no false openers.
+    @Test func logCallExtractionIsStringAwareAndReceiverAgnostic() {
+        let code = """
+            Self.logger.notice("disarmed (\\(r, privacy: .public)), x")
+            l.error("a) \\(b)")
+            print ("p")
+            let x = foo.information(1) + bar.logger
+            NSLog("n")
+            Self.logger.notice(
+                "two")
+            Self.logger.fault("x"
+            """
+        let calls = Self.logCalls(in: code)
+        #expect(calls.map(\.text) == [
+            ".notice(\"disarmed (\\(r, privacy: .public)), x\")",
+            ".error(\"a) \\(b)\")",
+            "print (\"p\")",
+            "NSLog(\"n\")",
+            ".notice(\n    \"two\")",
+            ".fault(\"x\"",
+        ])
+        #expect(calls.map(\.line) == [1, 2, 3, 5, 6, 8])
+        #expect(calls.map(\.isSingleLine) == [true, true, true, true, false, false])
+        #expect(calls.map(\.closed) == [true, true, true, true, true, false])
     }
 
     /// F1 (2026-10-18): the fire-gate SKIP line used to be `.debug`, which

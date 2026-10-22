@@ -22,18 +22,19 @@ light/dark menu bars.
 - **Stay awake with the lid closed**, on demand, from the menu bar. Verified
   by reading the system state back (`pmset -g`) — the menu never shows a
   cached guess.
-- **Lock Screen**, one click (the lock icon next to Quit): NapCat locks your session, confirms the screen
-  really is locked, and only then turns the display off — your Mac keeps
-  running the whole time, which is the point when Stay Awake is on (walk away
-  or close the lid without stopping the work in progress). The order matters:
-  lock → verify → dark, so a failure can never leave you with a dark screen on
-  an *unlocked* Mac; if the lock cannot be confirmed within two seconds the
-  display stays on and NapCat tells you. It needs no privileges of any kind
-  (no `sudo`, no setup) but it does use one private macOS entry point
-  (`SACLockScreenImmediate` in `login.framework`), resolved at runtime — the
-  lock is verified through the public `CGSessionCopyCurrentDictionary()`. If a
-  future macOS drops that entry point, the button simply shows as disabled
-  with an explanation instead of misbehaving.
+- **Lock Screen**, one click (the lock icon next to Quit): NapCat locks your
+  session, confirms the screen really is locked, and only then turns the
+  display off — your Mac keeps running the whole time, which is the point when
+  Stay Awake is on (walk away or close the lid without stopping the work in
+  progress). The order matters: lock → verify → dark, so a failure can never
+  leave you with a dark screen on an *unlocked* Mac; if the lock cannot be
+  confirmed within two seconds the display stays on and NapCat tells you. It
+  needs no privileges of any kind (no `sudo`, no setup) but it does use one
+  private macOS entry point (`SACLockScreenImmediate` in `login.framework`),
+  resolved at runtime — the lock is verified through the public
+  `CGSessionCopyCurrentDictionary()`. If a future macOS drops that entry point,
+  the button simply shows as disabled with an explanation instead of
+  misbehaving.
 - **Battery charge limit** (Apple Silicon only), slider 50–100% in steps
   of 5, default 90%. Charging pauses at the limit and resumes when the
   battery drifts 5 points below it.
@@ -567,12 +568,11 @@ pushes, and the row says so.
   task *is* running, it errs toward sending the push.
 - **A phone on silent may stay silent.** Lid alerts publish at ntfy's `urgent`
   priority (5, alias `max`); session alerts publish at `high` (4), so silent
-  mode still applies to them. The ntfy iOS app v1.8.0+ can deliver `urgent`
-  messages as Critical Alerts that bypass silent mode, once you grant it that
-  permission.
-  That version was still unreleased as of October 2026 (check the
-  [ntfy release notes](https://docs.ntfy.sh/releases/)). Until you have it,
-  iOS shows a normal notification and silent mode applies.
+  mode still applies to them. As of October 2026 the App Store's ntfy iOS app
+  is 1.7.0 (May 2026); v1.8.0, which adds Critical Alerts for `urgent`
+  messages (bypassing silent mode and Do Not Disturb), is still unreleased
+  (check the [ntfy release notes](https://docs.ntfy.sh/releases/)). Until
+  then, iOS shows a normal notification and silent mode applies.
 - **Session alerts have a horizon.** Detectable run length is capped at 12 h
   since the session's last hook event.
 - **Session alerts reveal when you work.** Every alert adds a little

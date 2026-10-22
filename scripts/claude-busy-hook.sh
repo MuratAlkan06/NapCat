@@ -58,8 +58,8 @@
 # best-effort (recorded `unknown` when SUPERCONDUCTOR_MANAGED_AGENT is absent);
 # `src` is DEBUG-ONLY and never a policy input.
 #
-# Stock macOS only: bash 3.2, plutil, date, stat, mktemp, head, grep. No jq,
-# no sudo.
+# Stock macOS only: bash 3.2, plutil, date, stat, mktemp, head, grep, tr. No
+# jq, no sudo.
 
 umask 077
 
@@ -76,8 +76,10 @@ STATE_DIR="$HOME/Library/Application Support/NapCat/claude-busy"
 DISABLED_FLAG="$STATE_DIR/DISABLED"
 LOG_FILE="$STATE_DIR/hook.log"
 CAP=43200
+TMP_CAP=60
 SESSION_RE='^[0-9a-f][0-9a-f-]{7,63}$'
 NTYPE_RE='^[a-z_]{1,32}$'
+EVENT_RE='^[A-Za-z]{1,32}$'
 WAITING_EVENT=waiting
 MAX_STDIN=262144
 NL=$'\n'
@@ -104,6 +106,16 @@ valid_session() {
   [[ ${1:-} =~ $SESSION_RE ]]
 }
 
+# The event name is UNTRUSTED too: only a plain-letters name (1-32 chars, no
+# newline or CR) is ever written to hook.log; anything else is logged as
+# `invalid`, never echoed (log-forgery guard on the two ignore paths).
+valid_event() {
+  case "${1:-}" in
+    ""|*"$NL"*|*"$CR"*) return 1 ;;
+  esac
+  [[ ${1:-} =~ $EVENT_RE ]]
+}
+
 # Layer 4 — atomic, fire-and-forget marker write. Called BACKGROUNDED so a
 # stalled filesystem cannot delay the prompt. mktemp in the SAME directory + mv
 # is a rename(2), so a reader never sees a half-written marker.
@@ -117,7 +129,13 @@ write_marker() {
 
 # Every invocation sweeps siblings older than the 12h cap. Only session-id-
 # shaped names are ever considered, so hook.log, DISABLED and the dot-prefixed
-# temp files are never touched.
+# temp files are never touched by that pass.
+# A second pass removes this hook's own temp files (`.payload.*`, `.marker.*`)
+# once they are older than TMP_CAP seconds: a run killed at Claude's 5 s hook
+# timeout leaves its temp file behind, and nothing else would ever reclaim it.
+# A live temp file normally exists for milliseconds (well inside that 5 s
+# timeout), so the 60 s floor leaves a concurrent run's files alone. No other
+# name is matched (never hook.log, never DISABLED).
 #   $1 now (unix epoch)
 sweep_markers() {
   local f base mtime age
@@ -129,6 +147,13 @@ sweep_markers() {
     case "$mtime" in ''|*[!0-9]*) continue ;; esac
     age=$(( $1 - mtime ))
     [ "$age" -gt "$CAP" ] && rm -f "$f" 2>/dev/null
+  done
+  for f in "$STATE_DIR"/.payload.* "$STATE_DIR"/.marker.*; do
+    [ -f "$f" ] || continue
+    mtime=$(stat -f %m "$f" 2>/dev/null) || continue
+    case "$mtime" in ''|*[!0-9]*) continue ;; esac
+    age=$(( $1 - mtime ))
+    [ "$age" -gt "$TMP_CAP" ] && rm -f "$f" 2>/dev/null
   done
 }
 
@@ -159,11 +184,15 @@ has_running_background_task() {
 # output ends in one newline; the `x` sentinel stops $(…) from also stripping
 # a newline that is part of the VALUE, so a "permission_prompt<LF>" value
 # fails the newline guard instead of silently passing as permission_prompt.
+# bash 3.2 silently DROPS NUL bytes inside $(…), so a "permission\u0000_prompt"
+# value would otherwise collapse into permission_prompt: every NUL is mapped to
+# `#` first (a byte NTYPE_RE rejects ⇒ `invalid`). pipefail keeps plutil's own
+# status as the pipeline's, so a non-string still takes the `?` branch.
 # On failure plutil writes its error to stdout, so the capture is discarded.
 #   $1 payload file
 notification_type() {
   local t
-  t=$(plutil -extract notification_type raw -expect string -o - "$1" 2>/dev/null && printf x) || { printf '?'; return 0; }
+  t=$( (set -o pipefail; plutil -extract notification_type raw -expect string -o - "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#') && printf x ) || { printf '?'; return 0; }
   t=${t%x}
   t=${t%"$NL"}
   case "$t" in
@@ -181,7 +210,7 @@ main() {
   mkdir -p "$STATE_DIR" 2>/dev/null
   chmod 700 "$STATE_DIR" 2>/dev/null
 
-  local now src payload event session marker bg_running ntype tclass tinfo
+  local now src payload event logevent session marker bg_running ntype tclass tinfo
   now=$(date +%s)
   src=unknown
   [ -n "${SUPERCONDUCTOR_MANAGED_AGENT:-}" ] && src=sc
@@ -198,6 +227,10 @@ main() {
     return 0
   fi
   event=$(plutil -extract hook_event_name raw -o - "$payload" 2>/dev/null) || event=""
+  # The only form of the event name the ignore paths may log: `?` when absent,
+  # the name itself when it passes valid_event, `invalid` otherwise.
+  logevent=${event:-?}
+  [ -n "$event" ] && ! valid_event "$event" && logevent=invalid
   session=$(plutil -extract session_id raw -o - "$payload" 2>/dev/null) || session=""
   bg_running=no
   has_running_background_task "$payload" && bg_running=yes
@@ -208,7 +241,7 @@ main() {
   rm -f "$payload" 2>/dev/null
 
   if ! valid_session "$session"; then
-    log "ignore reason=bad-session event=${event:-?}"
+    log "ignore reason=bad-session event=$logevent"
     return 0
   fi
 
@@ -252,7 +285,7 @@ main() {
       fi
       ;;
     *)
-      log "ignore reason=unhandled-event event=${event:-?}"
+      log "ignore reason=unhandled-event event=$logevent"
       ;;
   esac
   return 0

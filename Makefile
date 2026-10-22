@@ -23,8 +23,13 @@ all: smc
 	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
 	codesign --force -s - $(APP)
 
+# pkill only SIGNALS the running instance; `open` issued while it is still
+# exiting can hand off to the dying process, and nothing launches. So wait for
+# it to be gone first — bounded: up to ~5 s (50 polls of 0.1 s), then `open`
+# regardless.
 run: all
 	pkill -x $(APP_NAME) || true
+	@i=0; while pgrep -x $(APP_NAME) >/dev/null && [ $$i -lt 50 ]; do sleep 0.1; i=$$((i + 1)); done
 	open $(APP)
 
 test:

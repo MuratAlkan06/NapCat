@@ -203,7 +203,9 @@ enum FinishAlertPolicy {
         now: Int
     ) -> FinishAlertObservation {
         let present = uniqueMarkers(current)
-        var tracked: [String: TrackedSession] = [:]
+        // Not named `tracked`: outside FinishAlertController no Sources file
+        // may say `tracked[` (FinishAlertStructureTests.trackedReadFailures).
+        var observed: [String: TrackedSession] = [:]
         var events: [FinishAlertEvent] = []
         var suppressed: [FinishAlertSuppression] = []
         let waiting = ClaudeBusyConstants.waitingEventToken
@@ -239,7 +241,7 @@ enum FinishAlertPolicy {
                     session.waitingBuzzed = true
                 }
             }
-            tracked[id] = session
+            observed[id] = session
         }
 
         for id in previous.keys.sorted() where present[id] == nil {
@@ -256,10 +258,10 @@ enum FinishAlertPolicy {
             }
         }
 
-        let stillWorking = tracked.values.filter {
+        let stillWorking = observed.values.filter {
             ClaudeActivityPolicy.markerIsFresh(ts: $0.lastTs, now: now)
         }.count
-        return FinishAlertObservation(tracked: tracked, events: events,
+        return FinishAlertObservation(tracked: observed, events: events,
                                       suppressed: suppressed, stillWorking: stillWorking)
     }
 

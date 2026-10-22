@@ -39,6 +39,12 @@ struct FinishAlertStructureTests {
         for token in LidGuardStructureTests.logCallTokens where code.lowercased().contains(token) {
             failures.append("log call '\(token)' in \(policyFile) — the policy never logs")
         }
+        // H1: every extracted call (any receiver, across lines) — not only
+        // lines naming a logger — and the shared alias / shape rules.
+        for call in LidGuardStructureTests.logCalls(in: code) {
+            failures.append("\(policyFile):\(call.line): log call '\(call.text.prefix { $0 != "\n" })' — the policy never logs")
+        }
+        failures += LidGuardStructureTests.logShapeFailures(code, file: policyFile)
         for line in code.split(separator: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             let words = trimmed.split(separator: " ")
@@ -83,6 +89,8 @@ struct FinishAlertStructureTests {
             ("print call", "    static func canary() { print(\"x\") }"),
             ("NSLog call", "    static func canary() { NSLog(\"x\") }"),
             ("os_log call", "    static func canary() { os_log(\"x\") }"),
+            ("aliased logger call", "    static func canary(_ l: AnyObject) { l.notice(\"x\") }"),
+            ("split log call", "    static func canary() { sink.error(\n        \"x\") }"),
             ("defaults read", "    static let canary = UserDefaults.standard.string(forKey: \"x\")"),
             ("topic read", "    static let canary = DefaultsKeys.lidGuardNtfyTopic"),
             ("destination topic read", "    static func canary(_ d: NtfyDestination) -> String { d.topic }"),
@@ -180,9 +188,13 @@ struct FinishAlertStructureTests {
     }
 
     /// Every lint failure for one shell file's text (empty = clean). Mirrors
-    /// `noLidGuardLogLineCanEchoTheTopicOrTheUrl`, stricter: each `.public`
+    /// `LidGuardStructureTests.logLintFailures`, stricter: each `.public`
     /// interpolation must be an allow-listed count / reason expression and
     /// each `.private` one the outcome detail; levels must be persisted.
+    /// H1: the content rules run over every log-token line AND the whole text
+    /// of every extracted log call (across lines, any receiver), plus the
+    /// shared shape rules (one physical line per call, one logger
+    /// declaration, no logger alias / escape).
     static func shellLintFailures(_ source: String, file: String) -> [String] {
         var failures: [String] = []
         let code = LidGuardStructureTests.codeOnly(source)
@@ -196,15 +208,15 @@ struct FinishAlertStructureTests {
             for token in LidGuardStructureTests.logCallTokens where code.lowercased().contains(token) {
                 failures.append("log call '\(token)' in \(file) — the watcher never logs")
             }
+            for call in LidGuardStructureTests.logCalls(in: code) {
+                failures.append("\(file):\(call.line): log call '\(call.text.prefix { $0 != "\n" })' — the watcher never logs")
+            }
         }
         for level in ["logger.debug(", "logger.trace(", "logger.info("] where code.lowercased().contains(level) {
             failures.append("'\(level)' in \(file) — not persisted by macOS; use .notice or higher")
         }
-        for line in code.split(separator: "\n") {
-            let text = String(line)
-            guard LidGuardStructureTests.logCallTokens.contains(where: { text.lowercased().contains($0) }) else {
-                continue
-            }
+        failures += LidGuardStructureTests.logShapeFailures(code, file: file)
+        for text in LidGuardStructureTests.logScanUnits(code) {
             for secret in logSecretTokens where text.contains(secret) {
                 failures.append("\(file): a log line carries '\(secret)': \(text)")
             }
@@ -234,6 +246,7 @@ struct FinishAlertStructureTests {
 
     @Test func shippedShellFilesPassTheLint() throws {
         var logLines = 0
+        var logCalls = 0
         for file in Self.shellFiles {
             let source = try Self.shipped(file)
             #expect(Self.shellLintFailures(source, file: file).isEmpty,
@@ -241,12 +254,14 @@ struct FinishAlertStructureTests {
             logLines += LidGuardStructureTests.codeOnly(source).split(separator: "\n")
                 .filter { line in LidGuardStructureTests.logCallTokens.contains { line.lowercased().contains($0) } }
                 .count
+            logCalls += LidGuardStructureTests.logCalls(in: LidGuardStructureTests.codeOnly(source)).count
         }
         // Vacuity guards: the files are the real ones, and the controller
         // really logs (so the log rules are exercised).
         #expect(try Self.shipped(Self.watcherFile).contains("makeFileSystemObjectSource("))
         #expect(try Self.shipped(Self.controllerFile).contains("final class FinishAlertController"))
         #expect(logLines >= 8, "expected the controller's log lines to be scanned, found \(logLines)")
+        #expect(logCalls >= 8, "expected the controller's log calls to be extracted, found \(logCalls)")
     }
 
     /// Canary: every banned token, every log-hygiene violation, and a watcher
@@ -280,6 +295,7 @@ struct FinishAlertStructureTests {
                 ("destination topic read", "    func canary() -> String? { config.storedDestination?.topic }"),
                 ("destination server read", "    func canary() -> String? { config.storedDestination?.server }"),
             ]
+            mutants += Self.h1Mutants.map { ($0.name, $0.line) }
             if file == Self.watcherFile {
                 mutants += [
                     ("watcher logger", "    let canary = Logger(subsystem: \"x\", category: \"y\")"),
@@ -308,6 +324,89 @@ struct FinishAlertStructureTests {
         let watcher = try Self.shipped(Self.watcherFile)
         let withImport = watcher.replacingOccurrences(of: "import Foundation", with: "import Foundation\nimport os")
         #expect(!Self.shellLintFailures(withImport, file: Self.watcherFile).isEmpty)
+    }
+
+    /// H1 canaries — each one evades a LINE-based scan (the log token and the
+    /// offending text sit on different lines, or the logger is renamed away).
+    /// `expected`: the rule(s) that must catch it in the controller, the file
+    /// that legitimately logs (so a hit cannot come from "the watcher never
+    /// logs" instead).
+    static let h1Mutants: [(name: String, line: String, expected: [String])] = [
+        ("multi-line split",
+         "    func canary() { Self.logger.notice(\n        \"\\(id, privacy: .public)\") }",
+         ["spans lines", "'id' at '.public'"]),
+        ("aliased logger",
+         "    func canary() { let l = Self.logger; l.notice(\"x\") }", ["logger alias"]),
+        ("aliased bare logger",
+         "    func canary() { let l = logger; l.notice(\"x\") }", ["logger alias"]),
+        ("escaped logger",
+         "    func canary() { relay(Self.logger) }", ["logger alias"]),
+        ("second logger",
+         "    private static let other = Logger(subsystem: \"x\", category: \"y\")", ["logger alias"]),
+        ("hidden continuation interpolation",
+         "    func canary() {\n        Self.logger.notice(\"\"\"\n            finish alert \\(id)\n            \"\"\")\n    }",
+         ["interpolation without a privacy level", "spans lines"]),
+    ]
+
+    @Test func h1CanariesAreCaughtByTheRuleThatTargetsThem() throws {
+        let original = try Self.shipped(Self.controllerFile)
+        let anchor = "final class FinishAlertController {"
+        try #require(original.contains(anchor))
+        for (name, line, expected) in Self.h1Mutants {
+            let failures = Self.shellLintFailures(original.replacingOccurrences(of: anchor, with: anchor + "\n" + line),
+                                                  file: Self.controllerFile)
+            for marker in expected {
+                #expect(failures.contains { $0.contains(marker) },
+                        "canary '\(name)' was NOT caught by the '\(marker)' rule: \(failures)")
+            }
+        }
+        // Negative control: a clean, allow-listed one-line call passes.
+        let clean = "    func canary() { Self.logger.notice(\"finish alert: \\(dropped, privacy: .public)\") }"
+        #expect(Self.shellLintFailures(original.replacingOccurrences(of: anchor, with: anchor + "\n" + clean),
+                                       file: Self.controllerFile).isEmpty)
+    }
+
+    // MARK: - H5: the tracked map stays inside the controller
+
+    /// `FinishAlertController.tracked` holds session ids (internal diff keys)
+    /// and is `private(set)` only so tests can read it. No other Sources file
+    /// may read it — nor the policy's `FinishAlertObservation.tracked` — or
+    /// extend the controller to reach it bare. Tests are not scanned.
+    static func trackedReadFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (name, text) in sources where name != controllerFile {
+            for token in [".tracked", "tracked[", "extension FinishAlertController"] where text.contains(token) {
+                failures.append("'\(token)' in \(name) — the tracked map is readable only inside \(controllerFile)")
+            }
+        }
+        return failures
+    }
+
+    @Test func theTrackedMapIsReadOnlyInsideTheController() throws {
+        let sources = try LidGuardStructureTests.swiftSources()
+        #expect(Self.trackedReadFailures(sources).isEmpty, "\(Self.trackedReadFailures(sources))")
+        // Vacuity: the property and its one policy-side read really exist.
+        let controller = try #require(sources.first { $0.name == Self.controllerFile })
+        #expect(controller.text.contains("private(set) var tracked"))
+        #expect(controller.text.contains("observation.tracked"))
+
+        func mutate(_ name: String, _ code: String) -> [(name: String, text: String)] {
+            sources.map { $0.name == name ? ($0.name, $0.text + "\n" + code) : $0 }
+        }
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("menu reads the ids", mutate("MenuContentView.swift", "let ids = finishAlert?.tracked.keys")),
+            ("subscript elsewhere", mutate("LidGuardController.swift", "let s = controller.tracked[id]")),
+            ("observation read elsewhere", mutate("NapCatApp.swift", "let t = observation.tracked")),
+            ("extension reaches it bare",
+             mutate("NapCatApp.swift", "extension FinishAlertController { var n: Int { tracked.count } }")),
+            ("policy local named tracked", mutate(Self.policyFile, "func f() { var tracked = [0]; tracked[0] = 1 }")),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.trackedReadFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Negative control: the controller itself may read it.
+        #expect(Self.trackedReadFailures(mutate(Self.controllerFile, "let ids = tracked.keys; let s = self.tracked[id]"))
+            .isEmpty)
     }
 
     /// The watcher, the controller and the production scheduler are built in
