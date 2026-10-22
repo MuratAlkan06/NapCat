@@ -1,5 +1,9 @@
 # NapCat
 
+[![CI](https://github.com/MuratAlkan06/NapCat/actions/workflows/ci.yml/badge.svg)](https://github.com/MuratAlkan06/NapCat/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/MuratAlkan06/NapCat)](LICENSE)
+![Platform: macOS 14+](https://img.shields.io/badge/platform-macOS%2014%2B-lightgrey)
+
 A tiny macOS menu bar cat that tells you — at a glance — what your Mac's
 power state is, and gives you two switches that macOS hides:
 
@@ -611,8 +615,9 @@ Notes:
   awake, `v0.3.0` charge limit, `v0.4.0` animation, `v1.0.0` polish, and
   later `v1.0.1` watchdog charging re-enable + MIT license, `v1.1.0`
   menu-stays-open UX fix + hand-drawn sleep icon, `v1.2.0` lid-close ntfy
-  alert + hardware-validated sleep pipeline, and `v1.3.0` Lock Screen +
-  frozen menu redesign). Each annotated tag carries its release notes
+  alert + hardware-validated sleep pipeline, `v1.3.0` Lock Screen +
+  frozen menu redesign, `v1.4.0` session alerts — finish and waiting
+  pushes, and `v1.4.1` the quieter menu panel). Each annotated tag carries its release notes
   (`git tag -n99`); the detailed build plan and verification matrix are
   maintained privately.
 
