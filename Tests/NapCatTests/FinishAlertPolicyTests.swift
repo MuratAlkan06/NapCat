@@ -39,6 +39,7 @@ struct FinishAlertPolicyTests {
         #expect(FinishAlertTuning.batchWindowSeconds == 30)
         #expect(FinishAlertTuning.retryDelaySeconds == 30)
         #expect(FinishAlertTuning.retryMaxAgeSeconds == 300)
+        #expect(FinishAlertTuning.rateLimitHoldSeconds == 600)
         #expect(FinishAlertTuning.staleCapSeconds == 43_200)
         #expect(FinishAlertTuning.staleCapSeconds == ClaudeBusyConstants.freshnessCapSeconds)
     }
@@ -234,7 +235,7 @@ struct FinishAlertPolicyTests {
     static func m1(_ ts: Int, _ event: String) -> [IdentifiedBusyMarker] { [marker(s1, ts, event)] }
 
     static let scenarios: [Scenario] = {
-        let t = Self.t0, ups = Self.ups, w = Self.waiting
+        let t = Self.t0, ups = Self.ups, w = Self.waiting, was = ClaudeBusyConstants.waitingAfterStopEventToken
         return [
             // MARK: FA-5 — a newer UserPromptSubmit is a new turn, never a finish
             Scenario(id: "R1", note: "debounce-window recreate: newer UPS ts ⇒ no finish, anchor reset",
@@ -352,6 +353,36 @@ struct FinishAlertPolicyTests {
                      baseline: m1(t, ups), steps: [
                         Step([], now: t + 900, [.finished(minutes: 15)]),
                      ]),
+            // MARK: B-2 — the post-Stop waiting token is the same waiting class
+            Scenario(id: "W15", note: "post-Stop keep → waiting-after-stop ⇒ exactly one buzz; rewrites never re-buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 600, "Stop"), now: t + 602),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)]),
+                        Step(m1(t + 720, was), now: t + 722),
+                     ]),
+            Scenario(id: "W16", note: "waiting → waiting-after-stop is NOT a new episode (no second buzz)",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 400, was), now: t + 402),
+                        Step(m1(t + 500, w), now: t + 502),
+                     ]),
+            Scenario(id: "W17", note: "waiting-after-stop → Stop clears the dedupe; the next wait buzzes again",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 600, "Stop"), now: t + 602),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)]),
+                        Step(m1(t + 700, "Stop"), now: t + 702),
+                        Step(m1(t + 900, was), now: t + 902, [.waiting(minutes: 15)]),
+                     ]),
+            Scenario(id: "W18", note: "B-2 hook keep: waiting → Notification (subagent ended mid-turn) → waiting ⇒ second buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 360, "Notification"), now: t + 362),
+                        Step(m1(t + 480, w), now: t + 482, [.waiting(minutes: 8)]),
+                     ]),
         ]
     }()
 
@@ -389,6 +420,32 @@ struct FinishAlertPolicyTests {
         let resumed = FinishAlertPolicy.observe(previous: late.tracked, current: Self.m1(Self.t0 + 90, "Notification"),
                                                 now: Self.t0 + 90)
         #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting ends the episode")
+    }
+
+    /// B-2: the dedupe flag treats BOTH waiting tokens as one episode — a
+    /// `waiting` → `waiting-after-stop` rewrite keeps it set (no new buzz),
+    /// and only a NON-waiting token (here the post-Stop `Stop` a resume
+    /// writes) clears it.
+    @Test func waitingAfterStopSharesTheWaitingEpisode() {
+        let afterStop = ClaudeBusyConstants.waitingAfterStopEventToken
+        let start = [Self.s1: Self.session(firstSeen: Self.t0, exact: true, lastTs: Self.t0)]
+        let buzzed = FinishAlertPolicy.observe(previous: start, current: Self.m1(Self.t0 + 60, afterStop),
+                                               now: Self.t0 + 60)
+        #expect(buzzed.events == [.waiting(minutes: 1)], "a transition into waiting-after-stop buzzes")
+        #expect(buzzed.tracked[Self.s1]?.waitingBuzzed == true)
+
+        let swapped = FinishAlertPolicy.observe(previous: buzzed.tracked, current: Self.m1(Self.t0 + 90, Self.waiting),
+                                                now: Self.t0 + 90)
+        #expect(swapped.events.isEmpty, "a change between the two waiting tokens is not a new episode")
+        #expect(swapped.tracked[Self.s1]?.waitingBuzzed == true)
+
+        let back = FinishAlertPolicy.observe(previous: swapped.tracked, current: Self.m1(Self.t0 + 120, afterStop),
+                                             now: Self.t0 + 120)
+        #expect(back.events.isEmpty)
+        let resumed = FinishAlertPolicy.observe(previous: back.tracked, current: Self.m1(Self.t0 + 150, "Stop"),
+                                                now: Self.t0 + 150)
+        #expect(resumed.events.isEmpty)
+        #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting-after-stop ends the episode")
     }
 
     /// Ids are internal keys: every event payload leaf is an Int (or nil).
@@ -502,6 +559,38 @@ struct FinishAlertPolicyTests {
         #expect(FinishAlertPolicy.retryDecision(outcome: outcome, attempt: attempt) == expected, "\(id)")
         // Exhaustive: a new outcome case will not compile until the table above covers it.
         switch outcome { case .accepted, .rejected, .timedOutUnconfirmed, .sendFailed: break }
+    }
+
+    // MARK: - B-1 rate-limit hold (window extension)
+
+    /// Only a 429 holds the session lane, for `rateLimitHoldSeconds`; every
+    /// other outcome — including every other refusal — leaves the window be.
+    @Test(arguments: [
+        // (id, outcome, expected)
+        ("H1", MessageSendOutcome.rejected(429), TimeInterval?(600)),
+        ("H2", .accepted, nil),
+        ("H3", .timedOutUnconfirmed, nil),
+        ("H4", .sendFailed("offline"), nil),
+        ("H5", .sendFailed("lane busy"), nil),
+        ("H6", .rejected(400), nil),
+        ("H7", .rejected(401), nil),
+        ("H8", .rejected(403), nil),
+        ("H9", .rejected(404), nil),
+        ("H10", .rejected(500), nil),
+        ("H11", .rejected(503), nil),
+        ("H12", .rejected(428), nil),
+        ("H13", .rejected(430), nil),
+    ] as [(String, MessageSendOutcome, TimeInterval?)])
+    func windowExtensionTable(_ id: String, _ outcome: MessageSendOutcome, _ expected: TimeInterval?) {
+        #expect(FinishAlertPolicy.windowExtension(after: outcome) == expected, "\(id)")
+        // Exhaustive: a new outcome case will not compile until the table above covers it.
+        switch outcome { case .accepted, .rejected, .timedOutUnconfirmed, .sendFailed: break }
+    }
+
+    @Test func theRateLimitHoldIsTheTunableAndNeverARetry() {
+        #expect(FinishAlertPolicy.windowExtension(after: .rejected(429)) == FinishAlertTuning.rateLimitHoldSeconds)
+        #expect(FinishAlertPolicy.retryDecision(outcome: .rejected(429), attempt: .first) == .done,
+                "the hold replaces nothing: a 429 is still never retried")
     }
 
     @Test func retryDelayIsTheTunable() {

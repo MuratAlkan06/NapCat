@@ -717,8 +717,9 @@ final class MenuStateModel: ObservableObject {
     /// `.hookNotInstalled` otherwise), and `.paused` is the F2 downgrade: on,
     /// but no busy marker can exist, so nothing can fire. A refused or failed
     /// LAST session send must not read "armed" either — it names the fix
-    /// (re-run the test send), and a STRICTLY LATER accepted lid-lane send
-    /// (that test send, or a lid alert) clears the downgrade: see
+    /// (re-run the test send; for a 429 it says alerts are being held, B-1),
+    /// and a STRICTLY LATER accepted lid-lane send (that test send, or a lid
+    /// alert) clears the downgrade: see
     /// `finishAlertSendDowngraded`. The Details "Last session alert" line is
     /// unaffected — it stays the truthful history.
     nonisolated static func finishAlertStatusLine(
@@ -742,16 +743,30 @@ final class MenuStateModel: ObservableObject {
         case .armed:
             if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                                          lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {
+                if finishAlertRateLimited(lastOutcome) {
+                    return "Session alerts: ntfy is rate-limiting this Mac — alerts are held and folded for a while"
+                }
                 return "Session alerts: the last message did not go out — re-run Send test message"
             }
             return "Session alerts: armed — a push when a Claude session finishes or waits for you"
         }
     }
 
+    /// B-1: the last session send was refused with HTTP 429. The controller
+    /// then holds the session lane (events fold, one message when the hold
+    /// ends), so the caption says so — a WARNING, not the generic error:
+    /// "re-run Send test message" is the wrong advice for a rate limit (it
+    /// would only burn more quota). Same recovery rule as the generic
+    /// downgrade (`finishAlertSendDowngraded`).
+    nonisolated static func finishAlertRateLimited(_ outcome: MessageSendOutcome?) -> Bool {
+        outcome == .rejected(429)
+    }
+
     /// The status line with its severity. Off is a choice (nominal); switched
     /// on but unable to fire (no topic, untested, paused, nothing to watch) is
     /// a warning; armed with a refused / failed last send (not yet recovered
-    /// by a later accepted lid-lane send) is an error.
+    /// by a later accepted lid-lane send) is an error — except a 429, which is
+    /// a warning: alerts are held and folded, not lost (B-1).
     nonisolated static func finishAlertStatus(
         for state: FinishAlertDisplayState,
         lastOutcome: MessageSendOutcome?,
@@ -771,7 +786,11 @@ final class MenuStateModel: ObservableObject {
             let downgraded = finishAlertSendDowngraded(
                 lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                 lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt)
-            severity = downgraded ? .error : .nominal
+            if !downgraded {
+                severity = .nominal
+            } else {
+                severity = finishAlertRateLimited(lastOutcome) ? .warning : .error
+            }
         }
         return PanelLine(text: text, severity: severity)
     }

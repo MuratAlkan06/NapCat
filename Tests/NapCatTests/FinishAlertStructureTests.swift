@@ -409,6 +409,36 @@ struct FinishAlertStructureTests {
             .isEmpty)
     }
 
+    // MARK: - B-1: the 429 hold is session-lane only
+
+    /// Only the finish-alert policy (which defines it) and controller (the
+    /// session lane) may name the rate-limit hold — the lid lane keeps its
+    /// own, hold-free send path.
+    static func rateLimitHoldFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (name, text) in sources where name != policyFile && name != controllerFile {
+            let code = LidGuardStructureTests.codeOnly(text)
+            for token in ["windowExtension(", "rateLimitHoldSeconds", "holdForRateLimit"] where code.contains(token) {
+                failures.append("'\(token)' in \(name) — the 429 hold belongs to the session lane only")
+            }
+        }
+        return failures
+    }
+
+    @Test func theRateLimitHoldStaysInTheSessionLane() throws {
+        let sources = try LidGuardStructureTests.swiftSources()
+        #expect(Self.rateLimitHoldFailures(sources).isEmpty, "\(Self.rateLimitHoldFailures(sources))")
+        // Vacuity: the controller really applies the policy's hold.
+        let controller = try #require(sources.first { $0.name == Self.controllerFile })
+        #expect(controller.text.contains("FinishAlertPolicy.windowExtension(after: outcome)"))
+        // Canary: the lid lane reaching for the hold is caught.
+        let mutant = sources.map {
+            $0.name == "LidGuardController.swift"
+                ? ($0.name, $0.text + "\nlet h = FinishAlertPolicy.windowExtension(after: outcome)") : $0
+        }
+        #expect(!Self.rateLimitHoldFailures(mutant).isEmpty, "canary: a lid-lane hold was NOT caught")
+    }
+
     /// The watcher, the controller and the production scheduler are built in
     /// ONE place: `FinishAlertController.makeIfEnabled` (debug-sim gated).
     /// The app reaches the feature only through that factory.

@@ -28,6 +28,10 @@ enum FinishAlertTuning {
     static let retryDelaySeconds: TimeInterval = 30
     /// A retry whose originating event is older than this is dropped.
     static let retryMaxAgeSeconds: TimeInterval = 300
+    /// B-1: after ntfy answers a session send with HTTP 429, the batch window
+    /// is held open this long — later events fold into ONE digest that goes
+    /// out when the hold ends (the lid lane has no hold).
+    static let rateLimitHoldSeconds: TimeInterval = 600
     /// A disappearance whose last-known marker ts is older than this is the
     /// hook's sweep, not a finish (same 12 h cap as marker freshness).
     static let staleCapSeconds = ClaudeBusyConstants.freshnessCapSeconds
@@ -188,15 +192,17 @@ enum FinishAlertPolicy {
     /// 1. NEW id ⇒ tracked from its own ts; exact only if it is a
     ///    UserPromptSubmit marker; a new id already `waiting` is a transition.
     /// 2. EXISTING id ⇒ a NEWER UserPromptSubmit ts starts a new turn (anchor
-    ///    reset, exact, dedupe cleared — never a finish); leaving `waiting`
-    ///    ends the episode (dedupe cleared); lastTs/lastEvent always updated.
+    ///    reset, exact, dedupe cleared — never a finish); leaving waiting
+    ///    (either waiting token, B-2) ends the episode (dedupe cleared);
+    ///    lastTs/lastEvent always updated.
     /// 3. DISAPPEARED id ⇒ stale (last ts beyond the 12 h cap; exactly the cap
     ///    is NOT stale) / clockJump (negative run) / underMinimumRun, else
     ///    `.finished`.
     /// 4. WAITING transition (non-waiting or new → waiting, not yet buzzed) ⇒
     ///    clockJump / underMinimumRun, else `.waiting` and the dedupe flag is
     ///    set. A suppressed transition leaves the flag false; rewrites that
-    ///    stay `waiting` are never a transition.
+    ///    stay waiting — including `waiting` ⇄ `waiting-after-stop` — are
+    ///    never a transition.
     static func observe(
         previous: [String: TrackedSession],
         current: [IdentifiedBusyMarker],
@@ -208,11 +214,10 @@ enum FinishAlertPolicy {
         var observed: [String: TrackedSession] = [:]
         var events: [FinishAlertEvent] = []
         var suppressed: [FinishAlertSuppression] = []
-        let waiting = ClaudeBusyConstants.waitingEventToken
 
         for id in present.keys.sorted() {
             guard let marker = present[id] else { continue }
-            let isWaiting = marker.event == waiting
+            let isWaiting = isWaitingEvent(marker.event)
             var session: TrackedSession
             let isTransitionToWaiting: Bool
             if let prior = previous[id] {
@@ -222,7 +227,7 @@ enum FinishAlertPolicy {
                     session.exactStart = true
                     session.waitingBuzzed = false
                 }
-                let wasWaiting = prior.lastEvent == waiting
+                let wasWaiting = isWaitingEvent(prior.lastEvent)
                 if wasWaiting && !isWaiting { session.waitingBuzzed = false }
                 session.lastTs = marker.ts
                 session.lastEvent = marker.event
@@ -270,6 +275,13 @@ enum FinishAlertPolicy {
     static func minutes(duration: Int, exact: Bool) -> Int? {
         guard exact, duration >= 60 else { return nil }
         return duration / 60
+    }
+
+    /// B-2: BOTH synthetic waiting tokens mean "blocked on the user" — the
+    /// in-flight `waiting` and the post-Stop `waiting-after-stop`. A change
+    /// between the two is NOT a new episode; any other token ends it.
+    private static func isWaitingEvent(_ event: String) -> Bool {
+        event == ClaudeBusyConstants.waitingEventToken || event == ClaudeBusyConstants.waitingAfterStopEventToken
     }
 
     /// Floor + clock checks shared by finishes and waiting buzzes; nil = the
@@ -320,6 +332,16 @@ enum FinishAlertPolicy {
         case (.sendFailed, .retry): return .done
         case (.accepted, _), (.rejected, _), (.timedOutUnconfirmed, _): return .done
         }
+    }
+
+    /// B-1: how far a session-lane send outcome pushes the batch window out.
+    /// Only a 429 (ntfy is rate-limiting this Mac) holds — for
+    /// `rateLimitHoldSeconds`, during which events keep folding into the
+    /// digest; every other outcome (accepted, unconfirmed, failed, any other
+    /// refusal) leaves the window alone. No retry either way (`retryDecision`).
+    static func windowExtension(after outcome: MessageSendOutcome) -> TimeInterval? {
+        guard outcome == .rejected(429) else { return nil }
+        return FinishAlertTuning.rateLimitHoldSeconds
     }
 
     /// A pending retry is re-gated at fire time: still armed, not paused, the

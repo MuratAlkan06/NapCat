@@ -618,6 +618,159 @@ struct FinishAlertControllerTests {
         }
     }
 
+    // MARK: B-1 — session-lane hold after HTTP 429
+
+    static let hold = FinishAlertTuning.rateLimitHoldSeconds
+
+    /// A 429 opens the hold: the window now closes `rateLimitHoldSeconds`
+    /// after the refusal and the ONE flush is scheduled for that instant — no
+    /// retry, nothing else pending.
+    @Test func a429HoldsTheWindowAndSchedulesTheFlushAtTheHoldEnd() async throws {
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(429))) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.count == 1)
+            #expect(h.controller.lastSendOutcome == .rejected(429))
+            #expect(h.pendingRetries.isEmpty, "a 429 is still never retried")
+            #expect(h.scheduler.pending.map(\.delay) == [Self.hold],
+                    "exactly one pending callback: the flush at the hold end, got \(h.scheduler.pending.map(\.delay))")
+        }
+    }
+
+    /// Every finish observed during the hold FOLDS into the digest; nothing
+    /// is sent until the hold ends, then ONE folded message goes out.
+    @Test func finishesDuringTheHoldFoldIntoOneMessageAtTheHoldEnd() async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(429))
+        try await withFinishAlertHarness(sender: sender) { h in
+            for id in [H.s1, H.s2, H.s3] { h.store.put(id, ts: H.t0 - 600) }
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            let flush = try #require(h.scheduler.pending(delay: Self.hold).first)
+            sender.setOutcome(.accepted)
+
+            h.advance(100)
+            h.store.remove(H.s2)
+            await h.settle()
+            h.advance(200)
+            h.store.remove(H.s3)
+            await h.settle()
+            #expect(h.sends.count == 1, "held: nothing goes out during the hold")
+            #expect(h.scheduler.pending.count == 1 && flush.isPending, "still the one flush at the hold end")
+
+            h.advance(300)   // t0 + 600: the hold ends
+            flush.fire()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: 10, folded: 1, stillWorking: 2),
+                                            .sessionFinished(minutes: nil, folded: 2, stillWorking: 0)])
+            #expect(h.controller.lastSendOutcome == .accepted)
+            #expect(h.scheduler.pending.isEmpty, "an accepted flush leaves no hold behind")
+        }
+    }
+
+    /// A second 429 at the flush extends the hold again: a new flush one
+    /// hold later, and what folds meanwhile goes out then.
+    @Test func a429AtTheHoldEndExtendsTheHoldAgain() async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(429))
+        try await withFinishAlertHarness(sender: sender) { h in
+            for id in [H.s1, H.s2, H.s3] { h.store.put(id, ts: H.t0 - 600) }
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            let first = try #require(h.scheduler.pending(delay: Self.hold).first)
+
+            h.advance(100)
+            h.store.remove(H.s2)
+            await h.settle()
+            h.advance(500)
+            first.fire()
+            await drainMain()
+            #expect(h.sends.count == 2, "the held digest went out at the hold end")
+            let second = try #require(h.scheduler.pending(delay: Self.hold).first, "the second 429 re-held the lane")
+            #expect(second !== first)
+            #expect(h.scheduler.pending.count == 1)
+
+            sender.setOutcome(.accepted)
+            h.advance(60)
+            h.store.remove(H.s3)
+            await h.settle()
+            #expect(h.sends.count == 2, "still held after the second 429")
+            h.advance(540)
+            second.fire()
+            await drainMain()
+            #expect(h.sends.count == 3)
+            #expect(h.sends.last?.kind == .sessionFinished(minutes: 21, folded: 1, stillWorking: 0))
+        }
+    }
+
+    enum HoldTeardown: String, CaseIterable, Sendable { case off, paused, quit }
+
+    /// Disarm, pause and quit during the hold cancel the flush and drop the
+    /// folded digest; after re-arming, the hold is gone (the next finish
+    /// sends at once, unfolded).
+    @Test(arguments: HoldTeardown.allCases)
+    func aTeardownDuringTheHoldCancelsTheFlushAndDropsTheDigest(_ teardown: HoldTeardown) async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(429))
+        try await withFinishAlertHarness(sender: sender) { h in
+            for id in [H.s1, H.s2, H.s3] { h.store.put(id, ts: H.t0 - 600) }
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            let flush = try #require(h.scheduler.pending(delay: Self.hold).first)
+            h.advance(100)
+            h.store.remove(H.s2)
+            await h.settle()
+
+            switch teardown {
+            case .off:
+                h.config.finishAlertArmingState = .off
+                h.controller.reconcile()
+            case .paused:
+                h.pause()
+                h.controller.reconcile()
+            case .quit:
+                h.controller.disarmForShutdown()
+            }
+            #expect(!h.controller.isWatching, "\(teardown.rawValue)")
+            #expect(flush.cancelled, "\(teardown.rawValue): the hold's flush is cancelled")
+            for work in h.scheduler.scheduled { work.fire() }
+            await drainMain()
+            #expect(h.sends.count == 1, "\(teardown.rawValue): nothing goes out after the teardown")
+
+            // Re-arm: a fresh baseline, no window, no digest left over.
+            h.config.finishAlertArmingState = .armed
+            try? FileManager.default.removeItem(at: h.dir.appendingPathComponent(ClaudeBusyConstants.disabledFlagName))
+            h.controller.reconcile()
+            #expect(h.controller.isWatching, "\(teardown.rawValue): re-armed")
+            sender.setOutcome(.accepted)
+            h.store.remove(H.s3)
+            await h.settle()
+            #expect(h.sends.count == 2, "\(teardown.rawValue): the hold did not survive the teardown")
+            #expect(h.sends.last?.kind == .sessionFinished(minutes: 11, folded: 1, stillWorking: 0),
+                    "\(teardown.rawValue): the dropped digest's finish is not folded in")
+        }
+    }
+
+    /// Any other refusal leaves the plain batch window: a finish after it
+    /// goes out as soon as the 30 s window closes, not after a hold.
+    @Test func otherRefusalsDoNotHold() async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(403))
+        try await withFinishAlertHarness(sender: sender) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.store.put(H.s2, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.scheduler.pending.isEmpty, "no hold after a 403")
+            h.advance(10)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(h.scheduler.pending.map(\.delay) == [FinishAlertTuning.batchWindowSeconds - 10])
+        }
+    }
+
     // MARK: Floor + minutes, end to end
 
     @Test func aLongRunFinishCarriesItsMinutes() async throws {

@@ -7,7 +7,7 @@ backports.
 
 | Version                          | Supported |
 |----------------------------------|-----------|
-| Latest tag (currently `v1.3.0`)  | Yes       |
+| The latest tagged release        | Yes       |
 | Anything older                   | No        |
 
 If you are on an older tag, update to the latest one and re-run

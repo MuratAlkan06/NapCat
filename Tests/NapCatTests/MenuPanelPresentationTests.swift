@@ -202,13 +202,21 @@ struct MenuPanelPresentationTests {
     static let sessionSendAt = 1_000_000.0
 
     static let sessionOutcomes: [MessageSendOutcome?] =
-        [nil, .accepted, .timedOutUnconfirmed, .rejected(429), .sendFailed("boom")]
+        [nil, .accepted, .timedOutUnconfirmed, .rejected(429), .sendFailed("boom"), .rejected(403)]
 
-    /// Every display state × every last outcome (6 × 5 = 30 rows), exact
-    /// strings. Only `.armed` reads the last outcome.
+    static let sessionRateLimitedText =
+        "Session alerts: ntfy is rate-limiting this Mac — alerts are held and folded for a while"
+
+    /// Every display state × every last outcome (6 × 6 = 36 rows), exact
+    /// strings. Only `.armed` reads the last outcome. B-1: a 429 is the
+    /// rate-limit WARNING (alerts are held, not lost — and "re-run Send test
+    /// message" would only burn quota); every other refusal / failure keeps
+    /// the generic error.
     static let sessionRows: [SessionRow] = sessionOutcomes.flatMap { outcome -> [SessionRow] in
         let armed: SessionRow
         switch outcome {
+        case .rejected(429)?:
+            armed = SessionRow(state: .armed, outcome: outcome, text: sessionRateLimitedText, severity: .warning)
         case .rejected?, .sendFailed?:
             armed = SessionRow(state: .armed, outcome: outcome,
                                text: "Session alerts: the last message did not go out — re-run Send test message",
@@ -235,7 +243,9 @@ struct MenuPanelPresentationTests {
     }
 
     @Test func sessionRowsCoverEveryStateAndOutcome() {
-        #expect(Self.sessionRows.count == 30, "vacuity guard — 6 states × 5 outcomes")
+        #expect(Self.sessionRows.count == 36, "vacuity guard — 6 states × 6 outcomes")
+        let armedSeverities = Set(Self.sessionRows.filter { $0.state == .armed }.map(\.severity))
+        #expect(armedSeverities == [.nominal, .warning, .error], "armed shows healthy, held (429) and failed lines")
     }
 
     @Test(arguments: sessionRows)
@@ -249,7 +259,7 @@ struct MenuPanelPresentationTests {
     }
 
     static let sessionDegradedPhrases = ["set an ntfy topic", "send the test message", "cannot fire",
-                                         "waiting for the Claude hook", "did not go out"]
+                                         "waiting for the Claude hook", "did not go out", "rate-limiting"]
 
     /// Severity per row, cross-checked against the text in BOTH directions (a
     /// degraded line is never nominal; a nominal one never reads degraded),
@@ -299,13 +309,13 @@ struct MenuPanelPresentationTests {
                                outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t - 60,
                                text: sessionFailedText, severity: .error),
             SessionRecoveryRow(id: "R4 equal timestamps ⇒ still error (strictly later only)",
-                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t,
+                               outcome: .rejected(403), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t,
                                text: sessionFailedText, severity: .error),
             SessionRecoveryRow(id: "R5 later lid send only unconfirmed ⇒ still error",
                                outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .timedOutUnconfirmed,
                                lidOutcomeAt: t + 60, text: sessionFailedText, severity: .error),
             SessionRecoveryRow(id: "R6 later lid send refused ⇒ still error",
-                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .rejected(429), lidOutcomeAt: t + 60,
+                               outcome: .rejected(403), outcomeAt: t, lidOutcome: .rejected(429), lidOutcomeAt: t + 60,
                                text: sessionFailedText, severity: .error),
             SessionRecoveryRow(id: "R7 later lid send failed ⇒ still error",
                                outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .sendFailed("boom"),
@@ -326,6 +336,23 @@ struct MenuPanelPresentationTests {
             SessionRecoveryRow(id: "R12 an unconfirmed session send stays nominal whatever the lid did",
                                outcome: .timedOutUnconfirmed, outcomeAt: t, lidOutcome: .rejected(403),
                                lidOutcomeAt: t + 60, text: sessionArmedText, severity: .nominal),
+            // B-1: a 429 reads "held", a WARNING — same recovery rule (R2).
+            SessionRecoveryRow(id: "R13 refused (429) session send, no lid send ⇒ rate-limit warning",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: nil, lidOutcomeAt: nil,
+                               text: sessionRateLimitedText, severity: .warning),
+            SessionRecoveryRow(id: "R14 429, accepted test send BEFORE it ⇒ still the rate-limit warning",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t - 60,
+                               text: sessionRateLimitedText, severity: .warning),
+            SessionRecoveryRow(id: "R15 429, equal timestamps ⇒ still the rate-limit warning (strictly later only)",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t,
+                               text: sessionRateLimitedText, severity: .warning),
+            SessionRecoveryRow(id: "R16 429, later lid send refused too ⇒ still the rate-limit warning",
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: .rejected(429), lidOutcomeAt: t + 60,
+                               text: sessionRateLimitedText, severity: .warning),
+            SessionRecoveryRow(id: "R17 429 never overrides a non-armed state", state: .hookNotInstalled,
+                               outcome: .rejected(429), outcomeAt: t, lidOutcome: nil, lidOutcomeAt: nil,
+                               text: "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)",
+                               severity: .warning),
         ]
     }()
 
@@ -346,16 +373,27 @@ struct MenuPanelPresentationTests {
         let history = MenuStateModel.finishAlertLastSend(outcome: row.outcome, kind: Self.finishedKind,
                                                          at: row.outcomeAt, now: Self.sessionSendAt + 120)
         #expect(history.severity == MenuStateModel.finishAlertLastSendSeverity(row.outcome, at: row.outcomeAt))
+        // B-1 (fact vs state): the caption may say "held" (a warning), but the
+        // history line still reports the 429 refusal as an error.
+        if row.outcome == .rejected(429), row.outcomeAt != nil {
+            #expect(history.severity == .error)
+            #expect(history.text.contains("(HTTP 429)"))
+        }
     }
 
     @Test func sessionRecoveryRowsAreUniqueAndCoverBothVerdicts() {
-        #expect(Self.sessionRecoveryRows.count == 12)
+        #expect(Self.sessionRecoveryRows.count == 17)
         #expect(Set(Self.sessionRecoveryRows.map(\.id)).count == Self.sessionRecoveryRows.count)
         let downgradable = Self.sessionRecoveryRows.filter {
-            $0.state == .armed && ($0.outcome == .sendFailed("boom") || $0.outcome == .rejected(429))
+            $0.state == .armed && ($0.outcome == .sendFailed("boom") || $0.outcome == .rejected(403))
         }
         #expect(downgradable.contains { $0.severity == .nominal } && downgradable.contains { $0.severity == .error },
                 "vacuity guard — the table must show recovery AND non-recovery")
+        // B-1: the 429 caption recovers by the same rule (R2) and otherwise warns.
+        let rateLimited = Self.sessionRecoveryRows.filter { $0.state == .armed && $0.outcome == .rejected(429) }
+        #expect(rateLimited.contains { $0.severity == .nominal } && rateLimited.contains { $0.severity == .warning },
+                "vacuity guard — the 429 rows must show recovery AND the held warning")
+        #expect(!rateLimited.contains { $0.severity == .error }, "an armed 429 caption is never an error")
     }
 
     struct SessionLastSendRow: CustomTestStringConvertible, Sendable {
@@ -821,21 +859,22 @@ struct MenuPanelPresentationTests {
         }
     }
 
-    /// FA-4 end to end: a session alert refused with 429 (never retried — the
-    /// controller's half) reaches the panel as an error status, a last-send
-    /// line that ESCAPES Details, and an error badge — while the lid half is
-    /// perfectly healthy, so the badge can only come from the session send.
-    /// C6: re-running the test send as the caption says clears the status
-    /// downgrade only once ntfy accepts it LATER than the refusal; the
-    /// history line stays truthful.
+    /// FA-4 end to end: a session alert refused by the server (403 here —
+    /// never retried, the controller's half) reaches the panel as an error
+    /// status, a last-send line that ESCAPES Details, and an error badge —
+    /// while the lid half is perfectly healthy, so the badge can only come
+    /// from the session send. C6: re-running the test send as the caption
+    /// says clears the status downgrade only once ntfy accepts it LATER than
+    /// the refusal; the history line stays truthful. (A 429 has its own
+    /// caption — `aRateLimitedSessionAlertSaysAlertsAreHeld`.)
     @Test @MainActor func aRefusedSessionAlertSurfacesAndRaisesTheBadge() async throws {
         typealias H = FinishAlertHarness
-        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(429))) { h in
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { h in
             h.store.put(H.s1, ts: H.t0 - 600)
             h.controller.reconcile()
             h.store.remove(H.s1)
             await h.settle()
-            #expect(h.controller.lastSendOutcome == .rejected(429))
+            #expect(h.controller.lastSendOutcome == .rejected(403))
             #expect(h.pendingRetries.isEmpty)
 
             let lidSuite = "com.muratalkan.napcat.tests.menupanel.session.\(UUID().uuidString)"
@@ -853,7 +892,7 @@ struct MenuPanelPresentationTests {
                     severity: .error))
                 let last = model.finishAlertLastSend(now: Double(H.t0) + 120)
                 #expect(last == PanelLine(
-                    text: "Last session alert: refused by the server 2m ago (finished) (HTTP 429) — check the topic and server",
+                    text: "Last session alert: refused by the server 2m ago (finished) (HTTP 403) — check the topic and server",
                     severity: .error))
                 #expect(MenuStateModel.placement(ofDetailsLine: last.severity) == .topLevel)
                 #expect(model.detailsBadge == .error)
@@ -877,6 +916,54 @@ struct MenuPanelPresentationTests {
                 // escapes Details (so the badge stays an error).
                 #expect(model.finishAlertLastSend(now: Double(H.t0) + 120) == last)
                 #expect(model.detailsBadge == .error)
+            }
+        }
+    }
+
+    /// B-1 end to end: a session alert refused with 429 holds the session
+    /// lane (the controller's flush sits at the hold end) and the status
+    /// says so as a WARNING — no "re-run Send test message" advice — while
+    /// the Details history line still reports the refusal as an error that
+    /// escapes Details (so the badge is an error). The C6 recovery rule
+    /// applies unchanged: a LATER accepted lid-lane send clears the caption.
+    @Test @MainActor func aRateLimitedSessionAlertSaysAlertsAreHeld() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(429))) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.lastSendOutcome == .rejected(429))
+            #expect(h.pendingRetries.isEmpty)
+            #expect(h.scheduler.pending(delay: FinishAlertTuning.rateLimitHoldSeconds).count == 1,
+                    "the session lane is held")
+
+            let lidSuite = "com.muratalkan.napcat.tests.menupanel.ratelimit.\(UUID().uuidString)"
+            let lidDefaults = UserDefaults(suiteName: lidSuite)!
+            defer { lidDefaults.removePersistentDomain(forName: lidSuite) }
+            let lid = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+            lid.arm()
+            lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+
+            withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
+                #expect(model.lidStatus.severity == .nominal)
+                #expect(model.finishAlertStatus == PanelLine(text: Self.sessionRateLimitedText, severity: .warning))
+                #expect(!model.finishAlertStatus.text.contains("Send test message"),
+                        "a re-run test send would only burn more quota")
+                #expect(MenuStateModel.placement(ofDetailsLine: model.finishAlertStatus.severity) == .topLevel)
+                let last = model.finishAlertLastSend(now: Double(H.t0) + 120)
+                #expect(last == PanelLine(
+                    text: "Last session alert: refused by the server 2m ago (finished) (HTTP 429) — check the topic and server",
+                    severity: .error))
+                #expect(MenuStateModel.placement(ofDetailsLine: last.severity) == .topLevel)
+                #expect(model.detailsBadge == .error, "the history line still raises the badge")
+
+                // A LATER accepted lid-lane send clears the held caption too.
+                lid.clock.advance(Double(H.t0) - lid.clock.now + 60)
+                lid.controller.sendTestMessage()
+                model.refresh()
+                #expect(model.finishAlertStatus == PanelLine(text: Self.sessionArmedText, severity: .nominal))
+                #expect(model.finishAlertLastSend(now: Double(H.t0) + 120) == last)
             }
         }
     }

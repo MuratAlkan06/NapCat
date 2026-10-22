@@ -208,13 +208,22 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    /// Every reconcile event clears a marker once nothing keeps it. B-2:
+    /// `SubagentStop` clears only a POST-STOP marker (a foreground subagent
+    /// ending mid-turn KEEPS it — the phase table below), so its marker is
+    /// first moved past the main turn's Stop (kept by a running task).
     @Test func everyClearEventRemovesTheMarker() {
+        #expect(ClaudeBusyConstants.clearEvents.contains("SubagentStop"), "vacuity: all five reconcile events")
         for clearEvent in ClaudeBusyConstants.clearEvents {
             withHome { home in
                 let session = "cafe0001-0002-4abc-8def-000000000002"
                 _ = runHook(json: #"{"hook_event_name":"UserPromptSubmit","session_id":"\#(session)"}"#, home: home)
                 let marker = markerDir(home).appendingPathComponent(session)
                 #expect(waitForFile(marker, present: true), "\(clearEvent): setup marker must exist")
+                if clearEvent == "SubagentStop" {
+                    _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+                    #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "), "setup: post-Stop marker")
+                }
 
                 let result = runHook(json: #"{"hook_event_name":"\#(clearEvent)","session_id":"\#(session)"}"#, home: home)
                 #expect(result.exitCode == 0)
@@ -238,6 +247,9 @@ struct ClaudeBusyHookScriptTests {
         }
         return #"{"hook_event_name":"\#(event)","session_id":"\#(session)"}"#
     }
+
+    /// A `background_tasks` value holding one running subagent.
+    static let runningTask = #"[{"id":"a","type":"subagent","status":"running"}]"#
 
     /// Sets a marker for `session` and asserts it landed.
     private func primeMarker(_ session: String, home: URL) {
@@ -288,18 +300,23 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
-    /// SubagentStop (newly registered in B3) reconciles the same way: a subagent
-    /// finishing while others still run keeps the session busy; the last one
-    /// finishing clears it.
+    /// SubagentStop (newly registered in B3) reconciles the same way once the
+    /// main turn has ended (B-2: post-Stop — the in-flight keep is in the
+    /// phase table): a subagent finishing while others still run keeps the
+    /// session busy; the last one finishing clears it.
     @Test func subagentStopReconcilesOnRemainingBackgroundTasks() {
         withHome { home in
             let session = "b3000003-0013-4abc-8def-000000000013"
             primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            // The main turn ends while background work runs → post-Stop keep.
+            _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "), "setup: post-Stop marker")
             // One subagent finished, another still running → KEEP.
             let stillRunning = #"[{"id":"b","type":"subagent","status":"running"}]"#
             _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: stillRunning), home: home)
-            let marker = markerDir(home).appendingPathComponent(session)
-            #expect(waitForFile(marker, present: true), "SubagentStop with a still-running peer KEEPS the marker")
+            #expect(waitForMarkerEvent(marker, event: "SubagentStop").contains("event=SubagentStop "),
+                    "SubagentStop with a still-running peer KEEPS the marker")
             // Last subagent finished → CLEAR.
             let allDone = #"[{"id":"b","type":"subagent","status":"completed"}]"#
             _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: allDone), home: home)
@@ -417,7 +434,7 @@ struct ClaudeBusyHookScriptTests {
                 #expect(ClaudeActivityPolicy.parseMarker(contents)?.event == token,
                         "\(notificationType): the Swift reader must parse the waiting marker")
                 #expect(hookLog(home).contains(
-                    "keep session=\(session) event=Notification type=\(notificationType) reason=waiting-on-user pid="),
+                    "keep session=\(session) event=Notification type=\(notificationType) phase=inflight reason=waiting-on-user pid="),
                         "\(notificationType): hook.log must record the waiting keep")
             }
         }
@@ -439,7 +456,7 @@ struct ClaudeBusyHookScriptTests {
                 #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                         "\(notificationType): kept marker \(String(reflecting: contents)) must record event=Notification")
                 #expect(hookLog(home).contains(
-                    "keep session=\(session) event=Notification type=\(notificationType) reason=work-continues pid="),
+                    "keep session=\(session) event=Notification type=\(notificationType) phase=inflight reason=work-continues pid="),
                         "\(notificationType): hook.log must record the resume keep")
             }
         }
@@ -475,7 +492,7 @@ struct ClaudeBusyHookScriptTests {
                 #expect(result.stdout.isEmpty, "stdout empty on \(label)")
                 #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
                         "notification_type \(label) must CLEAR the marker")
-                #expect(hookLog(home).contains("clear session=\(session) event=Notification type=\(logged)\n"),
+                #expect(hookLog(home).contains("clear session=\(session) event=Notification type=\(logged) phase=inflight\n"),
                         "notification_type \(label) must be logged as type=\(logged)")
             }
         }
@@ -514,7 +531,7 @@ struct ClaudeBusyHookScriptTests {
                 #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
                         "malformed type \(json) must CLEAR the marker")
                 let log = hookLog(home)
-                #expect(log.contains("clear session=\(session) event=Notification type=invalid\n"),
+                #expect(log.contains("clear session=\(session) event=Notification type=invalid phase=inflight\n"),
                         "malformed type \(json) must be logged as type=invalid")
                 #expect(!log.contains(raw), "the raw value of \(json) must never reach hook.log")
                 #expect(log.split(separator: "\n").count == 2,
@@ -533,7 +550,7 @@ struct ClaudeBusyHookScriptTests {
             let marker = markerDir(home).appendingPathComponent(session)
             _ = runHook(json: notificationJSON(session, notificationType: #""permission\u0000_prompt""#), home: home)
             #expect(waitForFile(marker, present: false), "the NUL-poisoned type must CLEAR the marker")
-            #expect(hookLog(home).contains("clear session=\(session) event=Notification type=invalid\n"))
+            #expect(hookLog(home).contains("clear session=\(session) event=Notification type=invalid phase=inflight\n"))
 
             primeMarker(session, home: home)
             _ = runHook(json: notificationJSON(session, notificationType: quoted("permission_prompt")), home: home)
@@ -650,7 +667,7 @@ struct ClaudeBusyHookScriptTests {
             #expect(contents.contains("event=\(ClaudeBusyConstants.waitingEventToken) "),
                     "waiting must win over a running background task, got \(String(reflecting: contents))")
             let log = hookLog(home)
-            #expect(log.contains("type=permission_prompt reason=waiting-on-user"))
+            #expect(log.contains("type=permission_prompt phase=inflight reason=waiting-on-user"))
             #expect(!log.contains("reason=background-task-running"))
         }
     }
@@ -671,7 +688,7 @@ struct ClaudeBusyHookScriptTests {
             #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                     "idle_prompt + running task must KEEP with event=Notification, got \(String(reflecting: contents))")
             #expect(hookLog(home).contains(
-                "keep session=\(session) event=Notification type=idle_prompt reason=background-task-running pid="))
+                "keep session=\(session) event=Notification type=idle_prompt phase=inflight reason=background-task-running pid="))
 
             // The turn really ends: a plain Stop clears, logged exactly as before C1.
             _ = runHook(json: eventJSON("Stop", session), home: home)
@@ -850,7 +867,7 @@ struct ClaudeBusyHookScriptTests {
         for prefix in ClaudeBusyConstants.markerTokenPrefixes {
             #expect(script.contains(prefix), "grammar token '\(prefix)' missing from the shell script")
         }
-        // The five event names.
+        // The six registered event names.
         for event in ClaudeBusyConstants.allEvents {
             #expect(script.contains(event), "event '\(event)' missing from the shell script")
         }
@@ -858,24 +875,45 @@ struct ClaudeBusyHookScriptTests {
         #expect(script.contains("CAP=\(ClaudeBusyConstants.freshnessCapSeconds)"))
     }
 
-    /// B3 event-set parity: SubagentStop is a real event, handled by the hook
-    /// and registered by the installer, but it is NOT one of ClaudeBusyConstants'
-    /// original five (NapCat's Swift reader only reads markers, so it does not
-    /// enumerate hook events). Assert the new event is wired consistently across
-    /// the hook, installer, and uninstaller so none drifts out of sync.
+    /// The quoted names on `line`, in order (`"Stop": [ …` ⇒ ["Stop", …]).
+    private static func quotedNames(_ line: Substring) -> [String] {
+        line.split(separator: "\"", omittingEmptySubsequences: false).enumerated()
+            .filter { $0.offset % 2 == 1 }.map { String($0.element) }
+    }
+
+    /// Event-set parity (B3, amended by B-2): SubagentStop is a registered
+    /// reconcile event and — since B-2 — a member of `ClaudeBusyConstants.
+    /// clearEvents` / `allEvents`. The registration list is set-matched
+    /// EXACTLY (nothing missing, nothing extra) against the installer's
+    /// printed entries, the uninstaller's removal list, and the README's
+    /// hand-paste block, so none drifts out of sync with the Swift constants.
     @Test func subagentStopIsWiredAcrossHookAndInstallers() throws {
         let hook = try Self.read(Self.hookScriptURL)
         let installer = try Self.read(Self.installerURL)
         let uninstaller = try Self.read(Self.uninstallerURL)
+        let readme = try Self.read(Self.repoRoot().appendingPathComponent("README.md"))
+        let registered = Set(ClaudeBusyConstants.allEvents)
 
+        #expect(ClaudeBusyConstants.allEvents.count == 6 && registered.count == 6, "six distinct registered events")
+        #expect(ClaudeBusyConstants.clearEvents.contains("SubagentStop"), "SubagentStop is a reconcile event")
         #expect(hook.contains("SubagentStop"), "the hook must handle SubagentStop")
-        #expect(installer.contains("\"SubagentStop\""), "the installer must print a SubagentStop registration")
-        #expect(uninstaller.contains("SubagentStop"), "the uninstaller must list SubagentStop for removal")
 
-        // The installer registers the full set: B1's five + SubagentStop.
-        for event in ClaudeBusyConstants.allEvents + ["SubagentStop"] {
-            #expect(installer.contains("\"\(event)\""), "installer missing registration for '\(event)'")
-        }
+        let installerEntries = installer.split(separator: "\n").filter { $0.contains("$EXEC_CMD ]") }
+            .compactMap { Self.quotedNames($0).first }
+        #expect(installerEntries.count == 6 && Set(installerEntries) == registered,
+                "installer registrations \(installerEntries) must be exactly \(registered.sorted())")
+
+        let removal = try #require(uninstaller.split(separator: "\n").first { $0.contains("\"UserPromptSubmit\",") },
+                                   "the uninstaller's removal list")
+        #expect(Self.quotedNames(removal).count == 6 && Set(Self.quotedNames(removal)) == registered,
+                "uninstaller removal list \(Self.quotedNames(removal)) must be exactly \(registered.sorted())")
+
+        let readmeEntries = readme.split(separator: "\n")
+            .filter { $0.hasPrefix("\"") && $0.contains(ClaudeBusyConstants.installedHookRelativePath) }
+            .compactMap { Self.quotedNames($0).first }
+        #expect(readmeEntries.count == 6 && Set(readmeEntries) == registered,
+                "README registrations \(readmeEntries) must be exactly \(registered.sorted())")
+
         // PreToolUse carries no background_tasks, so it is deliberately NOT wired.
         #expect(!hook.contains("PreToolUse"), "PreToolUse must not be handled (no background_tasks signal)")
         #expect(!installer.contains("PreToolUse"), "PreToolUse must not be registered")
@@ -916,9 +954,542 @@ struct ClaudeBusyHookScriptTests {
         }
 
         // The token is not a real hook event and parses as a marker event.
-        #expect(!(ClaudeBusyConstants.allEvents + ["SubagentStop"]).contains(token),
+        #expect(!ClaudeBusyConstants.allEvents.contains(token),
                 "the synthetic token must not collide with a real hook event name")
         #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=\(token) pid=1 src=unknown\n")?.event == token)
+    }
+
+    // MARK: - B-2: phase parity (shell lists ↔ Swift constants, byte-match)
+
+    /// The body lines of the shell function `name` (from `name() {` to the
+    /// first line that is exactly `}`), comment-free and trimmed.
+    static func functionBody(_ name: String, in script: String) -> [String] {
+        let lines = script.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let start = lines.firstIndex(of: "\(name)() {") else { return [] }
+        let rest = lines[(start + 1)...]
+        let end = rest.firstIndex(of: "}") ?? rest.endIndex
+        return rest[..<end].map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    }
+
+    /// Pure parity check (reusable for canaries): `marker_phase`'s case
+    /// patterns are EXACTLY the in-flight list, then the post-Stop list, then
+    /// the `*)` default — same members, same order, nothing extra; the
+    /// synthetic token byte-matches `WAITING_AFTER_STOP_EVENT`; the token
+    /// check is `^[A-Za-z-]{1,32}$` and every phase / waiting token passes it;
+    /// the two lists are disjoint and each holds its waiting token.
+    static func phaseParityFailures(_ script: String, inFlight: [String], postStop: [String],
+                                    waitingAfterStop: String) -> [String] {
+        var failures: [String] = []
+        let codeLines = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        if !codeLines.contains("WAITING_AFTER_STOP_EVENT=\(waitingAfterStop)") {
+            failures.append("WAITING_AFTER_STOP_EVENT must byte-match waitingAfterStopEventToken")
+        }
+        let tokenRegex = "^[A-Za-z-]{1,32}$"
+        if !codeLines.contains("TOKEN_RE='\(tokenRegex)'") {
+            failures.append("the marker-token check must be \(tokenRegex)")
+        }
+        let body = functionBody("marker_phase", in: script)
+        if !body.contains(#"line=$(head -c 256 "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#')"#) {
+            failures.append("marker_phase must read at most 256 bytes with NULs mapped")
+        }
+        let patterns = body.filter { $0.hasSuffix(")") && !$0.contains("$") }
+        let expected = [inFlight.joined(separator: "|") + ")", postStop.joined(separator: "|") + ")", "*)"]
+        if patterns != expected {
+            failures.append("marker_phase patterns \(patterns) must byte-match \(expected)")
+        }
+        let waiting = ClaudeBusyConstants.waitingEventToken
+        for token in inFlight + postStop + [waitingAfterStop, waiting]
+        where token.range(of: tokenRegex, options: .regularExpression) == nil {
+            failures.append("'\(token)' can never pass the marker-token check")
+        }
+        if !Set(inFlight).isDisjoint(with: postStop) { failures.append("a token may belong to one phase only") }
+        if !inFlight.contains(waiting) { failures.append("'\(waiting)' must be IN-FLIGHT") }
+        if !postStop.contains(waitingAfterStop) { failures.append("'\(waitingAfterStop)' must be POST-STOP") }
+        return failures
+    }
+
+    @Test func phaseTokenListsMatchSwiftConstants() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        let failures = Self.phaseParityFailures(script, inFlight: ClaudeBusyConstants.inFlightEventTokens,
+                                                postStop: ClaudeBusyConstants.postStopEventTokens,
+                                                waitingAfterStop: ClaudeBusyConstants.waitingAfterStopEventToken)
+        #expect(failures.isEmpty, "\(failures)")
+        // Vacuity: the probe really exists, and the contract values hold.
+        #expect(Self.functionBody("marker_phase", in: script).count >= 10)
+        #expect(ClaudeBusyConstants.waitingAfterStopEventToken == "waiting-after-stop")
+        #expect(ClaudeBusyConstants.inFlightEventTokens == ["UserPromptSubmit", "Notification", "waiting"])
+        #expect(ClaudeBusyConstants.postStopEventTokens == ["Stop", "StopFailure", "SubagentStop", "waiting-after-stop"])
+        // The synthetic token is no real hook event and parses as a marker event.
+        let token = ClaudeBusyConstants.waitingAfterStopEventToken
+        #expect(!ClaudeBusyConstants.allEvents.contains(token))
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=\(token) pid=1 src=unknown\n")?.event == token)
+    }
+
+    /// Canaries: drop `waiting-after-stop` from EITHER side (the shell case
+    /// pattern, the shell token variable, or the Swift list) — or reorder a
+    /// list — and the parity lint fails.
+    @Test func phaseParityCatchesADriftOnEitherSide() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        let inFlight = ClaudeBusyConstants.inFlightEventTokens
+        let postStop = ClaudeBusyConstants.postStopEventTokens
+        let token = ClaudeBusyConstants.waitingAfterStopEventToken
+        try #require(Self.phaseParityFailures(script, inFlight: inFlight, postStop: postStop,
+                                              waitingAfterStop: token).isEmpty, "canary baseline must be clean")
+
+        let shellMutants: [(String, String, String)] = [
+            ("shell case pattern", "SubagentStop|waiting-after-stop)", "SubagentStop)"),
+            ("shell token variable", "WAITING_AFTER_STOP_EVENT=waiting-after-stop", "WAITING_AFTER_STOP_EVENT=waiting"),
+            ("shell extra in-flight token", "Notification|waiting)", "Notification|waiting|Stop)"),
+            ("shell token regex", "TOKEN_RE='^[A-Za-z-]{1,32}$'", "TOKEN_RE='^[A-Za-z]{1,32}$'"),
+            ("shell unbounded read", "head -c 256 \"$1\"", "cat \"$1\""),
+        ]
+        for (name, target, replacement) in shellMutants {
+            let mutant = script.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != script, "canary setup '\(name)'")
+            #expect(!Self.phaseParityFailures(mutant, inFlight: inFlight, postStop: postStop,
+                                              waitingAfterStop: token).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        let swiftMutants: [(String, [String], [String])] = [
+            ("Swift post-Stop list", inFlight, postStop.filter { $0 != token }),
+            ("Swift in-flight list", inFlight.filter { $0 != "Notification" }, postStop),
+            ("Swift list order", inFlight, Array(postStop.reversed())),
+        ]
+        for (name, mutantInFlight, mutantPostStop) in swiftMutants {
+            #expect(!Self.phaseParityFailures(script, inFlight: mutantInFlight, postStop: mutantPostStop,
+                                              waitingAfterStop: token).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    // MARK: - B-2: the phase-aware reconcile table, through the shipped script
+
+    enum PhaseEvent: String, CaseIterable, Sendable {
+        case subagentStop = "SubagentStop"
+        case permissionPrompt = "permission_prompt"            // WAITING class
+        case quotaAutoResumeFired = "quota_auto_resume_fired"  // RESUME class
+        case idlePrompt = "idle_prompt"                        // CLEAR class
+    }
+
+    enum PhaseVerdict: Equatable, Sendable {
+        case keep(String)   // reason=
+        case clear
+        case ignore         // reason=no-marker
+    }
+
+    struct PhaseRow: CustomTestStringConvertible, Sendable {
+        let id: String
+        /// The marker's event token before the event; nil = no marker.
+        let prior: String?
+        let event: PhaseEvent
+        let bg: Bool
+        /// The marker's event token after the event; nil = no marker.
+        let result: String?
+        let verdict: PhaseVerdict
+        var testDescription: String {
+            "\(id): \(prior ?? "absent") + \(event.rawValue) bg=\(bg ? "yes" : "no") → \(result ?? "absent")"
+        }
+    }
+
+    /// The frozen phase of each prior token (absent ⇒ none).
+    nonisolated static func phase(of prior: String?) -> String {
+        guard let prior else { return "none" }
+        if ClaudeBusyConstants.inFlightEventTokens.contains(prior) { return "inflight" }
+        if ClaudeBusyConstants.postStopEventTokens.contains(prior) { return "poststop" }
+        return "none"
+    }
+
+    nonisolated static let wait = "waiting-on-user", resume = "work-continues", bgKeep = "background-task-running",
+               midTurn = "main-turn-in-flight"
+
+    /// (prior token) × (event) × (background task running), 7 × 4 × 2 = 56
+    /// rows — the frozen B-2 rules, written out (never computed).
+    nonisolated static let phaseRows: [PhaseRow] = {
+        let was = "waiting-after-stop"
+        typealias E = PhaseEvent
+        func rows(_ prefix: String, _ prior: String?, _ cells: [(E, Bool, String?, PhaseVerdict)]) -> [PhaseRow] {
+            cells.enumerated().map { index, cell in
+                PhaseRow(id: "\(prefix)\(index + 1)", prior: prior, event: cell.0, bg: cell.1,
+                         result: cell.2, verdict: cell.3)
+            }
+        }
+        var all: [PhaseRow] = []
+        // Phase none: no marker.
+        all += rows("N", nil, [
+            (.subagentStop, false, nil, .ignore),
+            (.subagentStop, true, "SubagentStop", .keep(bgKeep)),
+            (.permissionPrompt, false, "waiting", .keep(wait)),
+            (.permissionPrompt, true, "waiting", .keep(wait)),
+            (.quotaAutoResumeFired, false, "Notification", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Notification", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Stop", .keep(bgKeep)),
+        ])
+        // Phase IN-FLIGHT.
+        all += rows("U", "UserPromptSubmit", [
+            (.subagentStop, false, "Notification", .keep(midTurn)),
+            (.subagentStop, true, "Notification", .keep(midTurn)),
+            (.permissionPrompt, false, "waiting", .keep(wait)),
+            (.permissionPrompt, true, "waiting", .keep(wait)),
+            (.quotaAutoResumeFired, false, "Notification", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Notification", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Notification", .keep(bgKeep)),
+        ])
+        all += rows("K", "Notification", [
+            (.subagentStop, false, "Notification", .keep(midTurn)),
+            (.subagentStop, true, "Notification", .keep(midTurn)),
+            (.permissionPrompt, false, "waiting", .keep(wait)),
+            (.permissionPrompt, true, "waiting", .keep(wait)),
+            (.quotaAutoResumeFired, false, "Notification", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Notification", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Notification", .keep(bgKeep)),
+        ])
+        all += rows("W", "waiting", [
+            (.subagentStop, false, "Notification", .keep(midTurn)),
+            (.subagentStop, true, "Notification", .keep(midTurn)),
+            (.permissionPrompt, false, "waiting", .keep(wait)),
+            (.permissionPrompt, true, "waiting", .keep(wait)),
+            (.quotaAutoResumeFired, false, "Notification", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Notification", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Notification", .keep(bgKeep)),
+        ])
+        // Phase POST-STOP.
+        all += rows("S", "Stop", [
+            (.subagentStop, false, nil, .clear),
+            (.subagentStop, true, "SubagentStop", .keep(bgKeep)),
+            (.permissionPrompt, false, was, .keep(wait)),
+            (.permissionPrompt, true, was, .keep(wait)),
+            (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Stop", .keep(bgKeep)),
+        ])
+        all += rows("A", "SubagentStop", [
+            (.subagentStop, false, nil, .clear),
+            (.subagentStop, true, "SubagentStop", .keep(bgKeep)),
+            (.permissionPrompt, false, was, .keep(wait)),
+            (.permissionPrompt, true, was, .keep(wait)),
+            (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Stop", .keep(bgKeep)),
+        ])
+        all += rows("P", was, [
+            (.subagentStop, false, nil, .clear),
+            (.subagentStop, true, "SubagentStop", .keep(bgKeep)),
+            (.permissionPrompt, false, was, .keep(wait)),
+            (.permissionPrompt, true, was, .keep(wait)),
+            (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Stop", .keep(bgKeep)),
+        ])
+        return all
+    }()
+
+    @Test func phaseRowsCoverTheWholeGrid() {
+        #expect(Self.phaseRows.count == 56, "vacuity guard — 7 priors × 4 events × 2 bg states")
+        #expect(Set(Self.phaseRows.map(\.id)).count == 56)
+        let priors = Set(Self.phaseRows.map { $0.prior ?? "absent" })
+        #expect(priors == ["absent", "UserPromptSubmit", "Notification", "waiting", "Stop", "SubagentStop",
+                           "waiting-after-stop"], "the frozen grid's seven prior states")
+    }
+
+    /// Priors outside the frozen grid. `StopFailure` is POST-STOP like `Stop`.
+    /// `SessionEnd` (written only when background work outlives the session)
+    /// is in NEITHER frozen list, so it reads as phase "none" — pinned here
+    /// as frozen (B-2 contract: an unlisted token is "none"); moving it to
+    /// POST-STOP is a contract change, not a fix to make silently.
+    @Test func stopFailureIsPostStopAndSessionEndIsUnlisted() {
+        withHome { home in
+            let session = "b2f00004-0060-4abc-8def-000000000060"
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("StopFailure", at: marker)
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(waitForFile(marker, present: false), "a post-StopFailure SubagentStop(bg=no) clears")
+            #expect(hookLog(home).hasSuffix(" clear session=\(session) event=SubagentStop phase=poststop\n"))
+
+            plantMarker("SessionEnd", at: marker)
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
+            #expect(FileManager.default.fileExists(atPath: marker.path), "an unlisted token is left alone")
+        }
+    }
+
+    /// The marker line planted as the prior state: a distinctive `pid` /
+    /// `src` so a rewrite by the hook (`src=unknown`) is told apart from it.
+    private func plantMarker(_ token: String, at url: URL) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let now = Int(Date().timeIntervalSince1970)
+        try? "v1 ts=\(now) event=\(token) pid=999999 src=planted\n".write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Polls until the marker holds a hook-written (`src=unknown`) line with
+    /// `event=<token>`; returns the last content seen.
+    private func waitForRewrite(_ url: URL, event token: String, timeout: Double = 3) -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let c = try? String(contentsOf: url, encoding: .utf8),
+               c.contains("event=\(token) "), c.hasSuffix(" src=unknown\n") { return c }
+            Thread.sleep(forTimeInterval: 0.03)
+        }
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    private func phaseEventJSON(_ event: PhaseEvent, _ session: String, bg: Bool) -> String {
+        let tasks = bg ? Self.runningTask : #"[{"id":"a","type":"subagent","status":"completed"}]"#
+        switch event {
+        case .subagentStop: return eventJSON("SubagentStop", session, backgroundTasks: tasks)
+        default: return notificationJSON(session, notificationType: quoted(event.rawValue), backgroundTasks: tasks)
+        }
+    }
+
+    @Test(arguments: phaseRows)
+    func phaseAwareReconcileTable(_ row: PhaseRow) {
+        withHome { home in
+            let session = "b2000001-0041-4abc-8def-000000000041"
+            let marker = markerDir(home).appendingPathComponent(session)
+            if let prior = row.prior { plantMarker(prior, at: marker) }
+            let result = runHook(json: phaseEventJSON(row.event, session, bg: row.bg), home: home)
+            #expect(result.exitCode == 0)
+            #expect(result.stdout.isEmpty)
+
+            if let expected = row.result {
+                let contents = waitForRewrite(marker, event: expected)
+                let pattern = "^v1 ts=[0-9]+ event=\(expected) pid=[0-9]+ src=unknown\n$"
+                #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                        "marker \(String(reflecting: contents)) must be rewritten as event=\(expected)")
+                #expect(ClaudeActivityPolicy.parseMarker(contents)?.event == expected, "the Swift reader parses it")
+            } else {
+                #expect(waitForFile(marker, present: false), "no marker may remain")
+                Thread.sleep(forTimeInterval: 0.1)
+                #expect(!FileManager.default.fileExists(atPath: marker.path), "and none appears later")
+            }
+
+            let phase = Self.phase(of: row.prior)
+            let name = row.event == .subagentStop ? "SubagentStop" : "Notification"
+            let type = row.event == .subagentStop ? "" : " type=\(row.event.rawValue)"
+            let log = hookLog(home)
+            switch row.verdict {
+            case .keep(let reason):
+                #expect(log.contains("keep session=\(session) event=\(name)\(type) phase=\(phase) reason=\(reason) pid="),
+                        "log \(String(reflecting: log))")
+            case .clear:
+                #expect(log.hasSuffix(" clear session=\(session) event=\(name)\(type) phase=\(phase)\n"),
+                        "log \(String(reflecting: log))")
+            case .ignore:
+                #expect(log.hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"),
+                        "log \(String(reflecting: log))")
+            }
+            #expect(log.split(separator: "\n").count == 1, "exactly one log line per run")
+        }
+    }
+
+    // MARK: B-2 canonical scenarios (sequences through the shipped script)
+
+    private static let doneTask = #"[{"id":"a","type":"subagent","status":"completed"}]"#
+
+    /// (a) A foreground subagent finishing mid-turn never clears the running
+    /// turn: UPS → SubagentStop(bg=no) ⇒ the marker is KEPT as Notification.
+    @Test func scenarioA_foregroundSubagentStopMidTurnKeepsTheMarker() {
+        withHome { home in
+            let session = "b2a00001-0051-4abc-8def-000000000051"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            let contents = waitForMarkerEvent(marker, event: "Notification")
+            #expect(contents.contains("event=Notification "), "kept, got \(String(reflecting: contents))")
+            #expect(hookLog(home).contains("keep session=\(session) event=SubagentStop phase=inflight reason=main-turn-in-flight pid="))
+        }
+    }
+
+    /// (b) UPS → waiting → SubagentStop(bg=no) ⇒ `Notification`: the waiting
+    /// episode ends, so a later wait in the SAME turn notifies again (the
+    /// policy fed the hook's own tokens buzzes twice).
+    @Test func scenarioB_subagentStopEndsTheWaitingEpisodeSoALaterWaitBuzzesAgain() {
+        withHome { home in
+            let session = "b2b00001-0052-4abc-8def-000000000052"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let steps: [(json: String, token: String)] = [
+                (notificationJSON(session, notificationType: quoted("permission_prompt")), "waiting"),
+                (eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), "Notification"),
+                (notificationJSON(session, notificationType: quoted("permission_prompt")), "waiting"),
+            ]
+            var tokens: [String] = []
+            for step in steps {
+                _ = runHook(json: step.json, home: home)
+                let contents = waitForMarkerEvent(marker, event: step.token)
+                tokens.append(ClaudeActivityPolicy.parseMarker(contents)?.event ?? "?")
+            }
+            #expect(tokens == ["waiting", "Notification", "waiting"])
+
+            // Those exact tokens through the app policy: two separate buzzes.
+            let t = 1_800_000_000
+            var tracked = FinishAlertPolicy.baseline(current: [], now: t)
+            var buzzes = 0
+            for (index, token) in ([ClaudeBusyConstants.setEvent] + tokens).enumerated() {
+                let ts = t + index * 120
+                let observation = FinishAlertPolicy.observe(
+                    previous: tracked,
+                    current: [IdentifiedBusyMarker(sessionID: session,
+                                                   marker: BusyMarker(ts: ts, event: token, pid: 1, src: "unknown"))],
+                    now: ts + 1)
+                buzzes += observation.events.filter { if case .waiting = $0 { return true } else { return false } }.count
+                tracked = observation.tracked
+            }
+            #expect(buzzes == 2, "the second wait of the turn buzzes again")
+        }
+    }
+
+    /// (c) Stop(bg=yes) → permission_prompt ⇒ `waiting-after-stop`; then the
+    /// background subagent ends — SubagentStop(bg=no) ⇒ CLEARED.
+    @Test func scenarioC_waitAfterStopThenTheLastSubagentEndsClears() {
+        withHome { home in
+            let session = "b2c00001-0053-4abc-8def-000000000053"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "))
+            _ = runHook(json: notificationJSON(session, notificationType: quoted("permission_prompt")), home: home)
+            let afterStop = ClaudeBusyConstants.waitingAfterStopEventToken
+            #expect(waitForMarkerEvent(marker, event: afterStop).contains("event=\(afterStop) "))
+            #expect(hookLog(home).contains("type=permission_prompt phase=poststop reason=waiting-on-user"))
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(waitForFile(marker, present: false), "the last subagent ending after Stop CLEARS")
+            #expect(hookLog(home).hasSuffix(" clear session=\(session) event=SubagentStop phase=poststop\n"))
+        }
+    }
+
+    /// (d) B3 unchanged after Stop: Stop(bg=yes) → SubagentStop(bg=yes) keeps,
+    /// SubagentStop(bg=no) clears.
+    @Test func scenarioD_postStopSubagentStopsAreB3Unchanged() {
+        withHome { home in
+            let session = "b2d00001-0054-4abc-8def-000000000054"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "))
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "SubagentStop").contains("event=SubagentStop "))
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(waitForFile(marker, present: false), "the last subagent ending CLEARS")
+        }
+    }
+
+    /// (e) No marker: SubagentStop(bg=no) creates nothing and logs why.
+    @Test func scenarioE_subagentStopWithoutAMarkerCreatesNothing() {
+        withHome { home in
+            let session = "b2e00001-0055-4abc-8def-000000000055"
+            let result = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(result.exitCode == 0 && result.stdout.isEmpty)
+            Thread.sleep(forTimeInterval: 0.15)
+            #expect(sessionShapedFiles(in: markerDir(home)).isEmpty, "nothing is created")
+            #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
+        }
+    }
+
+    /// Canary: drop `waiting-after-stop` from the shell's POST-STOP pattern and
+    /// scenario (c) breaks — the post-Stop wait reads as phase "none", so the
+    /// last subagent ending leaves the marker standing (a stuck "running").
+    @Test func phaseListCanaryBreaksScenarioC() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(of: "SubagentStop|waiting-after-stop)", with: "SubagentStop)")
+        #expect(mutant != original, "canary setup: the post-Stop pattern must exist")
+        withHome { home in
+            let session = "b2c00002-0056-4abc-8def-000000000056"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker(ClaudeBusyConstants.waitingAfterStopEventToken, at: marker)
+            _ = runScript(mutantURL, json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            Thread.sleep(forTimeInterval: 0.15)
+            #expect(FileManager.default.fileExists(atPath: marker.path),
+                    "without the token in the list the marker is NOT cleared (so scenario (c) has teeth)")
+            #expect(hookLog(home).contains("phase=none"))
+        }
+    }
+
+    // MARK: B-2: the phase probe never trusts the marker
+
+    /// A marker the hook did not write — garbage, an oversized or forged
+    /// token, a NUL- or CR-spliced token, a wrong version — reads as phase
+    /// "none": the probe never echoes it, and SubagentStop(bg=no) leaves it
+    /// alone (no clear, no rewrite).
+    @Test func unparseableMarkersReadAsPhaseNone() {
+        let cases: [(name: String, bytes: [UInt8])] = [
+            ("garbage", Array("not a marker\n".utf8)),
+            ("wrong version", Array("v2 ts=1 event=Stop pid=1 src=x\n".utf8)),
+            ("missing ts", Array("v1 event=Stop pid=1 src=x\n".utf8)),
+            ("33-char token", Array("v1 ts=1 event=\(String(repeating: "S", count: 33)) pid=1 src=x\n".utf8)),
+            ("digit in token", Array("v1 ts=1 event=Stop2 pid=1 src=x\n".utf8)),
+            ("NUL-spliced token", Array("v1 ts=1 event=Sto".utf8) + [0] + Array("p pid=1 src=x\n".utf8)),
+            ("CR in token", Array("v1 ts=1 event=Stop\r pid=1 src=x\n".utf8)),
+            ("token on line two", Array("v1 ts=1\nevent=Stop pid=1 src=x\n".utf8)),
+            ("empty", []),
+        ]
+        for (name, bytes) in cases {
+            withHome { home in
+                let session = "b2f00001-0057-4abc-8def-000000000057"
+                let marker = markerDir(home).appendingPathComponent(session)
+                try? FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+                FileManager.default.createFile(atPath: marker.path, contents: Data(bytes))
+                let result = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(name)")
+                Thread.sleep(forTimeInterval: 0.1)
+                #expect(FileManager.default.contents(atPath: marker.path) == Data(bytes), "\(name): left untouched")
+                #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"),
+                        "\(name): \(String(reflecting: hookLog(home)))")
+            }
+        }
+    }
+
+    /// A marker longer than the 256-byte read whose token sits past it reads
+    /// as "none"; one whose token sits inside it is still read.
+    @Test func thePhaseProbeReadsOnlyTheFirst256Bytes() {
+        withHome { home in
+            let session = "b2f00002-0058-4abc-8def-000000000058"
+            let marker = markerDir(home).appendingPathComponent(session)
+            try? FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+            let pad = String(repeating: "0", count: 300)
+            try? "v1 ts=\(pad) event=Stop pid=1 src=x\n".write(to: marker, atomically: true, encoding: .utf8)
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
+
+            try? "v1 ts=1 event=Stop pid=1 src=\(pad)\n".write(to: marker, atomically: true, encoding: .utf8)
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(waitForFile(marker, present: false), "a token inside the first 256 bytes is read (post-Stop ⇒ clear)")
+        }
+    }
+
+    /// UX safety: a FIFO planted under the marker's name must never block the
+    /// hook (opening a FIFO for reading waits for a writer). The probe reads
+    /// regular files only, so the run returns at once with phase "none".
+    @Test func aFifoAtTheMarkerPathNeverBlocksTheHook() {
+        withHome { home in
+            let session = "b2f00003-0059-4abc-8def-000000000059"
+            let marker = markerDir(home).appendingPathComponent(session)
+            try? FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+            #expect(mkfifo(marker.path, 0o600) == 0, "setup: FIFO created")
+            // Belt and braces: if a regression ever blocks on the FIFO, open
+            // it for writing (non-blocking) so the reader gets EOF and the
+            // test fails instead of hanging.
+            let unblocker = DispatchWorkItem {
+                let fd = open(marker.path, O_WRONLY | O_NONBLOCK)
+                if fd >= 0 { close(fd) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 4, execute: unblocker)
+            let started = Date()
+            let result = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            let elapsed = Date().timeIntervalSince(started)
+            unblocker.cancel()
+            #expect(result.exitCode == 0)
+            #expect(elapsed < 3, "the hook must return at once, took \(elapsed) s")
+            #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
+        }
     }
 
     // MARK: - Installer registration is EXEC FORM only (no shell-form path)

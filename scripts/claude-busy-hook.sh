@@ -1,11 +1,14 @@
 #!/bin/bash
-# NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1).
+# NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
+# B-2).
 #
 # Registered in ~/.claude/settings.json for six events and maintains a
 # per-session "work is in flight" marker under
 #   $HOME/Library/Application Support/NapCat/claude-busy/<session_id>
-# NapCat READS these markers; it never sends anything. This script only writes
-# its own state directory.
+# NapCat only READS these markers (it never writes one). The pushes the app
+# sends (the lid alert, session alerts) are built from the app's own state in
+# a closed vocabulary — no marker content ever reaches a message. This script
+# sends nothing and only writes its own state directory.
 #
 # UserPromptSubmit SETS the marker. The turn-ending / idle events
 # (Stop, StopFailure, SessionEnd, Notification and — B3 — SubagentStop)
@@ -33,6 +36,20 @@
 # The type is UNTRUSTED input: it must pass a strict whole-string check before
 # it is matched or logged; a value failing it is logged only as `invalid`,
 # never echoed.
+#
+# B-2 — the marker's event token ENCODES THE PHASE of the main turn:
+#   IN-FLIGHT  = UserPromptSubmit, Notification, waiting
+#   POST-STOP  = Stop, StopFailure, SubagentStop, waiting-after-stop
+# A Notification or SubagentStop first reads the CURRENT marker's token
+# (marker_phase; absent / unparseable / unlisted ⇒ "none") and reconciles by
+# it: a SubagentStop while the main turn is IN FLIGHT (a foreground subagent
+# finished) KEEPS the marker, rewritten as `Notification` — it never clears a
+# running turn, and a waiting episode ends so a later wait can notify again;
+# post-Stop it is B3 unchanged (keep while background work runs, else clear);
+# with no marker it never creates one unless background work runs. A WAITING
+# Notification after Stop writes `waiting-after-stop` (the phase survives the
+# wait), a RESUME one writes `Stop`, and a background-task keep of any other
+# Notification writes `Notification` in flight and `Stop` otherwise.
 #
 # HARD UX-SAFETY LAYERS (a buggy hook must never be able to break the user's
 # Claude Code experience — lint-enforced by ClaudeBusyHookScriptTests):
@@ -80,7 +97,10 @@ TMP_CAP=60
 SESSION_RE='^[0-9a-f][0-9a-f-]{7,63}$'
 NTYPE_RE='^[a-z_]{1,32}$'
 EVENT_RE='^[A-Za-z]{1,32}$'
+TOKEN_RE='^[A-Za-z-]{1,32}$'
+MARKER_RE='^v1 ts=[0-9]+ event=([^ ]+)( |$)'
 WAITING_EVENT=waiting
+WAITING_AFTER_STOP_EVENT=waiting-after-stop
 MAX_STDIN=262144
 NL=$'\n'
 CR=$'\r'
@@ -206,11 +226,42 @@ notification_type() {
   return 0
 }
 
+# B-2 — read-only, VALIDATED phase probe of the CURRENT marker. Prints exactly
+# one of `inflight`, `poststop` or `none`. Only a REGULAR file is read (a FIFO
+# planted under the marker's name would block the read; `-f` refuses it), and
+# at most 256 bytes of it. NULs are mapped to `#` first (bash 3.2 drops them
+# inside $(…), which could splice a token together), only the first line is
+# parsed, and the event token (the field after `v1 ts=…`) must pass the strict
+# whole-string TOKEN_RE check. Absent, unparseable, or a token in neither
+# phase list ⇒ `none`. The token itself is never printed or logged.
+#   $1 marker path
+marker_phase() {
+  local line tok
+  [ -f "$1" ] || { printf none; return 0; }
+  line=$(head -c 256 "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#')
+  line=${line%%"$NL"*}
+  [[ $line =~ $MARKER_RE ]] || { printf none; return 0; }
+  tok=${BASH_REMATCH[1]}
+  case "$tok" in
+    *"$CR"*) printf none; return 0 ;;
+  esac
+  [[ $tok =~ $TOKEN_RE ]] || { printf none; return 0; }
+  case "$tok" in
+    UserPromptSubmit|Notification|waiting)
+      printf inflight ;;
+    Stop|StopFailure|SubagentStop|waiting-after-stop)
+      printf poststop ;;
+    *)
+      printf none ;;
+  esac
+  return 0
+}
+
 main() {
   mkdir -p "$STATE_DIR" 2>/dev/null
   chmod 700 "$STATE_DIR" 2>/dev/null
 
-  local now src payload event logevent session marker bg_running ntype tclass tinfo
+  local now src payload event logevent session marker bg_running ntype tclass tinfo phase pinfo token
   now=$(date +%s)
   src=unknown
   [ -n "${SUPERCONDUCTOR_MANAGED_AGENT:-}" ] && src=sc
@@ -255,7 +306,8 @@ main() {
       # C1 — classify a Notification by its (validated) type. Precedence:
       # waiting > resume > background-task keep (B3) > clear. Any other type
       # (idle_prompt, auth_success, agent_completed, unknown, `invalid`, `?`)
-      # leaves tclass empty, so it reconciles exactly as before C1.
+      # leaves tclass empty, so it falls through to the background-task check
+      # and otherwise clears, as before C1.
       tclass=""
       tinfo=""
       if [ "$event" = Notification ]; then
@@ -267,21 +319,45 @@ main() {
             tclass=resume ;;
         esac
       fi
+      # B-2 — a Notification or SubagentStop reconciles by the phase the
+      # CURRENT marker encodes (Stop / StopFailure / SessionEnd do not need
+      # it); only those two event lines carry `phase=`.
+      phase=""
+      pinfo=""
+      if [ "$event" = Notification ] || [ "$event" = SubagentStop ]; then
+        phase=$(marker_phase "$marker")
+        pinfo=" phase=$phase"
+      fi
       # Reconcile: a session blocked on the user, or whose work resumes, or
-      # with a still-running background subagent stays busy (work in flight);
-      # otherwise the turn is done and the marker is cleared.
+      # whose main turn is still in flight when a subagent ends, or with a
+      # still-running background subagent stays busy (work in flight);
+      # otherwise the turn is done and the marker is cleared. Precedence:
+      # waiting > resume > main-turn-in-flight > background task > clear.
       if [ "$tclass" = waiting ]; then
-        ( write_marker "$marker" "$now" "$WAITING_EVENT" "$src" ) &
-        log "keep session=$session event=$event$tinfo reason=waiting-on-user pid=$PPID src=$src"
+        token=$WAITING_EVENT
+        [ "$phase" = poststop ] && token=$WAITING_AFTER_STOP_EVENT
+        ( write_marker "$marker" "$now" "$token" "$src" ) &
+        log "keep session=$session event=$event$tinfo$pinfo reason=waiting-on-user pid=$PPID src=$src"
       elif [ "$tclass" = resume ]; then
-        ( write_marker "$marker" "$now" "$event" "$src" ) &
-        log "keep session=$session event=$event$tinfo reason=work-continues pid=$PPID src=$src"
+        token=$event
+        [ "$phase" = poststop ] && token=Stop
+        ( write_marker "$marker" "$now" "$token" "$src" ) &
+        log "keep session=$session event=$event$tinfo$pinfo reason=work-continues pid=$PPID src=$src"
+      elif [ "$event" = SubagentStop ] && [ "$phase" = inflight ]; then
+        ( write_marker "$marker" "$now" Notification "$src" ) &
+        log "keep session=$session event=$event$pinfo reason=main-turn-in-flight pid=$PPID src=$src"
       elif [ "$bg_running" = yes ]; then
-        ( write_marker "$marker" "$now" "$event" "$src" ) &
-        log "keep session=$session event=$event$tinfo reason=background-task-running pid=$PPID src=$src"
+        token=$event
+        if [ "$event" = Notification ] && [ "$phase" != inflight ]; then
+          token=Stop
+        fi
+        ( write_marker "$marker" "$now" "$token" "$src" ) &
+        log "keep session=$session event=$event$tinfo$pinfo reason=background-task-running pid=$PPID src=$src"
+      elif [ "$event" = SubagentStop ] && [ "$phase" = none ]; then
+        log "ignore reason=no-marker event=$event$pinfo"
       else
         rm -f "$marker" 2>/dev/null
-        log "clear session=$session event=$event$tinfo"
+        log "clear session=$session event=$event$tinfo$pinfo"
       fi
       ;;
     *)

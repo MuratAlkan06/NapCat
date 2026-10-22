@@ -322,13 +322,32 @@ final class FinishAlertController {
             // A flush only while the window is still open; past it, the hold
             // is the in-flight send, whose completion pumps again.
             guard flush == nil, let until = windowOpenUntil, until > at else { return }
-            flush = scheduler.schedule(after: until - at) { [weak self] in
-                guard let self else { return }
-                self.flush = nil
-                guard self.isWatching else { return }
-                self.pump()
-            }
+            scheduleFlush(after: until - at)
         }
+    }
+
+    /// The window-close flush: one one-shot callback that pumps the digest.
+    private func scheduleFlush(after delay: TimeInterval) {
+        flush = scheduler.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            self.flush = nil
+            guard self.isWatching else { return }
+            self.pump()
+        }
+    }
+
+    /// B-1: ntfy answered 429 — hold the batch window open for `delay` from
+    /// now (never shortening it) and move the ONE flush to the new close.
+    /// Everything observed meanwhile folds into the digest and goes out as
+    /// one message when the hold ends; a later 429 extends it again. Disarm
+    /// cancels the flush and drops the digest like any other window.
+    private func holdForRateLimit(_ delay: TimeInterval) {
+        let at = now()
+        let until = max(windowOpenUntil ?? at, at + delay)
+        windowOpenUntil = until
+        flush?.cancel()
+        scheduleFlush(after: until - at)
+        Self.logger.notice("finish alert: ntfy is rate-limiting — session alerts held and folded for \(Int(delay), privacy: .public) s")
     }
 
     private func sendNext() {
@@ -372,6 +391,9 @@ final class FinishAlertController {
         if generation == armGeneration && isWatching {
             if case .retryAfter(let delay) = FinishAlertPolicy.retryDecision(outcome: outcome, attempt: attempt) {
                 scheduleRetry(kind, originatedAt: originatedAt, after: delay)
+            }
+            if let hold = FinishAlertPolicy.windowExtension(after: outcome) {
+                holdForRateLimit(hold)
             }
         } else {
             Self.logger.notice("finish alert: a send completed after disarm — outcome recorded, nothing more sent")

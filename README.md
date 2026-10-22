@@ -346,8 +346,11 @@ is running and removes it when the turn ends. When the main turn ends but a
 **background subagent** is still running, the hook keeps the marker until the last
 subagent finishes (it reconciles on the `background_tasks` the `Stop`/`SubagentStop`
 events carry), so NapCat still shows **running** during orchestrator-plus-subagent
-work. NapCat only reads those markers (cross-checked against the live process list,
-fail-open so it never falsely reports "idle").
+work. The hook also tracks whether the main turn has ended, so a subagent finishing
+mid-turn never clears the marker and a later wait in the same turn can notify again
+(an existing install picks this up once you refresh the hook — see the upgrade note
+under "Install and register" below). NapCat only reads those markers (cross-checked
+against the live process list, fail-open so it never falsely reports "idle").
 
 ### Install and register — BY HAND
 
@@ -548,7 +551,9 @@ pushes, and the row says so.
   once only when it provably never left the Mac (no connection, DNS, TLS);
   anything that may have reached ntfy — one the server refused (for example,
   rate-limited), or one whose answer never came back — is never retried, so you
-  may occasionally miss one rather than get a duplicate.
+  may occasionally miss one rather than get a duplicate. After ntfy answers a
+  session alert with HTTP 429 (rate-limited), session alerts are held and folded
+  for ten minutes, then sent as one message; the lid alert is unaffected.
 - **The marker folder has to exist.** Until the busy hook is installed — or
   after its folder is deleted — the row says it is waiting for the Claude hook.
   After the folder is created or recreated, the feature re-arms on the next
@@ -578,8 +583,10 @@ pushes, and the row says so.
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.
-- **A finish alert can come early.** Rarely, a subagent finishing mid-turn can
-  clear the busy marker early and trigger a premature finish alert.
+- **A finish alert can come early with an older hook.** With a hook installed
+  before the main-turn tracking above, a subagent finishing mid-turn can clear
+  the busy marker early and trigger a premature finish alert; refresh the hook
+  (the upgrade note under "Install and register") to get the fix.
 - **Lid and finish can overlap.** If the finish send is in flight when the lid
   closes, the lid alert still goes out (separate lanes) — best-effort, like
   every push.
