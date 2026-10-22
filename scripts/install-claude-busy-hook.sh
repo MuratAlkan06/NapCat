@@ -36,7 +36,10 @@ if ! /usr/bin/install -m 755 "$SRC" "$HOOK_DEST"; then
     echo "error: could not install the hook to $HOOK_DEST" >&2
     exit 1
 fi
-echo "installed: $HOOK_DEST (755)"
+# The machine-readable stamp on line 2 of the hook — the same value NapCat's
+# menu compares against to flag an out-of-date installed copy.
+HOOK_VERSION="$(/usr/bin/sed -n 's/^# napcat-hook-version: \([0-9][0-9]*\)$/\1/p' "$HOOK_DEST" | /usr/bin/head -n 1)"
+echo "installed: $HOOK_DEST (755, hook version ${HOOK_VERSION:-unknown})"
 
 mkdir -p "$MARKER_DIR" && chmod 700 "$MARKER_DIR"
 echo "ready:     $MARKER_DIR (700)"

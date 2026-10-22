@@ -28,17 +28,21 @@ protocol MarkerDirectoryWatching: AnyObject {
     var isRunning: Bool { get }
     /// Starts observing. `handler` runs on a PRIVATE serial queue (never the
     /// main queue). Returns false (and stays stopped) when the directory
-    /// cannot be opened. Starting a running watcher is a no-op returning true.
+    /// cannot be opened or the path is not a directory. Starting a running
+    /// watcher is a no-op returning true.
     func start(handler: @escaping @Sendable (MarkerDirectoryEvent) -> Void) -> Bool
     /// Cancels the source; its cancel handler closes the descriptor.
     /// Idempotent; start → stop → start works.
     func stop()
 }
 
-/// The production watcher: `open(O_EVTONLY | O_CLOEXEC)` + a dispatch
-/// filesystem-object source. `O_EVTONLY` asks only for event notifications —
-/// it never keeps the volume from unmounting and never blocks the directory's
-/// deletion; `O_CLOEXEC` keeps the descriptor out of any child process.
+/// The production watcher: `open(O_EVTONLY | O_CLOEXEC | O_NONBLOCK |
+/// O_DIRECTORY)` + a dispatch filesystem-object source. `O_EVTONLY` asks only
+/// for event notifications — it never keeps the volume from unmounting and
+/// never blocks the directory's deletion; `O_CLOEXEC` keeps the descriptor out
+/// of any child process; `O_NONBLOCK` keeps the open itself from ever waiting
+/// (a FIFO planted at the path); `O_DIRECTORY` refuses anything that is not a
+/// directory, so `start` fails instead of watching the wrong kind of file.
 final class KqueueMarkerDirectoryWatcher: MarkerDirectoryWatching, @unchecked Sendable {
     /// The kqueue bits observed: entries changing, and the directory itself
     /// going away. Computed: the option set is not `Sendable`, so it cannot
@@ -73,7 +77,7 @@ final class KqueueMarkerDirectoryWatcher: MarkerDirectoryWatching, @unchecked Se
         lock.lock()
         defer { lock.unlock() }
         guard source == nil else { return true }
-        let descriptor = open(directory.path, O_EVTONLY | O_CLOEXEC)
+        let descriptor = open(directory.path, O_EVTONLY | O_CLOEXEC | O_NONBLOCK | O_DIRECTORY)
         guard descriptor >= 0 else { return false }
         let newSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,

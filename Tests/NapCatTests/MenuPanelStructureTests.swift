@@ -256,6 +256,9 @@ struct MenuPanelStructureTests {
         let generalTwins = try #require(Self.structChunk("GeneralSurfacedLines", in: source))
         let pairs: [(accessor: String, twinHome: String)] = [
             ("model.hookStatus", claudeTwins),
+            // S7: the installed hook copy's version (out of date / no stamp
+            // are warnings, so it needs the top-level twin like hookStatus).
+            ("model.hookVersionStatus", claudeTwins),
             // 2026-10-21: the awake fact left the glance tier (always nominal,
             // so its twin never renders — it gets one anyway, no special case).
             ("model.claudeAwakeLine", claudeTwins),

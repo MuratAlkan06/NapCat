@@ -83,6 +83,8 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var claudeHookEverSeen = false
     @Published private(set) var claudeHookLastSeenSeconds: Int?
     @Published private(set) var claudeDetectionPaused = false
+    /// S7: the installed hook copy's version stamp (nil = absent / no stamp).
+    @Published private(set) var claudeInstalledHookVersion: Int?
 
     // Track B / B2 (lid-close alert) mirrors. `lidGuardTopic` is a SECRET (the
     // ntfy topic is the feed's only password). It is PRIVATE since the panel
@@ -201,6 +203,7 @@ final class MenuStateModel: ObservableObject {
         claudeHookEverSeen = detection?.hookEverSeen ?? false
         claudeHookLastSeenSeconds = detection?.lastSeenSeconds
         claudeDetectionPaused = detection?.detectionPaused ?? false
+        claudeInstalledHookVersion = detection?.installedHookVersion
         // B2 mirrors — read straight off the (thread-safe) controller.
         lidGuardEnabled = lidGuard?.isEnabled ?? false
         lidGuardTopic = lidGuard?.storedTopic ?? ""
@@ -295,6 +298,14 @@ final class MenuStateModel: ObservableObject {
         )
     }
 
+    /// Tucked under Details › Claude detection (S7); absent when there is
+    /// nothing to add to `hookStatus`.
+    var hookVersionStatus: PanelLine? {
+        Self.claudeHookVersionStatus(installedVersion: claudeInstalledHookVersion,
+                                     expectedVersion: ClaudeBusyConstants.hookVersion,
+                                     markerDirExists: claudeHookInstalled)
+    }
+
     var lidStatus: PanelLine {
         Self.lidAlertStatus(
             for: lidGuardArming,
@@ -339,7 +350,8 @@ final class MenuStateModel: ObservableObject {
     var detailsBadge: PanelSeverity {
         var severities = [launchAtLoginCaption?.severity ?? .nominal, lockScreenStatus.severity]
         if claudeDetectionVisible {
-            severities += [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal]
+            severities += [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal,
+                           hookVersionStatus?.severity ?? .nominal]
         }
         if lidGuardVisible {
             let lidWithoutThePause = Self.lidAlertStatus(
@@ -511,6 +523,37 @@ final class MenuStateModel: ObservableObject {
             return "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh"
         }
         return "Busy hook: last seen \(ClaudeActivityPolicy.relativeTime(seconds: seconds))"
+    }
+
+    /// S7 — is the INSTALLED hook copy the version this build expects? The
+    /// installer copies the script once, so a checkout update leaves the old
+    /// copy running until it is re-run. Equal ⇒ nominal; older ⇒ a warning
+    /// naming the fix (a new Claude session is needed to load the new copy);
+    /// no readable stamp while the marker dir exists ⇒ a warning (an install
+    /// that predates the stamp). No stamp AND no marker dir ⇒ nil: the
+    /// "not installed" hook line already says it. NEWER than this build (the
+    /// checkout moved on but NapCat was not rebuilt) ⇒ info: nothing is
+    /// broken, but the two halves no longer match.
+    nonisolated static func claudeHookVersionStatus(
+        installedVersion: Int?,
+        expectedVersion: Int,
+        markerDirExists: Bool
+    ) -> PanelLine? {
+        guard let installedVersion else {
+            guard markerDirExists else { return nil }
+            return PanelLine(text: "Busy hook: installed copy has no version stamp — re-run the installer",
+                             severity: .warning)
+        }
+        if installedVersion < expectedVersion {
+            return PanelLine(text: "Busy hook: installed copy is out of date — re-run "
+                                + "scripts/install-claude-busy-hook.sh and open a new Claude session",
+                             severity: .warning)
+        }
+        if installedVersion > expectedVersion {
+            return PanelLine(text: "Busy hook: installed copy is newer than this NapCat — rebuild NapCat to match",
+                             severity: .info)
+        }
+        return PanelLine(text: "Busy hook: installed copy is current", severity: .nominal)
     }
 
     // MARK: - Track B / B2 (lid-close alert) presentation
@@ -717,8 +760,9 @@ final class MenuStateModel: ObservableObject {
     /// `.hookNotInstalled` otherwise), and `.paused` is the F2 downgrade: on,
     /// but no busy marker can exist, so nothing can fire. A refused or failed
     /// LAST session send must not read "armed" either — it names the fix
-    /// (re-run the test send), and a STRICTLY LATER accepted lid-lane send
-    /// (that test send, or a lid alert) clears the downgrade: see
+    /// (re-run the test send; for a 429 it says alerts are being held, B-1),
+    /// and a STRICTLY LATER accepted lid-lane send (that test send, or a lid
+    /// alert) clears the downgrade: see
     /// `finishAlertSendDowngraded`. The Details "Last session alert" line is
     /// unaffected — it stays the truthful history.
     nonisolated static func finishAlertStatusLine(
@@ -742,16 +786,30 @@ final class MenuStateModel: ObservableObject {
         case .armed:
             if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                                          lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {
+                if finishAlertRateLimited(lastOutcome) {
+                    return "Session alerts: ntfy is rate-limiting this Mac — alerts are held and folded for a while"
+                }
                 return "Session alerts: the last message did not go out — re-run Send test message"
             }
             return "Session alerts: armed — a push when a Claude session finishes or waits for you"
         }
     }
 
+    /// B-1: the last session send was refused with HTTP 429. The controller
+    /// then holds the session lane (events fold, one message when the hold
+    /// ends), so the caption says so — a WARNING, not the generic error:
+    /// "re-run Send test message" is the wrong advice for a rate limit (it
+    /// would only burn more quota). Same recovery rule as the generic
+    /// downgrade (`finishAlertSendDowngraded`).
+    nonisolated static func finishAlertRateLimited(_ outcome: MessageSendOutcome?) -> Bool {
+        outcome == .rejected(429)
+    }
+
     /// The status line with its severity. Off is a choice (nominal); switched
     /// on but unable to fire (no topic, untested, paused, nothing to watch) is
     /// a warning; armed with a refused / failed last send (not yet recovered
-    /// by a later accepted lid-lane send) is an error.
+    /// by a later accepted lid-lane send) is an error — except a 429, which is
+    /// a warning: alerts are held and folded, not lost (B-1).
     nonisolated static func finishAlertStatus(
         for state: FinishAlertDisplayState,
         lastOutcome: MessageSendOutcome?,
@@ -771,7 +829,11 @@ final class MenuStateModel: ObservableObject {
             let downgraded = finishAlertSendDowngraded(
                 lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                 lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt)
-            severity = downgraded ? .error : .nominal
+            if !downgraded {
+                severity = .nominal
+            } else {
+                severity = finishAlertRateLimited(lastOutcome) ? .warning : .error
+            }
         }
         return PanelLine(text: text, severity: severity)
     }

@@ -7,7 +7,7 @@ backports.
 
 | Version                          | Supported |
 |----------------------------------|-----------|
-| Latest tag (currently `v1.3.0`)  | Yes       |
+| The latest tagged release        | Yes       |
 | Anything older                   | No        |
 
 If you are on an older tag, update to the latest one and re-run
@@ -40,9 +40,11 @@ each an exact, argument-complete command string with no wildcards. Those
 entries are installed only by `scripts/setup.sh`, a short script you read and
 run yourself; the app never installs or changes them. They point at a
 root-owned helper outside the app bundle (`/usr/local/napcat/smc`), so the
-helper cannot be swapped without already being root. The optional lid-close
-alert uses an ntfy topic that is a bearer credential: anyone who knows it can
-read and post to the feed. It is stored only in NapCat's user defaults
+helper cannot be swapped without already being root. sudo matches an entry's
+arguments as one space-joined string, which is why the entries are never
+widened with wildcards. The optional lid-close and session alerts share an
+ntfy topic that is a bearer credential: anyone who knows it can read and post
+to the feed. It is stored only in NapCat's user defaults
 (`com.muratalkan.napcat`), is never written to the log or shown in the menu,
 and is deleted by `scripts/uninstall.sh`. The full rationale and the honest
 trade-offs are in the README's

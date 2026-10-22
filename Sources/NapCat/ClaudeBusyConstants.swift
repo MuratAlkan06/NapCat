@@ -3,15 +3,21 @@ import Foundation
 /// Single Swift source of truth for the constants shared with the companion
 /// hook script (scripts/claude-busy-hook.sh) and its installer. A PARITY LINT
 /// (ClaudeBusyHookScriptTests) byte-matches the marker-dir path, the
-/// session-id regex, the marker-line grammar tokens, the five hook event
-/// names and (Track C, C1) the Notification-type classes plus the synthetic
-/// `waiting` event token between this file and the shell script — the
-/// watchdog byte-match precedent (WatchdogControllerTests) applied to Track B.
+/// session-id regex, the marker-line grammar tokens, the six registered hook
+/// event names, (Track C, C1) the Notification-type classes plus the synthetic
+/// `waiting` event token, (B-2) the synthetic `waiting-after-stop` token
+/// and the two marker-phase token lists, and (S7) the hook version stamp
+/// between this file and the shell script — the watchdog byte-match precedent
+/// (WatchdogControllerTests) applied to Track B.
 ///
-/// Track B is READ-ONLY and Claude-scoped: nothing here sends a message, runs
-/// osascript, touches Messages, registers an IOKit sleep notification, or adds
-/// a UserDefaults key (all deferred to B2). NapCat only READS the markers this
-/// hook writes and MAY write its own kill-switch flag inside the marker dir.
+/// The marker side is Claude-scoped and one-way: NapCat only READS the markers
+/// this hook writes (and MAY write its own kill-switch flag inside the marker
+/// dir); it never writes a marker and never writes under ~/.claude — its one
+/// read there is the first KiB of the installed hook copy, for the version
+/// stamp (S7, `MarkerDirectoryStore.installedHookVersion`). The app DOES
+/// send ntfy pushes (the B2 lid alert, the Track C session alerts), but from
+/// its own state in a closed vocabulary — nothing in this file sends, and no
+/// marker content ever reaches a message.
 enum ClaudeBusyConstants {
     /// Marker directory, relative to the user's home. MUST byte-match the
     /// `$HOME/…` path the shell hook uses (parity lint).
@@ -42,15 +48,17 @@ enum ClaudeBusyConstants {
 
     /// UserPromptSubmit sets the marker (a turn is in flight).
     static let setEvent = "UserPromptSubmit"
-    /// The B1-era REGISTRATION list of reconcile events (turn ended / idle
-    /// prompt / session gone). Since Track C slice C1, `Notification` is NOT
-    /// an unconditional clear: it is reconciled by its `notification_type` —
-    /// keep-on-wait (`waitingNotificationTypes`), keep-on-resume
-    /// (`resumeNotificationTypes`), otherwise the B3 background-task check and
-    /// then clear. The array itself is unchanged (the parity lint byte-matches
-    /// these event names against the shell script).
-    static let clearEvents = ["Stop", "StopFailure", "SessionEnd", "Notification"]
-    /// All five events the hook is registered for.
+    /// The REGISTRATION list of reconcile events (turn ended / idle prompt /
+    /// session gone / a subagent ended). None of them is an unconditional
+    /// clear any more: `Notification` is reconciled by its
+    /// `notification_type` (C1 — keep-on-wait, keep-on-resume, otherwise the
+    /// B3 background-task check and then clear), and `SubagentStop` (B3,
+    /// phase-aware since B-2) KEEPS a marker whose main turn is still in
+    /// flight. The parity lints byte-match these names against the shell
+    /// script and set-match them against the installer's and uninstaller's
+    /// printed registration lists.
+    static let clearEvents = ["Stop", "StopFailure", "SessionEnd", "Notification", "SubagentStop"]
+    /// All six events the hook is registered for.
     static var allEvents: [String] { [setEvent] + clearEvents }
 
     /// Synthetic marker event token (C1): a Notification of a WAITING type
@@ -59,6 +67,26 @@ enum ClaudeBusyConstants {
     /// background-task or resume keep without new marker grammar. MUST
     /// byte-match the shell `WAITING_EVENT` (parity lint).
     static let waitingEventToken = "waiting"
+
+    /// Synthetic marker event token (B-2): the same WAITING class as
+    /// `waitingEventToken`, written when the main turn had ALREADY ENDED (the
+    /// marker was post-Stop), so the phase survives the wait. The app treats
+    /// both tokens as waiting. MUST byte-match the shell
+    /// `WAITING_AFTER_STOP_EVENT` (parity lint).
+    static let waitingAfterStopEventToken = "waiting-after-stop"
+
+    /// B-2 marker PHASE, encoded in the marker's `event` token: the main turn
+    /// is still IN FLIGHT. MUST byte-match the shell `marker_phase` case
+    /// pattern, in order (parity lint).
+    static let inFlightEventTokens = ["UserPromptSubmit", "Notification", "waiting"]
+
+    /// B-2 marker PHASE: the main turn has ENDED (only background work keeps
+    /// the marker). MUST byte-match the shell `marker_phase` case pattern, in
+    /// order (parity lint). An absent / unparseable marker, or a token in
+    /// neither list, is phase "none". `SessionEnd` (S11) is written only when
+    /// background work outlived the session — the main turn is over, so the
+    /// last subagent ending must clear it like any post-Stop marker.
+    static let postStopEventTokens = ["Stop", "StopFailure", "SessionEnd", "SubagentStop", "waiting-after-stop"]
 
     /// `notification_type` values that mean Claude is BLOCKED on the user: the
     /// hook KEEPS the marker, rewritten with `waitingEventToken`. MUST
@@ -106,8 +134,23 @@ enum ClaudeBusyConstants {
     static let maxMarkerBytes = 4096
 
     /// Stable installed hook path, relative to home. The installer copies the
-    /// script here (NOT under dist/, so `make clean` never removes it).
+    /// script here (NOT under dist/, so `make clean` never removes it). Only
+    /// BusyMarkerStore.swift may resolve it (structure lint).
     static let installedHookRelativePath = ".claude/hooks/napcat-busy-hook.sh"
+
+    /// S7 — the version of the hook script THIS build expects. MUST equal the
+    /// shell script's `# napcat-hook-version: N` stamp (parity lint); bump
+    /// both whenever the hook's behavior changes, so an installed copy left
+    /// behind by an earlier install reads as out of date in the menu.
+    static let hookVersion = 4
+
+    /// The stamp line's fixed prefix; the rest of the line is the decimal
+    /// version. It must sit within the first `installedHookReadBytes` bytes.
+    static let hookVersionStampPrefix = "# napcat-hook-version: "
+
+    /// Read cap for the installed hook copy: only this many leading bytes are
+    /// ever read (the stamp is on line 2).
+    static let installedHookReadBytes = 1024
 
     /// Absolute marker directory for the current user.
     static var markerDirURL: URL {

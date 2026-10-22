@@ -13,9 +13,16 @@
 # Structure (P2 security-review carryover): steps COLLECT errors instead of
 # aborting — the sudoers file, /usr/local/napcat, and the LaunchAgent are
 # removed even when the pmset or smc steps fail. Charging is re-enabled via
-# the installed smc BEFORE the binary is removed.
+# the installed smc BEFORE the binary is removed — and only after the
+# helper's path is re-checked as root-owned (otherwise that one step is
+# skipped and reported).
 
 set -uo pipefail  # deliberately NOT -e: every step must be attempted
+# Pinned PATH + umask: sudo is not guaranteed to reset the caller's PATH (no
+# secure_path by default), so a user-writable PATH entry could otherwise
+# hijack a bare rm/id/grep run as root here.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
+umask 022
 
 SUDOERS_FILE="/etc/sudoers.d/napcat"
 SMC_DIR="/usr/local/napcat"
@@ -40,7 +47,45 @@ fi
 
 # 2. Re-enable charging while the helper still exists (same probe chain as
 #    the app: CHTE unless the key reports "no data", then CH0B/CH0C).
-if [ -x "$SMC_BIN" ]; then
+#    The helper runs AS ROOT here, so first re-check what setup.sh checked at
+#    install time: /usr/local, the helper directory and the binary must each
+#    be root-owned, not group/other-writable, and not a symlink. If anything
+#    fails, ONLY this step is skipped (with a collected failure); every later
+#    step still runs.
+#    Prints the first problem found; prints nothing when the path is trusted.
+smc_helper_trust_problem() {
+    local path owner perms
+    for path in /usr/local "$SMC_DIR" "$SMC_BIN"; do
+        if [ -L "$path" ]; then
+            echo "$path is a symlink"
+            return 0
+        fi
+        owner="$(/usr/bin/stat -f '%u' "$path" 2>/dev/null)" || owner=""
+        perms="$(/usr/bin/stat -f '%Lp' "$path" 2>/dev/null)" || perms=""
+        case "$owner" in
+            ''|*[!0-9]*) echo "$path could not be inspected"; return 0 ;;
+        esac
+        case "$perms" in
+            ''|*[!0-7]*) echo "$path could not be inspected"; return 0 ;;
+        esac
+        if [ "$owner" -ne 0 ]; then
+            echo "$path is not owned by root (uid $owner)"
+            return 0
+        fi
+        if [ $(( 8#$perms & 8#022 )) -ne 0 ]; then
+            echo "$path is group- or other-writable (mode $perms)"
+            return 0
+        fi
+    done
+    return 0
+}
+SMC_TRUST_PROBLEM=""
+if [ -x "$SMC_BIN" ] || [ -L "$SMC_BIN" ]; then
+    SMC_TRUST_PROBLEM="$(smc_helper_trust_problem)"
+fi
+if [ -n "$SMC_TRUST_PROBLEM" ]; then
+    FAILURES+=("$SMC_TRUST_PROBLEM — refused to run $SMC_BIN as root, so charging was NOT re-enabled; it may stay paused until reboot. Inspect with: ls -ld /usr/local $SMC_DIR $SMC_BIN")
+elif [ -x "$SMC_BIN" ]; then
     if "$SMC_BIN" -k CHTE -r 2>/dev/null | grep -q "no data"; then
         "$SMC_BIN" -k CH0B -w 00 || FAILURES+=("smc CH0B enable failed — charging may still be inhibited until reboot")
         "$SMC_BIN" -k CH0C -w 00 || FAILURES+=("smc CH0C enable failed — charging may still be inhibited until reboot")

@@ -27,6 +27,18 @@ struct ScaffoldTests {
         )
     }
 
+    /// The bundle's marketing version is a plain `MAJOR.MINOR.PATCH` (the
+    /// value itself is bumped per release and deliberately not locked here).
+    @Test func bundleShortVersionIsSemantic() throws {
+        let url = URL(fileURLWithPath: #filePath)   // Tests/NapCatTests/<this file>
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/Info.plist")
+        let plist = try PropertyListSerialization.propertyList(from: try Data(contentsOf: url), format: nil)
+        let version = try #require((plist as? [String: Any])?["CFBundleShortVersionString"] as? String)
+        #expect(version.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil,
+                "CFBundleShortVersionString '\(version)' must be MAJOR.MINOR.PATCH")
+    }
+
     @Test func placeholderIconIsTemplateAtIconPointHeight() {
         let icon = StatusItemController.placeholderIcon()
         #expect(icon.isTemplate, "menu bar icon must be a template image")

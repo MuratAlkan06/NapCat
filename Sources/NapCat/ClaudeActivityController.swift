@@ -25,6 +25,8 @@ final class ClaudeActivityController {
     private(set) var hookEverSeen = false
     private(set) var lastSeenSeconds: Int?
     private(set) var detectionPaused = false
+    /// S7: the installed hook copy's version stamp (nil = absent / no stamp).
+    private(set) var installedHookVersion: Int?
 
     init(
         store: BusyMarkerStore,
@@ -65,6 +67,7 @@ final class ClaudeActivityController {
         hookInstalled = store.markerDirExists()
         hookEverSeen = store.hookLogExists()
         lastSeenSeconds = store.lastActivityEpoch().map { max(0, now - $0) }
+        installedHookVersion = store.installedHookVersion()
     }
 
     /// FRESH busy reading for the B2 lid guard, taken at the instant the system

@@ -39,6 +39,7 @@ struct FinishAlertPolicyTests {
         #expect(FinishAlertTuning.batchWindowSeconds == 30)
         #expect(FinishAlertTuning.retryDelaySeconds == 30)
         #expect(FinishAlertTuning.retryMaxAgeSeconds == 300)
+        #expect(FinishAlertTuning.rateLimitHoldSeconds == 600)
         #expect(FinishAlertTuning.staleCapSeconds == 43_200)
         #expect(FinishAlertTuning.staleCapSeconds == ClaudeBusyConstants.freshnessCapSeconds)
     }
@@ -234,7 +235,7 @@ struct FinishAlertPolicyTests {
     static func m1(_ ts: Int, _ event: String) -> [IdentifiedBusyMarker] { [marker(s1, ts, event)] }
 
     static let scenarios: [Scenario] = {
-        let t = Self.t0, ups = Self.ups, w = Self.waiting
+        let t = Self.t0, ups = Self.ups, w = Self.waiting, was = ClaudeBusyConstants.waitingAfterStopEventToken
         return [
             // MARK: FA-5 — a newer UserPromptSubmit is a new turn, never a finish
             Scenario(id: "R1", note: "debounce-window recreate: newer UPS ts ⇒ no finish, anchor reset",
@@ -352,6 +353,36 @@ struct FinishAlertPolicyTests {
                      baseline: m1(t, ups), steps: [
                         Step([], now: t + 900, [.finished(minutes: 15)]),
                      ]),
+            // MARK: B-2 — the post-Stop waiting token is the same waiting class
+            Scenario(id: "W15", note: "post-Stop keep → waiting-after-stop ⇒ exactly one buzz; rewrites never re-buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 600, "Stop"), now: t + 602),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)]),
+                        Step(m1(t + 720, was), now: t + 722),
+                     ]),
+            Scenario(id: "W16", note: "waiting → waiting-after-stop is NOT a new episode (no second buzz)",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 400, was), now: t + 402),
+                        Step(m1(t + 500, w), now: t + 502),
+                     ]),
+            Scenario(id: "W17", note: "waiting-after-stop → Stop clears the dedupe; the next wait buzzes again",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 600, "Stop"), now: t + 602),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)]),
+                        Step(m1(t + 700, "Stop"), now: t + 702),
+                        Step(m1(t + 900, was), now: t + 902, [.waiting(minutes: 15)]),
+                     ]),
+            Scenario(id: "W18", note: "B-2 hook keep: waiting → Notification (subagent ended mid-turn) → waiting ⇒ second buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 360, "Notification"), now: t + 362),
+                        Step(m1(t + 480, w), now: t + 482, [.waiting(minutes: 8)]),
+                     ]),
         ]
     }()
 
@@ -389,6 +420,32 @@ struct FinishAlertPolicyTests {
         let resumed = FinishAlertPolicy.observe(previous: late.tracked, current: Self.m1(Self.t0 + 90, "Notification"),
                                                 now: Self.t0 + 90)
         #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting ends the episode")
+    }
+
+    /// B-2: the dedupe flag treats BOTH waiting tokens as one episode — a
+    /// `waiting` → `waiting-after-stop` rewrite keeps it set (no new buzz),
+    /// and only a NON-waiting token (here the post-Stop `Stop` a resume
+    /// writes) clears it.
+    @Test func waitingAfterStopSharesTheWaitingEpisode() {
+        let afterStop = ClaudeBusyConstants.waitingAfterStopEventToken
+        let start = [Self.s1: Self.session(firstSeen: Self.t0, exact: true, lastTs: Self.t0)]
+        let buzzed = FinishAlertPolicy.observe(previous: start, current: Self.m1(Self.t0 + 60, afterStop),
+                                               now: Self.t0 + 60)
+        #expect(buzzed.events == [.waiting(minutes: 1)], "a transition into waiting-after-stop buzzes")
+        #expect(buzzed.tracked[Self.s1]?.waitingBuzzed == true)
+
+        let swapped = FinishAlertPolicy.observe(previous: buzzed.tracked, current: Self.m1(Self.t0 + 90, Self.waiting),
+                                                now: Self.t0 + 90)
+        #expect(swapped.events.isEmpty, "a change between the two waiting tokens is not a new episode")
+        #expect(swapped.tracked[Self.s1]?.waitingBuzzed == true)
+
+        let back = FinishAlertPolicy.observe(previous: swapped.tracked, current: Self.m1(Self.t0 + 120, afterStop),
+                                             now: Self.t0 + 120)
+        #expect(back.events.isEmpty)
+        let resumed = FinishAlertPolicy.observe(previous: back.tracked, current: Self.m1(Self.t0 + 150, "Stop"),
+                                                now: Self.t0 + 150)
+        #expect(resumed.events.isEmpty)
+        #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting-after-stop ends the episode")
     }
 
     /// Ids are internal keys: every event payload leaf is an Int (or nil).
@@ -463,6 +520,98 @@ struct FinishAlertPolicyTests {
         #expect(two.firstWaitingMinutes == 12)
     }
 
+    // MARK: - S10: absorbing a queued message back after a 429
+
+    struct AbsorbRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        /// Folded BEFORE the absorb, each at t = 200 with stillWorking 5.
+        let prior: [FinishAlertEvent]
+        let kind: LidGuardMessageKind
+        let at: Double
+        /// The digest's messages afterwards (the absorb passes stillWorking 3).
+        let expected: [LidGuardMessageKind]
+        /// nil ⇒ the absorb must leave the digest exactly as it was.
+        let originatedAt: Double?
+        var testDescription: String { id }
+    }
+
+    static let absorbRows: [AbsorbRow] = [
+        AbsorbRow(id: "A1 one finish keeps its minutes; stillWorking is the caller's, not the message's",
+                  prior: [], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 9), at: 100,
+                  expected: [.sessionFinished(minutes: 20, folded: 1, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A2 a folded finish re-enters as that many finishes",
+                  prior: [], kind: .sessionFinished(minutes: nil, folded: 3, stillWorking: 9), at: 100,
+                  expected: [.sessionFinished(minutes: nil, folded: 3, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A3 minutes on a multi-finish message are dropped",
+                  prior: [], kind: .sessionFinished(minutes: 17, folded: 3, stillWorking: 0), at: 100,
+                  expected: [.sessionFinished(minutes: nil, folded: 3, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A4 a degenerate folded 0 still counts as one finish (never lost)",
+                  prior: [], kind: .sessionFinished(minutes: 20, folded: 0, stillWorking: 0), at: 100,
+                  expected: [.sessionFinished(minutes: 20, folded: 1, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A5 a waiting buzz re-enters as one waiting event with its minutes",
+                  prior: [], kind: .needsAttention(minutes: 12, stillWorking: 4), at: 100,
+                  expected: [.needsAttention(minutes: 12, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A6 a waiting buzz without minutes",
+                  prior: [], kind: .needsAttention(minutes: nil, stillWorking: 0), at: 100,
+                  expected: [.needsAttention(minutes: nil, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A7 joins a folded finish: two finishes, minutes dropped, EARLIEST origin",
+                  prior: [.finished(minutes: 9)], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 1),
+                  at: 100, expected: [.sessionFinished(minutes: nil, folded: 2, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A8 joins a folded wait: two waits, minutes dropped",
+                  prior: [.waiting(minutes: 4)], kind: .needsAttention(minutes: 12, stillWorking: 1), at: 100,
+                  expected: [.needsAttention(minutes: nil, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A9 a finish beside a folded wait: waiting first, both keep their minutes",
+                  prior: [.waiting(minutes: 4)], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 1),
+                  at: 100, expected: [.needsAttention(minutes: 4, stillWorking: 2),
+                                      .sessionFinished(minutes: 20, folded: 1, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A10 a later origin never moves the anchor forward",
+                  prior: [.finished(minutes: 9)], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 1),
+                  at: 300, expected: [.sessionFinished(minutes: nil, folded: 2, stillWorking: 3)], originatedAt: 200),
+        AbsorbRow(id: "A11 a lid alert is ignored (empty digest stays empty)",
+                  prior: [], kind: .lidAlert(busySessionCount: 2), at: 100, expected: [], originatedAt: nil),
+        AbsorbRow(id: "A12 the test message is ignored",
+                  prior: [], kind: .test, at: 100, expected: [], originatedAt: nil),
+        AbsorbRow(id: "A13 a lid alert leaves a non-empty digest untouched (stillWorking too)",
+                  prior: [.finished(minutes: 9)], kind: .lidAlert(busySessionCount: 1), at: 100,
+                  expected: [.sessionFinished(minutes: 9, folded: 1, stillWorking: 5)], originatedAt: nil),
+    ]
+
+    @Test(arguments: absorbRows)
+    func absorbTable(_ row: AbsorbRow) {
+        var digest = FinishAlertDigest()
+        for event in row.prior { digest.fold(event, stillWorking: 5, at: 200) }
+        let before = digest
+        digest.absorb(row.kind, stillWorking: 3, at: row.at)
+        #expect(digest.messages() == row.expected)
+        if let originatedAt = row.originatedAt {
+            #expect(digest.originatedAt == originatedAt)
+            #expect(digest.stillWorking == 3)
+        } else {
+            #expect(digest == before, "an ignored kind must leave the digest exactly as it was")
+        }
+    }
+
+    /// Round trip: absorbing a digest's OWN messages into an empty digest
+    /// (with the same still-working count) rebuilds exactly those messages —
+    /// nothing is lost or invented on the way back in.
+    @Test func absorbingADigestsOwnMessagesRebuildsThem() {
+        let shapes: [[FinishAlertEvent]] = [
+            [.finished(minutes: 42)],
+            [.finished(minutes: 12), .finished(minutes: nil), .finished(minutes: 40)],
+            [.waiting(minutes: 4)],
+            [.waiting(minutes: 4), .waiting(minutes: 30)],
+            [.finished(minutes: 9), .waiting(minutes: 4)],
+            [.finished(minutes: 9), .finished(minutes: 3), .waiting(minutes: nil), .waiting(minutes: 1)],
+        ]
+        for events in shapes {
+            var original = FinishAlertDigest()
+            for (index, event) in events.enumerated() { original.fold(event, stillWorking: 4, at: Double(index)) }
+            var rebuilt = FinishAlertDigest()
+            for kind in original.messages() { rebuilt.absorb(kind, stillWorking: original.stillWorking, at: 0) }
+            #expect(rebuilt.messages() == original.messages(), "\(events)")
+        }
+    }
+
     // MARK: - Outbox decision
 
     @Test(arguments: [
@@ -502,6 +651,38 @@ struct FinishAlertPolicyTests {
         #expect(FinishAlertPolicy.retryDecision(outcome: outcome, attempt: attempt) == expected, "\(id)")
         // Exhaustive: a new outcome case will not compile until the table above covers it.
         switch outcome { case .accepted, .rejected, .timedOutUnconfirmed, .sendFailed: break }
+    }
+
+    // MARK: - B-1 rate-limit hold (window extension)
+
+    /// Only a 429 holds the session lane, for `rateLimitHoldSeconds`; every
+    /// other outcome — including every other refusal — leaves the window be.
+    @Test(arguments: [
+        // (id, outcome, expected)
+        ("H1", MessageSendOutcome.rejected(429), TimeInterval?(600)),
+        ("H2", .accepted, nil),
+        ("H3", .timedOutUnconfirmed, nil),
+        ("H4", .sendFailed("offline"), nil),
+        ("H5", .sendFailed("lane busy"), nil),
+        ("H6", .rejected(400), nil),
+        ("H7", .rejected(401), nil),
+        ("H8", .rejected(403), nil),
+        ("H9", .rejected(404), nil),
+        ("H10", .rejected(500), nil),
+        ("H11", .rejected(503), nil),
+        ("H12", .rejected(428), nil),
+        ("H13", .rejected(430), nil),
+    ] as [(String, MessageSendOutcome, TimeInterval?)])
+    func windowExtensionTable(_ id: String, _ outcome: MessageSendOutcome, _ expected: TimeInterval?) {
+        #expect(FinishAlertPolicy.windowExtension(after: outcome) == expected, "\(id)")
+        // Exhaustive: a new outcome case will not compile until the table above covers it.
+        switch outcome { case .accepted, .rejected, .timedOutUnconfirmed, .sendFailed: break }
+    }
+
+    @Test func theRateLimitHoldIsTheTunableAndNeverARetry() {
+        #expect(FinishAlertPolicy.windowExtension(after: .rejected(429)) == FinishAlertTuning.rateLimitHoldSeconds)
+        #expect(FinishAlertPolicy.retryDecision(outcome: .rejected(429), attempt: .first) == .done,
+                "the hold replaces nothing: a 429 is still never retried")
     }
 
     @Test func retryDelayIsTheTunable() {

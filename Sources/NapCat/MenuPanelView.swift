@@ -144,6 +144,7 @@ struct ClaudeSurfacedLines: View {
 
     var body: some View {
         SurfacedLine(line: model.hookStatus)
+        SurfacedLine(line: model.hookVersionStatus)
         SurfacedLine(line: model.claudeAwakeLine)
     }
 }
@@ -579,6 +580,7 @@ struct PanelDetailsContent: View {
         VStack(alignment: .leading, spacing: PanelMetrics.tight) {
             DetailsGroupHeader(title: "Claude detection")
             TuckedLine(line: model.hookStatus)
+            TuckedLine(line: model.hookVersionStatus)
             TuckedLine(line: model.claudeAwakeLine)
             HStack {
                 VStack(alignment: .leading, spacing: 1) {

@@ -22,18 +22,19 @@ light/dark menu bars.
 - **Stay awake with the lid closed**, on demand, from the menu bar. Verified
   by reading the system state back (`pmset -g`) — the menu never shows a
   cached guess.
-- **Lock Screen**, one click (the lock icon next to Quit): NapCat locks your session, confirms the screen
-  really is locked, and only then turns the display off — your Mac keeps
-  running the whole time, which is the point when Stay Awake is on (walk away
-  or close the lid without stopping the work in progress). The order matters:
-  lock → verify → dark, so a failure can never leave you with a dark screen on
-  an *unlocked* Mac; if the lock cannot be confirmed within two seconds the
-  display stays on and NapCat tells you. It needs no privileges of any kind
-  (no `sudo`, no setup) but it does use one private macOS entry point
-  (`SACLockScreenImmediate` in `login.framework`), resolved at runtime — the
-  lock is verified through the public `CGSessionCopyCurrentDictionary()`. If a
-  future macOS drops that entry point, the button simply shows as disabled
-  with an explanation instead of misbehaving.
+- **Lock Screen**, one click (the lock icon next to Quit): NapCat locks your
+  session, confirms the screen really is locked, and only then turns the
+  display off — your Mac keeps running the whole time, which is the point when
+  Stay Awake is on (walk away or close the lid without stopping the work in
+  progress). The order matters: lock → verify → dark, so a failure can never
+  leave you with a dark screen on an *unlocked* Mac; if the lock cannot be
+  confirmed within two seconds the display stays on and NapCat tells you. It
+  needs no privileges of any kind (no `sudo`, no setup) but it does use one
+  private macOS entry point (`SACLockScreenImmediate` in `login.framework`),
+  resolved at runtime — the lock is verified through the public
+  `CGSessionCopyCurrentDictionary()`. If a future macOS drops that entry point,
+  the button simply shows as disabled with an explanation instead of
+  misbehaving.
 - **Battery charge limit** (Apple Silicon only), slider 50–100% in steps
   of 5, default 90%. Charging pauses at the limit and resumes when the
   battery drifts 5 points below it.
@@ -137,7 +138,8 @@ session, so it cannot interrupt anything you have running; it takes effect
 from your next login.
 
 The script is idempotent — run it again after updating and it only replaces
-what changed.
+what changed (an already-current helper still gets its root:wheel owner and
+755 mode re-applied).
 
 ### Verify what was installed
 
@@ -175,7 +177,10 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
   charge limit slider does not change the privileged commands: percent
   thresholds are decided *inside the app*, which then issues one of the two
   fixed disable/enable writes. Try it after setup:
-  `sudo -n pmset -a hibernatemode 25` is denied.
+  `sudo -n pmset -a hibernatemode 25` is denied. sudo matches an entry's
+  arguments as one space-joined string, so a wildcard is never confined to a
+  single argument (it can match across several) — which is why these entries
+  are never widened with wildcards.
 - **Root-owned target binary.** The smc helper is installed to
   `/usr/local/napcat/smc` owned by `root:wheel` — never inside the app
   bundle, which is user-writable and re-signed on every rebuild. A NOPASSWD
@@ -286,13 +291,30 @@ sudo ./scripts/uninstall.sh
 ```
 
 Idempotent and thorough even after partial failures: clears `disablesleep`,
-re-enables charging (before deleting the helper it needs to do so), then
+re-enables charging (before deleting the helper it needs to do so — and only
+after re-checking that `/usr/local`, `/usr/local/napcat` and the helper are
+still root-owned and not writable by anyone else; if they are not, that one
+step is skipped and reported, and everything else still runs), then
 removes the sudoers file, `/usr/local/napcat`, the failsafe LaunchAgent, and
 NapCat's saved settings (including the ntfy topic), and prints a summary of
 everything it reverted. Then delete the repo /
 `dist/NapCat.app` and, if you enabled Launch at Login, remove the NapCat
 entry in System Settings › General › Login Items (or toggle it off in the
 menu before uninstalling).
+
+If you installed the optional Claude busy hook, remove it as well — as
+yourself, no `sudo`:
+
+```sh
+./scripts/uninstall-claude-busy-hook.sh
+```
+
+It deletes `~/.claude/hooks/napcat-busy-hook.sh` and the marker directory, then
+prints the six NapCat entries to delete from `~/.claude/settings.json` by hand
+(`UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`,
+`Notification` — it never edits that file); restart Claude Code afterwards.
+Finally, once NapCat has quit, you can delete its state folder
+`~/Library/Application Support/NapCat` if you want nothing left behind.
 
 Manual equivalent:
 
@@ -345,8 +367,11 @@ is running and removes it when the turn ends. When the main turn ends but a
 **background subagent** is still running, the hook keeps the marker until the last
 subagent finishes (it reconciles on the `background_tasks` the `Stop`/`SubagentStop`
 events carry), so NapCat still shows **running** during orchestrator-plus-subagent
-work. NapCat only reads those markers (cross-checked against the live process list,
-fail-open so it never falsely reports "idle").
+work. The hook also tracks whether the main turn has ended, so a subagent finishing
+mid-turn never clears the marker and a later wait in the same turn can notify again
+(an existing install picks this up once you refresh the hook — see the upgrade note
+under "Install and register" below). NapCat only reads those markers (cross-checked
+against the live process list, fail-open so it never falsely reports "idle").
 
 ### Install and register — BY HAND
 
@@ -379,7 +404,9 @@ waits for you, so it needs to receive every notification type. **If you
 registered an earlier version of this hook**, add the `SubagentStop` entry,
 remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
 `./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
-start a new Claude Code session so it loads.
+start a new Claude Code session so it loads. The installer prints the hook
+version it installed, and the menu (**Details → Claude detection**) warns when
+the installed copy is older than the one this NapCat build expects.
 
 **The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
 not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`
@@ -547,7 +574,9 @@ pushes, and the row says so.
   once only when it provably never left the Mac (no connection, DNS, TLS);
   anything that may have reached ntfy — one the server refused (for example,
   rate-limited), or one whose answer never came back — is never retried, so you
-  may occasionally miss one rather than get a duplicate.
+  may occasionally miss one rather than get a duplicate. After ntfy answers a
+  session alert with HTTP 429 (rate-limited), session alerts are held and folded
+  for ten minutes, then sent as one message; the lid alert is unaffected.
 - **The marker folder has to exist.** Until the busy hook is installed — or
   after its folder is deleted — the row says it is waiting for the Claude hook.
   After the folder is created or recreated, the feature re-arms on the next
@@ -567,19 +596,20 @@ pushes, and the row says so.
   task *is* running, it errs toward sending the push.
 - **A phone on silent may stay silent.** Lid alerts publish at ntfy's `urgent`
   priority (5, alias `max`); session alerts publish at `high` (4), so silent
-  mode still applies to them. The ntfy iOS app v1.8.0+ can deliver `urgent`
-  messages as Critical Alerts that bypass silent mode, once you grant it that
-  permission.
-  That version was still unreleased as of October 2026 (check the
-  [ntfy release notes](https://docs.ntfy.sh/releases/)). Until you have it,
-  iOS shows a normal notification and silent mode applies.
+  mode still applies to them. As of October 2026 the App Store's ntfy iOS app
+  is 1.7.0 (May 2026); v1.8.0, which adds Critical Alerts for `urgent`
+  messages (bypassing silent mode and Do Not Disturb), is still unreleased
+  (check the [ntfy release notes](https://docs.ntfy.sh/releases/)). Until
+  then, iOS shows a normal notification and silent mode applies.
 - **Session alerts have a horizon.** Detectable run length is capped at 12 h
   since the session's last hook event.
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.
-- **A finish alert can come early.** Rarely, a subagent finishing mid-turn can
-  clear the busy marker early and trigger a premature finish alert.
+- **A finish alert can come early with an older hook.** With a hook installed
+  before the main-turn tracking above, a subagent finishing mid-turn can clear
+  the busy marker early and trigger a premature finish alert; refresh the hook
+  (the upgrade note under "Install and register") to get the fix.
 - **Lid and finish can overlap.** If the finish send is in flight when the lid
   closes, the lid alert still goes out (separate lanes) — best-effort, like
   every push.
