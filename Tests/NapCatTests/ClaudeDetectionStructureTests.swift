@@ -86,6 +86,55 @@ struct ClaudeDetectionStructureTests {
         }
     }
 
+    /// S7: the app's one read under ~/.claude — the installed hook copy's
+    /// first KiB — is resolved in exactly one reader file. The constant may be
+    /// DEFINED in ClaudeBusyConstants.swift; only BusyMarkerStore.swift may
+    /// name it (or spell the path out).
+    static let installedHookPathTokens = ["installedHookRelativePath", ".claude/hooks", "napcat-busy-hook"]
+
+    static let installedHookPathDefinition =
+        #"static let installedHookRelativePath = ".claude/hooks/napcat-busy-hook.sh""#
+
+    static func installedHookPathFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (name, text) in sources where name != "BusyMarkerStore.swift" {
+            // The constants file is scanned with its ONE definition removed.
+            let scanned = name == "ClaudeBusyConstants.swift"
+                ? text.replacingOccurrences(of: installedHookPathDefinition, with: "") : text
+            for token in installedHookPathTokens where scanned.contains(token) {
+                failures.append("'\(token)' in \(name) — only BusyMarkerStore.swift may resolve the installed hook path")
+            }
+        }
+        let constants = sources.first { $0.name == "ClaudeBusyConstants.swift" }?.text ?? ""
+        let reader = sources.first { $0.name == "BusyMarkerStore.swift" }?.text ?? ""
+        if constants.components(separatedBy: installedHookPathDefinition).count != 2
+            || !reader.contains("ClaudeBusyConstants.installedHookRelativePath") {
+            failures.append("the definition / the one reader of the installed hook path moved (lint would be vacuous)")
+        }
+        return failures
+    }
+
+    @Test func onlyTheStoreResolvesTheInstalledHookPath() throws {
+        let sources = try Self.swiftSources()
+        #expect(Self.installedHookPathFailures(sources).isEmpty, "\(Self.installedHookPathFailures(sources))")
+
+        func mutate(_ name: String, _ code: String) -> [(name: String, text: String)] {
+            sources.map { $0.name == name ? ($0.name, $0.text + "\n" + code) : $0 }
+        }
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("menu reads the installed hook",
+             mutate("MenuStateModel.swift", "let p = ClaudeBusyConstants.installedHookRelativePath")),
+            ("controller spells the path out",
+             mutate("ClaudeActivityController.swift", "let p = NSHomeDirectory() + \"/.claude/hooks/x\"")),
+            ("finish alert names the hook file", mutate("FinishAlertController.swift", "let n = \"napcat-busy-hook.sh\"")),
+            ("a second constant in the constants file",
+             mutate("ClaudeBusyConstants.swift", "let q = installedHookRelativePath")),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.installedHookPathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     /// Debug-sim graph: in debugBattery mode the controller is never built, so
     /// no reader is constructed and no syscall path exists. Outside debug mode
     /// it IS built (construction alone does no I/O).

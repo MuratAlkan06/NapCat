@@ -32,6 +32,11 @@
 # Idempotent — safe to re-run.
 
 set -euo pipefail
+# Pinned PATH + umask: sudo is not guaranteed to reset the caller's PATH (no
+# secure_path by default), so a user-writable PATH entry could otherwise
+# hijack a bare rm/id/grep/cmp run as root here.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
+umask 022
 
 SUDOERS_FILE="/etc/sudoers.d/napcat"
 SMC_DIR="/usr/local/napcat"
@@ -157,8 +162,14 @@ if [ "$IS_ARM64" = "1" ]; then
     fi
     /usr/bin/install -d -m 755 -o root -g wheel "$SMC_DIR"
     assert_root_owned_dir "$SMC_DIR"
-    if [ -f "$SMC_DEST" ] && cmp -s "$SMC_SRC" "$SMC_DEST"; then
-        echo "ok: $SMC_DEST already up to date — nothing changed."
+    # Identical bytes say nothing about owner or mode, so the "already
+    # installed" branch re-asserts both (a NOPASSWD target must never be
+    # user-writable). A symlink never counts as installed: `install` below
+    # replaces it with a real file.
+    if [ -f "$SMC_DEST" ] && [ ! -L "$SMC_DEST" ] && cmp -s "$SMC_SRC" "$SMC_DEST"; then
+        /usr/sbin/chown root:wheel "$SMC_DEST"
+        /bin/chmod 755 "$SMC_DEST"
+        echo "ok: $SMC_DEST already up to date — owner and mode re-asserted (755 root:wheel)."
     else
         /usr/bin/install -m 755 -o root -g wheel "$SMC_SRC" "$SMC_DEST"
         echo "installed: $SMC_DEST (755 root:wheel)"

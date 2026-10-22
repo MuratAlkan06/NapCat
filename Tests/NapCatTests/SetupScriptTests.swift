@@ -503,4 +503,211 @@ struct SetupScriptTests {
                     "canary '\(name)' was NOT caught by the F2 lock")
         }
     }
+
+    // MARK: - S1: a pinned PATH + umask before the first command
+
+    /// The exact PATH both root scripts pin — stock system directories only.
+    static let pinnedPathLine = "PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH"
+
+    /// Every S1 violation in one root-script text; empty == locked. sudo is
+    /// not guaranteed to reset the caller's PATH, so the pin must be in force
+    /// before ANY command runs: the first code line is the `set -…` line, the
+    /// next two are exactly the PATH pin and `umask 022`, and nothing assigns
+    /// PATH again afterwards.
+    static func pinnedPathLintFailures(_ script: String) -> [String] {
+        var failures: [String] = []
+        let code = codeLines(script)
+        guard code.count >= 3 else { return ["script has fewer than three code lines (the lock would be vacuous)"] }
+        if !code[0].hasPrefix("set -") {
+            failures.append("the first code line must be the `set -…` line, got '\(code[0])'")
+        }
+        if code[1] != pinnedPathLine {
+            failures.append("the line after `set -…` must be exactly '\(pinnedPathLine)', got '\(code[1])'")
+        }
+        if code[2] != "umask 022" {
+            failures.append("the PATH pin must be followed by `umask 022`, got '\(code[2])'")
+        }
+        let assignments = code.filter { matches($0, #"(^|[;&|\s])(export\s+)?PATH="#) }
+        if assignments != [pinnedPathLine] {
+            failures.append("PATH must be assigned exactly once, by the pin: \(assignments)")
+        }
+        return failures
+    }
+
+    @Test func bothRootScriptsPinPathAndUmaskBeforeTheFirstCommand() throws {
+        for url in [Self.setupURL, Self.uninstallURL] {
+            let script = try Self.read(url)
+            let failures = Self.pinnedPathLintFailures(script)
+            #expect(failures.isEmpty, "\(url.lastPathComponent) S1 violations: \(failures)")
+        }
+    }
+
+    /// Canary: a dropped, widened, extended, late or overridden PATH pin — or
+    /// a dropped umask — must each trip the lock, in BOTH scripts.
+    @Test func pinnedPathLockCatchesRegressionMutants() throws {
+        let rootCheck = #"if [ "$(id -u)" -ne 0 ]; then"#
+        let pinAndUmask = Self.pinnedPathLine + "\numask 022\n"
+        for url in [Self.setupURL, Self.uninstallURL] {
+            let original = try Self.read(url)
+            let name = url.lastPathComponent
+            try #require(Self.pinnedPathLintFailures(original).isEmpty, "\(name): canary baseline must be clean")
+            let mutants: [(String, (String) -> String)] = [
+                ("PATH pin dropped", { $0.replacingOccurrences(of: Self.pinnedPathLine + "\n", with: "") }),
+                ("user dir prepended", {
+                    $0.replacingOccurrences(of: "PATH=/usr/bin:", with: "PATH=/usr/local/bin:/usr/bin:")
+                }),
+                ("inherited PATH appended", {
+                    $0.replacingOccurrences(of: "/usr/sbin:/sbin; export PATH", with: "/usr/sbin:/sbin:$PATH; export PATH")
+                }),
+                ("pin moved after the first command", {
+                    $0.replacingOccurrences(of: pinAndUmask, with: "")
+                        .replacingOccurrences(of: rootCheck, with: pinAndUmask + rootCheck)
+                }),
+                ("umask dropped", { $0.replacingOccurrences(of: "\numask 022\n", with: "\n") }),
+                ("PATH reassigned later", {
+                    $0.replacingOccurrences(of: rootCheck, with: #"export PATH="$HOME/bin:$PATH""# + "\n" + rootCheck)
+                }),
+            ]
+            for (mutantName, transform) in mutants {
+                let mutant = transform(original)
+                #expect(mutant != original, "\(name): canary setup '\(mutantName)': target text must exist")
+                #expect(!Self.pinnedPathLintFailures(mutant).isEmpty,
+                        "\(name): canary '\(mutantName)' was NOT caught by the S1 lock")
+            }
+        }
+    }
+
+    // MARK: - S2: uninstall.sh re-checks the helper before running it as root
+
+    /// The guard that decides whether the root-run smc step may execute.
+    static let smcGuardFunction = "smc_helper_trust_problem() {"
+    static let smcGuardCall = #"SMC_TRUST_PROBLEM="$(smc_helper_trust_problem)""#
+    static let smcGuardBranch = #"if [ -n "$SMC_TRUST_PROBLEM" ]; then"#
+    static let smcRunBranch = #"elif [ -x "$SMC_BIN" ]; then"#
+
+    /// Every S2 violation in an uninstall.sh text; empty == locked. Before
+    /// `$SMC_BIN` runs as root, /usr/local, the helper dir and the binary are
+    /// each re-checked (not a symlink, uid 0, no group/other write — the
+    /// setup.sh `assert_root_owned_dir` rules); a failed check records a
+    /// collected failure and skips ONLY that step (no `exit`).
+    static func smcTrustLintFailures(_ script: String) -> [String] {
+        var failures: [String] = []
+        let all = lines(script)
+        let code = codeLines(script)
+        if let start = all.firstIndex(of: smcGuardFunction),
+           let end = all[start...].firstIndex(of: "}") {
+            let body = all[start...end].map { $0.trimmingCharacters(in: .whitespaces) }
+            for rule in [#"for path in /usr/local "$SMC_DIR" "$SMC_BIN"; do"#,
+                         #"if [ -L "$path" ]; then"#,
+                         #"if [ "$owner" -ne 0 ]; then"#,
+                         #"if [ $(( 8#$perms & 8#022 )) -ne 0 ]; then"#] where !body.contains(rule) {
+                failures.append("smc_helper_trust_problem must check '\(rule)'")
+            }
+            if body.contains(where: { matches($0, #"(^|[;&|\s])exit(\s|$)"#) }) {
+                failures.append("smc_helper_trust_problem must never exit — only the smc step is skipped")
+            }
+        } else {
+            failures.append("\(smcGuardFunction) is missing from uninstall.sh")
+        }
+        guard let call = code.firstIndex(of: smcGuardCall),
+              let guardBranch = code.firstIndex(of: smcGuardBranch),
+              let runBranch = code.firstIndex(of: smcRunBranch) else {
+            return failures + ["the guard call / skip branch / run branch of the smc step is missing"]
+        }
+        if !(call < guardBranch && guardBranch < runBranch) {
+            failures.append("the smc step must be: guard call, then the skip branch, then the run branch")
+        }
+        let skip = code[(guardBranch + 1)..<runBranch]
+        if !skip.contains(where: { $0.hasPrefix(#"FAILURES+=("$SMC_TRUST_PROBLEM"#) }) {
+            failures.append("a failed helper check must be recorded as a collected failure")
+        }
+        if skip.contains(where: { matches($0, #"(^|[;&|\s])exit(\s|$)"#) }) {
+            failures.append("a failed helper check must skip only the smc step, never exit")
+        }
+        // The helper runs ONLY inside the run branch, after the guard.
+        let runs = code.indices.filter { code[$0].contains(#""$SMC_BIN" -k"#) }
+        if runs.isEmpty { failures.append("no smc invocation found (the lock would be vacuous)") }
+        for index in runs where index <= runBranch {
+            failures.append("smc runs as root before the helper check: '\(code[index])'")
+        }
+        return failures
+    }
+
+    @Test func uninstallRechecksTheHelperBeforeRunningItAsRoot() throws {
+        let failures = Self.smcTrustLintFailures(try Self.read(Self.uninstallURL))
+        #expect(failures.isEmpty, "uninstall.sh S2 violations: \(failures)")
+    }
+
+    /// Canary: a neutered or partial check, an abort instead of a skip, or a
+    /// helper run hoisted above the check must each trip the lock.
+    @Test func smcTrustLockCatchesRegressionMutants() throws {
+        let original = try Self.read(Self.uninstallURL)
+        try #require(Self.smcTrustLintFailures(original).isEmpty, "canary baseline must be clean")
+        let mutants: [(String, String, String)] = [
+            ("skip branch neutered", Self.smcGuardBranch, "if false; then"),
+            ("guard never called", Self.smcGuardCall, #"SMC_TRUST_PROBLEM="""#),
+            ("symlink test dropped", #"if [ -L "$path" ]; then"#, "if false; then"),
+            ("/usr/local not checked", #"for path in /usr/local "$SMC_DIR""#, #"for path in "$SMC_DIR""#),
+            ("group/other-write test dropped", "8#$perms & 8#022", "8#$perms & 8#000"),
+            ("owner test dropped", #"if [ "$owner" -ne 0 ]; then"#, "if false; then"),
+            ("failure not recorded", #"FAILURES+=("$SMC_TRUST_PROBLEM"#, #"echo ("$SMC_TRUST_PROBLEM"#),
+            ("skip turned into an abort", Self.smcGuardBranch, Self.smcGuardBranch + "\n    exit 1"),
+            ("helper run before the check", Self.smcGuardCall,
+             #""$SMC_BIN" -k CHTE -w 00000000"# + "\n" + Self.smcGuardCall),
+        ]
+        for (name, target, replacement) in mutants {
+            let mutant = original.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != original, "canary setup '\(name)': target text must exist")
+            #expect(!Self.smcTrustLintFailures(mutant).isEmpty, "canary '\(name)' was NOT caught by the S2 lock")
+        }
+    }
+
+    // MARK: - S3: an identical installed helper still gets owner + mode re-asserted
+
+    static let smcIdenticalBranch =
+        #"if [ -f "$SMC_DEST" ] && [ ! -L "$SMC_DEST" ] && cmp -s "$SMC_SRC" "$SMC_DEST"; then"#
+
+    /// Every S3 violation in a setup.sh text; empty == locked. The "already
+    /// installed" branch must chown root:wheel + chmod 755 the binary (same
+    /// bytes say nothing about owner/mode), a symlink never counts as
+    /// installed, and the other branch installs 755 root:wheel.
+    static func smcReinstallLintFailures(_ script: String) -> [String] {
+        let code = codeLines(script)
+        guard let open = code.firstIndex(of: smcIdenticalBranch),
+              let elseLine = code[open...].firstIndex(of: "else"),
+              let close = code[elseLine...].firstIndex(of: "fi") else {
+            return ["the symlink-refusing 'already installed' branch for $SMC_DEST is missing"]
+        }
+        var failures: [String] = []
+        let identical = code[(open + 1)..<elseLine]
+        for required in [#"/usr/sbin/chown root:wheel "$SMC_DEST""#, #"/bin/chmod 755 "$SMC_DEST""#]
+        where !identical.contains(required) {
+            failures.append("the 'already installed' branch must run '\(required)'")
+        }
+        if !code[(elseLine + 1)..<close].contains(#"/usr/bin/install -m 755 -o root -g wheel "$SMC_SRC" "$SMC_DEST""#) {
+            failures.append("the other branch must install $SMC_DEST 755 root:wheel")
+        }
+        return failures
+    }
+
+    @Test func anIdenticalHelperStillGetsOwnerAndModeReasserted() throws {
+        let failures = Self.smcReinstallLintFailures(try Self.read(Self.setupURL))
+        #expect(failures.isEmpty, "setup.sh S3 violations: \(failures)")
+    }
+
+    @Test func smcReinstallLockCatchesRegressionMutants() throws {
+        let original = try Self.read(Self.setupURL)
+        try #require(Self.smcReinstallLintFailures(original).isEmpty, "canary baseline must be clean")
+        let mutants: [(String, String, String)] = [
+            ("chown dropped", #"/usr/sbin/chown root:wheel "$SMC_DEST""# + "\n", ""),
+            ("chmod dropped", #"/bin/chmod 755 "$SMC_DEST""# + "\n", ""),
+            ("symlink counts as installed again", #" && [ ! -L "$SMC_DEST" ]"#, ""),
+            ("mode widened", #"/bin/chmod 755 "$SMC_DEST""#, #"/bin/chmod 775 "$SMC_DEST""#),
+        ]
+        for (name, target, replacement) in mutants {
+            let mutant = original.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != original, "canary setup '\(name)': target text must exist")
+            #expect(!Self.smcReinstallLintFailures(mutant).isEmpty, "canary '\(name)' was NOT caught by the S3 lock")
+        }
+    }
 }

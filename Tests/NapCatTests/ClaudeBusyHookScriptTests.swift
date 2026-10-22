@@ -187,6 +187,15 @@ struct ClaudeBusyHookScriptTests {
         body(home)
     }
 
+    /// `withHome` for a throwing body (same temp HOME discipline).
+    private func withThrowingHome(_ body: (URL) throws -> Void) throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("napcat-b1-hook-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try body(home)
+    }
+
     private func sessionShapedFiles(in dir: URL) -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
             .filter { ClaudeBusyConstants.isValidSessionID($0) }
@@ -476,8 +485,9 @@ struct ClaudeBusyHookScriptTests {
             (json: nil, logged: "?"),                                // field absent
             (json: "123", logged: "?"),                              // number
             (json: "true", logged: "?"),                             // bool
-            // (A JSON null never reaches C1: plist has no null, so the whole
-            // payload fails the pre-existing stdin JSON gate and is ignored.)
+            // S4: a JSON null now passes the stdin gate (`-convert json`,
+            // not xml1) and reads as absent.
+            (json: "null", logged: "?"),                             // null
             (json: #"{"permission_prompt":1}"#, logged: "?"),        // dict (raw form would print its KEY)
             (json: #"["permission_prompt"]"#, logged: "?"),          // array
             (json: quoted(""), logged: "invalid"),                   // empty string fails {1,32}
@@ -721,6 +731,312 @@ struct ClaudeBusyHookScriptTests {
             #expect(waitForFile(marker, present: false),
                     "mutant that drops the waiting keep must CLEAR the marker (so the waiting test has teeth)")
         }
+    }
+
+    // MARK: - S4: the stdin gate is JSON validity, not plist convertibility
+
+    /// `plutil -convert xml1` rejects any JSON `null` (plist has no null), so
+    /// one nullable field in a Claude Code payload used to drop the whole
+    /// event. The gate is `-convert json` now: a Stop carrying `"foo": null`
+    /// (and a null inside background_tasks) still CLEARS the marker.
+    @Test func aNullValuedFieldNoLongerDropsTheEvent() {
+        withHome { home in
+            let session = "5a000001-0071-4abc-8def-000000000071"
+            primeMarker(session, home: home)
+            let json = #"{"hook_event_name":"Stop","session_id":"\#(session)","foo":null,"#
+                + #""background_tasks":[{"id":"a","status":"completed","note":null}]}"#
+            let result = runHook(json: json, home: home)
+            #expect(result.exitCode == 0 && result.stdout.isEmpty)
+            #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                    "a Stop with a null-valued field must still CLEAR the marker")
+            let log = hookLog(home)
+            #expect(log.hasSuffix(" clear session=\(session) event=Stop\n"), "\(String(reflecting: log))")
+            #expect(!log.contains("stdin-not-json"))
+        }
+    }
+
+    /// …and the gate still rejects real garbage, logged as before.
+    @Test func realGarbageStillFailsTheStdinGate() {
+        let garbage = ["not json at all", "", #"{"hook_event_name":"Stop","session_id":"5a000002"#, "null", "{,}"]
+        for bad in garbage {
+            withHome { home in
+                let result = runHook(json: bad, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(String(reflecting: bad))")
+                let log = hookLog(home)
+                #expect(log.hasSuffix(" ignore reason=stdin-not-json\n") && log.split(separator: "\n").count == 1,
+                        "\(String(reflecting: bad)) must be rejected at the gate, got \(String(reflecting: log))")
+                #expect(sessionShapedFiles(in: markerDir(home)).isEmpty)
+                #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the payload is removed on the reject path")
+            }
+        }
+    }
+
+    /// Canary: the old xml1 gate drops the null-carrying Stop (the marker
+    /// survives, the log says stdin-not-json) — proves the S4 test has teeth.
+    @Test func xml1GateCanaryDropsANullPayload() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(of: "plutil -convert json -o /dev/null",
+                                                   with: "plutil -convert xml1 -o /dev/null")
+        #expect(mutant != original, "canary setup: the json gate must exist")
+        withHome { home in
+            let session = "5a000003-0073-4abc-8def-000000000073"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            _ = runScript(mutantURL, json: promptJSON(session), home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            #expect(waitForFile(marker, present: true), "canary setup: marker must be set first")
+            _ = runScript(mutantURL, json: #"{"hook_event_name":"Stop","session_id":"\#(session)","foo":null}"#,
+                          home: home)
+            Thread.sleep(forTimeInterval: 0.1)
+            #expect(FileManager.default.fileExists(atPath: marker.path), "the xml1 gate drops the event")
+            #expect(hookLog(home).hasSuffix(" ignore reason=stdin-not-json\n"))
+        }
+    }
+
+    // MARK: - S5: hook.log rotation
+
+    private func logURL(_ home: URL) -> URL {
+        markerDir(home).appendingPathComponent(ClaudeBusyConstants.logFileName)
+    }
+
+    /// A hook.log larger than 1 MiB is moved to hook.log.1 (replacing the old
+    /// generation) BEFORE the next append, so the new line starts a fresh log.
+    @Test func anOversizedHookLogIsRotatedBeforeTheAppend() throws {
+        try withThrowingHome { home in
+            try FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+            let line = "planted line\n"
+            let planted = String(repeating: line, count: 1_048_576 / line.utf8.count + 1)
+            #expect(planted.utf8.count > 1_048_576, "setup: just over 1 MiB")
+            try planted.write(to: logURL(home), atomically: true, encoding: .utf8)
+            let rotated = markerDir(home).appendingPathComponent(ClaudeBusyConstants.logFileName + ".1")
+            try "an older generation\n".write(to: rotated, atomically: true, encoding: .utf8)
+
+            let result = runHook(json: #"{"hook_event_name":"Foo","session_id":"5b000001-0081-4abc-8def-000000000081"}"#,
+                                 home: home)
+            #expect(result.exitCode == 0 && result.stdout.isEmpty)
+            #expect((try? String(contentsOf: rotated, encoding: .utf8)) == planted,
+                    "the oversized log becomes hook.log.1 (one generation, replaced)")
+            let fresh = hookLog(home)
+            #expect(fresh.split(separator: "\n").count == 1 && fresh.hasSuffix(" ignore reason=unhandled-event event=Foo\n"),
+                    "the new line starts a fresh hook.log, got \(String(reflecting: fresh.prefix(200)))")
+        }
+    }
+
+    /// Exactly 1 MiB is not "larger than": no rotation, the line is appended.
+    @Test func aHookLogAtTheCapIsNotRotated() throws {
+        try withThrowingHome { home in
+            try FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+            let planted = String(repeating: "z", count: 1_048_575) + "\n"
+            try planted.write(to: logURL(home), atomically: true, encoding: .utf8)
+            _ = runHook(json: #"{"hook_event_name":"Foo","session_id":"5b000002-0082-4abc-8def-000000000082"}"#,
+                        home: home)
+            #expect(!FileManager.default.fileExists(
+                atPath: markerDir(home).appendingPathComponent(ClaudeBusyConstants.logFileName + ".1").path))
+            let log = hookLog(home)
+            #expect(log.hasPrefix(planted) && log.hasSuffix(" ignore reason=unhandled-event event=Foo\n"))
+        }
+    }
+
+    // MARK: - S6: the payload temp file is removed on signals too
+
+    /// Pure lint (reusable for canaries): inside main(), right after the
+    /// payload mktemp and BEFORE stdin is read, an EXIT trap removes the
+    /// payload and a TERM/INT trap removes it AND exits 0 (a trapped signal
+    /// would otherwise resume the script); every explicit payload removal is
+    /// immediately followed by clearing the traps.
+    static func payloadTrapFailures(_ script: String) -> [String] {
+        let body = functionBody("main", in: script)
+        guard let mktemp = body.firstIndex(where: { $0.hasPrefix("payload=$(mktemp ") }),
+              let read = body.firstIndex(where: { $0.hasPrefix(#"head -c "$MAX_STDIN""#) }) else {
+            return ["main() must create the payload with mktemp and read stdin with head -c (lint would be vacuous)"]
+        }
+        var failures: [String] = []
+        for trap in [#"trap 'rm -f "$payload" 2>/dev/null' EXIT"#,
+                     #"trap 'rm -f "$payload" 2>/dev/null; exit 0' TERM INT"#] {
+            guard let index = body.firstIndex(of: trap) else {
+                failures.append("missing `\(trap)`")
+                continue
+            }
+            if !(mktemp < index && index < read) {
+                failures.append("`\(trap)` must sit between the payload mktemp and the stdin read")
+            }
+        }
+        let removals = body.indices.filter { body[$0] == #"rm -f "$payload" 2>/dev/null"# }
+        if removals.count != 2 { failures.append("expected the two explicit payload removals, found \(removals.count)") }
+        for index in removals where index + 1 >= body.count || body[index + 1] != "trap - EXIT TERM INT" {
+            failures.append("an explicit payload removal is not followed by `trap - EXIT TERM INT`")
+        }
+        return failures
+    }
+
+    @Test func thePayloadTrapIsSetRightAfterTheMktemp() throws {
+        let failures = Self.payloadTrapFailures(try Self.read(Self.hookScriptURL))
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    @Test func payloadTrapLintCatchesMutants() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        try #require(Self.payloadTrapFailures(original).isEmpty, "canary baseline must be clean")
+        let exitTrap = "  trap 'rm -f \"$payload\" 2>/dev/null' EXIT\n"
+        let read = "  head -c \"$MAX_STDIN\" >\"$payload\" 2>/dev/null\n"
+        let mutants: [(String, (String) -> String)] = [
+            ("EXIT trap dropped", { $0.replacingOccurrences(of: exitTrap, with: "") }),
+            ("TERM trap resumes instead of exiting", {
+                $0.replacingOccurrences(of: "2>/dev/null; exit 0' TERM INT", with: "2>/dev/null' TERM INT")
+            }),
+            ("trap set after the stdin read", {
+                $0.replacingOccurrences(of: exitTrap, with: "").replacingOccurrences(of: read, with: read + exitTrap)
+            }),
+            ("traps never cleared", { $0.replacingOccurrences(of: "  trap - EXIT TERM INT\n", with: "") }),
+        ]
+        for (name, transform) in mutants {
+            let mutant = transform(original)
+            #expect(mutant != original, "canary setup '\(name)'")
+            #expect(!Self.payloadTrapFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    private func payloadTempFiles(in dir: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix(".payload.") }
+    }
+
+    /// Runs `scriptURL` with stdin left OPEN (so it blocks reading stdin with
+    /// the payload temp file in place), sends SIGTERM once the payload exists,
+    /// then closes stdin. Returns the exit status, whether it was a signal
+    /// death, and whether the payload was seen at all.
+    private func runTerminatedInPayloadWindow(_ scriptURL: URL, home: URL)
+        -> (status: Int32, signalled: Bool, sawPayload: Bool) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptURL.path]
+        process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let stdin = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (-1, false, false) }
+        stdin.fileHandleForWriting.write(Data(#"{"hook_event_name":"Stop","#.utf8))
+        let deadline = Date().addingTimeInterval(5)
+        var sawPayload = false
+        while Date() < deadline {
+            if !payloadTempFiles(in: markerDir(home)).isEmpty { sawPayload = true; break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        process.terminate()
+        Thread.sleep(forTimeInterval: 0.2)   // let the signal land while stdin is still open
+        try? stdin.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return (process.terminationStatus, process.terminationReason == .uncaughtSignal, sawPayload)
+    }
+
+    /// A hook TERMed (Claude's timeout) while the payload temp file exists
+    /// removes it and still exits 0 — it never resumes the run.
+    @Test(.timeLimit(.minutes(1)))
+    func aTermInThePayloadWindowRemovesThePayloadAndExitsZero() {
+        withHome { home in
+            let run = runTerminatedInPayloadWindow(Self.hookScriptURL, home: home)
+            #expect(run.sawPayload, "setup: the payload temp file must have existed")
+            #expect(!run.signalled && run.status == 0, "TERM must end the hook with exit 0, got \(run)")
+            #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the trap removed the payload")
+            #expect(hookLog(home).isEmpty, "the run ended in the trap — it never resumed")
+        }
+    }
+
+    /// Canary: without the traps a TERM kills bash outright and strands the
+    /// payload (only the 60 s sweep would reclaim it) — the test above has teeth.
+    @Test(.timeLimit(.minutes(1)))
+    func withoutTheTrapsATermStrandsThePayload() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original
+            .replacingOccurrences(of: "  trap 'rm -f \"$payload\" 2>/dev/null' EXIT\n", with: "")
+            .replacingOccurrences(of: "  trap 'rm -f \"$payload\" 2>/dev/null; exit 0' TERM INT\n", with: "")
+        #expect(mutant != original, "canary setup: the traps must exist")
+        withHome { home in
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            let run = runTerminatedInPayloadWindow(mutantURL, home: home)
+            #expect(run.sawPayload)
+            #expect(run.signalled, "without a trap the TERM kills bash")
+            #expect(!payloadTempFiles(in: markerDir(home)).isEmpty, "and the payload is stranded")
+        }
+    }
+
+    // MARK: - S7: the version stamp (shell ↔ Swift parity) + the installer
+
+    /// Pure parity check (reusable for canaries): exactly one stamp line, it
+    /// is LINE 2, it reads `expected`, it ends within the first
+    /// `installedHookReadBytes` bytes, and the app's own parser reads that
+    /// value back from those bytes.
+    static func versionStampFailures(_ script: String, expected: Int) -> [String] {
+        var failures: [String] = []
+        let prefix = ClaudeBusyConstants.hookVersionStampPrefix
+        let lines = script.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let stamps = lines.indices.filter { lines[$0].hasPrefix(prefix) }
+        if stamps != [1] { failures.append("exactly one stamp line, on line 2 — found at lines \(stamps.map { $0 + 1 })") }
+        if lines.count > 1, lines[1] != prefix + "\(expected)" {
+            failures.append("line 2 must be '\(prefix)\(expected)', got '\(lines[1])'")
+        }
+        let cap = ClaudeBusyConstants.installedHookReadBytes
+        let stampEnd = lines.prefix(2).joined(separator: "\n").utf8.count + 1
+        if stampEnd > cap { failures.append("the stamp line ends past the first \(cap) bytes") }
+        let bytes = Array(script.utf8)
+        let parsed = MarkerDirectoryStore.parseHookVersionStamp(Array(bytes.prefix(cap)), truncated: bytes.count > cap)
+        if parsed != expected { failures.append("the app reads \(String(describing: parsed)), expected \(expected)") }
+        return failures
+    }
+
+    @Test func hookVersionStampMatchesSwiftConstant() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        #expect(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion).isEmpty,
+                "\(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion))")
+        #expect(ClaudeBusyConstants.hookVersion == 4, "the contract value of this slice")
+        #expect(ClaudeBusyConstants.hookVersionStampPrefix == "# napcat-hook-version: ")
+    }
+
+    /// Canaries: a drift on either side, a duplicate stamp, a stamp moved off
+    /// line 2 or past the first KiB, or a dropped stamp all fail.
+    @Test func versionStampParityCatchesADriftOnEitherSide() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        let expected = ClaudeBusyConstants.hookVersion
+        let stamp = ClaudeBusyConstants.hookVersionStampPrefix + "\(expected)\n"
+        try #require(Self.versionStampFailures(script, expected: expected).isEmpty, "canary baseline must be clean")
+        #expect(!Self.versionStampFailures(script, expected: expected + 1).isEmpty, "Swift bumped, shell not")
+        let mutants: [(String, String)] = [
+            ("shell bumped, Swift not", script.replacingOccurrences(of: stamp, with: ClaudeBusyConstants.hookVersionStampPrefix + "\(expected + 1)\n")),
+            ("stamp dropped", script.replacingOccurrences(of: stamp, with: "")),
+            ("duplicate stamp", script.replacingOccurrences(of: "\numask 077\n", with: "\n" + stamp + "umask 077\n")),
+            ("stamp past the first KiB", script.replacingOccurrences(of: stamp, with: "")
+                .replacingOccurrences(of: "\numask 077\n", with: "\n" + stamp + "umask 077\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != script, "canary setup '\(name)'")
+            #expect(!Self.versionStampFailures(mutant, expected: expected).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// The installer prints the version it installs, read from the installed
+    /// copy's stamp with this exact command — run here (sed only, never the
+    /// installer) against the shipped hook, it yields the Swift constant.
+    @Test func theInstallerPrintsTheVersionItInstalls() throws {
+        let installer = try Self.read(Self.installerURL)
+        let extraction = #"HOOK_VERSION="$(/usr/bin/sed -n 's/^# napcat-hook-version: \([0-9][0-9]*\)$/\1/p' "$HOOK_DEST" | /usr/bin/head -n 1)""#
+        let lines = installer.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.contains(extraction), "the installer must read the stamp from the installed copy")
+        #expect(lines.contains(#"echo "installed: $HOOK_DEST (755, hook version ${HOOK_VERSION:-unknown})""#),
+                "the installer must print the version it installed")
+        let extract = try #require(lines.firstIndex(of: extraction))
+        let install = try #require(lines.firstIndex { $0.hasPrefix(#"if ! /usr/bin/install -m 755 "$SRC" "$HOOK_DEST""#) })
+        #expect(install < extract, "the stamp is read from the copy just installed")
+
+        let sed = Process()
+        sed.executableURL = URL(fileURLWithPath: "/usr/bin/sed")
+        sed.arguments = ["-n", #"s/^# napcat-hook-version: \([0-9][0-9]*\)$/\1/p"#, Self.hookScriptURL.path]
+        let out = Pipe()
+        sed.standardOutput = out
+        try sed.run()
+        let printed = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        sed.waitUntilExit()
+        #expect(printed == "\(ClaudeBusyConstants.hookVersion)\n", "the installer would print \(String(reflecting: printed))")
     }
 
     @Test func garbageInputWritesNothingAndStaysSilent() {
@@ -1020,7 +1336,8 @@ struct ClaudeBusyHookScriptTests {
         #expect(Self.functionBody("marker_phase", in: script).count >= 10)
         #expect(ClaudeBusyConstants.waitingAfterStopEventToken == "waiting-after-stop")
         #expect(ClaudeBusyConstants.inFlightEventTokens == ["UserPromptSubmit", "Notification", "waiting"])
-        #expect(ClaudeBusyConstants.postStopEventTokens == ["Stop", "StopFailure", "SubagentStop", "waiting-after-stop"])
+        #expect(ClaudeBusyConstants.postStopEventTokens
+                == ["Stop", "StopFailure", "SessionEnd", "SubagentStop", "waiting-after-stop"])
         // The synthetic token is no real hook event and parses as a marker event.
         let token = ClaudeBusyConstants.waitingAfterStopEventToken
         #expect(!ClaudeBusyConstants.allEvents.contains(token))
@@ -1044,6 +1361,7 @@ struct ClaudeBusyHookScriptTests {
             ("shell extra in-flight token", "Notification|waiting)", "Notification|waiting|Stop)"),
             ("shell token regex", "TOKEN_RE='^[A-Za-z-]{1,32}$'", "TOKEN_RE='^[A-Za-z]{1,32}$'"),
             ("shell unbounded read", "head -c 256 \"$1\"", "cat \"$1\""),
+            ("shell SessionEnd dropped (S11)", "StopFailure|SessionEnd|SubagentStop", "StopFailure|SubagentStop"),
         ]
         for (name, target, replacement) in shellMutants {
             let mutant = script.replacingOccurrences(of: target, with: replacement)
@@ -1055,6 +1373,7 @@ struct ClaudeBusyHookScriptTests {
             ("Swift post-Stop list", inFlight, postStop.filter { $0 != token }),
             ("Swift in-flight list", inFlight.filter { $0 != "Notification" }, postStop),
             ("Swift list order", inFlight, Array(postStop.reversed())),
+            ("Swift SessionEnd dropped (S11)", inFlight, postStop.filter { $0 != "SessionEnd" }),
         ]
         for (name, mutantInFlight, mutantPostStop) in swiftMutants {
             #expect(!Self.phaseParityFailures(script, inFlight: mutantInFlight, postStop: mutantPostStop,
@@ -1102,8 +1421,9 @@ struct ClaudeBusyHookScriptTests {
     nonisolated static let wait = "waiting-on-user", resume = "work-continues", bgKeep = "background-task-running",
                midTurn = "main-turn-in-flight"
 
-    /// (prior token) × (event) × (background task running), 7 × 4 × 2 = 56
-    /// rows — the frozen B-2 rules, written out (never computed).
+    /// (prior token) × (event) × (background task running), 8 × 4 × 2 = 64
+    /// rows — the frozen B-2 rules, written out (never computed). S11 added
+    /// the `SessionEnd` prior (POST-STOP, rows E1–E8).
     nonisolated static let phaseRows: [PhaseRow] = {
         let was = "waiting-after-stop"
         typealias E = PhaseEvent
@@ -1167,6 +1487,18 @@ struct ClaudeBusyHookScriptTests {
             (.idlePrompt, false, nil, .clear),
             (.idlePrompt, true, "Stop", .keep(bgKeep)),
         ])
+        // S11: a SessionEnd marker exists only while background work outlived
+        // the session — POST-STOP, so the last subagent ending CLEARS it.
+        all += rows("E", "SessionEnd", [
+            (.subagentStop, false, nil, .clear),
+            (.subagentStop, true, "SubagentStop", .keep(bgKeep)),
+            (.permissionPrompt, false, was, .keep(wait)),
+            (.permissionPrompt, true, was, .keep(wait)),
+            (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Stop", .keep(bgKeep)),
+        ])
         all += rows("A", "SubagentStop", [
             (.subagentStop, false, nil, .clear),
             (.subagentStop, true, "SubagentStop", .keep(bgKeep)),
@@ -1191,31 +1523,51 @@ struct ClaudeBusyHookScriptTests {
     }()
 
     @Test func phaseRowsCoverTheWholeGrid() {
-        #expect(Self.phaseRows.count == 56, "vacuity guard — 7 priors × 4 events × 2 bg states")
-        #expect(Set(Self.phaseRows.map(\.id)).count == 56)
+        #expect(Self.phaseRows.count == 64, "vacuity guard — 8 priors × 4 events × 2 bg states")
+        #expect(Set(Self.phaseRows.map(\.id)).count == 64)
         let priors = Set(Self.phaseRows.map { $0.prior ?? "absent" })
-        #expect(priors == ["absent", "UserPromptSubmit", "Notification", "waiting", "Stop", "SubagentStop",
-                           "waiting-after-stop"], "the frozen grid's seven prior states")
+        #expect(priors == ["absent", "UserPromptSubmit", "Notification", "waiting", "Stop", "SessionEnd",
+                           "SubagentStop", "waiting-after-stop"], "the grid's eight prior states")
+        // Every listed phase token is a prior in the grid (except StopFailure,
+        // which `stopFailureAndSessionEndArePostStop` pins).
+        let listed = Set(ClaudeBusyConstants.inFlightEventTokens + ClaudeBusyConstants.postStopEventTokens)
+        #expect(listed.subtracting(priors) == ["StopFailure"])
     }
 
-    /// Priors outside the frozen grid. `StopFailure` is POST-STOP like `Stop`.
-    /// `SessionEnd` (written only when background work outlives the session)
-    /// is in NEITHER frozen list, so it reads as phase "none" — pinned here
-    /// as frozen (B-2 contract: an unlisted token is "none"); moving it to
-    /// POST-STOP is a contract change, not a fix to make silently.
-    @Test func stopFailureIsPostStopAndSessionEndIsUnlisted() {
+    /// `StopFailure` is POST-STOP like `Stop`, and — S11 — so is `SessionEnd`
+    /// (written only when background work outlives the session): before
+    /// S11 it was unlisted, read as phase "none", and the last subagent
+    /// ending left a stuck "running" marker behind. Now SubagentStop(bg=no)
+    /// after SessionEnd CLEARS it.
+    @Test func stopFailureAndSessionEndArePostStop() {
         withHome { home in
             let session = "b2f00004-0060-4abc-8def-000000000060"
             let marker = markerDir(home).appendingPathComponent(session)
-            plantMarker("StopFailure", at: marker)
-            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
-            #expect(waitForFile(marker, present: false), "a post-StopFailure SubagentStop(bg=no) clears")
-            #expect(hookLog(home).hasSuffix(" clear session=\(session) event=SubagentStop phase=poststop\n"))
+            for prior in ["StopFailure", "SessionEnd"] {
+                plantMarker(prior, at: marker)
+                _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+                #expect(waitForFile(marker, present: false), "a post-\(prior) SubagentStop(bg=no) clears")
+                #expect(hookLog(home).hasSuffix(" clear session=\(session) event=SubagentStop phase=poststop\n"),
+                        "\(prior): \(String(reflecting: hookLog(home)))")
+            }
+        }
+    }
 
-            plantMarker("SessionEnd", at: marker)
+    /// End to end: Stop with a running background task, then the session
+    /// ends while it still runs (marker rewritten as `SessionEnd`), then the
+    /// last subagent finishes ⇒ CLEARED, not a no-op.
+    @Test func sessionEndWithBackgroundWorkThenTheLastSubagentClears() {
+        withHome { home in
+            let session = "b2f00005-0061-4abc-8def-000000000061"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "))
+            _ = runHook(json: eventJSON("SessionEnd", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "SessionEnd").contains("event=SessionEnd "))
             _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
-            #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
-            #expect(FileManager.default.fileExists(atPath: marker.path), "an unlisted token is left alone")
+            #expect(waitForFile(marker, present: false), "the last subagent ending after SessionEnd CLEARS")
+            #expect(hookLog(home).hasSuffix(" clear session=\(session) event=SubagentStop phase=poststop\n"))
         }
     }
 

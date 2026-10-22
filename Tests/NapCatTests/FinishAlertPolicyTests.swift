@@ -520,6 +520,98 @@ struct FinishAlertPolicyTests {
         #expect(two.firstWaitingMinutes == 12)
     }
 
+    // MARK: - S10: absorbing a queued message back after a 429
+
+    struct AbsorbRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        /// Folded BEFORE the absorb, each at t = 200 with stillWorking 5.
+        let prior: [FinishAlertEvent]
+        let kind: LidGuardMessageKind
+        let at: Double
+        /// The digest's messages afterwards (the absorb passes stillWorking 3).
+        let expected: [LidGuardMessageKind]
+        /// nil ⇒ the absorb must leave the digest exactly as it was.
+        let originatedAt: Double?
+        var testDescription: String { id }
+    }
+
+    static let absorbRows: [AbsorbRow] = [
+        AbsorbRow(id: "A1 one finish keeps its minutes; stillWorking is the caller's, not the message's",
+                  prior: [], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 9), at: 100,
+                  expected: [.sessionFinished(minutes: 20, folded: 1, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A2 a folded finish re-enters as that many finishes",
+                  prior: [], kind: .sessionFinished(minutes: nil, folded: 3, stillWorking: 9), at: 100,
+                  expected: [.sessionFinished(minutes: nil, folded: 3, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A3 minutes on a multi-finish message are dropped",
+                  prior: [], kind: .sessionFinished(minutes: 17, folded: 3, stillWorking: 0), at: 100,
+                  expected: [.sessionFinished(minutes: nil, folded: 3, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A4 a degenerate folded 0 still counts as one finish (never lost)",
+                  prior: [], kind: .sessionFinished(minutes: 20, folded: 0, stillWorking: 0), at: 100,
+                  expected: [.sessionFinished(minutes: 20, folded: 1, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A5 a waiting buzz re-enters as one waiting event with its minutes",
+                  prior: [], kind: .needsAttention(minutes: 12, stillWorking: 4), at: 100,
+                  expected: [.needsAttention(minutes: 12, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A6 a waiting buzz without minutes",
+                  prior: [], kind: .needsAttention(minutes: nil, stillWorking: 0), at: 100,
+                  expected: [.needsAttention(minutes: nil, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A7 joins a folded finish: two finishes, minutes dropped, EARLIEST origin",
+                  prior: [.finished(minutes: 9)], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 1),
+                  at: 100, expected: [.sessionFinished(minutes: nil, folded: 2, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A8 joins a folded wait: two waits, minutes dropped",
+                  prior: [.waiting(minutes: 4)], kind: .needsAttention(minutes: 12, stillWorking: 1), at: 100,
+                  expected: [.needsAttention(minutes: nil, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A9 a finish beside a folded wait: waiting first, both keep their minutes",
+                  prior: [.waiting(minutes: 4)], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 1),
+                  at: 100, expected: [.needsAttention(minutes: 4, stillWorking: 2),
+                                      .sessionFinished(minutes: 20, folded: 1, stillWorking: 3)], originatedAt: 100),
+        AbsorbRow(id: "A10 a later origin never moves the anchor forward",
+                  prior: [.finished(minutes: 9)], kind: .sessionFinished(minutes: 20, folded: 1, stillWorking: 1),
+                  at: 300, expected: [.sessionFinished(minutes: nil, folded: 2, stillWorking: 3)], originatedAt: 200),
+        AbsorbRow(id: "A11 a lid alert is ignored (empty digest stays empty)",
+                  prior: [], kind: .lidAlert(busySessionCount: 2), at: 100, expected: [], originatedAt: nil),
+        AbsorbRow(id: "A12 the test message is ignored",
+                  prior: [], kind: .test, at: 100, expected: [], originatedAt: nil),
+        AbsorbRow(id: "A13 a lid alert leaves a non-empty digest untouched (stillWorking too)",
+                  prior: [.finished(minutes: 9)], kind: .lidAlert(busySessionCount: 1), at: 100,
+                  expected: [.sessionFinished(minutes: 9, folded: 1, stillWorking: 5)], originatedAt: nil),
+    ]
+
+    @Test(arguments: absorbRows)
+    func absorbTable(_ row: AbsorbRow) {
+        var digest = FinishAlertDigest()
+        for event in row.prior { digest.fold(event, stillWorking: 5, at: 200) }
+        let before = digest
+        digest.absorb(row.kind, stillWorking: 3, at: row.at)
+        #expect(digest.messages() == row.expected)
+        if let originatedAt = row.originatedAt {
+            #expect(digest.originatedAt == originatedAt)
+            #expect(digest.stillWorking == 3)
+        } else {
+            #expect(digest == before, "an ignored kind must leave the digest exactly as it was")
+        }
+    }
+
+    /// Round trip: absorbing a digest's OWN messages into an empty digest
+    /// (with the same still-working count) rebuilds exactly those messages —
+    /// nothing is lost or invented on the way back in.
+    @Test func absorbingADigestsOwnMessagesRebuildsThem() {
+        let shapes: [[FinishAlertEvent]] = [
+            [.finished(minutes: 42)],
+            [.finished(minutes: 12), .finished(minutes: nil), .finished(minutes: 40)],
+            [.waiting(minutes: 4)],
+            [.waiting(minutes: 4), .waiting(minutes: 30)],
+            [.finished(minutes: 9), .waiting(minutes: 4)],
+            [.finished(minutes: 9), .finished(minutes: 3), .waiting(minutes: nil), .waiting(minutes: 1)],
+        ]
+        for events in shapes {
+            var original = FinishAlertDigest()
+            for (index, event) in events.enumerated() { original.fold(event, stillWorking: 4, at: Double(index)) }
+            var rebuilt = FinishAlertDigest()
+            for kind in original.messages() { rebuilt.absorb(kind, stillWorking: original.stillWorking, at: 0) }
+            #expect(rebuilt.messages() == original.messages(), "\(events)")
+        }
+    }
+
     // MARK: - Outbox decision
 
     @Test(arguments: [

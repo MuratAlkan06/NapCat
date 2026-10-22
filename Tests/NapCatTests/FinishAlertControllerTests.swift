@@ -21,6 +21,8 @@ final class FakeMarkerStore: BusyMarkerStore {
     func markerDirExists() -> Bool { dirExists }
     func hookLogExists() -> Bool { hookLogPresent }
     func lastActivityEpoch() -> Int? { nil }
+    /// The finish alert never reads the installed hook's version.
+    func installedHookVersion() -> Int? { nil }
 
     /// Create or rewrite one marker (a rewrite is the hook's mktemp + mv).
     func put(_ id: String, ts: Int, event: String = ClaudeBusyConstants.setEvent) {
@@ -705,6 +707,83 @@ struct FinishAlertControllerTests {
         }
     }
 
+    /// S10: a flush of TWO messages (waiting + finish) whose FIRST send gets
+    /// 429 — the second is NOT sent into the same rate limit; it folds back
+    /// into the digest, a finish observed during the hold joins it, and ONE
+    /// combined flush goes out when the hold ends.
+    @Test func a429FoldsTheRestOfItsFlushBackIntoTheDigest() async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(429))
+        try await withFinishAlertHarness(sender: sender) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1)],
+                    "the finish queued behind the 429 must NOT be sent into the same limit")
+            #expect(h.controller.lastSendOutcome == .rejected(429))
+            let flush = try #require(h.scheduler.pending(delay: Self.hold).first)
+            #expect(h.scheduler.pending.count == 1, "only the hold's flush is pending (no retry)")
+
+            sender.setOutcome(.accepted)
+            h.advance(100)
+            h.store.remove(H.s3)
+            await h.settle()
+            #expect(h.sends.count == 1, "held: nothing goes out during the hold")
+            #expect(flush.isPending && h.scheduler.pending.count == 1, "still the one flush at the hold end")
+
+            h.advance(500)   // t0 + 600: the hold ends
+            flush.fire()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1),
+                                            .sessionFinished(minutes: nil, folded: 2, stillWorking: 1)],
+                    "the absorbed finish and the one observed during the hold leave as ONE message")
+            #expect(h.scheduler.pending.isEmpty)
+        }
+    }
+
+    /// S10, nothing else happening: the absorbed message goes out unchanged at
+    /// the hold end — folding back in neither loses nor alters it.
+    @Test func anAbsorbedMessageLeavesUnchangedAtTheHoldEnd() async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(429))
+        try await withFinishAlertHarness(sender: sender) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(h.sends.count == 1)
+            let flush = try #require(h.scheduler.pending(delay: Self.hold).first)
+            sender.setOutcome(.accepted)
+            h.advance(600)
+            flush.fire()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1),
+                                            .sessionFinished(minutes: 20, folded: 1, stillWorking: 2)])
+        }
+    }
+
+    /// S10 is 429-only: after any other refusal the queued second message is
+    /// still sent right away (no hold, nothing folded back).
+    @Test func otherRefusalsStillSendTheRestOfTheFlush() async throws {
+        let sender = RecordingMessageSender(outcome: .rejected(403))
+        try await withFinishAlertHarness(sender: sender) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 0),
+                                            .sessionFinished(minutes: 20, folded: 1, stillWorking: 1)])
+            #expect(h.scheduler.pending(delay: Self.hold).isEmpty)
+        }
+    }
+
     enum HoldTeardown: String, CaseIterable, Sendable { case off, paused, quit }
 
     /// Disarm, pause and quit during the hold cancel the flush and drop the
@@ -1000,6 +1079,33 @@ struct MarkerDirectoryWatcherTests {
             .appendingPathComponent("napcat-watch-missing-\(UUID().uuidString)")
         let watcher = KqueueMarkerDirectoryWatcher(directory: dir)
         #expect(!watcher.start { _ in })
+        #expect(!watcher.isRunning)
+    }
+
+    /// S8 (`O_DIRECTORY`): a REGULAR FILE at the watched path is refused by
+    /// the open itself — start fails and nothing is watched.
+    @Test func startOnARegularFileFailsAndStaysStopped() throws {
+        let parent = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let file = parent.appendingPathComponent("claude-busy")
+        #expect(FileManager.default.createFile(atPath: file.path, contents: Data("not a dir".utf8)))
+        let watcher = KqueueMarkerDirectoryWatcher(directory: file)
+        #expect(!watcher.start { _ in }, "a regular file is not a marker directory")
+        #expect(!watcher.isRunning)
+    }
+
+    /// S8 (`O_NONBLOCK` + `O_DIRECTORY`): a FIFO planted at the watched path
+    /// is refused at once — the open never waits for a writer.
+    @Test(.timeLimit(.minutes(1)))
+    func startOnAFifoFailsWithoutBlocking() throws {
+        let parent = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let fifo = parent.appendingPathComponent("claude-busy")
+        try #require(mkfifo(fifo.path, 0o600) == 0, "setup: mkfifo failed (errno \(errno))")
+        let watcher = KqueueMarkerDirectoryWatcher(directory: fifo)
+        let started = Date()
+        #expect(!watcher.start { _ in })
+        #expect(Date().timeIntervalSince(started) < 3, "the open must not block on a FIFO")
         #expect(!watcher.isRunning)
     }
 

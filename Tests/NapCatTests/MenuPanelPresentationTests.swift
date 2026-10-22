@@ -162,6 +162,62 @@ struct MenuPanelPresentationTests {
                 == .nominal)
     }
 
+    // MARK: - S7: is the installed hook copy current?
+
+    struct HookVersionRow: CustomTestStringConvertible, Sendable {
+        let installed: Int?
+        let markerDirExists: Bool
+        let line: PanelLine?
+        var testDescription: String { "installed=\(installed.map(String.init) ?? "nil") dir=\(markerDirExists)" }
+    }
+
+    static let hookVersionCurrentText = "Busy hook: installed copy is current"
+    static let hookVersionOutOfDateText = "Busy hook: installed copy is out of date — re-run "
+        + "scripts/install-claude-busy-hook.sh and open a new Claude session"
+    static let hookVersionNoStampText = "Busy hook: installed copy has no version stamp — re-run the installer"
+    static let hookVersionNewerText = "Busy hook: installed copy is newer than this NapCat — rebuild NapCat to match"
+
+    /// Every input class × marker dir present/absent (expected = 4).
+    static let hookVersionRows: [HookVersionRow] = [false, true].flatMap { dir -> [HookVersionRow] in
+        [
+            HookVersionRow(installed: 4, markerDirExists: dir,
+                           line: PanelLine(text: hookVersionCurrentText, severity: .nominal)),
+            HookVersionRow(installed: 3, markerDirExists: dir,
+                           line: PanelLine(text: hookVersionOutOfDateText, severity: .warning)),
+            HookVersionRow(installed: 1, markerDirExists: dir,
+                           line: PanelLine(text: hookVersionOutOfDateText, severity: .warning)),
+            HookVersionRow(installed: 5, markerDirExists: dir,
+                           line: PanelLine(text: hookVersionNewerText, severity: .info)),
+            // No stamp: a warning only while the marker dir exists — without
+            // it the "not installed" hook line already says to run the installer.
+            HookVersionRow(installed: nil, markerDirExists: dir,
+                           line: dir ? PanelLine(text: hookVersionNoStampText, severity: .warning) : nil),
+        ]
+    }
+
+    @Test(arguments: hookVersionRows)
+    func hookVersionStatusTable(_ row: HookVersionRow) {
+        let line = MenuStateModel.claudeHookVersionStatus(installedVersion: row.installed, expectedVersion: 4,
+                                                          markerDirExists: row.markerDirExists)
+        #expect(line == row.line)
+        if let line {
+            // Iron rule: only the current copy may stay tucked in Details.
+            #expect(MenuStateModel.placement(ofDetailsLine: line.severity)
+                    == (line.severity == .nominal ? .details : .topLevel))
+            #expect(Self.readsLikeAProblem(line.text) == (line.severity != .nominal), "\(line.text)")
+        }
+    }
+
+    /// No duplicate of the hook line: a missing hook (no marker dir, no
+    /// readable copy) is said ONCE, by `claudeHookStatus`.
+    @Test func aMissingHookIsReportedOnlyByTheHookLine() {
+        #expect(MenuStateModel.claudeHookVersionStatus(installedVersion: nil, expectedVersion: 4,
+                                                       markerDirExists: false) == nil)
+        #expect(MenuStateModel.claudeHookStatus(installed: false, everSeen: false, lastSeenSeconds: nil).text
+                .contains("not installed"))
+        #expect(Self.hookVersionRows.count == 10)
+    }
+
     @Test func topicAndServerSeverity() {
         #expect(MenuStateModel.lidAlertTopicStatus("napcat-x").severity == .nominal)
         #expect(MenuStateModel.lidAlertTopicStatus("").severity == .nominal, "none set is a setting, not a fault")
@@ -501,7 +557,8 @@ struct MenuPanelPresentationTests {
     /// a problem string must never be nominal (it would hide in Details), and a
     /// nominal string must never read like a problem.
     static let problemPhrases = ["not installed", "not seen yet", "not usable", "refused", "failed",
-                                 "unconfirmed", "Waiting for approval", "not found", "paused", "unavailable"]
+                                 "unconfirmed", "Waiting for approval", "not found", "paused", "unavailable",
+                                 "out of date", "no version stamp", "newer than"]
 
     static func readsLikeAProblem(_ text: String) -> Bool {
         problemPhrases.contains { text.contains($0) }
@@ -551,6 +608,13 @@ struct MenuPanelPresentationTests {
         for available in [false, true] {
             lines.append(MenuStateModel.lockScreenStatus(available: available))
         }
+        // S7: the installed hook copy's version, every class × dir state.
+        for row in hookVersionRows {
+            if let line = MenuStateModel.claudeHookVersionStatus(
+                installedVersion: row.installed, expectedVersion: 4, markerDirExists: row.markerDirExists) {
+                lines.append(line)
+            }
+        }
         // The Claude status is NOT a Details line: it is the footer
         // disclosure's own text, always visible (`claudeFooterLabelTable`).
         return lines
@@ -559,8 +623,9 @@ struct MenuPanelPresentationTests {
     @Test func noNonNominalLineStaysBehindTheDisclosure() {
         let lines = Self.everyDetailsHomeLine()
         // 8 hook + 5 topic + 6 server + 10 last-send + 30 last-session-alert
-        // + 2 login captions + 1 holding-awake + 2 lock-screen.
-        #expect(lines.count == 64, "vacuity guard — update when the input set changes")
+        // + 2 login captions + 1 holding-awake + 2 lock-screen + 9 hook-version
+        // (S7: 10 rows, one of which — no stamp, no dir — is no line).
+        #expect(lines.count == 73, "vacuity guard — update when the input set changes")
         var surfaced = 0
         for line in lines {
             let problem = Self.readsLikeAProblem(line.text)
@@ -824,6 +889,36 @@ struct MenuPanelPresentationTests {
         // (A refused SESSION send: `aRefusedSessionAlertSurfacesAndRaisesTheBadge`.)
     }
 
+    /// S7 end to end: the installed hook's stamp, sampled by the detection
+    /// controller, reaches the panel — an out-of-date copy is a top-level
+    /// warning that raises the badge; re-running the installer (the current
+    /// stamp) tucks it back into Details as nominal.
+    @Test @MainActor func anOutOfDateHookCopySurfacesAndRaisesTheBadge() throws {
+        let markerDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("napcat-menupanel-hookversion-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: markerDir) }
+        let store = StubMarkerStore(hookInstalled: true)
+        store.installedVersion = .some(ClaudeBusyConstants.hookVersion - 1)
+        let detection = ClaudeActivityController(store: store, prober: StubProber(), assertions: StubAssertions(),
+                                                 markerDirURL: markerDir)
+        detection.sample()
+        #expect(detection.installedHookVersion == ClaudeBusyConstants.hookVersion - 1, "sample() records it")
+        try withModel(detection: detection) { model, _, _ in
+            try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
+            #expect(model.hookStatus.severity == .nominal, "the liveness line itself is healthy")
+            #expect(model.hookVersionStatus == PanelLine(text: Self.hookVersionOutOfDateText, severity: .warning))
+            #expect(MenuStateModel.placement(ofDetailsLine: model.hookVersionStatus?.severity ?? .nominal) == .topLevel)
+            #expect(model.detailsBadge == .warning)
+
+            store.installedVersion = .some(ClaudeBusyConstants.hookVersion)
+            detection.sample()
+            model.refresh()
+            #expect(model.hookVersionStatus == PanelLine(text: Self.hookVersionCurrentText, severity: .nominal))
+            #expect(model.detailsBadge == .nominal)
+        }
+    }
+
     /// F2 end to end: the DISABLED flag read by the detection controller is
     /// threaded into the lid status the panel renders — armed + paused shows
     /// the downgrade (still a top-level warning caption), and the footer label
@@ -995,6 +1090,12 @@ final class StubMarkerStore: BusyMarkerStore {
     func markerDirExists() -> Bool { hookInstalled }
     func hookLogExists() -> Bool { hookInstalled }
     func lastActivityEpoch() -> Int? { hookInstalled ? Int(Date().timeIntervalSince1970) - 60 : nil }
+    /// Installed ⇒ the current stamp (a healthy hook raises nothing), unless
+    /// a test pins another version.
+    var installedVersion: Int?? = nil
+    func installedHookVersion() -> Int? {
+        installedVersion ?? (hookInstalled ? ClaudeBusyConstants.hookVersion : nil)
+    }
 }
 
 final class StubProber: ClaudeProcessProber {

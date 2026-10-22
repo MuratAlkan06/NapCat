@@ -1,6 +1,13 @@
 #!/bin/bash
+# napcat-hook-version: 4
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
+#
+# The version stamp above is machine-read: NapCat reads only the first 1 KiB
+# of the INSTALLED copy and compares the stamp with the version it expects
+# (ClaudeBusyConstants.hookVersion, parity-linted), so the menu can say when
+# the installed copy is out of date. Keep it on line 2; bump it whenever this
+# script's behavior changes.
 #
 # Registered in ~/.claude/settings.json for six events and maintains a
 # per-session "work is in flight" marker under
@@ -39,7 +46,10 @@
 #
 # B-2 — the marker's event token ENCODES THE PHASE of the main turn:
 #   IN-FLIGHT  = UserPromptSubmit, Notification, waiting
-#   POST-STOP  = Stop, StopFailure, SubagentStop, waiting-after-stop
+#   POST-STOP  = Stop, StopFailure, SessionEnd, SubagentStop, waiting-after-stop
+# (A `SessionEnd` marker exists only when background work outlived the
+# session: the main turn is over, so it is POST-STOP and the last subagent
+# ending clears it.)
 # A Notification or SubagentStop first reads the CURRENT marker's token
 # (marker_phase; absent / unparseable / unlisted ⇒ "none") and reconciles by
 # it: a SubagentStop while the main turn is IN FLIGHT (a foreground subagent
@@ -65,6 +75,18 @@
 #     present, no-ops immediately.
 #   * Layer 4 FIRE-AND-FORGET: the marker write is backgrounded and atomic, so
 #     a stalled filesystem cannot delay the prompt; the script returns at once.
+#
+# Input and housekeeping hygiene:
+#   * stdin is size-capped, then validated as JSON with
+#     `plutil -convert json` — NOT `-convert xml1`, which rejects any JSON
+#     `null` (plist has no null), so a nullable field added to a payload would
+#     silently drop the whole event. A null-valued field reads as absent.
+#   * The payload temp file is removed on every path; while it exists a trap
+#     removes it on EXIT, and on TERM/INT removes it and exits 0 (a hook killed
+#     at Claude's timeout never strands it, and still exits 0). The 60 s temp
+#     sweep stays the backstop (SIGKILL cannot be trapped).
+#   * hook.log is rotated before an append once it exceeds LOG_MAX bytes (one
+#     generation kept, hook.log.1), so it never grows without bound.
 #
 # REGISTRATION MUST BE EXEC FORM (the security control): the installer prints
 #   /usr/bin/env -i HOME=<home> /bin/bash <this script>
@@ -94,6 +116,7 @@ DISABLED_FLAG="$STATE_DIR/DISABLED"
 LOG_FILE="$STATE_DIR/hook.log"
 CAP=43200
 TMP_CAP=60
+LOG_MAX=1048576
 SESSION_RE='^[0-9a-f][0-9a-f-]{7,63}$'
 NTYPE_RE='^[a-z_]{1,32}$'
 EVENT_RE='^[A-Za-z]{1,32}$'
@@ -112,7 +135,15 @@ if [ -e "$DISABLED_FLAG" ]; then
   exit 0
 fi
 
+# Appends one diagnostics line. A log larger than LOG_MAX bytes (1 MiB) is
+# first rotated to hook.log.1 (one generation, overwritten), so the pair stays
+# bounded at about 2 MiB. Neither name is session-id shaped or a temp-file
+# name, so the sweep never touches them.
 log() {
+  local size
+  size=$(stat -f %z "$LOG_FILE" 2>/dev/null) || size=0
+  case "$size" in ''|*[!0-9]*) size=0 ;; esac
+  [ "$size" -gt "$LOG_MAX" ] && mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null
   printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
@@ -249,7 +280,7 @@ marker_phase() {
   case "$tok" in
     UserPromptSubmit|Notification|waiting)
       printf inflight ;;
-    Stop|StopFailure|SubagentStop|waiting-after-stop)
+    Stop|StopFailure|SessionEnd|SubagentStop|waiting-after-stop)
       printf poststop ;;
     *)
       printf none ;;
@@ -271,9 +302,17 @@ main() {
   # Size-cap stdin before parsing (an oversized payload is truncated, never
   # read in full).
   payload=$(mktemp "$STATE_DIR/.payload.XXXXXX" 2>/dev/null) || return 0
+  # While the payload exists: removed on EXIT; on TERM/INT removed, then exit
+  # 0 (a trapped signal would otherwise RESUME the script). Cleared once the
+  # payload is gone, so the rest of the run keeps the default dispositions.
+  trap 'rm -f "$payload" 2>/dev/null' EXIT
+  trap 'rm -f "$payload" 2>/dev/null; exit 0' TERM INT
   head -c "$MAX_STDIN" >"$payload" 2>/dev/null
-  if ! plutil -convert xml1 -o /dev/null "$payload" 2>/dev/null; then
+  # JSON validity, not plist convertibility: `-convert xml1` rejects any JSON
+  # null, so one nullable field would drop the whole event.
+  if ! plutil -convert json -o /dev/null "$payload" 2>/dev/null; then
     rm -f "$payload" 2>/dev/null
+    trap - EXIT TERM INT
     log "ignore reason=stdin-not-json"
     return 0
   fi
@@ -290,6 +329,7 @@ main() {
   ntype=""
   [ "$event" = Notification ] && ntype=$(notification_type "$payload")
   rm -f "$payload" 2>/dev/null
+  trap - EXIT TERM INT
 
   if ! valid_session "$session"; then
     log "ignore reason=bad-session event=$logevent"

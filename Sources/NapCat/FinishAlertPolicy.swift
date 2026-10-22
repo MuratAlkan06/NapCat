@@ -118,6 +118,35 @@ struct FinishAlertDigest: Equatable, Sendable {
         self.stillWorking = stillWorking
     }
 
+    /// S10 — re-enter an already-built session message that never went out
+    /// (it was still QUEUED behind a send ntfy refused with 429): instead of
+    /// being sent into the same rate limit, it folds back in and leaves with
+    /// the next flush. `.sessionFinished(minutes, folded, stillWorking)`
+    /// re-enters as `folded` finished events (at least one), its minutes kept
+    /// only when it stood for exactly one finish; `.needsAttention(minutes,
+    /// …)` as one waiting event with its minutes. Same first-minutes rule as
+    /// `fold`; `stillWorking` is the caller's latest observation (as in
+    /// `fold`); `originatedAt` keeps the EARLIEST event (the absorbed message
+    /// may predate what the digest already holds). The lid kinds (`.lidAlert`,
+    /// `.test`) never ride the session lane and are ignored — the digest is
+    /// left exactly as it was.
+    mutating func absorb(_ kind: LidGuardMessageKind, stillWorking: Int, at originated: Double) {
+        let wasEmpty = isEmpty
+        switch kind {
+        case .sessionFinished(let minutes, let folded, _):
+            let count = max(1, folded)
+            if finishedCount == 0 { firstFinishMinutes = count == 1 ? minutes : nil }
+            finishedCount += count
+        case .needsAttention(let minutes, _):
+            if waitingCount == 0 { firstWaitingMinutes = minutes }
+            waitingCount += 1
+        case .lidAlert, .test:
+            return
+        }
+        originatedAt = wasEmpty ? originated : min(originatedAt, originated)
+        self.stillWorking = stillWorking
+    }
+
     /// The messages to publish, WAITING FIRST (the user can act on it), then
     /// the finish. Minutes ride only when exactly one event of that kind was
     /// folded (folded sessions' run lengths differ). `.needsAttention` counts

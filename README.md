@@ -138,7 +138,8 @@ session, so it cannot interrupt anything you have running; it takes effect
 from your next login.
 
 The script is idempotent — run it again after updating and it only replaces
-what changed.
+what changed (an already-current helper still gets its root:wheel owner and
+755 mode re-applied).
 
 ### Verify what was installed
 
@@ -176,7 +177,10 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
   charge limit slider does not change the privileged commands: percent
   thresholds are decided *inside the app*, which then issues one of the two
   fixed disable/enable writes. Try it after setup:
-  `sudo -n pmset -a hibernatemode 25` is denied.
+  `sudo -n pmset -a hibernatemode 25` is denied. sudo matches an entry's
+  arguments as one space-joined string, so a wildcard is never confined to a
+  single argument (it can match across several) — which is why these entries
+  are never widened with wildcards.
 - **Root-owned target binary.** The smc helper is installed to
   `/usr/local/napcat/smc` owned by `root:wheel` — never inside the app
   bundle, which is user-writable and re-signed on every rebuild. A NOPASSWD
@@ -287,13 +291,30 @@ sudo ./scripts/uninstall.sh
 ```
 
 Idempotent and thorough even after partial failures: clears `disablesleep`,
-re-enables charging (before deleting the helper it needs to do so), then
+re-enables charging (before deleting the helper it needs to do so — and only
+after re-checking that `/usr/local`, `/usr/local/napcat` and the helper are
+still root-owned and not writable by anyone else; if they are not, that one
+step is skipped and reported, and everything else still runs), then
 removes the sudoers file, `/usr/local/napcat`, the failsafe LaunchAgent, and
 NapCat's saved settings (including the ntfy topic), and prints a summary of
 everything it reverted. Then delete the repo /
 `dist/NapCat.app` and, if you enabled Launch at Login, remove the NapCat
 entry in System Settings › General › Login Items (or toggle it off in the
 menu before uninstalling).
+
+If you installed the optional Claude busy hook, remove it as well — as
+yourself, no `sudo`:
+
+```sh
+./scripts/uninstall-claude-busy-hook.sh
+```
+
+It deletes `~/.claude/hooks/napcat-busy-hook.sh` and the marker directory, then
+prints the six NapCat entries to delete from `~/.claude/settings.json` by hand
+(`UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`,
+`Notification` — it never edits that file); restart Claude Code afterwards.
+Finally, once NapCat has quit, you can delete its state folder
+`~/Library/Application Support/NapCat` if you want nothing left behind.
 
 Manual equivalent:
 
@@ -383,7 +404,9 @@ waits for you, so it needs to receive every notification type. **If you
 registered an earlier version of this hook**, add the `SubagentStop` entry,
 remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
 `./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
-start a new Claude Code session so it loads.
+start a new Claude Code session so it loads. The installer prints the hook
+version it installed, and the menu (**Details → Claude detection**) warns when
+the installed copy is older than the one this NapCat build expects.
 
 **The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
 not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`

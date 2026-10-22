@@ -83,6 +83,8 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var claudeHookEverSeen = false
     @Published private(set) var claudeHookLastSeenSeconds: Int?
     @Published private(set) var claudeDetectionPaused = false
+    /// S7: the installed hook copy's version stamp (nil = absent / no stamp).
+    @Published private(set) var claudeInstalledHookVersion: Int?
 
     // Track B / B2 (lid-close alert) mirrors. `lidGuardTopic` is a SECRET (the
     // ntfy topic is the feed's only password). It is PRIVATE since the panel
@@ -201,6 +203,7 @@ final class MenuStateModel: ObservableObject {
         claudeHookEverSeen = detection?.hookEverSeen ?? false
         claudeHookLastSeenSeconds = detection?.lastSeenSeconds
         claudeDetectionPaused = detection?.detectionPaused ?? false
+        claudeInstalledHookVersion = detection?.installedHookVersion
         // B2 mirrors — read straight off the (thread-safe) controller.
         lidGuardEnabled = lidGuard?.isEnabled ?? false
         lidGuardTopic = lidGuard?.storedTopic ?? ""
@@ -295,6 +298,14 @@ final class MenuStateModel: ObservableObject {
         )
     }
 
+    /// Tucked under Details › Claude detection (S7); absent when there is
+    /// nothing to add to `hookStatus`.
+    var hookVersionStatus: PanelLine? {
+        Self.claudeHookVersionStatus(installedVersion: claudeInstalledHookVersion,
+                                     expectedVersion: ClaudeBusyConstants.hookVersion,
+                                     markerDirExists: claudeHookInstalled)
+    }
+
     var lidStatus: PanelLine {
         Self.lidAlertStatus(
             for: lidGuardArming,
@@ -339,7 +350,8 @@ final class MenuStateModel: ObservableObject {
     var detailsBadge: PanelSeverity {
         var severities = [launchAtLoginCaption?.severity ?? .nominal, lockScreenStatus.severity]
         if claudeDetectionVisible {
-            severities += [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal]
+            severities += [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal,
+                           hookVersionStatus?.severity ?? .nominal]
         }
         if lidGuardVisible {
             let lidWithoutThePause = Self.lidAlertStatus(
@@ -511,6 +523,37 @@ final class MenuStateModel: ObservableObject {
             return "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh"
         }
         return "Busy hook: last seen \(ClaudeActivityPolicy.relativeTime(seconds: seconds))"
+    }
+
+    /// S7 — is the INSTALLED hook copy the version this build expects? The
+    /// installer copies the script once, so a checkout update leaves the old
+    /// copy running until it is re-run. Equal ⇒ nominal; older ⇒ a warning
+    /// naming the fix (a new Claude session is needed to load the new copy);
+    /// no readable stamp while the marker dir exists ⇒ a warning (an install
+    /// that predates the stamp). No stamp AND no marker dir ⇒ nil: the
+    /// "not installed" hook line already says it. NEWER than this build (the
+    /// checkout moved on but NapCat was not rebuilt) ⇒ info: nothing is
+    /// broken, but the two halves no longer match.
+    nonisolated static func claudeHookVersionStatus(
+        installedVersion: Int?,
+        expectedVersion: Int,
+        markerDirExists: Bool
+    ) -> PanelLine? {
+        guard let installedVersion else {
+            guard markerDirExists else { return nil }
+            return PanelLine(text: "Busy hook: installed copy has no version stamp — re-run the installer",
+                             severity: .warning)
+        }
+        if installedVersion < expectedVersion {
+            return PanelLine(text: "Busy hook: installed copy is out of date — re-run "
+                                + "scripts/install-claude-busy-hook.sh and open a new Claude session",
+                             severity: .warning)
+        }
+        if installedVersion > expectedVersion {
+            return PanelLine(text: "Busy hook: installed copy is newer than this NapCat — rebuild NapCat to match",
+                             severity: .info)
+        }
+        return PanelLine(text: "Busy hook: installed copy is current", severity: .nominal)
     }
 
     // MARK: - Track B / B2 (lid-close alert) presentation

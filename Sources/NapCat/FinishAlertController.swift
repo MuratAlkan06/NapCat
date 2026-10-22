@@ -102,6 +102,9 @@ final class FinishAlertController {
     private var flush: FinishAlertScheduledWork?
     private var sendInFlight = false
     private var queue: [Outgoing] = []
+    /// The latest observation's fresh-session count — what a message folded
+    /// back into the digest after a 429 reports as still working (S10).
+    private var latestStillWorking = 0
     /// Pending single retries, keyed by a local token so a fired retry can
     /// remove itself. All cancelled on disarm.
     private var retries: [Int: FinishAlertScheduledWork] = [:]
@@ -242,6 +245,7 @@ final class FinishAlertController {
         tracked = [:]
         digest = FinishAlertDigest()
         queue = []
+        latestStillWorking = 0
         windowOpenUntil = nil
         guard wasWatching || dropped > 0 else { return }
         Self.logger.notice("finish alert: disarmed (\(reason.rawValue, privacy: .public)), dropped \(dropped, privacy: .public) pending item(s)")
@@ -282,6 +286,7 @@ final class FinishAlertController {
             now: Int(observedAt)
         )
         tracked = observation.tracked
+        latestStillWorking = observation.stillWorking
         logSuppressed(observation.suppressed)
         guard !observation.events.isEmpty else { return }
         Self.logger.notice("finish alert: \(observation.events.count, privacy: .public) alert event(s) observed")
@@ -350,6 +355,21 @@ final class FinishAlertController {
         Self.logger.notice("finish alert: ntfy is rate-limiting — session alerts held and folded for \(Int(delay), privacy: .public) s")
     }
 
+    /// S10: whatever is still QUEUED when ntfy answers 429 came from the same
+    /// flush; sending it now would only hit the same rate limit. It folds back
+    /// into the digest (`FinishAlertDigest.absorb`) and leaves with the ONE
+    /// flush at the hold's end, together with anything observed meanwhile. A
+    /// retry still waiting on its own timer is not in the queue — untouched.
+    private func foldQueueBackIntoDigest() {
+        guard !queue.isEmpty else { return }
+        let absorbed = queue
+        queue = []
+        for item in absorbed {
+            digest.absorb(item.kind, stillWorking: latestStillWorking, at: item.originatedAt)
+        }
+        Self.logger.notice("finish alert: \(absorbed.count, privacy: .public) queued message(s) folded back into the held digest")
+    }
+
     private func sendNext() {
         guard !sendInFlight, !queue.isEmpty else { return }
         let item = queue.removeFirst()
@@ -394,6 +414,7 @@ final class FinishAlertController {
             }
             if let hold = FinishAlertPolicy.windowExtension(after: outcome) {
                 holdForRateLimit(hold)
+                foldQueueBackIntoDigest()
             }
         } else {
             Self.logger.notice("finish alert: a send completed after disarm — outcome recorded, nothing more sent")

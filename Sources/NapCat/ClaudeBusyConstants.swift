@@ -5,14 +5,16 @@ import Foundation
 /// (ClaudeBusyHookScriptTests) byte-matches the marker-dir path, the
 /// session-id regex, the marker-line grammar tokens, the six registered hook
 /// event names, (Track C, C1) the Notification-type classes plus the synthetic
-/// `waiting` event token, and (B-2) the synthetic `waiting-after-stop` token
-/// and the two marker-phase token lists between this file and the shell
-/// script — the watchdog byte-match precedent (WatchdogControllerTests)
-/// applied to Track B.
+/// `waiting` event token, (B-2) the synthetic `waiting-after-stop` token
+/// and the two marker-phase token lists, and (S7) the hook version stamp
+/// between this file and the shell script — the watchdog byte-match precedent
+/// (WatchdogControllerTests) applied to Track B.
 ///
 /// The marker side is Claude-scoped and one-way: NapCat only READS the markers
 /// this hook writes (and MAY write its own kill-switch flag inside the marker
-/// dir); it never writes a marker and never touches ~/.claude. The app DOES
+/// dir); it never writes a marker and never writes under ~/.claude — its one
+/// read there is the first KiB of the installed hook copy, for the version
+/// stamp (S7, `MarkerDirectoryStore.installedHookVersion`). The app DOES
 /// send ntfy pushes (the B2 lid alert, the Track C session alerts), but from
 /// its own state in a closed vocabulary — nothing in this file sends, and no
 /// marker content ever reaches a message.
@@ -81,8 +83,10 @@ enum ClaudeBusyConstants {
     /// B-2 marker PHASE: the main turn has ENDED (only background work keeps
     /// the marker). MUST byte-match the shell `marker_phase` case pattern, in
     /// order (parity lint). An absent / unparseable marker, or a token in
-    /// neither list, is phase "none".
-    static let postStopEventTokens = ["Stop", "StopFailure", "SubagentStop", "waiting-after-stop"]
+    /// neither list, is phase "none". `SessionEnd` (S11) is written only when
+    /// background work outlived the session — the main turn is over, so the
+    /// last subagent ending must clear it like any post-Stop marker.
+    static let postStopEventTokens = ["Stop", "StopFailure", "SessionEnd", "SubagentStop", "waiting-after-stop"]
 
     /// `notification_type` values that mean Claude is BLOCKED on the user: the
     /// hook KEEPS the marker, rewritten with `waitingEventToken`. MUST
@@ -130,8 +134,23 @@ enum ClaudeBusyConstants {
     static let maxMarkerBytes = 4096
 
     /// Stable installed hook path, relative to home. The installer copies the
-    /// script here (NOT under dist/, so `make clean` never removes it).
+    /// script here (NOT under dist/, so `make clean` never removes it). Only
+    /// BusyMarkerStore.swift may resolve it (structure lint).
     static let installedHookRelativePath = ".claude/hooks/napcat-busy-hook.sh"
+
+    /// S7 — the version of the hook script THIS build expects. MUST equal the
+    /// shell script's `# napcat-hook-version: N` stamp (parity lint); bump
+    /// both whenever the hook's behavior changes, so an installed copy left
+    /// behind by an earlier install reads as out of date in the menu.
+    static let hookVersion = 4
+
+    /// The stamp line's fixed prefix; the rest of the line is the decimal
+    /// version. It must sit within the first `installedHookReadBytes` bytes.
+    static let hookVersionStampPrefix = "# napcat-hook-version: "
+
+    /// Read cap for the installed hook copy: only this many leading bytes are
+    /// ever read (the stamp is on line 2).
+    static let installedHookReadBytes = 1024
 
     /// Absolute marker directory for the current user.
     static var markerDirURL: URL {
