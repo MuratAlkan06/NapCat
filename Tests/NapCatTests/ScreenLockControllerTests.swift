@@ -43,15 +43,15 @@ struct ScreenLockControllerTests {
 
     /// The whole feature rests on a PRIVATE symbol. Dev hardware == target
     /// hardware, so this test is the early-warning signal that a macOS update
-    /// removed or renamed it: when it fails, the app has not broken (the row
-    /// degrades to disabled) but the feature is gone and PLAN.md must be
-    /// revisited.
+    /// removed or renamed it: when it fails, the app has not broken (the
+    /// header button degrades to disabled) but the feature is gone and
+    /// PLAN.md must be revisited.
     ///
     /// Resolution is side-effect-free — dlopen + dlsym only. The returned
     /// function is NEVER called here.
     @Test func lockSymbolResolvesOnThisMachine() {
         #expect(ScreenLockController.resolveLockFunction() != nil,
-                "\(ScreenLockController.lockSymbolName) no longer resolves — Lock Screen degrades to a disabled row")
+                "\(ScreenLockController.lockSymbolName) no longer resolves — Lock Screen degrades to a disabled header button")
     }
 
     /// Resolution is cached for the process lifetime (one dlopen, never
@@ -133,7 +133,7 @@ struct ScreenLockControllerTests {
         model.lockScreen()
         model.lockScreen()
         #expect(calls == 2)
-        #expect(!model.lockScreenAvailable, "no controller injected → row disabled, never assumed available")
+        #expect(!model.lockScreenAvailable, "no controller injected → header button disabled, never assumed available")
     }
 
     // MARK: - Structural isolation (lint-style)
