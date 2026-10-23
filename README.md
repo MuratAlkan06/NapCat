@@ -559,7 +559,7 @@ pushes, and the row says so.
   has never been tested sends the test message first, and nothing arms until it
   is accepted — a session alert is never the first thing your topic is trusted
   with. The two toggles are otherwise independent.
-- **At least 30 seconds of work** (since the prompt that started the turn)
+- **At least 60 seconds of work** (since the prompt that started the turn)
   before either push fires: a quick answer, or a permission prompt seconds after
   you hit Enter, stays quiet — you are still looking.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
@@ -649,8 +649,11 @@ Notes:
   alert + hardware-validated sleep pipeline, `v1.3.0` Lock Screen +
   frozen menu redesign, `v1.4.0` session alerts — finish and waiting
   pushes, `v1.4.1` the quieter menu panel, `v1.4.2` hardened alert delivery,
-  hook and build, and `v1.4.3` the masked ntfy topic field in the settings
-  dialog and the Lock Screen button moved into the panel header). Each
+  hook and build, `v1.4.3` the masked ntfy topic field in the settings
+  dialog and the Lock Screen button moved into the panel header, and
+  `v1.4.4` session alerts only after at least 60 seconds of work, plus
+  docs and code-comment parity — the topic field's AutoFill comment and
+  the Lock Screen button wording). Each
   annotated tag carries its release notes (`git tag -n99`); the detailed
   build plan and verification matrix are maintained privately.
 

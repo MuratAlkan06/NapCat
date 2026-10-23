@@ -1,7 +1,7 @@
 import Foundation
 
 // Pure Track C decision logic for the Claude finish alert and the waiting
-// buzz: marker-set diffing, the 30 s run floor, the 12 h stale cap, the batch
+// buzz: marker-set diffing, the 60 s run floor, the 12 h stale cap, the batch
 // digest, the outbox and retry tables, and the arming/display predicates.
 // I/O-free by construction — no filesystem, no timers, no network, no
 // subprocess, no logging, no defaults reads. `FinishAlertStructureTests` locks
@@ -17,8 +17,10 @@ import Foundation
 /// persisted key of Track C is the `claudeFinishAlertEnabled` toggle.
 enum FinishAlertTuning {
     /// Run-length floor (user ruling): a run shorter than this never alerts —
-    /// neither a finish nor a waiting buzz (you are still looking).
-    static let minimumRunSeconds = 30
+    /// neither a finish nor a waiting buzz (you are still looking). Raised
+    /// from 30 to 60 on 2026-10-23 by user ruling; a run of exactly the floor
+    /// with an exact anchor reads "1 min" (`minutes(duration:exact:)`).
+    static let minimumRunSeconds = 60
     /// One-shot debounce armed ONLY by a filesystem event — never periodic
     /// (B1 amendment, PLAN.md Track C).
     static let debounceSeconds: TimeInterval = 2

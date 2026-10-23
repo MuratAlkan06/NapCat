@@ -877,6 +877,21 @@ struct FinishAlertControllerTests {
         }
     }
 
+    /// The floor boundary end to end: a run of exactly 60 s (the floor) with
+    /// an exact anchor is sent, and its body reads "after 1 min".
+    @Test func aRunOfExactlyTheFloorFinishesAfterOneMinute() async throws {
+        try await withFinishAlertHarness { h in
+            h.store.put(H.s1, ts: H.t0 - 60)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: 1, folded: 1, stillWorking: 0)])
+            let kind = try #require(h.sends.first?.kind)
+            #expect(LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49")
+                    == "A Claude session finished after 1 min — none still working")
+        }
+    }
+
     // MARK: Waiting buzz
 
     @Test func aWaitingTransitionBuzzesOnceAndRewritesDoNot() async throws {

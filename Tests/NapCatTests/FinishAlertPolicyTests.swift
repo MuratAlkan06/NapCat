@@ -34,7 +34,7 @@ struct FinishAlertPolicyTests {
     // MARK: - Tunables (user rulings are code constants)
 
     @Test func tunablesAreTheContractValues() {
-        #expect(FinishAlertTuning.minimumRunSeconds == 30)
+        #expect(FinishAlertTuning.minimumRunSeconds == 60)   // 30 → 60: user ruling 2026-10-23
         #expect(FinishAlertTuning.debounceSeconds == 2)
         #expect(FinishAlertTuning.batchWindowSeconds == 30)
         #expect(FinishAlertTuning.retryDelaySeconds == 30)
@@ -65,12 +65,14 @@ struct FinishAlertPolicyTests {
         return [
             DisappearRow(id: "D1", gone: session(firstSeen: t0 - 2_520, exact: true, lastTs: t0 - 100),
                          events: [.finished(minutes: 42)], suppressed: []),
-            DisappearRow(id: "D2", gone: session(firstSeen: t0 - 29, exact: true, lastTs: t0 - 29),
+            // Floor boundary (60 s since 2026-10-23): 59 s suppressed; exactly
+            // 60 s is sent and, with an exact anchor, already reads 1 min.
+            DisappearRow(id: "D2", gone: session(firstSeen: t0 - 59, exact: true, lastTs: t0 - 59),
                          events: [], suppressed: [.underMinimumRun]),
-            DisappearRow(id: "D3", gone: session(firstSeen: t0 - 30, exact: true, lastTs: t0 - 30),
-                         events: [.finished(minutes: nil)], suppressed: []),
-            DisappearRow(id: "D4", gone: session(firstSeen: t0 - 31, exact: true, lastTs: t0 - 31),
-                         events: [.finished(minutes: nil)], suppressed: []),
+            DisappearRow(id: "D3", gone: session(firstSeen: t0 - 60, exact: true, lastTs: t0 - 60),
+                         events: [.finished(minutes: 1)], suppressed: []),
+            DisappearRow(id: "D4", gone: session(firstSeen: t0 - 61, exact: true, lastTs: t0 - 61),
+                         events: [.finished(minutes: 1)], suppressed: []),
             DisappearRow(id: "D5", gone: session(firstSeen: t0 - cap, exact: true, lastTs: t0 - cap),
                          events: [.finished(minutes: 720)], suppressed: []),
             DisappearRow(id: "D6", gone: session(firstSeen: t0 - cap - 1, exact: true, lastTs: t0 - cap - 1),
@@ -311,15 +313,15 @@ struct FinishAlertPolicyTests {
                         Step(m1(t + 100, w), now: t + 100),
                         Step(m1(t + 200, w), now: t + 200),
                      ]),
-            Scenario(id: "W7", note: "floor boundary: 29 s ⇒ suppressed",
+            Scenario(id: "W7", note: "floor boundary: 59 s ⇒ suppressed",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 29, w), now: t + 29, suppressed: [.underMinimumRun]),
+                        Step(m1(t + 59, w), now: t + 59, suppressed: [.underMinimumRun]),
                      ]),
-            Scenario(id: "W8", note: "floor boundary: 30 s ⇒ sent (exact but under a minute ⇒ minutes nil)",
+            Scenario(id: "W8", note: "floor boundary: 60 s ⇒ sent (exact anchor, a full minute ⇒ minutes 1)",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 30, w), now: t + 30, [.waiting(minutes: nil)]),
+                        Step(m1(t + 60, w), now: t + 60, [.waiting(minutes: 1)]),
                      ]),
             Scenario(id: "W9", note: "bg-running / resume keeps are never waiting",
                      baseline: nil, steps: [
