@@ -375,7 +375,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.runModal()
     }
 
-    /// Modal ntfy editor (two accessory NSTextFields: topic + server). Saving a
+    /// Modal ntfy editor (accessory fields: masked topic + server). Saving a
     /// CHANGED topic or server clears the primed flag, so — while the feature
     /// is switched on — the test send re-runs against the new feed and the user
     /// sees here and now whether their phone gets it.
@@ -427,24 +427,24 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.informativeText = [error, Self.lidAlertSettingsExplanation]
             .compactMap { $0 }
             .joined(separator: "\n\n")
-        let topicField = NSTextField(frame: NSRect(x: 0, y: 30, width: 300, height: 24))
-        topicField.stringValue = entry.topic
-        // Deliberately NOT a paste-ready value: a placeholder someone could copy
-        // verbatim would become a shared, publicly-known feed.
-        topicField.placeholderString = "Topic — e.g. napcat-<your-own-random-suffix>"
+        // Masked by default (issue #10): the topic is the feed's password, and
+        // this dialog opens wherever the screen happens to be visible.
+        let topicRow = MaskedTopicRow(topic: entry.topic, fieldFrame: NSRect(x: 0, y: 30, width: 300, height: 24))
         let serverField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
         serverField.stringValue = entry.server
         serverField.placeholderString = LidGuardTuning.defaultNtfyServer
-        let stack = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 54))
-        stack.addSubview(topicField)
+        let stack = NSView(frame: NSRect(x: 0, y: 0, width: max(300, topicRow.maxX), height: 54))
+        topicRow.addSubviews(to: stack)
         stack.addSubview(serverField)
         alert.accessoryView = stack
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()
-        alert.window.initialFirstResponder = topicField
+        alert.window.initialFirstResponder = topicRow.secureField
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return LidAlertSettingsEntry(topic: topicField.stringValue, server: serverField.stringValue)
+        // `topicRow` stays alive through the modal run (it is read here), which
+        // the checkbox needs: NSButton holds its target weakly.
+        return LidAlertSettingsEntry(topic: topicRow.topic, server: serverField.stringValue)
     }
 
     private static let lidAlertSettingsExplanation = """
@@ -475,6 +475,100 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate()
         alert.runModal()
+    }
+}
+
+/// The topic row of the ntfy settings editor — the AppKit half of
+/// `TopicFieldVisibility` (see there for why it is two overlaid fields). Owns
+/// the masked field, its plain twin and the "Show" checkbox, and only maps the
+/// pure state onto them.
+///
+/// The fields keep the editor's full 300 pt width and the checkbox sits to
+/// their right: the placeholder needs ~290 pt at the system font, so a field
+/// narrowed to make room would clip it.
+@MainActor
+private final class MaskedTopicRow: NSObject {
+    let secureField: NSSecureTextField
+    let plainField: NSTextField
+    let showCheckbox: NSButton
+    private var visibility = TopicFieldVisibility.initial
+
+    private static let checkboxGap: CGFloat = 8
+
+    init(topic: String, fieldFrame: NSRect) {
+        secureField = NSSecureTextField(frame: fieldFrame)
+        plainField = NSTextField(frame: fieldFrame)
+        showCheckbox = NSButton(checkboxWithTitle: TopicFieldVisibility.checkboxTitle, target: nil, action: nil)
+        super.init()
+        // Only the masked field is prefilled: the plain twin holds the topic only
+        // while it is the visible field (each toggle blanks the one it hides).
+        secureField.stringValue = topic
+        // A secure field with no content type gets PASSWORD semantics, so the
+        // system may offer saved logins (AutoFill) or a generated strong password
+        // when it gains focus — and it does, on open. The topic is not an account
+        // password: a picked login would hide behind the mask, pass the topic
+        // grammar, and be saved and sent. `.newPassword` plus completion off keep
+        // the system from offering either.
+        secureField.contentType = .newPassword
+        secureField.isAutomaticTextCompletionEnabled = false
+        plainField.isAutomaticTextCompletionEnabled = false
+        for field in [secureField, plainField] {
+            // Deliberately NOT a paste-ready value: a placeholder someone could copy
+            // verbatim would become a shared, publicly-known feed.
+            field.placeholderString = "Topic — e.g. napcat-<your-own-random-suffix>"
+            field.setAccessibilityLabel(TopicFieldVisibility.fieldAccessibilityLabel)
+        }
+        showCheckbox.target = self
+        showCheckbox.action = #selector(toggleVisibility(_:))
+        showCheckbox.setAccessibilityLabel(TopicFieldVisibility.checkboxAccessibilityLabel)
+        showCheckbox.sizeToFit()
+        // Right of the field, its title on the same baseline as the field's text.
+        let baseline = fieldFrame.maxY - secureField.firstBaselineOffsetFromTop
+        showCheckbox.setFrameOrigin(NSPoint(
+            x: fieldFrame.maxX + Self.checkboxGap,
+            y: baseline + showCheckbox.firstBaselineOffsetFromTop - showCheckbox.frame.height
+        ))
+        apply()
+    }
+
+    /// Right edge of the row, so the accessory view grows only as far as needed.
+    var maxX: CGFloat { showCheckbox.frame.maxX }
+
+    /// The topic as Save returns it: the visible field's text, untouched.
+    var topic: String {
+        visibility.visibleText(secure: secureField.stringValue, plain: plainField.stringValue)
+    }
+
+    func addSubviews(to container: NSView) {
+        container.addSubview(secureField)
+        container.addSubview(plainField)
+        container.addSubview(showCheckbox)
+    }
+
+    @objc private func toggleVisibility(_ sender: NSButton) {
+        let text = topic   // read BEFORE the flip; includes an edit still in progress
+        visibility = visibility.toggled()
+        let shown: NSTextField = visibility.isRevealed ? plainField : secureField
+        let hidden: NSTextField = visibility.isRevealed ? secureField : plainField
+        shown.stringValue = text
+        shown.isHidden = false
+        // Focus moves BEFORE the old field hides (hiding the first responder
+        // would first hop focus to its next key view) and lands with the caret
+        // at the END — makeFirstResponder selects all, and one stray keystroke
+        // would then replace the whole topic.
+        if shown.window?.makeFirstResponder(shown) == true, let editor = shown.currentEditor() {
+            editor.selectedRange = NSRange(location: text.utf16.count, length: 0)
+        }
+        apply()
+        // Blanked LAST — after it lost focus and was hidden, so no end-of-editing
+        // commit can refill it: a hidden field never keeps a copy of the topic.
+        hidden.stringValue = ""
+    }
+
+    private func apply() {
+        secureField.isHidden = visibility.secureFieldHidden
+        plainField.isHidden = visibility.plainFieldHidden
+        showCheckbox.state = visibility.checkboxState
     }
 }
 
