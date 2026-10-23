@@ -125,9 +125,17 @@ struct TopicFieldVisibilityTests {
     /// USE lock: the editor's topic row is an NSSecureTextField that opens
     /// masked and focused, the state comes from the pure type, and Save hands
     /// back the visible field's text — not a field prefilled on the side.
-    /// Security-review follow-ups are locked too: the secure field is not
-    /// offered saved logins / generated passwords (M1), only it is prefilled,
-    /// and a toggle blanks the field it hid only after hiding it (L1).
+    /// Security-review follow-ups are locked too (code shape only). M1: a
+    /// secure field with no content type is inferred as a password field, and
+    /// the system offers saved logins when it gains focus (it opens focused).
+    /// The topic is not an account password: a picked login would hide behind
+    /// the mask, pass the topic grammar, and be saved and sent. `.newPassword`
+    /// stops saved-credential offers but on its own may add "Suggest Strong
+    /// Password"; completion off is what suppresses that (DTS: it "should" —
+    /// unverified live). Source: Apple DTS, developer forums thread 821395
+    /// (macOS 26.3), not the AppKit reference — re-verify on new OS releases.
+    /// Also locked: only the secure field is prefilled, and a toggle blanks
+    /// the field it hid only after hiding it (L1).
     @Test func theSettingsEditorUsesTheMaskedTopicRow() throws {
         let menu = LidGuardStructureTests.codeOnly(try String(
             contentsOf: LidGuardStructureTests.sourcesDir().appendingPathComponent("MenuContentView.swift"),

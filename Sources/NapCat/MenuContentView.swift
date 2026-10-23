@@ -503,12 +503,15 @@ private final class MaskedTopicRow: NSObject {
         // Only the masked field is prefilled: the plain twin holds the topic only
         // while it is the visible field (each toggle blanks the one it hides).
         secureField.stringValue = topic
-        // A secure field with no content type gets PASSWORD semantics, so the
-        // system may offer saved logins (AutoFill) or a generated strong password
-        // when it gains focus — and it does, on open. The topic is not an account
-        // password: a picked login would hide behind the mask, pass the topic
-        // grammar, and be saved and sent. `.newPassword` plus completion off keep
-        // the system from offering either.
+        // A secure field with no content type is inferred as a password field,
+        // and the system offers saved logins when it gains focus — it does, on
+        // open. The topic is not an account password: a picked login would hide
+        // behind the mask, pass the topic grammar, and be saved and sent.
+        // `.newPassword` stops saved-credential offers but on its own may add
+        // "Suggest Strong Password"; completion off is what suppresses that (DTS
+        // says it "should" — not verified live). Source: Apple DTS, developer
+        // forums thread 821395 (macOS 26.3), not the AppKit reference — re-verify
+        // on new OS releases.
         secureField.contentType = .newPassword
         secureField.isAutomaticTextCompletionEnabled = false
         plainField.isAutomaticTextCompletionEnabled = false

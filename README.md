@@ -477,6 +477,8 @@ state, never arms itself, and never sends anything but its own fixed sentence.
 3. In the NapCat menu open **Details** and click **ntfy settings…**, paste the topic,
    and leave the server as `https://ntfy.sh` unless you run your own instance.
    The topic field is masked like a password; tick **Show** to proofread it.
+   If a password suggestion ever appears over the topic field, press **Esc**
+   instead of clicking it, and check the topic with **Show** before **Save**.
    A custom server must be an `https://` origin and nothing more — no path,
    query, fragment, or `user@` part, and a plain ASCII host name or IP address
    (`https://ntfy.example.com:8443`). Anything else is refused with an
