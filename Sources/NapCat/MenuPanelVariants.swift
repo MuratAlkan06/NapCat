@@ -11,9 +11,10 @@ import SwiftUI
 // `SessionAlertsSurfacedLines`, `GeneralSurfacedLines`,
 // `SurfacedLaunchAtLogin`) so that a non-nominal Details line always has a
 // top-level home, and must END with `PanelFooterRow` (the one Details
-// disclosure — whose text is the Claude status — then Lock Screen and Quit),
-// with expanded Details content above it (lint-locked in
-// MenuPanelStructureTests).
+// disclosure — whose text is the Claude status — then Quit), with expanded
+// Details content above it (lint-locked in MenuPanelStructureTests). Lock
+// Screen is not a footer control: since the 2026-10-22 amendment its icon
+// button sits in `BatteryHeader`'s top-right corner.
 
 // MARK: - Quiet Rows
 
@@ -91,9 +92,10 @@ struct QuietRowsPanel: View {
                 PanelDetailsContent(model: model)
                     .padding(.leading, PanelMetrics.titleIndent)
             }
-            // Top-level twins of the Details lines whose own control sits in
-            // the footer (the Claude status label, Lock Screen), aligned with
-            // the footer label's text.
+            // Top-level twins of the Details lines whose own control sits
+            // outside the rows above — the Claude status label in the footer,
+            // the Lock Screen icon in the header's top-right corner (since
+            // 2026-10-22) — aligned with the footer label's text.
             if model.claudeDetectionVisible {
                 ClaudeSurfacedLines(model: model)
                     .padding(.leading, PanelMetrics.titleIndent)
