@@ -10,10 +10,12 @@ import SwiftUI
 /// alerts, each with its one-line status), and everything else behind ONE
 /// "Details" disclosure. Declutter amendment (2026-10-21): the Claude status
 /// is the disclosure's own text in the footer ("Claude: running ●"), and Lock
-/// Screen is an icon button beside Quit. IRON RULE: a non-nominal line never
-/// stays inside Details — `TuckedLine` / `SurfacedLine` split every
-/// Details-home line on `MenuStateModel.placement(ofDetailsLine:)`, so each
-/// renders exactly once.
+/// Screen is an icon button. Lock Screen amendment (2026-10-22): that button
+/// overlays the battery header's top-right corner instead of sitting beside
+/// Quit, where it read as part of the Quit control. IRON RULE: a non-nominal
+/// line never stays inside Details — `TuckedLine` / `SurfacedLine` split
+/// every Details-home line on `MenuStateModel.placement(ofDetailsLine:)`, so
+/// each renders exactly once.
 ///
 /// Design freeze (2026-10-18): the panel is ONE fixed layout, `QuietRowsPanel`
 /// (MenuPanelVariants.swift), composed from the shared components below. The
@@ -48,6 +50,12 @@ enum PanelMetrics {
     static let titleIndent: CGFloat = symbolColumn + regular
     /// Gap between feature blocks in the panel's main column.
     static let rowSpacing: CGFloat = loose
+    /// Top inset of the Lock Screen button in the battery header's top-right
+    /// corner (2026-10-22). The ring — the system `.accessoryCircularCapacity`
+    /// gauge, which has no size constant to read (58pt measured) — is centred
+    /// in the 76pt header, so its top edge sits (76 − 58) / 2 = 9pt down. The
+    /// button shares that top line instead of hugging the panel edge.
+    static let headerLockInset: CGFloat = 9
 }
 
 /// One feature block: a control row plus whatever hangs under it (caption,
@@ -239,9 +247,10 @@ struct StayAwakeToggle: View {
 /// One click: lock the session AND turn the display off, with the Mac still
 /// running. The menu closes first (the user is walking away) — handled by
 /// MenuContentView through the single dismissal gateway. Since the
-/// 2026-10-21 declutter it is an ICON-ONLY button in the footer row, just
-/// left of Quit; its availability line lives in Details › General (and
-/// surfaces when the lock API is unavailable).
+/// 2026-10-21 declutter it is an ICON-ONLY button; since 2026-10-22 it sits
+/// in the battery header's top-right corner (`BatteryHeader`). Its
+/// availability line lives in Details › General (and surfaces when the lock
+/// API is unavailable).
 struct LockScreenButton: View {
     @ObservedObject var model: MenuStateModel
 
@@ -359,27 +368,24 @@ struct LaunchAtLoginRow: View {
 }
 
 /// The panel's LAST row (curation round 1, 2026-10-18): the ONE Details
-/// disclosure on the left, Quit on the right — and, since the 2026-10-21
-/// declutter, the icon-only Lock Screen button immediately left of Quit.
-/// Expanded Details content renders ABOVE this row, so the footer — and
-/// Quit — always close the panel.
+/// disclosure on the left, Quit on the right — nothing else. (The Lock Screen
+/// button sat beside Quit from the 2026-10-21 declutter until 2026-10-22,
+/// when it moved to the battery header's top-right corner.) Expanded Details
+/// content renders ABOVE this row, so the footer — and Quit — always close
+/// the panel.
 struct PanelFooterRow: View {
     @ObservedObject var model: MenuStateModel
 
-    /// Width budget (measured 2026-10-21 at the 300pt panel): the two buttons
-    /// take ~110pt, so the row spends no stack gap around the Spacer (which
-    /// alone keeps ≥8pt between the label and the buttons) and holds the
-    /// button pair `tight` — otherwise "⚠︎ Claude: paused" truncates.
+    /// The row adds no stack gap: the Spacer alone keeps ≥8pt between the
+    /// status label and Quit, and the disclosure's badge yields before the
+    /// label would truncate.
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             PanelDetailsDisclosure(model: model)
             Spacer(minLength: PanelMetrics.regular)
-            HStack(spacing: PanelMetrics.tight) {
-                LockScreenButton(model: model)
-                Button("Quit NapCat") { model.quit() }
-                    .controlSize(.small)
-                    .keyboardShortcut("q", modifiers: .command)
-            }
+            Button("Quit NapCat") { model.quit() }
+                .controlSize(.small)
+                .keyboardShortcut("q", modifiers: .command)
         }
     }
 }
@@ -392,6 +398,13 @@ struct PanelFooterRow: View {
 /// the "Battery N%" headline + charging line beside it, so the percent is
 /// stated exactly once (in the headline). The 44pt compact ring and Status
 /// Hero's percent-in-ring / activity-line header were deleted at the freeze.
+///
+/// Lock Screen amendment (2026-10-22, "battery header stays same, lock goes
+/// to top right"): the icon-only `LockScreenButton` is an OVERLAY in the
+/// header's top-trailing corner, its top on the ring's top line
+/// (`PanelMetrics.headerLockInset`). An overlay takes no room in the HStack,
+/// so ring, headline and charging line keep their frozen layout; the longest
+/// charging line ("On AC power — not charging") still clears the button.
 struct BatteryHeader: View {
     @ObservedObject var model: MenuStateModel
 
@@ -411,6 +424,10 @@ struct BatteryHeader: View {
             Spacer(minLength: 0)
         }
         .frame(minHeight: 76)
+        .overlay(alignment: .topTrailing) {
+            LockScreenButton(model: model)
+                .padding(.top, PanelMetrics.headerLockInset)
+        }
     }
 
     private var chargingLine: some View {
@@ -479,8 +496,8 @@ struct PanelDetailsDisclosure: View {
         Button {
             model.setDetailsExpanded(!expanded)
         } label: {
-            // Hugs its content: the footer's Spacer separates it from the
-            // Lock and Quit buttons.
+            // Hugs its content: the footer's Spacer separates it from Quit,
+            // the only other control in the row.
             HStack(spacing: PanelMetrics.regular) {
                 Image(systemName: PanelSymbol.disclosure)
                     .font(.caption.weight(.semibold))
@@ -489,7 +506,7 @@ struct PanelDetailsDisclosure: View {
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
                     .frame(width: PanelMetrics.symbolColumn)
                 // The status text never truncates to make room for the badge:
-                // if both do not fit beside the buttons, the badge yields (the
+                // if both do not fit beside Quit, the badge yields (the
                 // problems it points at are already surfaced above it).
                 ViewThatFits(in: .horizontal) {
                     statusLine(label, badge: badge)

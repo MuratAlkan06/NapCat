@@ -27,7 +27,7 @@ struct MenuPanelPresentationTests {
                 == PanelLine(text: text, severity: severity))
     }
 
-    /// The footer shares its row with two buttons, so its text is a SHORT
+    /// The footer shares its row with Quit, so its text is a SHORT
     /// FIXED vocabulary — exactly these three strings, never anything else
     /// (plus the plain "Details" name when detection is absent, see
     /// `debugWiringKeepsThePlainDetailsLabel`).
@@ -691,14 +691,15 @@ struct MenuPanelPresentationTests {
     /// the severity symbols, which sat there in the deleted Claude row — fits
     /// the column at the panel's symbol size, so no symbol crowds into the gap
     /// before its title. OS-drift canary: a wider glyph in a future macOS
-    /// fails here. Since the 2026-10-21 declutter the Lock Screen glyph is a
-    /// footer button, not a leading symbol (it stays in `PanelSymbol.all`, so
-    /// it still must resolve), and the Claude glyph is gone.
+    /// fails here. Since the 2026-10-21 declutter the Lock Screen glyph is an
+    /// icon-only button (in the header's top-right corner since 2026-10-22),
+    /// not a leading symbol (it stays in `PanelSymbol.all`, so it still must
+    /// resolve), and the Claude glyph is gone.
     @Test func leadingSymbolsFitTheSymbolColumn() throws {
         let config = NSImage.SymbolConfiguration(pointSize: PanelMetrics.symbolSize, weight: .regular)
         let leading = [PanelSymbol.stayAwake, PanelSymbol.chargeLimit, PanelSymbol.lidAlert,
                        PanelSymbol.sessionAlerts, PanelSymbol.info, PanelSymbol.warning, PanelSymbol.error]
-        #expect(PanelSymbol.all.contains(PanelSymbol.lockScreen), "the footer's lock glyph must still resolve")
+        #expect(PanelSymbol.all.contains(PanelSymbol.lockScreen), "the header's lock glyph must still resolve")
         for name in leading {
             let image = try #require(NSImage(systemSymbolName: name, accessibilityDescription: nil)?
                 .withSymbolConfiguration(config), "\(name) does not resolve")

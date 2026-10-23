@@ -11,7 +11,8 @@ import Testing
 /// the panel is ONE fixed layout (design freeze), the topic never reaches a
 /// view, the layout gives problem lines a top-level home, the ONE disclosure
 /// shares the last row with Quit (curation round 1), the header is the
-/// hero-size gauge with the charge-state glyph (curation round 2 + its fix),
+/// hero-size gauge with the charge-state glyph (curation round 2 + its fix)
+/// and carries the Lock Screen button in its top-right corner (2026-10-22),
 /// Details only ever tucks NOMINAL lines, Pause detection lives in Details
 /// (F3), motion is gated on Reduce Motion, and colors are system/semantic
 /// only.
@@ -135,29 +136,32 @@ struct MenuPanelStructureTests {
     }
 
     /// Curation round 1 (2026-10-18): Details sits on the LEFT of the panel's
-    /// last row with Quit on the RIGHT. Declutter (2026-10-21): the icon-only
-    /// Lock Screen button sits IMMEDIATELY left of Quit, and Quit stays the
-    /// last control. The footer holds the ONLY disclosure, the ONLY Lock Screen
-    /// button and the ONLY Quit button in the panel, and it is the LAST thing —
-    /// expanded Details content and the surfaced twins (Claude, General,
-    /// Launch at Login) render above it, so Quit can never be pushed out of
-    /// view.
+    /// last row with Quit on the RIGHT, and Quit stays the last control. Lock
+    /// Screen amendment (2026-10-22): the icon-only Lock Screen button left
+    /// the footer for the header's top-right corner (locked in
+    /// `theLockScreenButtonSitsInTheHeaderTopRightCorner`), so the footer is
+    /// the disclosure, the Spacer and Quit — nothing else. It holds the ONLY
+    /// disclosure and the ONLY Quit button in the panel, and it is the LAST
+    /// thing — expanded Details content and the surfaced twins (Claude,
+    /// General, Launch at Login) render above it, so Quit can never be pushed
+    /// out of view.
     @Test func theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast() throws {
         let views = try Self.allViewCode()
         #expect(Self.occurrences(of: "PanelDetailsDisclosure(", in: views) == 1, "exactly ONE disclosure in the panel")
         #expect(Self.occurrences(of: "Button(\"Quit NapCat\")", in: views) == 1, "exactly ONE Quit button")
-        #expect(Self.occurrences(of: "LockScreenButton(", in: views) == 1, "exactly ONE Lock Screen button")
         let footer = try #require(Self.structChunk("PanelFooterRow", in: try Self.code("MenuPanelView.swift")))
-        let disclosure = try #require(footer.range(of: "PanelDetailsDisclosure("), "the disclosure lives in the footer")
-        let spacer = try #require(footer.range(of: "Spacer("))
-        let lock = try #require(footer.range(of: "LockScreenButton(model: model)"), "Lock Screen lives in the footer")
+        #expect(!footer.contains("LockScreenButton("), "Lock Screen lives in the header, not the footer")
+        let disclosure = try #require(footer.range(of: "PanelDetailsDisclosure(model: model)"),
+                                      "the disclosure lives in the footer")
+        let spacer = try #require(footer.range(of: "Spacer(minLength: PanelMetrics.regular)"))
         let quit = try #require(footer.range(of: "Button(\"Quit NapCat\")"), "Quit lives in the footer")
-        #expect(footer.contains("HStack("), "one row")
-        #expect(disclosure.lowerBound < spacer.lowerBound && spacer.lowerBound < lock.lowerBound
-                && lock.lowerBound < quit.lowerBound,
-                "Details on the left, Spacer, then Lock Screen, then Quit on the right")
-        #expect(footer[lock.upperBound..<quit.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "Lock Screen sits IMMEDIATELY left of Quit")
+        #expect(Self.occurrences(of: "HStack(", in: footer) == 1, "one row — no nested button group")
+        #expect(disclosure.lowerBound < spacer.lowerBound && spacer.lowerBound < quit.lowerBound,
+                "Details on the left, Spacer, then Quit on the right")
+        #expect(footer[disclosure.upperBound..<spacer.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && footer[spacer.upperBound..<quit.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "nothing else sits in the footer — the disclosure, the Spacer, Quit")
+        #expect(Self.occurrences(of: "Button", in: footer) == 1, "Quit is the footer's only button")
         let afterQuit = footer[quit.upperBound...]
         #expect(!afterQuit.contains("Button") && !afterQuit.contains("(model: model)"),
                 "Quit stays the last (rightmost) control")
@@ -243,6 +247,45 @@ struct MenuPanelStructureTests {
                 "the headline states the percent")
     }
 
+    /// Lock Screen amendment (2026-10-22, user ruling "battery header stays
+    /// same, lock goes to top right"): the panel's ONE Lock Screen button is
+    /// an OVERLAY in the battery header's top-trailing corner, its top inset
+    /// by `PanelMetrics.headerLockInset` onto the ring's top line. An overlay
+    /// takes no room in the header row, so the frozen header — its HStack
+    /// (default centre alignment, `loose` spacing) and 76pt minimum height —
+    /// stays exactly as it was. (The button's own shape:
+    /// `lockScreenIsAnIconOnlyButtonForwardingToTheModel`.)
+    @Test func theLockScreenButtonSitsInTheHeaderTopRightCorner() throws {
+        #expect(Self.occurrences(of: "LockScreenButton(", in: try Self.allViewCode()) == 1,
+                "exactly ONE Lock Screen button")
+        // `body` is the part of the header above `gauge`.
+        let (body, _, _) = try Self.batteryHeaderParts()
+        #expect(Self.occurrences(of: "LockScreenButton(", in: body) == 1, "Lock Screen lives in the battery header")
+
+        // The frozen header row, unchanged: ONE HStack with the exact literal
+        // (an `alignment:` argument would break it), then the 76pt frame.
+        #expect(Self.occurrences(of: "HStack(", in: body) == 1, "ONE header row")
+        let row = try #require(body.range(of: "HStack(spacing: PanelMetrics.loose) {"),
+                               "the header HStack keeps its default centre alignment and loose spacing")
+        let frame = try #require(body.range(of: ".frame(minHeight: 76)"), "the ~76pt hero header")
+        #expect(row.upperBound < frame.lowerBound)
+
+        // The button is an overlay hung directly off that frame — never a
+        // child of the row, which would shift the ring and the text.
+        #expect(Self.occurrences(of: ".overlay(", in: body) == 1)
+        let overlay = try #require(body.range(of: ".overlay(alignment: .topTrailing) {"),
+                                   "the button sits in the header's top-right corner")
+        #expect(body[frame.upperBound..<overlay.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "the overlay is attached to the header row's frame")
+        let close = try #require(body[overlay.upperBound...].range(of: "}"))
+        let content = body[overlay.upperBound..<close.lowerBound]
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        #expect(content == "LockScreenButton(model: model) .padding(.top, PanelMetrics.headerLockInset)",
+                "the overlay holds exactly the button, inset onto the ring's top line — got '\(content)'")
+        #expect(PanelMetrics.headerLockInset > 0 && PanelMetrics.headerLockInset < 76 / 2,
+                "the button sits below the panel edge, in the header's top half")
+    }
+
     /// Inside Details, every line that can be a problem goes through
     /// `TuckedLine` (absent while non-nominal) — never rendered raw — and its
     /// top-level twin goes through `SurfacedLine`. Same accessor, opposite
@@ -291,8 +334,8 @@ struct MenuPanelStructureTests {
             #expect(!disclosure.contains(hiding), "'\(hiding)' could hide the Claude status")
         }
         // Footer width (measured at the 300pt panel): when label + badge do
-        // not fit beside the Lock and Quit buttons, the BADGE yields — the
-        // status text is never the part that truncates.
+        // not fit beside Quit, the BADGE yields before the label would
+        // truncate — the status text is never the part that truncates.
         #expect(disclosure.contains("ViewThatFits(in: .horizontal)"))
         let withBadge = try #require(disclosure.range(of: "statusLine(label, badge: badge)"))
         let withoutBadge = try #require(disclosure.range(of: "statusLine(label, badge: .nominal)"))
@@ -313,8 +356,9 @@ struct MenuPanelStructureTests {
     /// ICON-ONLY button (tooltip + VoiceOver label carry its name) with the
     /// same action and the same disabled rule, forwarding to the model only —
     /// MenuContentView keeps the one dismissal gateway (locked in
-    /// ScreenLockControllerTests / ScaffoldTests). Its placement in the footer
-    /// is locked in `theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast`.
+    /// ScreenLockControllerTests / ScaffoldTests). Its placement — the battery
+    /// header's top-right corner since 2026-10-22 — is locked in
+    /// `theLockScreenButtonSitsInTheHeaderTopRightCorner`.
     @Test func lockScreenIsAnIconOnlyButtonForwardingToTheModel() throws {
         let button = try #require(Self.structChunk("LockScreenButton", in: try Self.code("MenuPanelView.swift")))
         #expect(button.contains("Button { model.lockScreen() } label: {"))

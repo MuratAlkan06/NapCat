@@ -29,8 +29,9 @@ enum PanelTier: Equatable, Sendable {
 /// each resolves on this macOS (a missing symbol renders as nothing at all).
 enum PanelSymbol {
     static let stayAwake = "cup.and.saucer"
-    /// The icon-only Lock Screen button in the footer row (2026-10-21
-    /// declutter) — no longer a leading-column row symbol.
+    /// The icon-only Lock Screen button (2026-10-21 declutter), in the
+    /// battery header's top-right corner since 2026-10-22 — no longer a
+    /// leading-column row symbol.
     static let lockScreen = "lock.display"
     static let chargeLimit = "battery.75percent"
     static let lidAlert = "bell"
