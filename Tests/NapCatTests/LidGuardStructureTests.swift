@@ -55,7 +55,7 @@ struct LidGuardStructureTests {
     ]
 
     /// Files scanned by the no-topic-in-logs lint: the B2 subsystem PLUS the
-    /// three menu files, which see the topic (the model mirrors it so the editor
+    /// five menu files, which see the topic (the model mirrors it so the editor
     /// can be prefilled, and the editor renders it). They contain zero `logger.`
     /// calls today; including them turns that fact into a lock, so the first log
     /// line added there has to obey the same rules (security review 2026-09-09).
@@ -68,12 +68,13 @@ struct LidGuardStructureTests {
         "MenuPanelView.swift",
         "MenuPanelVariants.swift",
         "MenuContentView.swift",
+        "TopicFieldVisibility.swift",   // the editor's masked topic passes through it (issue #10)
     ]
 
     /// Every menu source file (2026-10-18 redesign split the view into two
     /// files — a new panel file must be added here).
     static let menuFiles = ["MenuStateModel.swift", "MenuPanelView.swift", "MenuPanelVariants.swift",
-                            "MenuContentView.swift"]
+                            "MenuContentView.swift", "TopicFieldVisibility.swift"]
 
     /// What counts as "a line that emits output", matched case-INSENSITIVELY
     /// (so `osLogger.`/`alertLogger.` cannot slip past). `Logger` is the only
