@@ -476,6 +476,7 @@ state, never arms itself, and never sends anything but its own fixed sentence.
    `_` and `-`, up to 64 characters.
 3. In the NapCat menu open **Details** and click **ntfy settings…**, paste the topic,
    and leave the server as `https://ntfy.sh` unless you run your own instance.
+   The topic field is masked like a password; tick **Show** to proofread it.
    A custom server must be an `https://` origin and nothing more — no path,
    query, fragment, or `user@` part, and a plain ASCII host name or IP address
    (`https://ntfy.example.com:8443`). Anything else is refused with an
@@ -647,7 +648,9 @@ Notes:
   menu-stays-open UX fix + hand-drawn sleep icon, `v1.2.0` lid-close ntfy
   alert + hardware-validated sleep pipeline, `v1.3.0` Lock Screen +
   frozen menu redesign, `v1.4.0` session alerts — finish and waiting
-  pushes, and `v1.4.1` the quieter menu panel). Each annotated tag carries its release notes
+  pushes, `v1.4.1` the quieter menu panel, `v1.4.2` hardened alert delivery,
+  hook and build, and `v1.4.3` the masked ntfy topic field in the settings
+  dialog). Each annotated tag carries its release notes
   (`git tag -n99`); the detailed build plan and verification matrix are
   maintained privately.
 
