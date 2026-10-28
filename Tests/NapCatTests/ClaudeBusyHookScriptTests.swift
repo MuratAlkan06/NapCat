@@ -989,7 +989,8 @@ struct ClaudeBusyHookScriptTests {
         let script = try Self.read(Self.hookScriptURL)
         #expect(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion).isEmpty,
                 "\(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion))")
-        #expect(ClaudeBusyConstants.hookVersion == 4, "the contract value of this slice")
+        // 4 → 5: a post-Stop CLEAR-class Notification no longer clears the marker.
+        #expect(ClaudeBusyConstants.hookVersion == 5, "the contract value of this slice")
         #expect(ClaudeBusyConstants.hookVersionStampPrefix == "# napcat-hook-version: ")
     }
 
@@ -1394,6 +1395,9 @@ struct ClaudeBusyHookScriptTests {
         case keep(String)   // reason=
         case clear
         case ignore         // reason=no-marker
+        /// Hook v5 — reason=poststop-clear-notification: the post-Stop marker
+        /// is left BYTE-IDENTICAL (no rewrite, no clear).
+        case spare
     }
 
     struct PhaseRow: CustomTestStringConvertible, Sendable {
@@ -1423,7 +1427,10 @@ struct ClaudeBusyHookScriptTests {
 
     /// (prior token) × (event) × (background task running), 8 × 4 × 2 = 64
     /// rows — the frozen B-2 rules, written out (never computed). S11 added
-    /// the `SessionEnd` prior (POST-STOP, rows E1–E8).
+    /// the `SessionEnd` prior (POST-STOP, rows E1–E8). Hook v5 changed the
+    /// four POST-STOP `idle_prompt` + no-task rows (S7, E7, A7, P7) from
+    /// clear to SPARE: a Notification carries no `background_tasks`, so it
+    /// can never prove the background work that kept the marker has ended.
     nonisolated static let phaseRows: [PhaseRow] = {
         let was = "waiting-after-stop"
         typealias E = PhaseEvent
@@ -1484,7 +1491,7 @@ struct ClaudeBusyHookScriptTests {
             (.permissionPrompt, true, was, .keep(wait)),
             (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
             (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
-            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, false, "Stop", .spare),
             (.idlePrompt, true, "Stop", .keep(bgKeep)),
         ])
         // S11: a SessionEnd marker exists only while background work outlived
@@ -1496,7 +1503,7 @@ struct ClaudeBusyHookScriptTests {
             (.permissionPrompt, true, was, .keep(wait)),
             (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
             (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
-            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, false, "SessionEnd", .spare),
             (.idlePrompt, true, "Stop", .keep(bgKeep)),
         ])
         all += rows("A", "SubagentStop", [
@@ -1506,7 +1513,7 @@ struct ClaudeBusyHookScriptTests {
             (.permissionPrompt, true, was, .keep(wait)),
             (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
             (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
-            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, false, "SubagentStop", .spare),
             (.idlePrompt, true, "Stop", .keep(bgKeep)),
         ])
         all += rows("P", was, [
@@ -1516,7 +1523,7 @@ struct ClaudeBusyHookScriptTests {
             (.permissionPrompt, true, was, .keep(wait)),
             (.quotaAutoResumeFired, false, "Stop", .keep(resume)),
             (.quotaAutoResumeFired, true, "Stop", .keep(resume)),
-            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, false, was, .spare),
             (.idlePrompt, true, "Stop", .keep(bgKeep)),
         ])
         return all
@@ -1605,11 +1612,17 @@ struct ClaudeBusyHookScriptTests {
             let session = "b2000001-0041-4abc-8def-000000000041"
             let marker = markerDir(home).appendingPathComponent(session)
             if let prior = row.prior { plantMarker(prior, at: marker) }
+            let planted = FileManager.default.contents(atPath: marker.path)
             let result = runHook(json: phaseEventJSON(row.event, session, bg: row.bg), home: home)
             #expect(result.exitCode == 0)
             #expect(result.stdout.isEmpty)
 
-            if let expected = row.result {
+            if row.verdict == .spare {
+                #expect(planted != nil && row.result == row.prior, "row setup: a spared marker must exist")
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(FileManager.default.contents(atPath: marker.path) == planted,
+                        "the post-Stop marker must be left byte-identical (no rewrite, no clear)")
+            } else if let expected = row.result {
                 let contents = waitForRewrite(marker, event: expected)
                 let pattern = "^v1 ts=[0-9]+ event=\(expected) pid=[0-9]+ src=unknown\n$"
                 #expect(contents.range(of: pattern, options: .regularExpression) != nil,
@@ -1635,6 +1648,11 @@ struct ClaudeBusyHookScriptTests {
             case .ignore:
                 #expect(log.hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"),
                         "log \(String(reflecting: log))")
+            case .spare:
+                #expect(log.contains(
+                    " ignore reason=poststop-clear-notification session=\(session) type=\(row.event.rawValue) pid="),
+                        "log \(String(reflecting: log))")
+                #expect(log.hasSuffix(" src=unknown\n"), "log \(String(reflecting: log))")
             }
             #expect(log.split(separator: "\n").count == 1, "exactly one log line per run")
         }
@@ -1741,6 +1759,62 @@ struct ClaudeBusyHookScriptTests {
             Thread.sleep(forTimeInterval: 0.15)
             #expect(sessionShapedFiles(in: markerDir(home)).isEmpty, "nothing is created")
             #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
+        }
+    }
+
+    /// (f) Hook v5 — the live bug: Stop(bg=yes) keeps the marker, then an
+    /// `idle_prompt` Notification arrives while the background subagent still
+    /// works. A Notification payload carries NO `background_tasks`, so it must
+    /// not clear the post-Stop marker — neither as `Stop` nor as
+    /// `waiting-after-stop`. Only the last SubagentStop(bg=no) clears it.
+    @Test func scenarioF_postStopIdleNotificationNeverClearsTheMarker() {
+        withHome { home in
+            let session = "b2f00006-0062-4abc-8def-000000000062"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+            #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "))
+
+            for token in ["Stop", ClaudeBusyConstants.waitingAfterStopEventToken] {
+                if token != "Stop" {
+                    _ = runHook(json: notificationJSON(session, notificationType: quoted("permission_prompt")), home: home)
+                    #expect(waitForMarkerEvent(marker, event: token).contains("event=\(token) "))
+                }
+                let before = FileManager.default.contents(atPath: marker.path)
+                let result = runHook(json: notificationJSON(session, notificationType: quoted("idle_prompt")), home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty)
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(before != nil && FileManager.default.contents(atPath: marker.path) == before,
+                        "\(token): an idle Notification after Stop leaves the marker untouched")
+                let lastLine = hookLog(home).split(separator: "\n").last.map(String.init) ?? ""
+                #expect(lastLine.contains(
+                    " ignore reason=poststop-clear-notification session=\(session) type=idle_prompt pid=")
+                        && lastLine.hasSuffix(" src=unknown"), "\(token): \(String(reflecting: lastLine))")
+            }
+
+            _ = runHook(json: eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(waitForFile(marker, present: false), "the last subagent ending still CLEARS")
+            #expect(hookLog(home).hasSuffix(" clear session=\(session) event=SubagentStop phase=poststop\n"))
+        }
+    }
+
+    /// Canary: neuter the hook v5 guard and scenario (f) breaks — the idle
+    /// Notification after Stop falls through to the clear (the live bug).
+    @Test func postStopNotificationGuardCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(
+            of: #"elif [ "$event" = Notification ] && [ "$phase" = poststop ]; then"#,
+            with: "elif false; then")
+        #expect(mutant != original, "canary setup: the post-Stop Notification guard must exist to be neutered")
+        withHome { home in
+            let session = "b2f00007-0063-4abc-8def-000000000063"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("Stop", at: marker)
+            _ = runScript(mutantURL, json: notificationJSON(session, notificationType: quoted("idle_prompt")), home: home)
+            #expect(waitForFile(marker, present: false),
+                    "without the guard the post-Stop marker is CLEARED (so scenario (f) has teeth)")
         }
     }
 
