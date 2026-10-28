@@ -1,5 +1,5 @@
 #!/bin/bash
-# napcat-hook-version: 4
+# napcat-hook-version: 5
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
 #
@@ -39,10 +39,25 @@
 #     answered/completed) KEEP it with the real event name;
 #   * everything else — the idle / auth / agent-completed types and ANY
 #     unknown, missing, non-string or malformed type — falls through to the
-#     B3 background-task check and otherwise CLEARS (the original behavior).
+#     B3 background-task check; then, if the marker is POST-STOP (see B-2
+#     below), it is IGNORED — the marker is left exactly as it is (hook v5);
+#     otherwise it CLEARS (the original behavior).
 # The type is UNTRUSTED input: it must pass a strict whole-string check before
 # it is matched or logged; a value failing it is logged only as `invalid`,
 # never echoed.
+#
+# Why a post-Stop CLEAR-class Notification never clears (hook v5): a marker
+# that outlived its Stop exists only because background work was still
+# running (or the session is `waiting-after-stop` on top of that). A
+# Notification payload does NOT carry `background_tasks` — that array rides
+# only on Stop and SubagentStop — so the B3 check above always reads "none
+# running" for it and the else-clear would delete a marker whose background
+# work is still in flight (an idle_prompt while a background subagent works
+# did exactly that). Post-Stop clears belong to the turn-ending and subagent
+# events — Stop, StopFailure, SessionEnd and SubagentStop (Stop and
+# SubagentStop carry the task registry). In flight, a CLEAR-class
+# Notification still clears (the missed-Stop safety valve); with no marker,
+# the clear is a no-op.
 #
 # B-2 — the marker's event token ENCODES THE PHASE of the main turn:
 #   IN-FLIGHT  = UserPromptSubmit, Notification, waiting
@@ -59,7 +74,9 @@
 # with no marker it never creates one unless background work runs. A WAITING
 # Notification after Stop writes `waiting-after-stop` (the phase survives the
 # wait), a RESUME one writes `Stop`, and a background-task keep of any other
-# Notification writes `Notification` in flight and `Stop` otherwise.
+# Notification writes `Notification` in flight and `Stop` otherwise; any other
+# post-Stop Notification leaves the marker untouched (logged
+# `reason=poststop-clear-notification`, hook v5 — see C1 above).
 #
 # HARD UX-SAFETY LAYERS (a buggy hook must never be able to break the user's
 # Claude Code experience — lint-enforced by ClaudeBusyHookScriptTests):
@@ -344,10 +361,11 @@ main() {
       ;;
     Stop|StopFailure|SessionEnd|Notification|SubagentStop)
       # C1 — classify a Notification by its (validated) type. Precedence:
-      # waiting > resume > background-task keep (B3) > clear. Any other type
-      # (idle_prompt, auth_success, agent_completed, unknown, `invalid`, `?`)
-      # leaves tclass empty, so it falls through to the background-task check
-      # and otherwise clears, as before C1.
+      # waiting > resume > background-task keep (B3) > post-Stop ignore >
+      # clear. Any other type (idle_prompt, auth_success, agent_completed,
+      # unknown, `invalid`, `?`) leaves tclass empty, so it falls through to
+      # the background-task check, is then ignored post-Stop (hook v5), and
+      # otherwise clears, as before C1.
       tclass=""
       tinfo=""
       if [ "$event" = Notification ]; then
@@ -371,8 +389,10 @@ main() {
       # Reconcile: a session blocked on the user, or whose work resumes, or
       # whose main turn is still in flight when a subagent ends, or with a
       # still-running background subagent stays busy (work in flight);
-      # otherwise the turn is done and the marker is cleared. Precedence:
-      # waiting > resume > main-turn-in-flight > background task > clear.
+      # otherwise the turn is done and the marker is cleared — except that a
+      # post-Stop Notification never clears. Precedence: waiting > resume >
+      # main-turn-in-flight > background task > (SubagentStop, no marker)
+      # ignore > (Notification, post-Stop) ignore > clear.
       if [ "$tclass" = waiting ]; then
         token=$WAITING_EVENT
         [ "$phase" = poststop ] && token=$WAITING_AFTER_STOP_EVENT
@@ -395,6 +415,15 @@ main() {
         log "keep session=$session event=$event$tinfo$pinfo reason=background-task-running pid=$PPID src=$src"
       elif [ "$event" = SubagentStop ] && [ "$phase" = none ]; then
         log "ignore reason=no-marker event=$event$pinfo"
+      elif [ "$event" = Notification ] && [ "$phase" = poststop ]; then
+        # Hook v5. Reached only with tclass EMPTY (a CLEAR-class, unknown or
+        # malformed type) — a waiting or resume type took a branch above —
+        # and with bg_running=no. A Notification payload never carries
+        # `background_tasks`, so that "no" says nothing: the post-Stop marker
+        # exists because background work was running, and only Stop /
+        # StopFailure / SessionEnd / SubagentStop may clear it (Stop and
+        # SubagentStop carry the task registry). No rewrite, no clear.
+        log "ignore reason=poststop-clear-notification session=$session type=$ntype pid=$PPID src=$src"
       else
         rm -f "$marker" 2>/dev/null
         log "clear session=$session event=$event$tinfo$pinfo"

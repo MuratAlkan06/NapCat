@@ -52,7 +52,8 @@ enum ClaudeBusyConstants {
     /// session gone / a subagent ended). None of them is an unconditional
     /// clear any more: `Notification` is reconciled by its
     /// `notification_type` (C1 — keep-on-wait, keep-on-resume, otherwise the
-    /// B3 background-task check and then clear), and `SubagentStop` (B3,
+    /// B3 background-task check, then — hook v5 — left untouched while the
+    /// marker is post-Stop, and only then clear), and `SubagentStop` (B3,
     /// phase-aware since B-2) KEEPS a marker whose main turn is still in
     /// flight. The parity lints byte-match these names against the shell
     /// script and set-match them against the installer's and uninstaller's
@@ -113,9 +114,12 @@ enum ClaudeBusyConstants {
     ]
 
     /// The documented `notification_type` values that CLEAR the marker
-    /// (unless a background task is still running — B3). Documentation and
-    /// parity only: the hook has no clear list — ANY type outside the two keep
-    /// lists (unknown, missing, non-string, malformed) clears.
+    /// (unless a background task is still running — B3 — or, hook v5, the
+    /// marker is post-Stop: a Notification payload carries no
+    /// `background_tasks`, so it never clears a marker that outlived its
+    /// Stop). Documentation and parity only: the hook has no clear list — ANY
+    /// type outside the two keep lists (unknown, missing, non-string,
+    /// malformed) clears.
     static let clearNotificationTypes = [
         "idle_prompt",
         "auth_success",
@@ -142,7 +146,7 @@ enum ClaudeBusyConstants {
     /// shell script's `# napcat-hook-version: N` stamp (parity lint); bump
     /// both whenever the hook's behavior changes, so an installed copy left
     /// behind by an earlier install reads as out of date in the menu.
-    static let hookVersion = 4
+    static let hookVersion = 5
 
     /// The stamp line's fixed prefix; the rest of the line is the decimal
     /// version. It must sit within the first `installedHookReadBytes` bytes.

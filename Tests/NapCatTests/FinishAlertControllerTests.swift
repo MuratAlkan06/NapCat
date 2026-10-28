@@ -438,7 +438,10 @@ struct FinishAlertControllerTests {
 
             await h.fireDebounce()
             #expect(h.sends.isEmpty)
-            #expect(h.controller.tracked[H.s1]?.firstSeen == H.t0 + 5, "firstSeen re-anchored to the new turn")
+            // C3 rule 2 AMENDED (2026-10-27): the watcher never saw the id
+            // disappear, so it is still one busy episode — the anchor holds.
+            #expect(h.controller.tracked[H.s1]?.firstSeen == H.t0 - 600, "the episode anchor is never moved")
+            #expect(h.controller.tracked[H.s1]?.lastTs == H.t0 + 5)
             #expect(h.controller.tracked[H.s1]?.exactStart == true)
         }
     }
