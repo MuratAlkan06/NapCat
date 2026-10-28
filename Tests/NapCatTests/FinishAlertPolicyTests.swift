@@ -239,12 +239,14 @@ struct FinishAlertPolicyTests {
     static let scenarios: [Scenario] = {
         let t = Self.t0, ups = Self.ups, w = Self.waiting, was = ClaudeBusyConstants.waitingAfterStopEventToken
         return [
-            // MARK: FA-5 — a newer UserPromptSubmit is a new turn, never a finish
-            Scenario(id: "R1", note: "debounce-window recreate: newer UPS ts ⇒ no finish, anchor reset",
+            // MARK: FA-5 — a newer UserPromptSubmit is never a finish, and (C3
+            // rule 2 AMENDED 2026-10-27) never moves the EPISODE anchor either
+            Scenario(id: "R1", note: "debounce-window recreate: newer UPS ts ⇒ no finish; the episode anchor holds",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 600, ups), now: t + 602),          // cleared + recreated in one window
-                        Step([], now: t + 610, suppressed: [.underMinimumRun]),   // 10 s from the NEW anchor
+                        // The watcher never saw the id disappear: one episode, anchored at t.
+                        Step([], now: t + 610, [.finished(minutes: 10)]),
                      ]),
             Scenario(id: "R2", note: "same id, same ts ⇒ nothing",
                      baseline: nil, steps: [
@@ -252,24 +254,65 @@ struct FinishAlertPolicyTests {
                         Step(m1(t, ups), now: t + 300),
                         Step(m1(t, ups), now: t + 900),
                      ]),
-            Scenario(id: "R3", note: "bg-running keep (Stop) then a newer UPS ⇒ new exact turn",
+            Scenario(id: "R3", note: "bg-running keep (Stop) then a newer UPS ⇒ the inexact first-seen anchor holds",
                      baseline: nil, steps: [
                         Step(m1(t, "Stop"), now: t + 2),                 // first seen as a keep: inexact
-                        Step(m1(t + 100, ups), now: t + 102),
-                        Step([], now: t + 100 + 180, [.finished(minutes: 3)]),
+                        Step(m1(t + 100, ups), now: t + 102),            // never upgrades to exact mid-episode
+                        Step([], now: t + 100 + 180, [.finished(minutes: nil)]),
                      ]),
-            Scenario(id: "R4", note: "UPS with ts == lastTs is not a newer turn",
+            Scenario(id: "R4", note: "a UPS rewrite (here ts == lastTs) never moves the anchor",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 50, "Stop"), now: t + 52),
                         Step(m1(t + 50, ups), now: t + 54),
                         Step([], now: t + 120, [.finished(minutes: 2)]),   // anchored at t, not t+50
                      ]),
-            Scenario(id: "R5", note: "new turn after a long turn: finish minutes measure the LAST turn only",
+            Scenario(id: "R5", note: "a later UPS mid-episode: finish minutes span the WHOLE episode, not the last prompt",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 3_000, ups), now: t + 3_002),
-                        Step([], now: t + 3_000 + 120, [.finished(minutes: 2)]),
+                        Step([], now: t + 3_000 + 120, [.finished(minutes: 52)]),
+                     ]),
+            // MARK: C3 rule 2 AMENDED — the anchor is the EPISODE start
+            // (UserPromptSubmit also fires for scheduled tasks, background
+            // subagent report-backs and cross-session messages)
+            Scenario(id: "E1", note: "keeps every ~31 s + automated UPS rewrites at t+300 / t+340 ⇒ ONE finish of 6 min",
+                     baseline: nil, steps: [Step(m1(t, ups), now: t + 2)]
+                        + ([(31, "Notification"), (62, "Notification"), (93, "Stop"), (124, "SubagentStop"),
+                            (155, "SubagentStop"), (186, "Stop"), (217, "SubagentStop"), (248, "Notification"),
+                            (279, "SubagentStop")] as [(Int, String)])
+                            .map { (offset: Int, token: String) -> Step in Step(m1(t + offset, token), now: t + offset + 1) }
+                        + [
+                            Step(m1(t + 300, ups), now: t + 301),
+                            Step(m1(t + 310, "SubagentStop"), now: t + 311),
+                            Step(m1(t + 340, ups), now: t + 341),
+                            Step([], now: t + 360, [.finished(minutes: 6)]),   // from t, not from t + 340
+                        ]),
+            Scenario(id: "E2", note: "a waiting transition late in a long episode reports the EPISODE minutes",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 600, "Stop"), now: t + 602),
+                        Step(m1(t + 1_200, ups), now: t + 1_202),        // a background subagent reported back
+                        Step(m1(t + 1_500, w), now: t + 1_502, [.waiting(minutes: 25)]),
+                     ]),
+            Scenario(id: "E3", note: "an episode boundary still re-anchors: disappear ⇒ finish; reappear as UPS ⇒ new exact anchor",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, ups), now: t + 302),
+                        Step([], now: t + 600, [.finished(minutes: 10)]),
+                        Step(m1(t + 700, ups), now: t + 702),
+                        Step(m1(t + 880, w), now: t + 882, [.waiting(minutes: 3)]),   // from t + 700, exact
+                        Step([], now: t + 1_000, [.finished(minutes: 5)]),
+                     ]),
+            Scenario(id: "E4", note: "waiting → UPS (the user answered) clears the dedupe, keeps the anchor; a 2nd wait buzzes with episode minutes",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 360, ups), now: t + 362),
+                        Step(m1(t + 600, "Notification"), now: t + 602),
+                        Step(m1(t + 900, w), now: t + 902, [.waiting(minutes: 15)]),
+                        Step(m1(t + 960, w), now: t + 962),
+                        Step([], now: t + 1_200, [.finished(minutes: 20)]),
                      ]),
             // MARK: FA-11 — waiting buzz
             Scenario(id: "W1", note: "UPS → waiting ⇒ exactly one buzz",
@@ -299,12 +342,12 @@ struct FinishAlertPolicyTests {
                         Step(m1(t + 400, "Notification"), now: t + 402),
                         Step(m1(t + 600, w), now: t + 602, [.waiting(minutes: 10)]),
                      ]),
-            Scenario(id: "W5", note: "a newer UPS clears the dedupe (and resets the anchor)",
+            Scenario(id: "W5", note: "a newer UPS clears the dedupe (leaving waiting) but keeps the episode anchor",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
                         Step(m1(t + 400, ups), now: t + 402),
-                        Step(m1(t + 520, w), now: t + 520, [.waiting(minutes: 2)]),
+                        Step(m1(t + 520, w), now: t + 520, [.waiting(minutes: 8)]),
                      ]),
             Scenario(id: "W6", note: "floor: waiting 10 s in ⇒ suppressed; later rewrites never buzz the episode",
                      baseline: nil, steps: [
@@ -397,15 +440,26 @@ struct FinishAlertPolicyTests {
         }
     }
 
-    /// FA-5: the anchor really moves (not just "no event") and becomes exact.
-    @Test func newerUserPromptSubmitResetsTheAnchor() {
+    /// FA-5 × C3 rule 2 AMENDED (2026-10-27): a newer UserPromptSubmit
+    /// updates only lastTs/lastEvent — the episode anchor and its exactness
+    /// never move (not just "no event"); leaving waiting still clears the
+    /// dedupe, once, through the leaving-waiting rule.
+    @Test func aMidEpisodeUserPromptSubmitNeverMovesTheAnchor() {
         let previous = [Self.s1: Self.session(firstSeen: Self.t0 - 600, exact: false, lastTs: Self.t0 - 300,
                                               lastEvent: Self.waiting, buzzed: true)]
         let observation = FinishAlertPolicy.observe(previous: previous,
                                                     current: Self.m1(Self.t0 - 1, Self.ups), now: Self.t0)
         #expect(observation.events.isEmpty && observation.suppressed.isEmpty)
-        #expect(observation.tracked[Self.s1] == Self.session(firstSeen: Self.t0 - 1, exact: true,
+        #expect(observation.tracked[Self.s1] == Self.session(firstSeen: Self.t0 - 600, exact: false,
                                                              lastTs: Self.t0 - 1, lastEvent: Self.ups, buzzed: false))
+
+        let exactPrevious = [Self.s1: Self.session(firstSeen: Self.t0 - 900, exact: true, lastTs: Self.t0 - 100,
+                                                   lastEvent: "Stop")]
+        let rewritten = FinishAlertPolicy.observe(previous: exactPrevious,
+                                                  current: Self.m1(Self.t0, Self.ups), now: Self.t0 + 1)
+        #expect(rewritten.events.isEmpty && rewritten.suppressed.isEmpty)
+        #expect(rewritten.tracked[Self.s1] == Self.session(firstSeen: Self.t0 - 900, exact: true,
+                                                           lastTs: Self.t0, lastEvent: Self.ups))
     }
 
     /// FA-11: a suppressed transition leaves the dedupe flag FALSE; a sent one sets it.

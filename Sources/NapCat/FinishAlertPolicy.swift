@@ -42,7 +42,8 @@ enum FinishAlertTuning {
 /// What the watcher remembers about one present session between two
 /// observations. Keyed by session id in a `[String: TrackedSession]` map.
 struct TrackedSession: Equatable, Sendable {
-    /// Epoch seconds anchoring the current run's start.
+    /// Epoch seconds anchoring the current busy EPISODE's start: set when the
+    /// id first appears and never moved while it stays present (C3 rule 2).
     var firstSeen: Int
     /// True iff `firstSeen` came from an OBSERVED `event=UserPromptSubmit`
     /// marker (otherwise it is only "when we first saw it" — minutes unknown).
@@ -222,10 +223,19 @@ enum FinishAlertPolicy {
     /// and 6 of the C3a contract; table-tested row by row):
     /// 1. NEW id ⇒ tracked from its own ts; exact only if it is a
     ///    UserPromptSubmit marker; a new id already `waiting` is a transition.
-    /// 2. EXISTING id ⇒ a NEWER UserPromptSubmit ts starts a new turn (anchor
-    ///    reset, exact, dedupe cleared — never a finish); leaving waiting
-    ///    (either waiting token, B-2) ends the episode (dedupe cleared);
-    ///    lastTs/lastEvent always updated.
+    ///    This is the EPISODE anchor (`firstSeen` / `exactStart`): set here
+    ///    once and kept until the id disappears.
+    /// 2. EXISTING id ⇒ the anchor never moves (AMENDED 2026-10-27, user
+    ///    ruling): any rewrite — a newer UserPromptSubmit included — updates
+    ///    only lastTs/lastEvent; leaving waiting (either waiting token, B-2)
+    ///    ends the waiting episode (dedupe cleared — this also covers a prompt
+    ///    that answers a wait). Why: UserPromptSubmit fires not only for a
+    ///    typed prompt but also when a scheduled task fires, a background
+    ///    subagent reports back, or a cross-session message arrives, so
+    ///    re-anchoring on it made a long busy episode report the minutes since
+    ///    its last automated prompt. Known residual: a disarm/re-arm
+    ///    mid-episode re-anchors at the marker's CURRENT ts (the baseline) —
+    ///    the marker grammar has no episode-start field (backlog).
     /// 3. DISAPPEARED id ⇒ stale (last ts beyond the 12 h cap; exactly the cap
     ///    is NOT stale) / clockJump (negative run) / underMinimumRun, else
     ///    `.finished`.
@@ -253,11 +263,6 @@ enum FinishAlertPolicy {
             let isTransitionToWaiting: Bool
             if let prior = previous[id] {
                 session = prior
-                if marker.event == ClaudeBusyConstants.setEvent && marker.ts > prior.lastTs {
-                    session.firstSeen = marker.ts
-                    session.exactStart = true
-                    session.waitingBuzzed = false
-                }
                 let wasWaiting = isWaitingEvent(prior.lastEvent)
                 if wasWaiting && !isWaiting { session.waitingBuzzed = false }
                 session.lastTs = marker.ts

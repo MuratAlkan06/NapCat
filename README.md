@@ -561,7 +561,7 @@ pushes, and the row says so.
   has never been tested sends the test message first, and nothing arms until it
   is accepted — a session alert is never the first thing your topic is trusted
   with. The two toggles are otherwise independent.
-- **At least 60 seconds of work** (since the prompt that started the turn)
+- **At least 60 seconds of work** (measured from when the session became busy)
   before either push fires: a quick answer, or a permission prompt seconds after
   you hit Enter, stays quiet — you are still looking.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
