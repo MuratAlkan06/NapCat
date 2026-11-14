@@ -72,6 +72,7 @@ echo "        Notification entry — the hook now tells waiting-on-you notificat
 echo "        (permission prompts, MCP input requests) apart from idle ones, so it"
 echo "        must receive every type. This run already refreshed the installed"
 echo "        script copy. A NEW Claude Code session is needed to load it."
+echo "Reminder: relaunch NapCat from this checkout before starting a new Claude session, so the app matches this hook's marker format."
 echo "NOTE: hooks load at session start — open a NEW Claude Code session for"
 echo "      this to take effect. Pause anytime by creating:"
 echo "          $MARKER_DIR/DISABLED"

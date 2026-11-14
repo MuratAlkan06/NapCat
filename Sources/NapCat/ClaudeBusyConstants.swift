@@ -3,7 +3,8 @@ import Foundation
 /// Single Swift source of truth for the constants shared with the companion
 /// hook script (scripts/claude-busy-hook.sh) and its installer. A PARITY LINT
 /// (ClaudeBusyHookScriptTests) byte-matches the marker-dir path, the
-/// session-id regex, the marker-line grammar tokens, the six registered hook
+/// session-id regex, the marker-line grammar tokens (hook v7: plus the
+/// optional `ep=` episode-start token and its digit bound), the six registered hook
 /// event names, (Track C, C1) the Notification-type classes plus the synthetic
 /// `waiting` event token, (B-2) the synthetic `waiting-after-stop` token
 /// and the two marker-phase token lists, and (S7) the hook version stamp
@@ -41,10 +42,25 @@ enum ClaudeBusyConstants {
     /// Marker version tag (first token of a marker line).
     static let markerVersion = "v1"
 
-    /// Ordered token prefixes after the version tag — the grammar
-    /// `v1 ts=… event=… pid=… src=…`. MUST byte-match the shell `printf`
-    /// (parity lint). `src` is DEBUG-ONLY and never a policy input.
+    /// Ordered REQUIRED token prefixes after the version tag — the grammar
+    /// `v1 ts=… event=… pid=… src=…` (hook v7 appends the optional token
+    /// below). MUST byte-match the shell `printf` (parity lint). `src` is
+    /// DEBUG-ONLY and never a policy input.
     static let markerTokenPrefixes = ["ts=", "event=", "pid=", "src="]
+
+    /// Hook v7 — the OPTIONAL sixth token: `ep=<epoch seconds>`, the EPISODE
+    /// START (when the session became busy). The hook writes it from its own
+    /// clock when a write starts a new episode and carries it over on every
+    /// in-episode rewrite; a five-token marker (hook v6 or earlier) has none.
+    /// The parser only carries the raw text; `FinishAlertPolicy` validates it
+    /// before any use. MUST byte-match the shell `printf` (parity lint).
+    static let markerOptionalTokenPrefix = "ep="
+
+    /// Hook v7 — the longest `ep` value either side accepts: 10 decimal
+    /// digits (epoch seconds up to the year 2286). MUST match the bound in
+    /// the shell `EP_RE` (parity lint); `FinishAlertPolicy` checks a raw
+    /// value's length against it BEFORE any integer conversion.
+    static let episodeStartMaxDigits = 10
 
     /// UserPromptSubmit sets the marker (a turn is in flight).
     static let setEvent = "UserPromptSubmit"
@@ -131,7 +147,7 @@ enum ClaudeBusyConstants {
     static let freshnessCapSeconds = 43_200
 
     /// Track C (risk F12): read cap for ONE marker file. A real marker line is
-    /// ~60 bytes; anything larger than this is not a marker the hook wrote and
+    /// under 100 bytes; anything larger than this is not a marker the hook wrote and
     /// is skipped WITHOUT being read in full (the store checks the size before
     /// opening and reads at most `maxMarkerBytes + 1` bytes). App-side only —
     /// the shell hook never writes anything near this size.
@@ -146,7 +162,7 @@ enum ClaudeBusyConstants {
     /// shell script's `# napcat-hook-version: N` stamp (parity lint); bump
     /// both whenever the hook's behavior changes, so an installed copy left
     /// behind by an earlier install reads as out of date in the menu.
-    static let hookVersion = 6
+    static let hookVersion = 7
 
     /// The stamp line's fixed prefix; the rest of the line is the decimal
     /// version. It must sit within the first `installedHookReadBytes` bytes.

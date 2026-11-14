@@ -30,7 +30,9 @@ struct BusyMarkerStoreTests {
             "v1 ts=-5 event=UserPromptSubmit pid=1 src=sc",          // negative ts
             "v1 ts=1 event=UserPromptSubmit pid=xx src=sc",          // non-numeric pid
             "v1 ts=1 event= pid=1 src=sc",                           // empty event
-            "v1 ts=1 event=UserPromptSubmit pid=1 src=sc extra",     // extra token (6)
+            "v1 ts=1 event=UserPromptSubmit pid=1 src=sc extra",     // non-ep sixth token (6): only `ep=` may be sixth
+            "v1 ts=1 event=UserPromptSubmit pid=1 src=sc ep",        // `ep` without its `=` is not the ep token
+            "v1 ts=1 event=UserPromptSubmit pid=1 ep=5 src=sc",      // ep in src's place (order is fixed)
             "v1 ts=1 event=UserPromptSubmit pid=1",                  // missing src (4 tokens)
             "",                                                      // empty
             "garbage",                                               // single token
@@ -38,6 +40,92 @@ struct BusyMarkerStoreTests {
         for line in bad {
             #expect(ClaudeActivityPolicy.parseMarker(line) == nil, "must reject: \(String(reflecting: line))")
         }
+    }
+
+    // MARK: Hook v7 — the optional sixth `ep=` token (carried raw, never trusted)
+
+    @Test func sixFieldsWithAnEpTokenParse() {
+        let marker = ClaudeActivityPolicy.parseMarker(
+            "v1 ts=1730000600 event=waiting pid=4321 src=unknown ep=1730000000\n")
+        #expect(marker == BusyMarker(ts: 1_730_000_600, event: "waiting", pid: 4321, src: "unknown",
+                                     ep: "1730000000"))
+        #expect(ClaudeBusyConstants.markerOptionalTokenPrefix == "ep=")
+        // RAW: the parser never judges the value — only FinishAlertPolicy does.
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=Stop pid=1 src=sc ep=abc")?.ep == "abc")
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=Stop pid=1 src=sc ep=-5")?.ep == "-5")
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=Stop pid=1 src=sc ep=ep=1")?.ep == "ep=1")
+    }
+
+    @Test func fiveFieldMarkersStillParseWithoutAnEp() {
+        let marker = ClaudeActivityPolicy.parseMarker("v1 ts=1730000000 event=UserPromptSubmit pid=4321 src=unknown\n")
+        #expect(marker == BusyMarker(ts: 1_730_000_000, event: "UserPromptSubmit", pid: 4321, src: "unknown"))
+        #expect(marker != nil && marker?.ep == nil, "a hook v6 marker has no episode start")
+    }
+
+    @Test func aNonEpSixthFieldIsRejected() {
+        for sixth in ["extra", "x=1", "EP=1730000000", "e=1730000000", "src=sc", "ts=1", "=1730000000"] {
+            let line = "v1 ts=1 event=UserPromptSubmit pid=1 src=sc \(sixth)\n"
+            #expect(ClaudeActivityPolicy.parseMarker(line) == nil, "must reject: \(String(reflecting: line))")
+        }
+    }
+
+    @Test func aSeventhFieldIsRejected() {
+        let bad = [
+            "v1 ts=1 event=Stop pid=1 src=sc ep=1730000000 extra",
+            "v1 ts=1 event=Stop pid=1 src=sc ep=1730000000 ep=1730000000",
+            "v1 ts=1 event=Stop pid=1 src=sc extra ep=1730000000",
+        ]
+        for line in bad {
+            #expect(ClaudeActivityPolicy.parseMarker(line) == nil, "must reject: \(String(reflecting: line))")
+        }
+    }
+
+    /// `ep=` with nothing after it is still the ep token: the marker parses
+    /// (the busy signal never depends on the episode start) and the raw value
+    /// is the empty string — which the policy treats as unusable.
+    @Test func anEmptyEpIsCarriedAsAnEmptyRawValue() {
+        let marker = ClaudeActivityPolicy.parseMarker("v1 ts=42 event=UserPromptSubmit pid=7 src=sc ep=\n")
+        #expect(marker?.ep == "")
+        #expect(marker?.ts == 42)
+    }
+
+    /// A huge ep never traps the parser and is carried raw; on the input path
+    /// it is bounded by the store's 4 KiB read cap (a file past it is skipped
+    /// whole), and the policy checks its length before any Int conversion.
+    @Test func aHugeEpIsCarriedRawAndBoundedByTheStoreCap() {
+        let digits = String(repeating: "9", count: 100_000)
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=Stop pid=1 src=sc ep=\(digits)\n")?.ep == digits)
+
+        withTempDir { root in
+            let store = MarkerDirectoryStore(root: root)
+            let cap = ClaudeBusyConstants.maxMarkerBytes
+            let head = "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown ep="
+            let fits = String(repeating: "9", count: cap - head.utf8.count - 1)
+            Self.write(root, Self.idA, head + fits + "\n")                           // exactly the cap
+            Self.write(root, Self.idB, head + fits + "9\n")                          // cap + 1
+            let identified = store.identifiedMarkers()
+            #expect(identified.map(\.sessionID) == [Self.idA], "only the at-cap marker is read")
+            #expect(identified.first?.marker.ep == fits, "carried raw, \(fits.count) digits")
+        }
+    }
+
+    /// ONE line only: a second line — even one that would complete a valid
+    /// six-field marker — or a stray CR makes the whole file unparseable.
+    /// A single trailing `\n` (what the hook writes) is fine.
+    @Test func multiLineMarkersAreRejected() {
+        let bad = [
+            "v1 ts=1 event=Stop pid=1 src=sc\nep=1730000000\n",                  // ep on line two
+            "v1 ts=1 event=Stop pid=1\nsrc=sc\n",                                // five fields over two lines
+            "v1 ts=1 event=Stop pid=1 src=sc\nv1 ts=2 event=Stop pid=2 src=sc\n", // two markers
+            "v1 ts=1 event=Stop pid=1 src=sc ep=1730000000\n\n",                 // trailing blank line
+            "v1 ts=1 event=Stop pid=1 src=sc ep=1730000000\r\n",                 // CR LF
+            "v1 ts=1 event=Stop pid=1 src=sc\rep=1730000000",                    // bare CR
+        ]
+        for line in bad {
+            #expect(ClaudeActivityPolicy.parseMarker(line) == nil, "must reject: \(String(reflecting: line))")
+        }
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=Stop pid=1 src=sc ep=1730000000\n")?.ep == "1730000000")
+        #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=Stop pid=1 src=sc ep=1730000000")?.ep == "1730000000")
     }
 
     // MARK: Session-id shape (path-traversal / newline guard)

@@ -211,9 +211,14 @@ struct ClaudeBusyHookScriptTests {
             #expect(sessionShapedFiles(in: markerDir(home)) == [session], "exactly one marker")
 
             let contents = (try? String(contentsOf: marker, encoding: .utf8)) ?? ""
-            let pattern = "^v1 ts=[0-9]+ event=UserPromptSubmit pid=[0-9]+ src=unknown\n$"
+            let pattern = "^v1 ts=[0-9]+ event=UserPromptSubmit pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
             #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                     "marker content \(String(reflecting: contents)) must match the v1 grammar with src=unknown")
+            // Hook v7: a marker set with none before starts a NEW episode, so
+            // its episode start is this write's own ts.
+            let parsed = ClaudeActivityPolicy.parseMarker(contents)
+            #expect(parsed != nil && parsed?.ep == parsed.map { String($0.ts) },
+                    "a new episode's ep is the write's ts, got \(String(reflecting: contents))")
         }
     }
 
@@ -283,7 +288,7 @@ struct ClaudeBusyHookScriptTests {
             let contents = waitForMarkerEvent(marker, event: "Stop")
             #expect(FileManager.default.fileExists(atPath: marker.path),
                     "a running subagent must KEEP the marker on Stop")
-            let pattern = "^v1 ts=[0-9]+ event=Stop pid=[0-9]+ src=unknown\n$"
+            let pattern = "^v1 ts=[0-9]+ event=Stop pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
             #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                     "kept marker \(String(reflecting: contents)) records the reconcile event, same grammar")
         }
@@ -437,7 +442,7 @@ struct ClaudeBusyHookScriptTests {
                 #expect(result.stdout.isEmpty, "\(notificationType): stdout must stay empty")
                 let marker = markerDir(home).appendingPathComponent(session)
                 let contents = waitForMarkerEvent(marker, event: token)
-                let pattern = "^v1 ts=[0-9]+ event=\(token) pid=[0-9]+ src=unknown\n$"
+                let pattern = "^v1 ts=[0-9]+ event=\(token) pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
                 #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                         "\(notificationType): kept marker \(String(reflecting: contents)) must record event=\(token)")
                 #expect(ClaudeActivityPolicy.parseMarker(contents)?.event == token,
@@ -461,7 +466,7 @@ struct ClaudeBusyHookScriptTests {
                 #expect(result.stdout.isEmpty, "\(notificationType): stdout must stay empty")
                 let marker = markerDir(home).appendingPathComponent(session)
                 let contents = waitForMarkerEvent(marker, event: "Notification")
-                let pattern = "^v1 ts=[0-9]+ event=Notification pid=[0-9]+ src=unknown\n$"
+                let pattern = "^v1 ts=[0-9]+ event=Notification pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
                 #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                         "\(notificationType): kept marker \(String(reflecting: contents)) must record event=Notification")
                 #expect(hookLog(home).contains(
@@ -732,7 +737,7 @@ struct ClaudeBusyHookScriptTests {
             #expect(runHook(json: json, home: home).exitCode == 0)
             let marker = markerDir(home).appendingPathComponent(session)
             let contents = waitForMarkerEvent(marker, event: "Notification")
-            let pattern = "^v1 ts=[0-9]+ event=Notification pid=[0-9]+ src=unknown\n$"
+            let pattern = "^v1 ts=[0-9]+ event=Notification pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
             #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                     "idle_prompt + running task must KEEP with event=Notification, got \(String(reflecting: contents))")
             #expect(hookLog(home).contains(
@@ -1221,7 +1226,8 @@ struct ClaudeBusyHookScriptTests {
         #expect(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion).isEmpty,
                 "\(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion))")
         // 5 → 6: a `\u0000` escape on stdin is mapped before the plutil gate.
-        #expect(ClaudeBusyConstants.hookVersion == 6, "the contract value of this slice")
+        // 6 → 7: the marker carries the episode start (`ep=`, sixth field).
+        #expect(ClaudeBusyConstants.hookVersion == 7, "the contract value of this slice")
         #expect(ClaudeBusyConstants.hookVersionStampPrefix == "# napcat-hook-version: ")
     }
 
@@ -1269,6 +1275,30 @@ struct ClaudeBusyHookScriptTests {
         let printed = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         sed.waitUntilExit()
         #expect(printed == "\(ClaudeBusyConstants.hookVersion)\n", "the installer would print \(String(reflecting: printed))")
+    }
+
+    /// Hook v7: an app build older than this hook cannot read its markers,
+    /// so the installer prints ONE static reminder to relaunch NapCat before
+    /// the new session — read here, never by running the installer. Its exit
+    /// codes stay as they were: `exit 1` on the error paths, `exit 0` last.
+    @Test func theInstallerRemindsToRelaunchNapCatBeforeANewSession() throws {
+        let installer = try Self.read(Self.installerURL)
+        let reminder = #"echo "Reminder: relaunch NapCat from this checkout before starting a new Claude session, so the app matches this hook's marker format.""#
+        let lines = installer.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        #expect(lines.filter { $0 == reminder }.count == 1, "exactly one reminder line, verbatim")
+        #expect(lines.filter { $0.contains("Reminder:") }.count == 1, "no second reminder")
+        #expect(!reminder.contains("$") && !reminder.contains("`"), "static text: nothing is expanded")
+        let code = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        #expect(code.last == "exit 0", "the success path still ends in exit 0")
+        let exits = code.compactMap { line -> String? in
+            guard let range = line.range(of: "exit [0-9]+", options: .regularExpression) else { return nil }
+            return String(line[range])
+        }
+        #expect(Set(exits) == ["exit 0", "exit 1"] && exits.filter { $0 == "exit 0" }.count == 1,
+                "exit codes unchanged, got \(exits)")
+        let reminderIndex = try #require(code.firstIndex(of: reminder))
+        let newSessionNote = try #require(code.firstIndex { $0.hasPrefix(#"echo "NOTE: hooks load at session start"#) })
+        #expect(reminderIndex < newSessionNote, "the relaunch reminder comes before the new-session note")
     }
 
     @Test func garbageInputWritesNothingAndStaysSilent() {
@@ -1409,18 +1439,90 @@ struct ClaudeBusyHookScriptTests {
         #expect(script.contains(ClaudeBusyConstants.markerDirRelativePath))
         // Session-id regex (verbatim).
         #expect(script.contains(ClaudeBusyConstants.sessionIDRegex))
-        // Marker grammar: version + each token prefix, and the full printf.
-        #expect(script.contains("v1 ts=%s event=%s pid=%s src=%s"))
+        // Marker grammar: version + each token prefix, and the full printf
+        // (hook v7: the five required tokens, then the optional `ep=`).
+        #expect(script.contains("v1 ts=%s event=%s pid=%s src=%s ep=%s"))
         #expect(script.contains(ClaudeBusyConstants.markerVersion))
-        for prefix in ClaudeBusyConstants.markerTokenPrefixes {
+        for prefix in ClaudeBusyConstants.markerTokenPrefixes + [ClaudeBusyConstants.markerOptionalTokenPrefix] {
             #expect(script.contains(prefix), "grammar token '\(prefix)' missing from the shell script")
         }
+        #expect(Self.episodeFieldParityFailures(script).isEmpty, "\(Self.episodeFieldParityFailures(script))")
         // The six registered event names.
         for event in ClaudeBusyConstants.allEvents {
             #expect(script.contains(event), "event '\(event)' missing from the shell script")
         }
         // 12h cap.
         #expect(script.contains("CAP=\(ClaudeBusyConstants.freshnessCapSeconds)"))
+    }
+
+    /// Hook v7 parity (pure, reusable for canaries) for the SIXTH field: the
+    /// marker is written by ONE printf whose format is the version tag, the
+    /// four required tokens, then the optional episode-start token — each
+    /// `%s`, built here from the Swift constants; the shell's strict `ep`
+    /// check bounds the value at `maxDigits` digits with no leading zero; its
+    /// full-line read ends in the optional token (no seventh field); and the
+    /// writer carries a value that passed that read over, else anchors at the
+    /// write's own ts.
+    static func episodeFieldParityFailures(
+        _ script: String,
+        optional: String = ClaudeBusyConstants.markerOptionalTokenPrefix,
+        maxDigits: Int = ClaudeBusyConstants.episodeStartMaxDigits
+    ) -> [String] {
+        var failures: [String] = []
+        let codeLines = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        let tokens = ClaudeBusyConstants.markerTokenPrefixes + [optional]
+        let format = ([ClaudeBusyConstants.markerVersion] + tokens.map { $0 + "%s" }).joined(separator: " ") + "\\n"
+        let writers = codeLines.filter { $0.hasPrefix("printf 'v1") }
+        if writers.count != 1 { failures.append("exactly one marker printf, found \(writers.count)") }
+        if !writers.allSatisfy({ $0.hasPrefix("printf '\(format)' ") }) {
+            failures.append("the marker printf must be '\(format)', got \(writers)")
+        }
+        let epRegex = "^[1-9][0-9]{0,\(maxDigits - 1)}$"
+        if !codeLines.contains("EP_RE='\(epRegex)'") {
+            failures.append("the shell ep check must be EP_RE='\(epRegex)'")
+        }
+        let lineRegex = "^v1 ts=[0-9]+ event=[^ ]+ pid=[0-9]+ src=[^ ]+ \(optional)([^ ]+)$"
+        if !codeLines.contains("EP_MARKER_RE='\(lineRegex)'") {
+            failures.append("the shell ep read must be EP_MARKER_RE='\(lineRegex)'")
+        }
+        let writer = functionBody("write_marker", in: script)
+        for line in [#"ep=$(marker_episode "$1")"#, #"[ -n "$ep" ] || ep=$2"#] where !writer.contains(line) {
+            failures.append("write_marker must contain '\(line)'")
+        }
+        let probe = functionBody("marker_episode", in: script)
+        for line in [#"[ -f "$1" ] || return 0"#,
+                     #"line=$(head -c 256 "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#')"#,
+                     #"[[ $line =~ $EP_MARKER_RE ]] || return 0"#,
+                     #"[[ $ep =~ $EP_RE ]] || return 0"#] where !probe.contains(line) {
+            failures.append("marker_episode must contain '\(line)'")
+        }
+        return failures
+    }
+
+    /// Canaries: drop the sixth field from the printf, loosen or widen the
+    /// shell's ep check, let its read accept a seventh field, skip the
+    /// validation, or make the writer always re-anchor — or drift a Swift
+    /// constant — and the parity lint fails.
+    @Test func episodeFieldParityCatchesADriftOnEitherSide() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        try #require(Self.episodeFieldParityFailures(script).isEmpty, "canary baseline must be clean")
+        let shellMutants: [(String, String, String)] = [
+            ("printf drops ep", #" src=%s ep=%s\n' "$2" "$3" "$PPID" "$4" "$ep""#, #" src=%s\n' "$2" "$3" "$PPID" "$4""#),
+            ("ep check loosened", "EP_RE='^[1-9][0-9]{0,9}$'", "EP_RE='^[0-9]+$'"),
+            ("ep check widened", "EP_RE='^[1-9][0-9]{0,9}$'", "EP_RE='^[1-9][0-9]{0,10}$'"),
+            ("ep read accepts a seventh field", #"src=[^ ]+ ep=([^ ]+)$'"#, #"src=[^ ]+ ep=([^ ]+)( |$)'"#),
+            ("probe validation dropped", #"[[ $ep =~ $EP_RE ]] || return 0"#, ":"),
+            ("writer never carries ep over", #"ep=$(marker_episode "$1")"#, #"ep="""#),
+            ("writer never falls back", #"[ -n "$ep" ] || ep=$2"#, ":"),
+        ]
+        for (name, target, replacement) in shellMutants {
+            let mutant = script.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != script, "canary setup '\(name)'")
+            #expect(!Self.episodeFieldParityFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        #expect(!Self.episodeFieldParityFailures(script, optional: "episode=").isEmpty, "Swift prefix drift")
+        #expect(!Self.episodeFieldParityFailures(script, maxDigits: 11).isEmpty, "Swift digit bound drift")
     }
 
     /// The quoted names on `line`, in order (`"Stop": [ …` ⇒ ["Stop", …]).
@@ -1817,13 +1919,14 @@ struct ClaudeBusyHookScriptTests {
         try? "v1 ts=\(now) event=\(token) pid=999999 src=planted\n".write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// Polls until the marker holds a hook-written (`src=unknown`) line with
-    /// `event=<token>`; returns the last content seen.
+    /// Polls until the marker holds a hook-written (`src=unknown`, hook v7
+    /// `ep=` last) line with `event=<token>`; returns the last content seen.
     private func waitForRewrite(_ url: URL, event token: String, timeout: Double = 3) -> String {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let c = try? String(contentsOf: url, encoding: .utf8),
-               c.contains("event=\(token) "), c.hasSuffix(" src=unknown\n") { return c }
+               c.contains("event=\(token) "),
+               c.range(of: " src=unknown ep=[0-9]+\n$", options: .regularExpression) != nil { return c }
             Thread.sleep(forTimeInterval: 0.03)
         }
         return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
@@ -1855,7 +1958,7 @@ struct ClaudeBusyHookScriptTests {
                         "the post-Stop marker must be left byte-identical (no rewrite, no clear)")
             } else if let expected = row.result {
                 let contents = waitForRewrite(marker, event: expected)
-                let pattern = "^v1 ts=[0-9]+ event=\(expected) pid=[0-9]+ src=unknown\n$"
+                let pattern = "^v1 ts=[0-9]+ event=\(expected) pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
                 #expect(contents.range(of: pattern, options: .regularExpression) != nil,
                         "marker \(String(reflecting: contents)) must be rewritten as event=\(expected)")
                 #expect(ClaudeActivityPolicy.parseMarker(contents)?.event == expected, "the Swift reader parses it")
@@ -2146,6 +2249,154 @@ struct ClaudeBusyHookScriptTests {
             #expect(result.exitCode == 0)
             #expect(elapsed < 3, "the hook must return at once, took \(elapsed) s")
             #expect(hookLog(home).hasSuffix(" ignore reason=no-marker event=SubagentStop phase=none\n"))
+        }
+    }
+
+    // MARK: - Hook v7: the episode-start field (`ep=`), through the shipped script
+
+    /// Plants `bytes` as the marker at `url` (the prior state of a run).
+    private func plantBytes(_ bytes: [UInt8], at url: URL) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: url.path, contents: Data(bytes))
+    }
+
+    /// A planted v7-shaped marker line: `src=planted`, so a hook rewrite
+    /// (`src=unknown`) is told apart from it.
+    private func plantedLine(_ token: String, ts: Int, ep: String) -> [UInt8] {
+        Array("v1 ts=\(ts) event=\(token) pid=999999 src=planted ep=\(ep)\n".utf8)
+    }
+
+    /// Every in-episode rewrite — waiting, a mid-turn SubagentStop, a kept
+    /// Stop, waiting after Stop, a resume, a post-Stop SubagentStop keep, and
+    /// a UserPromptSubmit while the marker persists — carries the episode
+    /// start over unchanged; only `ts` (and the token) move. The Swift reader
+    /// sees the same value at every step.
+    @Test func inEpisodeRewritesCarryTheEpisodeStartOver() {
+        withHome { home in
+            let session = "e7000001-0071-4abc-8def-000000000071"
+            let marker = markerDir(home).appendingPathComponent(session)
+            let start = Int(Date().timeIntervalSince1970) - 600
+            plantBytes(plantedLine("UserPromptSubmit", ts: start, ep: String(start)), at: marker)
+            let steps: [(json: String, token: String)] = [
+                (notificationJSON(session, notificationType: quoted("permission_prompt")), "waiting"),
+                (eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), "Notification"),
+                (eventJSON("Stop", session, backgroundTasks: Self.runningTask), "Stop"),
+                (notificationJSON(session, notificationType: quoted("permission_prompt")),
+                 ClaudeBusyConstants.waitingAfterStopEventToken),
+                (notificationJSON(session, notificationType: quoted("quota_auto_resume_fired")), "Stop"),
+                (eventJSON("SubagentStop", session, backgroundTasks: Self.runningTask), "SubagentStop"),
+                (promptJSON(session), "UserPromptSubmit"),
+            ]
+            for step in steps {
+                #expect(runHook(json: step.json, home: home).exitCode == 0)
+                let contents = waitForRewrite(marker, event: step.token)
+                let parsed = ClaudeActivityPolicy.parseMarker(contents)
+                #expect(parsed?.event == step.token, "\(step.token): rewritten, got \(String(reflecting: contents))")
+                #expect(parsed?.ep == String(start), "\(step.token): the episode start is carried over")
+                #expect((parsed?.ts ?? 0) > start, "\(step.token): only ts moves")
+                #expect(contents.utf8.count < 256, "a marker line stays far below every read cap")
+            }
+        }
+    }
+
+    /// A prior marker WITHOUT a usable episode start — a v6 line, an empty,
+    /// non-digit, zero, leading-zero, signed or over-long value, a seventh
+    /// field, the value on line two, a missing field, a NUL inside it — never
+    /// lends its value: the rewrite anchors a FRESH episode at its own ts.
+    @Test func anUnusableEpisodeStartIsReplacedByAFreshAnchor() {
+        let old = Int(Date().timeIntervalSince1970) - 600
+        let head = "v1 ts=\(old) event=UserPromptSubmit pid=999999 src=planted"
+        let cases: [(name: String, bytes: [UInt8])] = [
+            ("v6 marker without ep", Array("\(head)\n".utf8)),
+            ("empty ep", Array("\(head) ep=\n".utf8)),
+            ("letters", Array("\(head) ep=abc\n".utf8)),
+            ("zero", Array("\(head) ep=0\n".utf8)),
+            ("leading zero", Array("\(head) ep=0123456789\n".utf8)),
+            ("eleven digits", Array("\(head) ep=12345678901\n".utf8)),
+            ("signed", Array("\(head) ep=-\(old)\n".utf8)),
+            ("a seventh field", Array("\(head) ep=\(old) extra=1\n".utf8)),
+            ("ep on line two", Array("\(head)\nep=\(old)\n".utf8)),
+            ("missing pid", Array("v1 ts=\(old) event=UserPromptSubmit src=planted ep=\(old)\n".utf8)),
+            ("NUL inside ep", Array("\(head) ep=17".utf8) + [0] + Array("00000000\n".utf8)),
+        ]
+        for (name, bytes) in cases {
+            withHome { home in
+                let session = "e7000002-0072-4abc-8def-000000000072"
+                let marker = markerDir(home).appendingPathComponent(session)
+                plantBytes(bytes, at: marker)
+                let json = notificationJSON(session, notificationType: quoted("permission_prompt"))
+                #expect(runHook(json: json, home: home).exitCode == 0, "\(name)")
+                let contents = waitForRewrite(marker, event: ClaudeBusyConstants.waitingEventToken)
+                let parsed = ClaudeActivityPolicy.parseMarker(contents)
+                #expect(parsed != nil, "\(name): rewritten, got \(String(reflecting: contents))")
+                #expect(parsed?.ep == parsed.map { String($0.ts) }, "\(name): a fresh anchor at the write's ts")
+                #expect(parsed?.ep != String(old), "\(name): the unusable value is never carried over")
+            }
+        }
+    }
+
+    /// An episode ends when its marker is cleared; the next UserPromptSubmit
+    /// starts a NEW one, anchored at its own ts — never the old start.
+    @Test func aNewEpisodeAfterAClearAnchorsAfresh() {
+        withHome { home in
+            let session = "e7000003-0073-4abc-8def-000000000073"
+            let marker = markerDir(home).appendingPathComponent(session)
+            let start = Int(Date().timeIntervalSince1970) - 600
+            plantBytes(plantedLine("UserPromptSubmit", ts: start, ep: String(start)), at: marker)
+            _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.doneTask), home: home)
+            #expect(waitForFile(marker, present: false), "setup: Stop with nothing running clears")
+            _ = runHook(json: promptJSON(session), home: home)
+            let parsed = ClaudeActivityPolicy.parseMarker(waitForRewrite(marker, event: "UserPromptSubmit"))
+            #expect(parsed?.ep == parsed.map { String($0.ts) }, "the new episode is anchored at its own ts")
+            #expect(parsed?.ep != String(start))
+        }
+    }
+
+    /// UX safety on the new read: a FIFO planted under the marker's name never
+    /// blocks the backgrounded write (the probe reads regular files only); the
+    /// write replaces it with a fresh-episode marker and the hook returns at once.
+    @Test func aFifoAtTheMarkerPathNeverBlocksTheEpisodeRead() {
+        withHome { home in
+            let session = "e7000004-0074-4abc-8def-000000000074"
+            let marker = markerDir(home).appendingPathComponent(session)
+            try? FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+            #expect(mkfifo(marker.path, 0o600) == 0, "setup: FIFO created")
+            let unblocker = DispatchWorkItem {
+                let fd = open(marker.path, O_WRONLY | O_NONBLOCK)
+                if fd >= 0 { close(fd) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 4, execute: unblocker)
+            let started = Date()
+            let result = runHook(json: promptJSON(session), home: home)
+            #expect(result.exitCode == 0)
+            #expect(Date().timeIntervalSince(started) < 3, "the hook must return at once")
+            let contents = waitForRewrite(marker, event: "UserPromptSubmit")
+            let elapsed = Date().timeIntervalSince(started)
+            unblocker.cancel()
+            let parsed = ClaudeActivityPolicy.parseMarker(contents)
+            #expect(parsed?.ep == parsed.map { String($0.ts) }, "a fresh anchor, got \(String(reflecting: contents))")
+            #expect(elapsed < 3, "the backgrounded write must not wait on the FIFO, took \(elapsed) s")
+        }
+    }
+
+    /// Canary: make the writer ignore the current marker and the carry-over
+    /// test breaks — the waiting rewrite re-anchors at its own ts.
+    @Test func episodeCarryOverCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original.replacingOccurrences(of: #"ep=$(marker_episode "$1")"#, with: #"ep="""#)
+        #expect(mutant != original, "canary setup: the carry-over read must exist to be removed")
+        withHome { home in
+            let session = "e7000005-0075-4abc-8def-000000000075"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let start = Int(Date().timeIntervalSince1970) - 600
+            plantBytes(plantedLine("UserPromptSubmit", ts: start, ep: String(start)), at: marker)
+            _ = runScript(mutantURL, json: notificationJSON(session, notificationType: quoted("permission_prompt")),
+                          home: home)
+            let parsed = ClaudeActivityPolicy.parseMarker(waitForRewrite(marker, event: "waiting"))
+            #expect(parsed != nil && parsed?.ep != String(start),
+                    "without the carry-over read the episode start is lost (so the carry-over test has teeth)")
         }
     }
 

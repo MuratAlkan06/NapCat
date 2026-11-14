@@ -5,14 +5,29 @@
 // keeps every proc_* / IOPM* symbol out of this file. Table-driven tests
 // (ClaudeActivityPolicyTests) exercise the mappings like HysteresisEngine.
 
-/// One parsed `v1` marker line (`ts`, `event`, `pid`, `src`). The session id
-/// is the FILE NAME, not part of the line, so it is not carried here. `src`
-/// is DEBUG-ONLY and never influences any decision.
+/// One parsed `v1` marker line (`ts`, `event`, `pid`, `src`, and — hook v7 —
+/// the optional `ep`). The session id is the FILE NAME, not part of the line,
+/// so it is not carried here. `src` is DEBUG-ONLY and never influences any
+/// decision.
 struct BusyMarker: Equatable, Sendable {
     let ts: Int
     let event: String
     let pid: Int
     let src: String
+    /// Hook v7: the RAW `ep=` text (the episode start) exactly as the marker
+    /// carried it — possibly empty or malformed, and NEVER trusted here.
+    /// nil when the marker has no sixth field (hook v6 or earlier). Only
+    /// `FinishAlertPolicy` validates it before use; its length is bounded by
+    /// the store's `ClaudeBusyConstants.maxMarkerBytes` read cap.
+    let ep: String?
+
+    init(ts: Int, event: String, pid: Int, src: String, ep: String? = nil) {
+        self.ts = ts
+        self.event = event
+        self.pid = pid
+        self.src = src
+        self.ep = ep
+    }
 }
 
 /// How one enumerated process classifies against "is this Claude Code?".
@@ -49,15 +64,25 @@ enum ClaudeActivityPolicy {
         !debugBattery
     }
 
-    // MARK: Marker parsing (grammar: `v1 ts=<n> event=<e> pid=<n> src=<s>`)
+    // MARK: Marker parsing (grammar: `v1 ts=<n> event=<e> pid=<n> src=<s>`
+    // plus, hook v7, an optional sixth `ep=<raw>`)
 
-    /// Parse one marker line. Valid iff it is exactly the five-token `v1`
-    /// grammar with a non-negative numeric `ts` and numeric `pid`. Wrong
-    /// version, missing/non-numeric ts, or extra tokens ⇒ nil (ignored, never
-    /// counted busy).
+    /// Parse one marker line. Valid iff it is ONE line (at most a single
+    /// trailing `\n`) holding exactly the five-token `v1` grammar with a
+    /// non-negative numeric `ts` and numeric `pid` — or those five plus a
+    /// sixth token that starts with `ep=` (hook v7), carried RAW in
+    /// `BusyMarker.ep` and validated only by `FinishAlertPolicy`. Wrong
+    /// version, missing/non-numeric ts, a sixth token that is not `ep=`, a
+    /// seventh token, or a second line ⇒ nil (ignored, never counted busy).
     static func parseMarker(_ raw: String) -> BusyMarker? {
-        let fields = raw.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" })
-        guard fields.count == 5 else { return nil }
+        // One line only: the hook writes exactly one `\n`-terminated line, so
+        // any line break before that final `\n` is a file it did not write.
+        // Scalar-level, so a CR+LF pair cannot pass as one character.
+        var line = raw.unicodeScalars
+        if line.last == "\n" { line.removeLast() }
+        guard !line.contains(where: { $0 == "\n" || $0 == "\r" }) else { return nil }
+        let fields = String(line).split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard fields.count == 5 || fields.count == 6 else { return nil }
         guard fields[0] == ClaudeBusyConstants.markerVersion else { return nil }
         guard fields[1].hasPrefix("ts="), let ts = Int(fields[1].dropFirst(3)), ts >= 0 else { return nil }
         guard fields[2].hasPrefix("event=") else { return nil }
@@ -67,7 +92,13 @@ enum ClaudeActivityPolicy {
         guard fields[4].hasPrefix("src=") else { return nil }
         let src = String(fields[4].dropFirst(4))
         guard !src.isEmpty else { return nil }
-        return BusyMarker(ts: ts, event: event, pid: pid, src: src)
+        var ep: String?
+        if fields.count == 6 {
+            let prefix = ClaudeBusyConstants.markerOptionalTokenPrefix
+            guard fields[5].hasPrefix(prefix) else { return nil }
+            ep = String(fields[5].dropFirst(prefix.count))
+        }
+        return BusyMarker(ts: ts, event: event, pid: pid, src: src, ep: ep)
     }
 
     // MARK: Freshness + busy decision
