@@ -342,6 +342,9 @@ final class FinishAlertController {
             // is the in-flight send, whose completion pumps again.
             guard flush == nil, let until = windowOpenUntil, until > at else { return }
             scheduleFlush(after: until - at)
+        case .holdOffline:
+            // Alert healing: held open-ended — a flush trigger pumps again.
+            return
         }
     }
 
@@ -500,6 +503,7 @@ final class FinishAlertController {
         switch kind {
         case .sessionFinished: return "finish"
         case .needsAttention: return "waiting"
+        case .connectionRestored: return "restored"
         case .lidAlert, .test: return "other"
         }
     }

@@ -912,6 +912,7 @@ final class MenuStateModel: ObservableObject {
         switch kind {
         case .sessionFinished?: return " (finished)"
         case .needsAttention?: return " (waiting)"
+        case .connectionRestored?: return " (connection restored)"
         case .lidAlert?, .test?, nil: return ""
         }
     }

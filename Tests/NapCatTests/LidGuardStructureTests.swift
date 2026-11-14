@@ -591,7 +591,7 @@ struct LidGuardStructureTests {
     }
 
     /// The dry-run sender proves the produced body really is the template —
-    /// for all four closed kinds.
+    /// for all five closed kinds (alert healing added the restore push).
     @Test func theDryRunSenderProducesOnlyTemplateBodies() {
         let destination = NtfyDestination(server: "https://ntfy.sh", topic: "napcat-structure")
         let sender = RecordingMessageSender()
@@ -600,6 +600,7 @@ struct LidGuardStructureTests {
             .test,
             .sessionFinished(minutes: 42, folded: 1, stillWorking: 1),
             .needsAttention(minutes: 12, stillWorking: 0),
+            .connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 1),
         ]
         for kind in kinds {
             sender.send(kind, to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
@@ -611,6 +612,13 @@ struct LidGuardStructureTests {
         }
         #expect(bodies[2] == "A Claude session finished after 42 min — 1 still working")
         #expect(bodies[3] == "Claude is waiting for your approval — 12 min in")
+        #expect(bodies[4] == "Connection was down 14 min. 2 session alerts delivered late. 1 lid alert missed.")
+        // Closed-set lock: a sixth kind will not compile until it is added here.
+        for kind in kinds {
+            switch kind {
+            case .lidAlert, .test, .sessionFinished, .needsAttention, .connectionRestored: break
+            }
+        }
     }
 
     // MARK: - What B4 removed (regression locks)

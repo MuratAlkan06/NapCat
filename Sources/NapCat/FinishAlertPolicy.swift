@@ -3,7 +3,9 @@ import Foundation
 // Pure Track C decision logic for the Claude finish alert and the waiting
 // buzz: marker-set diffing, the hook v7 episode-start check, the 60 s run
 // floor, the 12 h stale cap, the batch digest, the outbox and retry tables,
-// and the arming/display predicates.
+// and the arming/display predicates — plus alert-channel healing (issue #23):
+// the offline-hold state machine, its arming predicate, the held digest's max
+// age and the lost-connection restore push.
 // I/O-free by construction — no filesystem, no timers, no network, no
 // subprocess, no logging, no defaults reads. `FinishAlertStructureTests` locks
 // that (canary-proven), and `FinishAlertPolicyTests` exercises every rule as a
@@ -127,6 +129,10 @@ struct FinishAlertDigest: Equatable, Sendable {
 
     var isEmpty: Bool { finishedCount == 0 && waitingCount == 0 }
 
+    /// How many alert events are folded in (finishes + waiting buzzes) — what
+    /// alert healing counts as delivered late or dropped.
+    var eventCount: Int { finishedCount + waitingCount }
+
     /// Fold one event observed at `now`. Keeps the FIRST minutes per kind and
     /// the first event's time; `stillWorking` is always the latest.
     mutating func fold(_ event: FinishAlertEvent, stillWorking: Int, at now: Double) {
@@ -153,7 +159,9 @@ struct FinishAlertDigest: Equatable, Sendable {
     /// `fold`); `originatedAt` keeps the EARLIEST event (the absorbed message
     /// may predate what the digest already holds). The lid kinds (`.lidAlert`,
     /// `.test`) never ride the session lane and are ignored — the digest is
-    /// left exactly as it was.
+    /// left exactly as it was. So is the healing restore push
+    /// (`.connectionRestored`): it is recomposed from the outage's counts at
+    /// the next flush, never folded.
     mutating func absorb(_ kind: LidGuardMessageKind, stillWorking: Int, at originated: Double) {
         let wasEmpty = isEmpty
         switch kind {
@@ -164,11 +172,23 @@ struct FinishAlertDigest: Equatable, Sendable {
         case .needsAttention(let minutes, _):
             if waitingCount == 0 { firstWaitingMinutes = minutes }
             waitingCount += 1
-        case .lidAlert, .test:
+        case .lidAlert, .test, .connectionRestored:
             return
         }
         originatedAt = wasEmpty ? originated : min(originatedAt, originated)
         self.stillWorking = stillWorking
+    }
+
+    /// `messages()`, each paired with how many folded events it stands for —
+    /// what a healing flush counts as delivered late once ntfy accepts it.
+    func messagesWithEventCounts() -> [(kind: LidGuardMessageKind, events: Int)] {
+        messages().map { kind in
+            switch kind {
+            case .needsAttention: return (kind, waitingCount)
+            case .sessionFinished: return (kind, finishedCount)
+            case .lidAlert, .test, .connectionRestored: return (kind, 0)
+            }
+        }
     }
 
     /// The messages to publish, WAITING FIRST (the user can act on it), then
@@ -194,6 +214,9 @@ struct FinishAlertDigest: Equatable, Sendable {
 enum OutboxDecision: Equatable, Sendable {
     case sendNow
     case holdForWindow
+    /// Alert healing: the session lane is OFFLINE — an open-ended hold.
+    /// Nothing is scheduled; one of the flush triggers ends it.
+    case holdOffline
 }
 
 /// Which publish attempt an outcome belongs to.
@@ -415,8 +438,13 @@ enum FinishAlertPolicy {
 
     /// The FIRST event sends immediately and opens a batch window; later
     /// events fold into the digest and are flushed once the window has closed
-    /// and nothing is in flight.
-    static func outboxDecision(windowOpenUntil: Double?, sendInFlight: Bool, now: Double) -> OutboxDecision {
+    /// and nothing is in flight. Alert healing: while the lane is `offline`
+    /// everything holds, open-ended. A healing flush goes through this same
+    /// table once the lane is no longer offline, so an open 429 hold still
+    /// wins over it.
+    static func outboxDecision(windowOpenUntil: Double?, sendInFlight: Bool, offline: Bool = false,
+                               now: Double) -> OutboxDecision {
+        guard !offline else { return .holdOffline }
         guard !sendInFlight else { return .holdForWindow }
         if let windowOpenUntil, now < windowOpenUntil { return .holdForWindow }
         return .sendNow
@@ -482,5 +510,277 @@ enum FinishAlertPolicy {
             if !markerDirExists { return .hookNotInstalled }
             return .armed
         }
+    }
+
+    // MARK: Alert-channel healing (issue #23)
+
+    /// Healing arms iff there is a validated destination to heal toward, a
+    /// feature that sends to it (session alerts armed, or the lid alert
+    /// armed), and something in play: Stay Awake is ON, or the finish watcher
+    /// is armed and tracking at least one session — or the session lane is
+    /// still HOLDING something (an alert pending in it, or an open outage with
+    /// alerts delivered late, dropped or lid misses to report), so the
+    /// disarm that follows a last session finishing can never drop the very
+    /// alert the feature exists to deliver.
+    static func healingMayArm(destinationValid: Bool, sessionAlertsArmed: Bool, lidAlertArmed: Bool,
+                              stayAwakeOn: Bool, trackedSessions: Int, sessionLaneHolding: Bool) -> Bool {
+        guard destinationValid, sessionAlertsArmed || lidAlertArmed else { return false }
+        return stayAwakeOn || (sessionAlertsArmed && trackedSessions >= 1) || sessionLaneHolding
+    }
+
+    /// The held digest has passed its max age: its OLDEST event is more than
+    /// `AlertHealingTuning.heldDigestMaxAgeSeconds` old (exactly the max age
+    /// is still delivered).
+    static func heldDigestExpired(originatedAt: Double, now: Double) -> Bool {
+        now - originatedAt > AlertHealingTuning.heldDigestMaxAgeSeconds
+    }
+
+    /// The restore push for a healing outage, or nil. Sent ONLY with content
+    /// — session alerts delivered late or dropped, or lid alerts missed since
+    /// the outage began — and only after an outage of at least
+    /// `AlertHealingTuning.minimumOutageSeconds` (exactly the floor counts),
+    /// measured from the ORIGINAL anchor to when the healing flush began.
+    static func restoreMessage(for outage: AlertOutage, lidMisses: Int) -> LidGuardMessageKind? {
+        guard let healedAt = outage.flushStartedAt else { return nil }
+        let duration = healedAt - outage.startedAt
+        guard duration >= AlertHealingTuning.minimumOutageSeconds else { return nil }
+        let lidMissed = max(0, lidMisses - outage.lidMissBaseline)
+        let deliveredLate = max(0, outage.deliveredLate)
+        let dropped = max(0, outage.dropped)
+        guard deliveredLate > 0 || dropped > 0 || lidMissed > 0 else { return nil }
+        return .connectionRestored(minutes: outageMinutes(duration), deliveredLate: deliveredLate,
+                                   dropped: dropped, lidMissed: lidMissed)
+    }
+
+    /// The restore push's minutes: rounded UP, at least 1 — never "0 min".
+    static func outageMinutes(_ seconds: TimeInterval) -> Int {
+        max(1, Int((max(0, seconds) / 60).rounded(.up)))
+    }
+}
+
+// MARK: - Alert-channel healing (issue #23)
+
+/// Alert-healing tunables. CODE CONSTANTS — no defaults key and no toggle:
+/// the feature arms itself from the live state (`healingMayArm`).
+enum AlertHealingTuning {
+    /// A path must stay unsatisfied this long before the session lane holds:
+    /// ONE one-shot debounce, armed by the path update itself — never
+    /// periodic. A shorter flap is no outage.
+    static let pathDebounceSeconds: TimeInterval = 2
+    /// An outage shorter than this never earns the restore push.
+    static let minimumOutageSeconds: TimeInterval = 60
+    /// HELD-DIGEST MAX AGE (12 h). A held session alert whose oldest event is
+    /// older than this is DROPPED — counted for the restore push, never
+    /// delivered. Deliberately its own constant:
+    /// `FinishAlertTuning.retryMaxAgeSeconds` bounds ONE retry and must never
+    /// silently cap an outage hold.
+    static let heldDigestMaxAgeSeconds: TimeInterval = 43_200
+}
+
+/// DISARMED → ONLINE → OFFLINE → FLUSHING → ONLINE. Session lane only: the
+/// lid lane is never gated, queued or flushed by any of it.
+enum AlertHealingPhase: String, Equatable, Sendable {
+    /// Zero footprint: no path monitor, nothing scheduled, nothing held.
+    case disarmed
+    /// Watching the path; session alerts send as usual.
+    case online
+    /// The session lane holds everything (open-ended) until a flush trigger.
+    case offline
+    /// A flush attempt is under way (an open 429 hold may still defer it).
+    case flushing
+}
+
+/// What may end an OFFLINE hold. Fixed log-safe words.
+enum AlertHealingFlushTrigger: String, Equatable, Sendable {
+    /// The path went from unsatisfied to satisfied.
+    case pathRestored
+    /// A new session alert event arrived while offline.
+    case sessionEvent
+    /// The menu opened (the menu-open reconcile).
+    case menuOpen
+}
+
+/// One input to the healing state machine.
+enum AlertHealingInput: Equatable, Sendable {
+    case arm
+    case disarm
+    /// One path update — a repeat of the same status included.
+    case path(ConnectivityPathStatus)
+    /// The one-shot path debounce fired.
+    case pathDebounceFired
+    /// A session-lane send failed before leaving the Mac (`.sendFailed`).
+    case sessionSendFailed
+    /// A session event arrived or the menu opened (the path trigger is
+    /// derived from `.path`). Coalesced: only an OFFLINE lane reacts.
+    case flushTrigger(AlertHealingFlushTrigger)
+    /// The flush — held digest and restore push alike — completed without a
+    /// pre-connect failure.
+    case flushCompleted
+}
+
+/// What the controller must do after a transition.
+enum AlertHealingEffect: Equatable, Sendable {
+    case startMonitor
+    case stopMonitor
+    /// Schedule the ONE one-shot path debounce.
+    case scheduleDebounce
+    case cancelDebounce
+    /// OFFLINE was entered: cancel the pending session retries and fold them,
+    /// and anything still queued, into the digest — then hold the lane.
+    case holdSessionLane
+    /// Flush through the outbox (an open 429 hold still wins).
+    case flush
+}
+
+/// One connectivity outage, from the moment the connection was first seen
+/// down until a flush succeeds. Counts only — never a session id.
+struct AlertOutage: Equatable, Sendable {
+    /// The ORIGINAL anchor (epoch seconds). A failed flush never moves it.
+    let startedAt: Double
+    /// The lid-alert miss counter when the outage began: misses are its delta.
+    let lidMissBaseline: Int
+    /// Session alert events a healing flush got accepted by ntfy.
+    var deliveredLate = 0
+    /// Session alert events dropped at the held digest's max age.
+    var dropped = 0
+    /// When the current flush attempt began — the outage's end for the
+    /// restore push's minutes. nil while OFFLINE.
+    var flushStartedAt: Double?
+}
+
+/// The healing state machine (pure, table-tested). The controller feeds it
+/// inputs and performs the effects it returns.
+struct AlertHealingState: Equatable, Sendable {
+    private(set) var phase: AlertHealingPhase = .disarmed
+    /// The last path status delivered (nil before the first one).
+    private(set) var lastPath: ConnectivityPathStatus?
+    /// When the path went unsatisfied while ONLINE — the debounce's anchor
+    /// and, once sustained, the outage's.
+    private(set) var unsatisfiedSince: Double?
+    /// The open outage (OFFLINE / FLUSHING), else nil.
+    private(set) var outage: AlertOutage?
+
+    var isArmed: Bool { phase != .disarmed }
+
+    /// Entry: a session-lane pre-connect `.sendFailed` (even on a path the
+    /// monitor calls satisfied — a captive portal) or a path unsatisfied
+    /// for the full debounce. Exit: a completed flush only; a pre-connect
+    /// failure during the flush re-enters OFFLINE with the ORIGINAL anchor.
+    /// Flush triggers (the path coming back, a session event, the menu
+    /// opening) act only on an OFFLINE lane, so simultaneous triggers cause
+    /// ONE attempt.
+    mutating func apply(_ input: AlertHealingInput, now: Double, lidMisses: Int) -> [AlertHealingEffect] {
+        switch (phase, input) {
+        case (.disarmed, .arm):
+            self = AlertHealingState()
+            phase = .online
+            return [.startMonitor]
+        case (.disarmed, _), (_, .arm):
+            return []
+        case (_, .disarm):
+            self = AlertHealingState()
+            return [.cancelDebounce, .stopMonitor]
+        case (_, .path(let status)):
+            return path(status, now: now)
+        case (.online, .pathDebounceFired):
+            guard lastPath == .unsatisfied, let since = unsatisfiedSince else {
+                unsatisfiedSince = nil
+                return []
+            }
+            guard now - since >= AlertHealingTuning.pathDebounceSeconds else { return [.scheduleDebounce] }
+            enterOffline(anchor: since, lidMisses: lidMisses)
+            return [.holdSessionLane]
+        case (_, .pathDebounceFired):
+            return []
+        case (.online, .sessionSendFailed):
+            let effects: [AlertHealingEffect] = unsatisfiedSince == nil ? [] : [.cancelDebounce]
+            enterOffline(anchor: unsatisfiedSince ?? now, lidMisses: lidMisses)
+            return effects + [.holdSessionLane]
+        case (.flushing, .sessionSendFailed):
+            enterOffline(anchor: now, lidMisses: lidMisses)
+            return [.holdSessionLane]
+        case (.offline, .sessionSendFailed):
+            return []
+        case (.offline, .flushTrigger):
+            beginFlush(at: now)
+            return [.flush]
+        case (_, .flushTrigger):
+            return []
+        case (.flushing, .flushCompleted):
+            phase = .online
+            outage = nil
+            // Healed while the path reads down: start the debounce afresh.
+            guard lastPath == .unsatisfied else { return [] }
+            unsatisfiedSince = now
+            return [.scheduleDebounce]
+        case (_, .flushCompleted):
+            return []
+        }
+    }
+
+    /// A healing-flush message ntfy ACCEPTED: its events were delivered late.
+    mutating func recordDeliveredLate(_ events: Int) {
+        guard events > 0 else { return }
+        outage?.deliveredLate += events
+    }
+
+    /// The held digest's max age, applied: once its OLDEST event is past it,
+    /// the digest collapses to counts — every event in it is counted DROPPED
+    /// and the digest is emptied, so none of them can also be delivered late
+    /// (dropped wins). Only an open outage expires anything. Returns the
+    /// events dropped (0 = nothing expired).
+    mutating func expireHeldDigest(_ digest: inout FinishAlertDigest, now: Double) -> Int {
+        guard outage != nil, !digest.isEmpty,
+              FinishAlertPolicy.heldDigestExpired(originatedAt: digest.originatedAt, now: now) else { return 0 }
+        let events = digest.eventCount
+        outage?.dropped += events
+        digest = FinishAlertDigest()
+        return events
+    }
+
+    /// An open outage with something to report: session alerts delivered late
+    /// or dropped, or lid alerts missed since it began.
+    func outageHasContent(lidMisses: Int) -> Bool {
+        guard let outage else { return false }
+        return outage.deliveredLate > 0 || outage.dropped > 0 || lidMisses > outage.lidMissBaseline
+    }
+
+    private mutating func path(_ status: ConnectivityPathStatus, now: Double) -> [AlertHealingEffect] {
+        let previous = lastPath
+        lastPath = status
+        switch status {
+        case .unsatisfied:
+            guard phase == .online, unsatisfiedSince == nil else { return [] }
+            unsatisfiedSince = now
+            return [.scheduleDebounce]
+        case .satisfied:
+            var effects: [AlertHealingEffect] = []
+            if unsatisfiedSince != nil {
+                unsatisfiedSince = nil
+                effects.append(.cancelDebounce)
+            }
+            if phase == .offline && previous == .unsatisfied {
+                beginFlush(at: now)
+                effects.append(.flush)
+            }
+            return effects
+        }
+    }
+
+    /// From ONLINE a new outage begins at `anchor`; from FLUSHING the open one
+    /// continues — its ORIGINAL anchor and counts kept.
+    private mutating func enterOffline(anchor: Double, lidMisses: Int) {
+        phase = .offline
+        unsatisfiedSince = nil
+        if outage == nil {
+            outage = AlertOutage(startedAt: anchor, lidMissBaseline: lidMisses)
+        } else {
+            outage?.flushStartedAt = nil
+        }
+    }
+
+    private mutating func beginFlush(at now: Double) {
+        phase = .flushing
+        outage?.flushStartedAt = now
     }
 }

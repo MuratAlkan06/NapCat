@@ -515,10 +515,11 @@ struct LidGuardPolicyTests {
         return Mirror(reflecting: kind).children.flatMap { leaves($0.value) }
     }
 
-    /// The set of message kinds is CLOSED — exactly four kinds since Track C —
-    /// and carries no free text: every associated value in the whole enum is
-    /// an Int (a count or minutes), walked down through tuples and optionals so
-    /// a String hidden inside a multi-value payload cannot slip past.
+    /// The set of message kinds is CLOSED — exactly five kinds since alert
+    /// healing (issue #23) added the restore push — and carries no free text:
+    /// every associated value in the whole enum is an Int (a count or
+    /// minutes), walked down through tuples and optionals so a String hidden
+    /// inside a multi-value payload cannot slip past.
     @Test func messageKindsCarryNoFreeText() {
         let kinds: [(kind: LidGuardMessageKind, leafCount: Int)] = [
             (.test, 0),
@@ -527,6 +528,7 @@ struct LidGuardPolicyTests {
             (.sessionFinished(minutes: nil, folded: 1, stillWorking: 0), 2),
             (.needsAttention(minutes: 12, stillWorking: 1), 2),
             (.needsAttention(minutes: nil, stillWorking: 0), 1),
+            (.connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 1), 4),
         ]
         for (kind, leafCount) in kinds {
             let leaves = Self.payloadLeaves(kind)
@@ -536,11 +538,11 @@ struct LidGuardPolicyTests {
                 #expect(leaf is Int, "\(kind): only Int counts / minutes may ride in a message kind")
             }
         }
-        // EXHAUSTIVE on purpose — a fifth kind will not compile here until it
+        // EXHAUSTIVE on purpose — a sixth kind will not compile here until it
         // is consciously added to this closed-set lock (and to the walk above).
         for (kind, _) in kinds {
             switch kind {
-            case .lidAlert, .test, .sessionFinished, .needsAttention: break
+            case .lidAlert, .test, .sessionFinished, .needsAttention, .connectionRestored: break
             }
         }
         // Counts / minutes are all that distinguish two messages of one kind.
@@ -549,6 +551,75 @@ struct LidGuardPolicyTests {
                 != .sessionFinished(minutes: nil, folded: 1, stillWorking: 0))
         #expect(LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 0)
                 != .needsAttention(minutes: 12, stillWorking: 1))
+        #expect(LidGuardMessageKind.connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 1)
+                != .connectionRestored(minutes: 14, deliveredLate: 1, dropped: 1, lidMissed: 1))
+    }
+
+    // MARK: - Alert healing: the restore push (byte-locked, singular / plural)
+
+    /// Literal expected strings — the base sentence, then one segment per
+    /// non-zero count in a FIXED order (delivered late, dropped, lid missed),
+    /// each with its singular and plural form. Never "0 min".
+    static let connectionRestoredRows: [BodyRow] = [
+        BodyRow(kind: .connectionRestored(minutes: 14, deliveredLate: 1, dropped: 0, lidMissed: 0),
+                expected: "Connection was down 14 min. 1 session alert delivered late."),
+        BodyRow(kind: .connectionRestored(minutes: 14, deliveredLate: 3, dropped: 0, lidMissed: 0),
+                expected: "Connection was down 14 min. 3 session alerts delivered late."),
+        BodyRow(kind: .connectionRestored(minutes: 750, deliveredLate: 0, dropped: 1, lidMissed: 0),
+                expected: "Connection was down 750 min. 1 session alert dropped."),
+        BodyRow(kind: .connectionRestored(minutes: 750, deliveredLate: 0, dropped: 4, lidMissed: 0),
+                expected: "Connection was down 750 min. 4 session alerts dropped."),
+        BodyRow(kind: .connectionRestored(minutes: 2, deliveredLate: 0, dropped: 0, lidMissed: 1),
+                expected: "Connection was down 2 min. 1 lid alert missed."),
+        BodyRow(kind: .connectionRestored(minutes: 2, deliveredLate: 0, dropped: 0, lidMissed: 2),
+                expected: "Connection was down 2 min. 2 lid alerts missed."),
+        BodyRow(kind: .connectionRestored(minutes: 1, deliveredLate: 1, dropped: 1, lidMissed: 1),
+                expected: "Connection was down 1 min. 1 session alert delivered late. 1 session alert dropped. "
+                    + "1 lid alert missed."),
+        BodyRow(kind: .connectionRestored(minutes: 63, deliveredLate: 2, dropped: 5, lidMissed: 3),
+                expected: "Connection was down 63 min. 2 session alerts delivered late. 5 session alerts dropped. "
+                    + "3 lid alerts missed."),
+        BodyRow(kind: .connectionRestored(minutes: 9, deliveredLate: 2, dropped: 0, lidMissed: 1),
+                expected: "Connection was down 9 min. 2 session alerts delivered late. 1 lid alert missed."),
+        // Never "0 min" (and never negative) — the policy rounds up to ≥ 1.
+        BodyRow(kind: .connectionRestored(minutes: 0, deliveredLate: 1, dropped: 0, lidMissed: 0),
+                expected: "Connection was down 1 min. 1 session alert delivered late."),
+        BodyRow(kind: .connectionRestored(minutes: -4, deliveredLate: 0, dropped: 0, lidMissed: 1),
+                expected: "Connection was down 1 min. 1 lid alert missed."),
+        // Non-positive counts add no segment (the policy never sends a bare
+        // base sentence; this only pins the degenerate shape).
+        BodyRow(kind: .connectionRestored(minutes: 7, deliveredLate: 0, dropped: -1, lidMissed: 0),
+                expected: "Connection was down 7 min."),
+    ]
+
+    @Test(arguments: connectionRestoredRows)
+    func theRestorePushIsTheExactClosedVocabulary(row: BodyRow) {
+        #expect(LidGuardPolicy.messageBody(kind: row.kind, clockTime: "22:49") == row.expected)
+    }
+
+    /// Property sweep: counts + minutes ONLY — no clock time, no placeholder,
+    /// never "0 min" or a negative number, and the segments keep their order.
+    @Test func restorePushBodiesHoldTheirInvariantsAcrossTheGrid() {
+        for minutes in [-1, 0, 1, 59, 720] {
+            for late in [-1, 0, 1, 2] {
+                for dropped in [0, 1, 3] {
+                    for lid in [0, 1, 2] {
+                        let body = LidGuardPolicy.messageBody(
+                            kind: .connectionRestored(minutes: minutes, deliveredLate: late, dropped: dropped,
+                                                      lidMissed: lid), clockTime: "22:49")
+                        #expect(body.hasPrefix("Connection was down \(max(1, minutes)) min."), "\(body)")
+                        #expect(!body.contains("22:49") && !body.contains("nil") && !body.contains("Optional"))
+                        #expect(!body.contains(" 0 ") && !body.contains("-"), "\(body)")
+                        #expect(body.hasSuffix("."), "\(body)")
+                        let order = ["delivered late", "dropped", "missed"].compactMap { body.range(of: $0)?.lowerBound }
+                        #expect(order == order.sorted(), "segments out of order: \(body)")
+                        #expect(body.contains("delivered late") == (late > 0))
+                        #expect(body.contains("dropped") == (dropped > 0))
+                        #expect(body.contains("missed") == (lid > 0))
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Track C bodies (closed vocabulary: counts + minutes only)
@@ -689,6 +760,12 @@ struct LidGuardPolicyTests {
                      priority: "high", tags: "raised_hand"),
         KindTableRow(kind: .needsAttention(minutes: nil, stillWorking: 2), lane: .session,
                      priority: "high", tags: "raised_hand"),
+        // Alert healing: the restore push mirrors the informational session
+        // kinds (p4) and rides the SESSION lane.
+        KindTableRow(kind: .connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 0),
+                     lane: .session, priority: "high", tags: "signal_strength"),
+        KindTableRow(kind: .connectionRestored(minutes: 1, deliveredLate: 0, dropped: 0, lidMissed: 1),
+                     lane: .session, priority: "high", tags: "signal_strength"),
     ]
 
     @Test(arguments: kindTable)
@@ -705,6 +782,8 @@ struct LidGuardPolicyTests {
         }
         #expect(LidGuardPolicy.lane(for: .sessionFinished(minutes: 1, folded: 1, stillWorking: 0)) != .lid)
         #expect(LidGuardPolicy.lane(for: .needsAttention(minutes: 1, stillWorking: 0)) != .lid)
+        #expect(LidGuardPolicy.lane(for: .connectionRestored(minutes: 1, deliveredLate: 0, dropped: 0, lidMissed: 1))
+                != .lid, "even a lid-misses-only restore push never takes the lid lane")
     }
 
     // MARK: - Send-outcome classifier (fixtures)

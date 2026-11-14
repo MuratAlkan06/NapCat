@@ -797,6 +797,10 @@ struct FinishAlertPolicyTests {
         AbsorbRow(id: "A13 a lid alert leaves a non-empty digest untouched (stillWorking too)",
                   prior: [.finished(minutes: 9)], kind: .lidAlert(busySessionCount: 1), at: 100,
                   expected: [.sessionFinished(minutes: 9, folded: 1, stillWorking: 5)], originatedAt: nil),
+        AbsorbRow(id: "A14 the healing restore push is never folded (recomposed at the next flush)",
+                  prior: [.finished(minutes: 9)],
+                  kind: .connectionRestored(minutes: 14, deliveredLate: 1, dropped: 0, lidMissed: 0), at: 100,
+                  expected: [.sessionFinished(minutes: 9, folded: 1, stillWorking: 5)], originatedAt: nil),
     ]
 
     @Test(arguments: absorbRows)
@@ -851,6 +855,23 @@ struct FinishAlertPolicyTests {
     func outboxTable(_ id: String, _ until: Double?, _ inFlight: Bool, _ now: Double, _ expected: OutboxDecision) {
         #expect(FinishAlertPolicy.outboxDecision(windowOpenUntil: until, sendInFlight: inFlight, now: now) == expected,
                 "\(id)")
+        // Not offline: exactly the pre-healing table.
+        #expect(FinishAlertPolicy.outboxDecision(windowOpenUntil: until, sendInFlight: inFlight, offline: false,
+                                                 now: now) == expected, "\(id)")
+    }
+
+    /// Alert healing: an OFFLINE lane holds open-ended in EVERY combination —
+    /// past the window, nothing in flight — and nothing is scheduled for it.
+    @Test(arguments: [
+        ("O9", nil, false, 100.0),
+        ("O10", nil, true, 100.0),
+        ("O11", 130.0, false, 100.0),
+        ("O12", 130.0, false, 131.0),
+        ("O13", 130.0, true, 131.0),
+    ] as [(String, Double?, Bool, Double)])
+    func anOfflineLaneHoldsOpenEnded(_ id: String, _ until: Double?, _ inFlight: Bool, _ now: Double) {
+        #expect(FinishAlertPolicy.outboxDecision(windowOpenUntil: until, sendInFlight: inFlight, offline: true,
+                                                 now: now) == .holdOffline, "\(id)")
     }
 
     // MARK: - FA-7 retry table
@@ -1008,5 +1029,367 @@ struct FinishAlertPolicyTests {
         // The watcher arms in EXACTLY the one row whose caption says "armed".
         #expect(FinishAlertPolicy.finishAlertMayArm(armingState: state, detectionPaused: paused,
                                                     markerDirExists: dirExists) == (id == "A13"), "\(id)")
+    }
+
+    // MARK: - Alert-channel healing (issue #23): tunables
+
+    @Test func healingTunablesAreTheContractValues() {
+        #expect(AlertHealingTuning.pathDebounceSeconds == 2)
+        #expect(AlertHealingTuning.minimumOutageSeconds == 60)
+        #expect(AlertHealingTuning.heldDigestMaxAgeSeconds == 43_200, "12 h")
+        #expect(AlertHealingTuning.heldDigestMaxAgeSeconds != FinishAlertTuning.retryMaxAgeSeconds,
+                "the single retry's 5 min max age must never cap an outage hold")
+    }
+
+    // MARK: - Healing: the state table (row ids LOCKED)
+
+    struct HealingStep: Sendable {
+        let input: AlertHealingInput
+        let at: Double
+        let lidMisses: Int
+        let effects: [AlertHealingEffect]
+    }
+
+    struct HealingRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let steps: [HealingStep]
+        let phase: AlertHealingPhase
+        /// The open outage's ORIGINAL anchor (nil = no outage).
+        let anchor: Double?
+        /// When the current flush attempt began (nil = none).
+        var flushStartedAt: Double? = nil
+        var testDescription: String { id }
+    }
+
+    static func step(_ input: AlertHealingInput, _ at: Double, _ effects: [AlertHealingEffect] = [],
+                     lid: Int = 0) -> HealingStep {
+        HealingStep(input: input, at: at, lidMisses: lid, effects: effects)
+    }
+
+    /// Every armed row starts here: DISARMED → ONLINE at t = 1000.
+    static let armAt1000 = step(.arm, 1000, [.startMonitor])
+    /// ONLINE → OFFLINE through a sustained path loss at 1000 (anchor 1000).
+    static let offlineByPath = [armAt1000, step(.path(.unsatisfied), 1000, [.scheduleDebounce]),
+                                step(.pathDebounceFired, 1002, [.holdSessionLane])]
+    /// ONLINE → OFFLINE on a satisfied path, by a send failure at 1010.
+    static let offlineByCaptivePortal = [armAt1000, step(.path(.satisfied), 1000),
+                                         step(.sessionSendFailed, 1010, [.holdSessionLane])]
+
+    static let healingRows: [HealingRow] = [
+        HealingRow(id: "H1 arm: DISARMED → ONLINE, the path monitor starts",
+                   steps: [armAt1000], phase: .online, anchor: nil),
+        HealingRow(id: "H2 captive portal: a satisfied path + a pre-connect send failure ⇒ OFFLINE",
+                   steps: offlineByCaptivePortal, phase: .offline, anchor: 1010),
+        HealingRow(id: "H3 a flap shorter than the debounce ⇒ no transition",
+                   steps: [armAt1000, step(.path(.unsatisfied), 1000, [.scheduleDebounce]),
+                           step(.path(.satisfied), 1001, [.cancelDebounce]), step(.pathDebounceFired, 1002)],
+                   phase: .online, anchor: nil),
+        HealingRow(id: "H4 a sustained unsatisfied path ⇒ OFFLINE, anchored when the path went down",
+                   steps: offlineByPath, phase: .offline, anchor: 1000),
+        HealingRow(id: "H5 repeated unsatisfied updates arm ONE debounce",
+                   steps: [armAt1000, step(.path(.unsatisfied), 1000, [.scheduleDebounce]),
+                           step(.path(.unsatisfied), 1001), step(.pathDebounceFired, 1002, [.holdSessionLane])],
+                   phase: .offline, anchor: 1000),
+        HealingRow(id: "H6 a send failure inside the debounce: OFFLINE at once, anchored at the path loss",
+                   steps: [armAt1000, step(.path(.unsatisfied), 1000, [.scheduleDebounce]),
+                           step(.sessionSendFailed, 1001, [.cancelDebounce, .holdSessionLane])],
+                   phase: .offline, anchor: 1000),
+        HealingRow(id: "H7 a debounce that fires early re-arms itself instead of holding",
+                   steps: [armAt1000, step(.path(.unsatisfied), 1000, [.scheduleDebounce]),
+                           step(.pathDebounceFired, 1001.5, [.scheduleDebounce])],
+                   phase: .online, anchor: nil),
+        HealingRow(id: "H8 path unsatisfied → satisfied while OFFLINE ⇒ FLUSHING (one flush)",
+                   steps: offlineByPath + [step(.path(.satisfied), 1100, [.flush])],
+                   phase: .flushing, anchor: 1000, flushStartedAt: 1100),
+        HealingRow(id: "H9 captive portal: a REPEATED satisfied path is no restore",
+                   steps: offlineByCaptivePortal + [step(.path(.satisfied), 1020)],
+                   phase: .offline, anchor: 1010),
+        HealingRow(id: "H10 a session event while OFFLINE ⇒ FLUSHING",
+                   steps: offlineByCaptivePortal + [step(.flushTrigger(.sessionEvent), 1100, [.flush])],
+                   phase: .flushing, anchor: 1010, flushStartedAt: 1100),
+        HealingRow(id: "H11 the menu opening while OFFLINE ⇒ FLUSHING",
+                   steps: offlineByCaptivePortal + [step(.flushTrigger(.menuOpen), 1100, [.flush])],
+                   phase: .flushing, anchor: 1010, flushStartedAt: 1100),
+        HealingRow(id: "H12 simultaneous triggers coalesce into ONE attempt",
+                   steps: offlineByPath + [step(.path(.satisfied), 1100, [.flush]),
+                                           step(.flushTrigger(.menuOpen), 1100),
+                                           step(.flushTrigger(.sessionEvent), 1100),
+                                           step(.path(.satisfied), 1100)],
+                   phase: .flushing, anchor: 1000, flushStartedAt: 1100),
+        HealingRow(id: "H13 a pre-connect failure during the flush ⇒ OFFLINE keeping the ORIGINAL anchor",
+                   steps: offlineByPath + [step(.path(.satisfied), 1100, [.flush]),
+                                           step(.sessionSendFailed, 1101, [.holdSessionLane])],
+                   phase: .offline, anchor: 1000),
+        HealingRow(id: "H14 a completed flush ⇒ ONLINE, the outage closed",
+                   steps: offlineByPath + [step(.path(.satisfied), 1100, [.flush]), step(.flushCompleted, 1105)],
+                   phase: .online, anchor: nil),
+        HealingRow(id: "H15 healed while the path reads down ⇒ a fresh debounce from the heal",
+                   steps: offlineByCaptivePortal + [step(.flushTrigger(.menuOpen), 1100, [.flush]),
+                                                    step(.path(.unsatisfied), 1101),
+                                                    step(.flushCompleted, 1102, [.scheduleDebounce]),
+                                                    step(.pathDebounceFired, 1104, [.holdSessionLane])],
+                   phase: .offline, anchor: 1102),
+        HealingRow(id: "H16 a send failure while already OFFLINE changes nothing",
+                   steps: offlineByPath + [step(.sessionSendFailed, 1050)], phase: .offline, anchor: 1000),
+        HealingRow(id: "H17 triggers and completions while ONLINE do nothing",
+                   steps: [armAt1000, step(.flushTrigger(.menuOpen), 1001), step(.flushTrigger(.sessionEvent), 1001),
+                           step(.flushCompleted, 1002)],
+                   phase: .online, anchor: nil),
+        HealingRow(id: "H18 FLUSHING ignores the path debounce and further triggers",
+                   steps: offlineByPath + [step(.path(.satisfied), 1100, [.flush]), step(.path(.unsatisfied), 1101),
+                                           step(.pathDebounceFired, 1104), step(.flushTrigger(.menuOpen), 1104)],
+                   phase: .flushing, anchor: 1000, flushStartedAt: 1100),
+        HealingRow(id: "H19 disarm from OFFLINE drops everything and stops the monitor",
+                   steps: offlineByPath + [step(.disarm, 1200, [.cancelDebounce, .stopMonitor])],
+                   phase: .disarmed, anchor: nil),
+        HealingRow(id: "H20 DISARMED ignores every input but arm",
+                   steps: [step(.path(.unsatisfied), 1000), step(.pathDebounceFired, 1002),
+                           step(.sessionSendFailed, 1003), step(.flushTrigger(.menuOpen), 1004),
+                           step(.flushCompleted, 1005), step(.disarm, 1006)],
+                   phase: .disarmed, anchor: nil),
+        HealingRow(id: "H21 arming an armed machine is a no-op",
+                   steps: offlineByPath + [step(.arm, 1100)], phase: .offline, anchor: 1000),
+        HealingRow(id: "H22 re-arming after a disarm starts afresh",
+                   steps: offlineByPath + [step(.disarm, 1200, [.cancelDebounce, .stopMonitor]),
+                                           step(.arm, 1300, [.startMonitor])],
+                   phase: .online, anchor: nil),
+    ]
+
+    @Test(arguments: healingRows)
+    func healingStateTable(_ row: HealingRow) {
+        var state = AlertHealingState()
+        for (index, step) in row.steps.enumerated() {
+            let effects = state.apply(step.input, now: step.at, lidMisses: step.lidMisses)
+            #expect(effects == step.effects, "\(row.id) — step \(index) (\(step.input))")
+        }
+        #expect(state.phase == row.phase, "\(row.id)")
+        #expect(state.outage?.startedAt == row.anchor, "\(row.id)")
+        #expect(state.outage?.flushStartedAt == row.flushStartedAt, "\(row.id)")
+        #expect(state.isArmed == (row.phase != .disarmed))
+    }
+
+    /// The lid-miss baseline is taken when the outage BEGINS and survives a
+    /// failed flush; a fresh outage takes a fresh one.
+    @Test func theLidMissBaselineIsTakenWhenTheOutageBegins() {
+        var state = AlertHealingState()
+        _ = state.apply(.arm, now: 1000, lidMisses: 4)
+        _ = state.apply(.sessionSendFailed, now: 1010, lidMisses: 5)
+        #expect(state.outage?.lidMissBaseline == 5)
+        _ = state.apply(.flushTrigger(.menuOpen), now: 1100, lidMisses: 7)
+        _ = state.apply(.sessionSendFailed, now: 1101, lidMisses: 8)
+        #expect(state.outage?.lidMissBaseline == 5, "a failed flush keeps the outage — baseline included")
+        _ = state.apply(.flushTrigger(.menuOpen), now: 1200, lidMisses: 8)
+        _ = state.apply(.flushCompleted, now: 1201, lidMisses: 8)
+        _ = state.apply(.sessionSendFailed, now: 1300, lidMisses: 9)
+        #expect(state.outage?.lidMissBaseline == 9)
+        #expect(state.outage?.startedAt == 1300)
+    }
+
+    // MARK: - Healing: the restore push
+
+    struct RestoreRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let startedAt: Double
+        let flushStartedAt: Double?
+        let deliveredLate: Int
+        let dropped: Int
+        let lidBaseline: Int
+        let lidNow: Int
+        let expected: LidGuardMessageKind?
+        var testDescription: String { id }
+    }
+
+    static let restoreRows: [RestoreRow] = [
+        RestoreRow(id: "R1 59 s outage ⇒ suppressed (under the floor)", startedAt: 1000, flushStartedAt: 1059,
+                   deliveredLate: 2, dropped: 0, lidBaseline: 0, lidNow: 1, expected: nil),
+        RestoreRow(id: "R2 exactly 60 s ⇒ sent, 1 min", startedAt: 1000, flushStartedAt: 1060,
+                   deliveredLate: 1, dropped: 0, lidBaseline: 0, lidNow: 0,
+                   expected: .connectionRestored(minutes: 1, deliveredLate: 1, dropped: 0, lidMissed: 0)),
+        RestoreRow(id: "R3 61 s ⇒ 2 min (rounded UP)", startedAt: 1000, flushStartedAt: 1061,
+                   deliveredLate: 1, dropped: 0, lidBaseline: 0, lidNow: 0,
+                   expected: .connectionRestored(minutes: 2, deliveredLate: 1, dropped: 0, lidMissed: 0)),
+        RestoreRow(id: "R4 120 s ⇒ 2 min", startedAt: 1000, flushStartedAt: 1120,
+                   deliveredLate: 3, dropped: 0, lidBaseline: 0, lidNow: 0,
+                   expected: .connectionRestored(minutes: 2, deliveredLate: 3, dropped: 0, lidMissed: 0)),
+        RestoreRow(id: "R5 121 s ⇒ 3 min", startedAt: 1000, flushStartedAt: 1121,
+                   deliveredLate: 3, dropped: 0, lidBaseline: 0, lidNow: 0,
+                   expected: .connectionRestored(minutes: 3, deliveredLate: 3, dropped: 0, lidMissed: 0)),
+        RestoreRow(id: "R6 a long outage with NOTHING to report ⇒ suppressed", startedAt: 1000, flushStartedAt: 9000,
+                   deliveredLate: 0, dropped: 0, lidBaseline: 2, lidNow: 2, expected: nil),
+        RestoreRow(id: "R7 lid misses alone ⇒ sent, counted as the delta since the outage began",
+                   startedAt: 1000, flushStartedAt: 1600, deliveredLate: 0, dropped: 0, lidBaseline: 3, lidNow: 5,
+                   expected: .connectionRestored(minutes: 10, deliveredLate: 0, dropped: 0, lidMissed: 2)),
+        RestoreRow(id: "R8 a lid counter below its baseline (cannot happen) counts as none",
+                   startedAt: 1000, flushStartedAt: 1600, deliveredLate: 0, dropped: 0, lidBaseline: 5, lidNow: 3,
+                   expected: nil),
+        RestoreRow(id: "R9 no flush begun ⇒ nothing to report yet", startedAt: 1000, flushStartedAt: nil,
+                   deliveredLate: 4, dropped: 1, lidBaseline: 0, lidNow: 1, expected: nil),
+        RestoreRow(id: "R10 a clock jump backwards ⇒ suppressed", startedAt: 5000, flushStartedAt: 1000,
+                   deliveredLate: 1, dropped: 0, lidBaseline: 0, lidNow: 0, expected: nil),
+        RestoreRow(id: "R11 a 12 h+ outage that dropped its digest ⇒ 'dropped', nothing delivered late",
+                   startedAt: 1000, flushStartedAt: 1000 + 43_260, deliveredLate: 0, dropped: 3, lidBaseline: 0,
+                   lidNow: 0, expected: .connectionRestored(minutes: 721, deliveredLate: 0, dropped: 3, lidMissed: 0)),
+        RestoreRow(id: "R12 every segment at once", startedAt: 1000, flushStartedAt: 1840,
+                   deliveredLate: 2, dropped: 1, lidBaseline: 1, lidNow: 2,
+                   expected: .connectionRestored(minutes: 14, deliveredLate: 2, dropped: 1, lidMissed: 1)),
+    ]
+
+    @Test(arguments: restoreRows)
+    func restorePushTable(_ row: RestoreRow) {
+        var outage = AlertOutage(startedAt: row.startedAt, lidMissBaseline: row.lidBaseline)
+        outage.deliveredLate = row.deliveredLate
+        outage.dropped = row.dropped
+        outage.flushStartedAt = row.flushStartedAt
+        #expect(FinishAlertPolicy.restoreMessage(for: outage, lidMisses: row.lidNow) == row.expected, "\(row.id)")
+    }
+
+    @Test(arguments: [
+        // (seconds, minutes) — rounded UP, never 0
+        (0.0, 1), (1.0, 1), (59.0, 1), (60.0, 1), (60.5, 2), (61.0, 2), (3_600.0, 60), (3_601.0, 61),
+        (43_200.0, 720), (-30.0, 1),
+    ] as [(TimeInterval, Int)])
+    func outageMinutesRoundUpAndNeverReadZero(_ seconds: TimeInterval, _ minutes: Int) {
+        #expect(FinishAlertPolicy.outageMinutes(seconds) == minutes, "\(seconds) s")
+    }
+
+    /// A failed flush keeps the ORIGINAL anchor, so the push that finally
+    /// goes out measures the WHOLE outage — not the time since the retry.
+    @Test func theRestorePushMeasuresTheOutageFromTheOriginalAnchor() throws {
+        var state = AlertHealingState()
+        _ = state.apply(.arm, now: 1000, lidMisses: 0)
+        _ = state.apply(.path(.unsatisfied), now: 1000, lidMisses: 0)
+        _ = state.apply(.pathDebounceFired, now: 1002, lidMisses: 0)
+        _ = state.apply(.path(.satisfied), now: 1100, lidMisses: 0)        // flush attempt 1
+        _ = state.apply(.sessionSendFailed, now: 1101, lidMisses: 0)       // …fails pre-connect
+        _ = state.apply(.path(.unsatisfied), now: 1102, lidMisses: 0)
+        _ = state.apply(.path(.satisfied), now: 1400, lidMisses: 0)        // flush attempt 2
+        state.recordDeliveredLate(2)
+        let outage = try #require(state.outage)
+        #expect(outage.startedAt == 1000)
+        #expect(FinishAlertPolicy.restoreMessage(for: outage, lidMisses: 0)
+                == .connectionRestored(minutes: 7, deliveredLate: 2, dropped: 0, lidMissed: 0),
+                "400 s from the ORIGINAL anchor ⇒ 7 min")
+    }
+
+    @Test func deliveredLateIsCountedOnlyInsideAnOutage() {
+        var state = AlertHealingState()
+        _ = state.apply(.arm, now: 1000, lidMisses: 0)
+        state.recordDeliveredLate(3)
+        #expect(state.outage == nil, "ONLINE: nothing to count")
+        _ = state.apply(.sessionSendFailed, now: 1010, lidMisses: 0)
+        state.recordDeliveredLate(0)
+        state.recordDeliveredLate(-2)
+        state.recordDeliveredLate(2)
+        state.recordDeliveredLate(1)
+        #expect(state.outage?.deliveredLate == 3)
+    }
+
+    // MARK: - Healing: the held digest's 12 h max age
+
+    @Test(arguments: [
+        // (age, expired) — exactly the max age is still delivered
+        (0.0, false), (43_199.0, false), (43_200.0, false), (43_200.5, true), (43_201.0, true), (90_000.0, true),
+    ] as [(Double, Bool)])
+    func theHeldDigestMaxAgeBoundary(_ age: Double, _ expired: Bool) {
+        let originatedAt = 1_800_000_000.0
+        #expect(FinishAlertPolicy.heldDigestExpired(originatedAt: originatedAt, now: originatedAt + age) == expired,
+                "\(age) s")
+    }
+
+    /// At the max age the held digest collapses to COUNTS: its events are
+    /// dropped (counted), the digest empties, and the restore push then says
+    /// "dropped" — never "delivered late" for the same alerts. One second
+    /// earlier nothing expires and they are still delivered.
+    @Test func atTheMaxAgeTheDigestCollapsesAndDroppedWinsOverDeliveredLate() throws {
+        let t = 1_800_000_000.0
+        var digest = FinishAlertDigest()
+        digest.fold(.finished(minutes: 30), stillWorking: 0, at: t)
+        digest.fold(.finished(minutes: 12), stillWorking: 0, at: t + 60)
+        digest.fold(.waiting(minutes: 4), stillWorking: 0, at: t + 120)
+        var state = AlertHealingState()
+        _ = state.apply(.arm, now: t - 10, lidMisses: 0)
+        _ = state.apply(.sessionSendFailed, now: t, lidMisses: 0)
+
+        // Exactly the max age: nothing expires.
+        #expect(state.expireHeldDigest(&digest, now: t + AlertHealingTuning.heldDigestMaxAgeSeconds) == 0)
+        #expect(digest.eventCount == 3)
+        #expect(state.outage?.dropped == 0)
+
+        // One second past it: all three are dropped, the digest is empty.
+        #expect(state.expireHeldDigest(&digest, now: t + AlertHealingTuning.heldDigestMaxAgeSeconds + 1) == 3)
+        #expect(digest.isEmpty && digest.messages().isEmpty, "nothing left to deliver late")
+        #expect(state.outage?.dropped == 3)
+        #expect(state.expireHeldDigest(&digest, now: t + 90_000) == 0, "an empty digest has nothing to drop")
+
+        _ = state.apply(.flushTrigger(.menuOpen), now: t + 43_260, lidMisses: 0)
+        let outage = try #require(state.outage)
+        let push = try #require(FinishAlertPolicy.restoreMessage(for: outage, lidMisses: 0))
+        #expect(push == .connectionRestored(minutes: 721, deliveredLate: 0, dropped: 3, lidMissed: 0))
+        let body = LidGuardPolicy.messageBody(kind: push, clockTime: "22:49")
+        #expect(body == "Connection was down 721 min. 3 session alerts dropped.")
+        #expect(!body.contains("delivered late"), "dropped wins over delivered-late")
+    }
+
+    @Test func onlyAnOpenOutageExpiresAHeldDigest() {
+        let t = 1_800_000_000.0
+        var digest = FinishAlertDigest()
+        digest.fold(.finished(minutes: 30), stillWorking: 0, at: t)
+        var state = AlertHealingState()
+        #expect(state.expireHeldDigest(&digest, now: t + 90_000) == 0, "disarmed")
+        _ = state.apply(.arm, now: t, lidMisses: 0)
+        #expect(state.expireHeldDigest(&digest, now: t + 90_000) == 0, "online: the batch window is not a hold")
+        #expect(digest.eventCount == 1)
+    }
+
+    @Test func outageContentIsDeliveredLateDroppedOrLidMisses() {
+        var state = AlertHealingState()
+        #expect(!state.outageHasContent(lidMisses: 9), "no outage, no content")
+        _ = state.apply(.arm, now: 1000, lidMisses: 2)
+        _ = state.apply(.sessionSendFailed, now: 1010, lidMisses: 2)
+        #expect(!state.outageHasContent(lidMisses: 2))
+        #expect(state.outageHasContent(lidMisses: 3), "a lid miss since the outage began")
+        state.recordDeliveredLate(1)
+        #expect(state.outageHasContent(lidMisses: 2))
+    }
+
+    // MARK: - Healing: the digest's per-message event counts
+
+    @Test func eachFlushedMessageCarriesItsEventCount() {
+        var digest = FinishAlertDigest()
+        #expect(digest.eventCount == 0 && digest.messagesWithEventCounts().isEmpty)
+        for event in [FinishAlertEvent.finished(minutes: 1), .waiting(minutes: 2), .finished(minutes: nil),
+                      .waiting(minutes: nil), .finished(minutes: 9)] {
+            digest.fold(event, stillWorking: 2, at: 0)
+        }
+        #expect(digest.eventCount == 5)
+        let pairs = digest.messagesWithEventCounts()
+        #expect(pairs.map(\.kind) == digest.messages())
+        #expect(pairs.map(\.events) == [2, 3], "waiting first, then the finish")
+    }
+
+    // MARK: - Healing: arming (code constants only — no toggle, no key)
+
+    @Test(arguments: [
+        // (id, destination, session armed, lid armed, stay awake, tracked, holding, expected)
+        ("HA1 nothing configured", false, false, false, true, 3, true, false),
+        ("HA2 no destination, even with everything else", false, true, true, true, 3, true, false),
+        ("HA3 destination but no feature sends to it", true, false, false, true, 3, true, false),
+        ("HA4 session alerts + Stay Awake", true, true, false, true, 0, false, true),
+        ("HA5 lid alert + Stay Awake", true, false, true, true, 0, false, true),
+        ("HA6 session alerts tracking one session", true, true, false, false, 1, false, true),
+        ("HA7 session alerts tracking none, Stay Awake off ⇒ zero footprint", true, true, false, false, 0, false,
+         false),
+        ("HA8 lid-only, Stay Awake off, no sessions ⇒ zero footprint", true, false, true, false, 0, false, false),
+        ("HA9 lid-only never counts tracked sessions (no watcher)", true, false, true, false, 2, false, false),
+        ("HA10 the lane still holds an alert ⇒ stays armed", true, true, false, false, 0, true, true),
+        ("HA11 an outage holding lid misses keeps lid-only armed", true, false, true, false, 0, true, true),
+        ("HA12 everything", true, true, true, true, 4, true, true),
+    ] as [(String, Bool, Bool, Bool, Bool, Int, Bool, Bool)])
+    func healingArmingTable(_ id: String, _ destination: Bool, _ session: Bool, _ lid: Bool, _ stayAwake: Bool,
+                            _ tracked: Int, _ holding: Bool, _ expected: Bool) {
+        #expect(FinishAlertPolicy.healingMayArm(destinationValid: destination, sessionAlertsArmed: session,
+                                                lidAlertArmed: lid, stayAwakeOn: stayAwake,
+                                                trackedSessions: tracked, sessionLaneHolding: holding) == expected,
+                "\(id)")
     }
 }

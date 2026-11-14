@@ -77,6 +77,8 @@ struct NtfyMessageSenderTests {
             LidGuardTuning.finishTagsValue,
             LidGuardTuning.attentionPriorityValue,
             LidGuardTuning.attentionTagsValue,
+            LidGuardTuning.restoredPriorityValue,
+            LidGuardTuning.restoredTagsValue,
             LidGuardTuning.ntfyContentTypeValue,
             LidGuardTuning.ntfyTitleHeader,
             LidGuardTuning.ntfyPriorityHeader,
@@ -98,6 +100,39 @@ struct NtfyMessageSenderTests {
         #expect(LidGuardTuning.finishTagsValue == "white_check_mark")
         #expect(LidGuardTuning.attentionPriorityValue == "high")
         #expect(LidGuardTuning.attentionTagsValue == "raised_hand")
+        // Alert healing: the restore push mirrors the informational kinds (p4).
+        #expect(LidGuardTuning.restoredPriorityValue == "high")
+        #expect(LidGuardTuning.restoredTagsValue == "signal_strength")
+    }
+
+    /// The per-kind header table in the sender's doc comment stays TRUTHFUL:
+    /// exactly one row per closed kind, and its lane / Priority / Tags are
+    /// what the policy really picks.
+    @Test func theSenderDocCommentHeaderTableMatchesThePolicy() throws {
+        let source = try String(
+            contentsOf: LidGuardStructureTests.sourcesDir().appendingPathComponent("NtfyMessageSender.swift"),
+            encoding: .utf8)
+        var rows: [String: [String]] = [:]
+        for line in source.split(separator: "\n") where line.hasPrefix("///     ") {
+            let columns = line.dropFirst(3).split(separator: " ").map(String.init)
+            if columns.count == 4 { rows[columns[0]] = Array(columns[1...]) }
+        }
+        #expect(rows["kind"] == ["lane", "Priority", "Tags"], "the table's header row")
+        func name(_ kind: LidGuardMessageKind) -> String {
+            switch kind {
+            case .lidAlert: return "lidAlert"
+            case .test: return "test"
+            case .sessionFinished: return "sessionFinished"
+            case .needsAttention: return "needsAttention"
+            case .connectionRestored: return "connectionRestored"
+            }
+        }
+        for row in LidGuardPolicyTests.kindTable {
+            let headers = LidGuardPolicy.ntfyHeaders(for: row.kind)
+            let lane = LidGuardPolicy.lane(for: row.kind) == .lid ? "lid" : "session"
+            #expect(rows[name(row.kind)] == [lane, headers.priority, headers.tags], "\(name(row.kind))")
+        }
+        #expect(rows.count == 6, "the header row + one row per kind: \(rows.keys.sorted())")
     }
 
     /// The body is the message, verbatim, UTF-8 encoded — no JSON wrapper, no
@@ -117,7 +152,8 @@ struct NtfyMessageSenderTests {
     @Test func everyMessageKindRoundTripsThroughTheBody() throws {
         for kind in [LidGuardMessageKind.lidAlert(busySessionCount: 1), .test,
                      .sessionFinished(minutes: 42, folded: 1, stillWorking: 1),
-                     .needsAttention(minutes: 12, stillWorking: 0)] {
+                     .needsAttention(minutes: 12, stillWorking: 0),
+                     .connectionRestored(minutes: 14, deliveredLate: 2, dropped: 1, lidMissed: 1)] {
             let body = LidGuardPolicy.messageBody(kind: kind, clockTime: "09:05")
             let request = try #require(NtfyMessageSender.makeRequest(destination: Self.destination, kind: kind, body: body))
             let data = try #require(request.httpBody)
