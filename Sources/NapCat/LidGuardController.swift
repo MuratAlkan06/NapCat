@@ -51,6 +51,12 @@ final class LidGuardController: @unchecked Sendable {
     private var sendInFlight = false
     private var lastOutcome: MessageSendOutcome?
     private var lastOutcomeAt: Double?
+    /// Alert healing (issue #23): lid ALERTS that failed before leaving the
+    /// Mac (`.sendFailed`) since launch. COUNTED ONLY — this file never reads
+    /// the network path, and the lid send path is never gated, queued,
+    /// retried or re-sent because of it. The finish alert reads the counter
+    /// (its delta across an outage) for the restore push.
+    private var lidAlertMisses = 0
     private var changeHandler: (@Sendable () -> Void)?
     private var armingRefreshHook: (@Sendable () -> Void)?
 
@@ -386,6 +392,7 @@ final class LidGuardController: @unchecked Sendable {
             at: Date(timeIntervalSince1970: sampledAt)
         ) { [weak self] outcome in
             inline.record(outcome)
+            if case .sendFailed = outcome { self?.countLidAlertMiss() }
             self?.recordOutcome(outcome, clearingSendInFlight: true)
             done.signal()
         }
@@ -503,6 +510,20 @@ final class LidGuardController: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return lastOutcomeAt
+    }
+
+    /// Alert healing (issue #23): lid alerts that failed pre-connect since
+    /// launch — a counter, nothing more.
+    var lidAlertMissCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return lidAlertMisses
+    }
+
+    private func countLidAlertMiss() {
+        lock.lock()
+        lidAlertMisses += 1
+        lock.unlock()
     }
 }
 

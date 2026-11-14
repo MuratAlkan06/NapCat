@@ -583,6 +583,14 @@ struct FinishAlertStructureTests {
         let refresh = try #require(body.range(of: "lidGuard?.refreshArming()"))
         let reconcile = try #require(body.range(of: "finishAlert?.reconcile()"), "menu open must reconcile")
         #expect(refresh.lowerBound < reconcile.lowerBound)
+        // Alert healing: the menu-open reconcile is a flush trigger, AFTER
+        // the reconcile (which re-gates healing first).
+        let menuTrigger = try #require(body.range(of: "finishAlert?.menuOpened()"), "menu open must trigger the flush")
+        #expect(reconcile.lowerBound < menuTrigger.lowerBound)
+        // …and a Stay Awake flip (an arming input) re-gates it.
+        let stayAwake = try #require(menu.range(of: "sleep.onObservedStateChange = {"))
+        #expect(menu[stayAwake.upperBound...].prefix(160).contains("self?.finishAlert?.reconcile()"),
+                "a Stay Awake flip must reconcile the finish alert (and with it alert healing)")
         #expect(menu.contains("model.onDetectionPausedChange = { [weak self] in self?.finishAlert?.reconcile() }"))
         #expect(menu.contains("finishAlert?.setChangeHandler"))
 

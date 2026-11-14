@@ -12,16 +12,29 @@ import os
 // process, take a B1 sample, read the ntfy topic, touch the network directly,
 // or run anything periodically. Session ids are in-memory dictionary keys
 // only; log lines carry counts and fixed reason words.
+//
+// Alert-channel healing (issue #23) lives here too, as the SESSION lane's
+// offline hold: the pure `AlertHealingState` decides, this shell observes the
+// injected `ConnectivityInterface` only while healing is armed, holds the
+// digest while OFFLINE (reusing the 429-hold machinery), flushes through the
+// same outbox, and appends the restore push. The lid lane is never touched:
+// lid alerts are only COUNTED here, through `lidAlertMissCount`.
 
 /// The slice of the lid-guard configuration the finish alert reads: its OWN
 /// toggle folded into the shared arming grammar, plus the SHARED validated
-/// destination. Adopted by `LidGuardController`; never exposes the raw topic.
+/// destination — and, for alert healing, the LID alert's own arming and its
+/// pre-connect miss counter. Adopted by `LidGuardController`; never exposes
+/// the raw topic.
 protocol FinishAlertConfigSource: AnyObject {
     var finishAlertArmingState: LidGuardArmingState { get }
     var storedDestination: NtfyDestination? { get }
+    var lidAlertArmingState: LidGuardArmingState { get }
+    var lidAlertMissCount: Int { get }
 }
 
-extension LidGuardController: FinishAlertConfigSource {}
+extension LidGuardController: FinishAlertConfigSource {
+    var lidAlertArmingState: LidGuardArmingState { armingState }
+}
 
 /// A cancellable delayed callback.
 @MainActor
@@ -76,6 +89,23 @@ final class FinishAlertController {
         let kind: LidGuardMessageKind
         let attempt: SendAttempt
         let originatedAt: Double
+        /// Alert healing: how many alert events it stands for, and whether it
+        /// belongs to a healing flush (its acceptance counts as delivered late).
+        var events = 0
+        var inFlush = false
+
+        var isRestore: Bool {
+            if case .connectionRestored = kind { return true }
+            return false
+        }
+    }
+
+    /// One pending FA-7 retry. The kind rides along so entering OFFLINE can
+    /// fold it into the held digest instead of sending it into the outage.
+    private struct PendingRetry {
+        let work: FinishAlertScheduledWork
+        let kind: LidGuardMessageKind
+        let originatedAt: Double
     }
 
     private let store: BusyMarkerStore
@@ -87,6 +117,13 @@ final class FinishAlertController {
     private let scheduler: FinishAlertScheduling
     /// WALL CLOCK, unix epoch seconds (injected for tests).
     private let now: () -> Double
+    /// Alert healing: the network-path observer, started ONLY while healing
+    /// is armed. nil ⇒ healing is absent altogether (a test seam: those
+    /// tests lock the pre-healing behaviour, which also applies whenever
+    /// healing is disarmed).
+    private let connectivity: ConnectivityInterface?
+    /// Alert healing: the OBSERVED Stay Awake state (true only when known on).
+    private let stayAwakeOn: () -> Bool
 
     // MARK: State (main actor only)
 
@@ -107,9 +144,23 @@ final class FinishAlertController {
     private var latestStillWorking = 0
     /// Pending single retries, keyed by a local token so a fired retry can
     /// remove itself. All cancelled on disarm.
-    private var retries: [Int: FinishAlertScheduledWork] = [:]
+    private var retries: [Int: PendingRetry] = [:]
     private var nextRetryToken = 0
     private var changeHandler: (@MainActor () -> Void)?
+
+    // MARK: Alert-healing state (main actor only)
+
+    /// The pure state machine (DISARMED → ONLINE → OFFLINE → FLUSHING).
+    private(set) var healing = AlertHealingState()
+    /// Bumped on every healing arm, so a path delivery from an earlier armed
+    /// period is ignored.
+    private var healingGeneration = 0
+    /// The ONE one-shot path debounce.
+    private var pathDebounce: FinishAlertScheduledWork?
+    /// Healing-flush messages still queued or in flight.
+    private var flushOutstanding = 0
+    /// The restore push of the current flush is queued or in flight.
+    private var restoreQueued = false
 
     // MARK: Menu-facing snapshot
 
@@ -119,6 +170,14 @@ final class FinishAlertController {
 
     /// True while the kqueue watcher is running — the ONLY meaning of "armed".
     var isWatching: Bool { watcher?.isRunning == true }
+
+    /// Alert healing: armed and OFFLINE — session alerts are being held. The
+    /// panel's one offline warning shows exactly while this is true.
+    var connectivityOffline: Bool { healing.phase == .offline }
+
+    /// The session lane has live work: the watcher runs, or healing is armed
+    /// (a lid-only restore push needs no watcher).
+    private var sessionLaneLive: Bool { isWatching || healing.isArmed }
 
     /// Caption state, computed live. The policy's `.armed` is reported only
     /// while the watcher really runs (F3: never "armed" without a watchable
@@ -140,7 +199,9 @@ final class FinishAlertController {
         sender: MessageSender,
         makeWatcher: @escaping (URL) -> MarkerDirectoryWatching,
         scheduler: FinishAlertScheduling,
-        now: @escaping () -> Double
+        now: @escaping () -> Double,
+        connectivity: ConnectivityInterface? = nil,
+        stayAwakeOn: @escaping () -> Bool = { false }
     ) {
         self.store = store
         self.markerDirURL = markerDirURL
@@ -150,6 +211,8 @@ final class FinishAlertController {
         self.makeWatcher = makeWatcher
         self.scheduler = scheduler
         self.now = now
+        self.connectivity = connectivity
+        self.stayAwakeOn = stayAwakeOn
     }
 
     /// The single construction site, gated by the debug-sim wiring predicate
@@ -157,11 +220,16 @@ final class FinishAlertController {
     /// read and no send path can exist there. Also nil without the lid guard
     /// (it owns the shared destination + priming) or without the shared
     /// sender. Construction does no I/O; nothing is watched until
-    /// `reconcile()` finds the feature armable.
+    /// `reconcile()` finds the feature armable. Alert healing: `connectivity`
+    /// comes from the startup swap (`ConnectivityWiring.makeInterface`) and
+    /// is observed only while healing is armed; Stay Awake is read from the
+    /// OBSERVED mirror.
     static func makeIfEnabled(
         debugBattery: Bool,
         lidGuard: LidGuardController?,
-        sender: MessageSender?
+        sender: MessageSender?,
+        connectivity: ConnectivityInterface,
+        stayAwakeMirror: ObservedStayAwakeMirror
     ) -> FinishAlertController? {
         guard FinishAlertPolicy.finishAlertMayBeConstructed(debugBattery: debugBattery) else { return nil }
         guard let lidGuard, let sender else { return nil }
@@ -173,7 +241,9 @@ final class FinishAlertController {
             sender: sender,
             makeWatcher: { KqueueMarkerDirectoryWatcher(directory: $0) },
             scheduler: MainQueueFinishAlertScheduler(),
-            now: { Date().timeIntervalSince1970 }
+            now: { Date().timeIntervalSince1970 },
+            connectivity: connectivity,
+            stayAwakeOn: { stayAwakeMirror.value == true }
         )
     }
 
@@ -199,11 +269,23 @@ final class FinishAlertController {
         } else if !gate.mayArm && isWatching {
             disarm(gate.reason)
         }
+        reconcileHealing()
     }
 
-    /// Clean-quit path: drop the watcher and everything pending.
+    /// Alert healing — the menu-open reconcile is one of the three flush
+    /// triggers (with the path coming back and a new session event). Only an
+    /// OFFLINE lane reacts, so it coalesces with the others. Called right
+    /// after `reconcile()` on every menu open.
+    func menuOpened() {
+        guard healing.phase == .offline else { return }
+        applyHealing(.flushTrigger(.menuOpen))
+    }
+
+    /// Clean-quit path: drop the watcher, everything pending, and the path
+    /// monitor.
     func disarmForShutdown() {
         disarm(.quit)
+        applyHealing(.disarm)
     }
 
     private func arm() {
@@ -245,13 +327,18 @@ final class FinishAlertController {
         debounce = nil
         flush?.cancel()
         flush = nil
-        for work in retries.values { work.cancel() }
+        for retry in retries.values { retry.work.cancel() }
         retries = [:]
         tracked = [:]
         digest = FinishAlertDigest()
         queue = []
         latestStillWorking = 0
-        windowOpenUntil = nil
+        flushOutstanding = 0
+        restoreQueued = false
+        // Alert healing outlives the watcher (a lid-only outage): an open 429
+        // hold must keep deferring its restore push, so the window stays.
+        // (A flush this cut short resumes in `reconcileHealing`.)
+        if !healing.isArmed { windowOpenUntil = nil }
         guard wasWatching || dropped > 0 else { return }
         Self.logger.notice("finish alert: disarmed (\(reason.rawValue, privacy: .public)), dropped \(dropped, privacy: .public) pending item(s)")
         notifyChanged()
@@ -266,6 +353,7 @@ final class FinishAlertController {
         case .directoryGone:
             // Never a finish: pending diffs are dropped with the rest.
             disarm(.directoryVanished)
+            reconcileHealing()
         case .contentsChanged:
             debounce?.cancel()
             debounce = scheduler.schedule(after: FinishAlertTuning.debounceSeconds) { [weak self] in
@@ -282,6 +370,7 @@ final class FinishAlertController {
         let gate = armingGate()
         guard gate.mayArm else {
             disarm(gate.reason)
+            reconcileHealing()
             return
         }
         let observedAt = now()
@@ -294,12 +383,26 @@ final class FinishAlertController {
         latestStillWorking = observation.stillWorking
         logSuppressed(observation.suppressed)
         logUnusableEpisodeStarts(observation.invalidEpisodeStarts)
-        guard !observation.events.isEmpty else { return }
-        Self.logger.notice("finish alert: \(observation.events.count, privacy: .public) alert event(s) observed")
-        for event in observation.events {
-            digest.fold(event, stillWorking: observation.stillWorking, at: observedAt)
+        let events = observation.events
+        if !events.isEmpty {
+            Self.logger.notice("finish alert: \(events.count, privacy: .public) alert event(s) observed")
+            // A held digest past its max age is dropped BEFORE the new events
+            // join it, so they are never dropped with it.
+            expireHeldIfNeeded()
+            for event in events {
+                digest.fold(event, stillWorking: observation.stillWorking, at: observedAt)
+            }
         }
-        pump()
+        // Healing re-gates on the new tracked count AFTER the fold: an alert
+        // just raised keeps the lane holding, so the last session's finish
+        // is never sent with healing disarmed under it.
+        reconcileHealing()
+        guard !events.isEmpty else { return }
+        if healing.phase == .offline {
+            applyHealing(.flushTrigger(.sessionEvent))
+        } else {
+            pump()
+        }
     }
 
     private func logSuppressed(_ suppressed: [FinishAlertSuppression]) {
@@ -323,19 +426,33 @@ final class FinishAlertController {
     /// Moves the digest to the send queue when the outbox allows, otherwise
     /// makes sure something will call back here: the window-close flush, or
     /// (with a send in flight past the window) that send's completion.
+    /// Alert healing: OFFLINE holds open-ended; while FLUSHING the batch is a
+    /// healing flush (an empty one still owes the restore push), and the same
+    /// table applies — so an open 429 hold defers the flush and its push.
     private func pump() {
-        guard !digest.isEmpty else { return }
+        let flushPending = healing.phase == .flushing && flushOutstanding == 0 && !restoreQueued
+        guard !digest.isEmpty || flushPending else { return }
+        if healing.phase == .flushing { expireHeldIfNeeded() }
         let at = now()
-        switch FinishAlertPolicy.outboxDecision(windowOpenUntil: windowOpenUntil, sendInFlight: sendInFlight, now: at) {
+        switch FinishAlertPolicy.outboxDecision(windowOpenUntil: windowOpenUntil, sendInFlight: sendInFlight,
+                                                offline: healing.phase == .offline, now: at) {
         case .sendNow:
             flush?.cancel()
             flush = nil
+            let inFlush = healing.phase == .flushing
             let originatedAt = digest.originatedAt
-            for kind in digest.messages() {
-                queue.append(Outgoing(kind: kind, attempt: .first, originatedAt: originatedAt))
+            let batch = digest.messagesWithEventCounts()
+            for (kind, events) in batch {
+                queue.append(Outgoing(kind: kind, attempt: .first, originatedAt: originatedAt,
+                                      events: events, inFlush: inFlush))
             }
             digest = FinishAlertDigest()
-            windowOpenUntil = at + FinishAlertTuning.batchWindowSeconds
+            if inFlush {
+                flushOutstanding += batch.count
+                // An empty healing flush: the restore push (if any) or done.
+                if batch.isEmpty { finishFlushBatch() }
+            }
+            if !queue.isEmpty { windowOpenUntil = at + FinishAlertTuning.batchWindowSeconds }
             sendNext()
         case .holdForWindow:
             // A flush only while the window is still open; past it, the hold
@@ -353,7 +470,7 @@ final class FinishAlertController {
         flush = scheduler.schedule(after: delay) { [weak self] in
             guard let self else { return }
             self.flush = nil
-            guard self.isWatching else { return }
+            guard self.sessionLaneLive else { return }
             self.pump()
         }
     }
@@ -378,6 +495,10 @@ final class FinishAlertController {
     /// flush at the hold's end, together with anything observed meanwhile. A
     /// retry still waiting on its own timer is not in the queue — untouched.
     private func foldQueueBackIntoDigest() {
+        // A healing flush cut short re-forms from the digest at the next pump
+        // (a queued restore push is recomposed then, never folded).
+        flushOutstanding = 0
+        restoreQueued = false
         guard !queue.isEmpty else { return }
         let absorbed = queue
         queue = []
@@ -406,39 +527,56 @@ final class FinishAlertController {
         sender.send(item.kind, to: destination, at: Date(timeIntervalSince1970: now())) { [weak self] outcome in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    self?.sendCompleted(item.kind, attempt: item.attempt, originatedAt: item.originatedAt,
-                                        generation: generation, outcome: outcome)
+                    self?.sendCompleted(item, generation: generation, outcome: outcome)
                 }
             }
         }
     }
 
-    private func sendCompleted(_ kind: LidGuardMessageKind, attempt: SendAttempt, originatedAt: Double,
-                               generation: Int, outcome: MessageSendOutcome) {
+    private func sendCompleted(_ item: Outgoing, generation: Int, outcome: MessageSendOutcome) {
         sendInFlight = false
         lastSendOutcome = outcome
         lastSendOutcomeAt = now()
-        lastSendKind = kind
+        lastSendKind = item.kind
         let fields = LidGuardPolicy.outcomeLogFields(outcome)
         if let detail = fields.privateDetail {
             Self.logger.notice("finish alert: send outcome \(fields.publicCategory, privacy: .public) — \(detail, privacy: .private)")
         } else {
             Self.logger.notice("finish alert: send outcome \(fields.publicCategory, privacy: .public)")
         }
-        if generation == armGeneration && isWatching {
-            if case .retryAfter(let delay) = FinishAlertPolicy.retryDecision(outcome: outcome, attempt: attempt) {
-                scheduleRetry(kind, originatedAt: originatedAt, after: delay)
-            }
-            if let hold = FinishAlertPolicy.windowExtension(after: outcome) {
-                holdForRateLimit(hold)
-                foldQueueBackIntoDigest()
+        // A restore push belongs to the healing flush, not to a watcher arm.
+        let current = item.isRestore
+            ? healing.phase == .flushing && restoreQueued
+            : generation == armGeneration && isWatching
+        if current {
+            if case .sendFailed = outcome, healing.isArmed {
+                // Alert healing: a session-lane pre-connect failure (single
+                // flight + a validated destination make an inline refusal
+                // unreachable here) holds the lane — the alert folds back
+                // into the digest and leaves with the flush. Never a retry.
+                digest.absorb(item.kind, stillWorking: latestStillWorking, at: item.originatedAt)
+                applyHealing(.sessionSendFailed)
+            } else {
+                if case .retryAfter(let delay) = FinishAlertPolicy.retryDecision(outcome: outcome,
+                                                                                attempt: item.attempt) {
+                    scheduleRetry(item.kind, originatedAt: item.originatedAt, after: delay)
+                }
+                if let hold = FinishAlertPolicy.windowExtension(after: outcome) {
+                    holdForRateLimit(hold)
+                    foldQueueBackIntoDigest()
+                } else if item.inFlush {
+                    if outcome == .accepted { healing.recordDeliveredLate(item.events) }
+                    flushOutstanding = max(0, flushOutstanding - 1)
+                    if flushOutstanding == 0 { finishFlushBatch() }
+                }
             }
         } else {
             Self.logger.notice("finish alert: a send completed after disarm — outcome recorded, nothing more sent")
         }
-        if isWatching {
+        if sessionLaneLive {
             if queue.isEmpty { pump() } else { sendNext() }
         }
+        reconcileHealing()
         notifyChanged()
     }
 
@@ -447,9 +585,10 @@ final class FinishAlertController {
     private func scheduleRetry(_ kind: LidGuardMessageKind, originatedAt: Double, after delay: TimeInterval) {
         nextRetryToken += 1
         let token = nextRetryToken
-        retries[token] = scheduler.schedule(after: delay) { [weak self] in
+        let work = scheduler.schedule(after: delay) { [weak self] in
             self?.retryFired(token: token, kind: kind, originatedAt: originatedAt)
         }
+        retries[token] = PendingRetry(work: work, kind: kind, originatedAt: originatedAt)
         Self.logger.notice("finish alert: send failed before leaving the Mac — one retry in \(Int(delay), privacy: .public) s")
     }
 
@@ -468,6 +607,141 @@ final class FinishAlertController {
         }
         queue.insert(Outgoing(kind: kind, attempt: .retry, originatedAt: originatedAt), at: 0)
         sendNext()
+    }
+
+    // MARK: - Alert-channel healing (issue #23)
+
+    /// Arms or disarms healing to match the live state (`healingMayArm`), and
+    /// resumes a healing flush a disarm cut short. Called after every arm /
+    /// disarm, observation and send completion, and on every reconcile (menu
+    /// open, launch, config and pause changes, Stay Awake flips). Idempotent.
+    private func reconcileHealing() {
+        guard connectivity != nil else { return }
+        let lidMisses = config.lidAlertMissCount
+        let holding = !digest.isEmpty || !queue.isEmpty || sendInFlight || !retries.isEmpty
+            || healing.outageHasContent(lidMisses: lidMisses)
+        let mayArm = FinishAlertPolicy.healingMayArm(
+            destinationValid: config.storedDestination != nil,
+            sessionAlertsArmed: isWatching,
+            lidAlertArmed: config.lidAlertArmingState == .armed,
+            stayAwakeOn: stayAwakeOn(),
+            trackedSessions: tracked.count,
+            sessionLaneHolding: holding)
+        if mayArm != healing.isArmed { applyHealing(mayArm ? .arm : .disarm) }
+        if healing.phase == .flushing && flushOutstanding == 0 && !restoreQueued { pump() }
+    }
+
+    /// Feeds one input to the state machine and performs its effects.
+    private func applyHealing(_ input: AlertHealingInput) {
+        guard let connectivity else { return }
+        let before = healing.phase
+        let dropped = input == .disarm ? healingDisarmDropCount() : 0
+        let effects = healing.apply(input, now: now(), lidMisses: config.lidAlertMissCount)
+        let after = healing.phase
+        // Logged before the effects run: a flush may complete inside them.
+        if after != before { logHealingTransition(from: before, to: after, dropped: dropped) }
+        for effect in effects {
+            switch effect {
+            case .startMonitor:
+                healingGeneration += 1
+                let generation = healingGeneration
+                connectivity.start { [weak self] status in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated { self?.handlePath(status, generation: generation) }
+                    }
+                }
+            case .stopMonitor:
+                connectivity.stop()
+                flushOutstanding = 0
+                restoreQueued = false
+            case .scheduleDebounce:
+                pathDebounce?.cancel()
+                pathDebounce = scheduler.schedule(after: AlertHealingTuning.pathDebounceSeconds) { [weak self] in
+                    guard let self else { return }
+                    self.pathDebounce = nil
+                    self.applyHealing(.pathDebounceFired)
+                }
+            case .cancelDebounce:
+                pathDebounce?.cancel()
+                pathDebounce = nil
+            case .holdSessionLane:
+                holdSessionLaneForOutage()
+            case .flush:
+                pump()
+            }
+        }
+        if after != before { notifyChanged() }
+    }
+
+    /// A path update, hopped to the main actor. One from an earlier armed
+    /// period, or one that raced a disarm, is ignored.
+    private func handlePath(_ status: ConnectivityPathStatus, generation: Int) {
+        guard generation == healingGeneration, healing.isArmed else { return }
+        applyHealing(.path(status))
+    }
+
+    /// OFFLINE was entered: pending single retries are cancelled and fold —
+    /// with anything still queued — into the held digest, so each alert is
+    /// sent exactly once, by the flush.
+    private func holdSessionLaneForOutage() {
+        let pending = retries.values.sorted { $0.originatedAt < $1.originatedAt }
+        retries = [:]
+        for retry in pending {
+            retry.work.cancel()
+            digest.absorb(retry.kind, stillWorking: latestStillWorking, at: retry.originatedAt)
+        }
+        let count = pending.count + queue.count
+        foldQueueBackIntoDigest()
+        Self.logger.notice("finish alert: connection lost — session alerts held until it returns, \(count, privacy: .public) pending item(s) folded in")
+    }
+
+    /// The held digest's 12 h max age (only inside an outage): its events
+    /// collapse to a DROPPED count for the restore push.
+    private func expireHeldIfNeeded() {
+        let dropped = healing.expireHeldDigest(&digest, now: now())
+        guard dropped > 0 else { return }
+        Self.logger.notice("finish alert: \(dropped, privacy: .public) held alert(s) passed the 12 h max age — dropped, counted for the restore push")
+    }
+
+    /// Every session message of the healing flush is done: append the restore
+    /// push when it has something to say (it rides the same flush, so it
+    /// already deferred to any 429 hold), else the flush is complete.
+    private func finishFlushBatch() {
+        guard healing.phase == .flushing, flushOutstanding == 0 else { return }
+        if !restoreQueued, let outage = healing.outage,
+           let restore = FinishAlertPolicy.restoreMessage(for: outage, lidMisses: config.lidAlertMissCount) {
+            restoreQueued = true
+            flushOutstanding = 1
+            queue.append(Outgoing(kind: restore, attempt: .first, originatedAt: now(), inFlush: true))
+            return
+        }
+        restoreQueued = false
+        applyHealing(.flushCompleted)
+    }
+
+    /// What a healing disarm forgets: the open outage's report (delivered
+    /// late + dropped + lid misses). Held alerts themselves stay in the digest.
+    private func healingDisarmDropCount() -> Int {
+        guard let outage = healing.outage else { return 0 }
+        return outage.deliveredLate + outage.dropped + max(0, config.lidAlertMissCount - outage.lidMissBaseline)
+    }
+
+    /// Fixed words + counts only — never a path detail, an address or a topic.
+    private func logHealingTransition(from before: AlertHealingPhase, to after: AlertHealingPhase, dropped: Int) {
+        switch after {
+        case .disarmed:
+            Self.logger.notice("finish alert: alert healing disarmed, dropped \(dropped, privacy: .public) outage report item(s)")
+        case .online where before == .disarmed:
+            Self.logger.notice("finish alert: alert healing armed")
+        case .online:
+            Self.logger.notice("finish alert: connection healed — held session alerts flushed")
+        case .offline where before == .flushing:
+            Self.logger.notice("finish alert: the flush failed before leaving the Mac — offline again, outage start kept")
+        case .offline:
+            break   // `holdSessionLaneForOutage` logs the entry with its count
+        case .flushing:
+            Self.logger.notice("finish alert: flushing the held session alerts")
+        }
     }
 
     // MARK: - Helpers

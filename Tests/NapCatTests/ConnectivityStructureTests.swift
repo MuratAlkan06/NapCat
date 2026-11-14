@@ -231,6 +231,157 @@ struct ConnectivityStructureTests {
         }
     }
 
+    // MARK: - Alert healing wiring (commit 3): the startup swap reaches the app
+
+    /// The app's ONE connectivity source is the startup swap, called once, in
+    /// NapCatApp, with the live debugBattery flag, straight into the finish
+    /// alert's gated factory — so debugBattery mode can never observe the
+    /// real path, and nothing else can build or hold another observer.
+    static let appSwapCall = "connectivity: ConnectivityWiring.makeInterface(debugBattery: isDebugBattery)"
+
+    static func startupWiringFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        let calls = sources.flatMap { source in
+            Array(repeating: source.name,
+                  count: source.text.components(separatedBy: "ConnectivityWiring.makeInterface(").count - 1)
+        }
+        if calls != ["NapCatApp.swift"] {
+            failures.append("ConnectivityWiring.makeInterface( is called at \(calls) — expected once, in NapCatApp.swift")
+        }
+        let app = sources.first { $0.name == "NapCatApp.swift" }?.text ?? ""
+        if app.components(separatedBy: appSwapCall).count - 1 != 1 {
+            failures.append("NapCatApp must pass exactly '\(appSwapCall)'")
+        }
+        if let factory = app.range(of: "FinishAlertController.makeIfEnabled("),
+           let swap = app.range(of: appSwapCall) {
+            let call = app[factory.upperBound...]
+            let end = call.range(of: "\n        )")?.lowerBound ?? call.endIndex
+            if !(swap.lowerBound > factory.upperBound && swap.lowerBound < end) {
+                failures.append("the swap must feed FinishAlertController.makeIfEnabled directly")
+            }
+        } else {
+            failures.append("NapCatApp does not build the finish alert with the connectivity swap")
+        }
+        return failures
+    }
+
+    @Test func theStartupSwapFeedsTheFinishAlertOnce() throws {
+        let sources = try Self.sources()
+        #expect(Self.startupWiringFailures(sources).isEmpty, "\(Self.startupWiringFailures(sources))")
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("hard-wired real monitor", Self.mutate(sources, "NapCatApp.swift") {
+                $0.replacingOccurrences(of: "makeInterface(debugBattery: isDebugBattery)",
+                                        with: "makeInterface(debugBattery: false)") }),
+            ("second swap call", Self.mutate(sources, "MenuContentView.swift") {
+                $0 + "\nlet c = ConnectivityWiring.makeInterface(debugBattery: false)" }),
+            ("controller builds its own", Self.mutate(sources, "FinishAlertController.swift") {
+                $0 + "\nlet c = ConnectivityWiring.makeInterface(debugBattery: false)" }),
+            ("swap removed", Self.mutate(sources, "NapCatApp.swift") {
+                $0.replacingOccurrences(of: Self.appSwapCall, with: "connectivity: someInterface") }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.startupWiringFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// Zero footprint by construction: the ONLY place the path is observed is
+    /// the controller's `.startMonitor` effect (healing armed), and the only
+    /// stop is its `.stopMonitor` effect — no other file starts a monitor.
+    static func observationSiteFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (token, arm) in [("connectivity.start", "case .startMonitor:"), ("connectivity.stop()", "case .stopMonitor:")] {
+            let sites = sources.flatMap { source in
+                Array(repeating: source.name, count: source.text.components(separatedBy: token).count - 1)
+            }
+            if sites != ["FinishAlertController.swift"] {
+                failures.append("'\(token)' at \(sites) — expected exactly once, in FinishAlertController.swift")
+                continue
+            }
+            let controller = sources.first { $0.name == "FinishAlertController.swift" }?.text ?? ""
+            guard let effect = controller.range(of: arm), let call = controller.range(of: token),
+                  call.lowerBound > effect.upperBound,
+                  !controller[effect.upperBound..<call.lowerBound].contains("case .") else {
+                failures.append("'\(token)' must run only in the healing '\(arm)' effect")
+                continue
+            }
+        }
+        return failures
+    }
+
+    @Test func thePathIsObservedOnlyWhileHealingIsArmed() throws {
+        let sources = try Self.sources()
+        #expect(Self.observationSiteFailures(sources).isEmpty, "\(Self.observationSiteFailures(sources))")
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("app starts the monitor", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc canary(_ connectivity: ConnectivityInterface) { connectivity.start { _ in } }" }),
+            ("second start in the controller", Self.mutate(sources, "FinishAlertController.swift") {
+                $0 + "\nfunc canary(_ connectivity: ConnectivityInterface) { connectivity.start { _ in } }" }),
+            ("start outside the startMonitor effect", Self.mutate(sources, "FinishAlertController.swift") {
+                $0.replacingOccurrences(of: "case .startMonitor:", with: "case .stopMonitor where false:")
+            }),
+            ("stop outside the stopMonitor effect", Self.mutate(sources, "FinishAlertController.swift") {
+                $0.replacingOccurrences(of: "case .stopMonitor:", with: "case .flush where false:")
+            }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.observationSiteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// The lid lane is EXEMPT: no B2 file (lid policy, lid controller, the
+    /// senders, the sleep source) names the path, the connectivity interface
+    /// or the healing state — a lid alert is never gated, queued or flushed,
+    /// and it never reads whether the Mac is offline.
+    static let pathTokens = ["Connectivity", "connectivity", "AlertHealing", "healing", "Healing", "NWPath"]
+
+    /// The one allowed mention: the sender's own URLSession setting that a
+    /// publish NEVER waits for connectivity (the exemption, in config form).
+    static let allowedSenderSetting = "configuration.waitsForConnectivity = false"
+
+    static func lidLanePathFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (name, raw) in sources where LidGuardStructureTests.b2Files.contains(name) {
+            let text = raw.replacingOccurrences(of: allowedSenderSetting, with: "")
+            for token in pathTokens where text.contains(token) {
+                failures.append("'\(token)' in \(name) — the lid lane never reads the path or the healing state")
+            }
+        }
+        if sources.filter({ LidGuardStructureTests.b2Files.contains($0.name) }).count
+            != LidGuardStructureTests.b2Files.count {
+            failures.append("a B2 file is missing — the lint would be vacuous")
+        }
+        return failures
+    }
+
+    @Test func theLidLaneNeverReadsThePath() throws {
+        let sources = try Self.sources()
+        #expect(Self.lidLanePathFailures(sources).isEmpty, "\(Self.lidLanePathFailures(sources))")
+        // Vacuity: the miss counter the healing reads really lives there.
+        let lid = try #require(sources.first { $0.name == "LidGuardController.swift" })
+        #expect(lid.text.contains("var lidAlertMissCount: Int"))
+        let sender = try #require(sources.first { $0.name == "NtfyMessageSender.swift" })
+        #expect(sender.text.contains(Self.allowedSenderSetting), "the allow-listed setting must be real")
+        // Flipping that setting (a publish parked until the network returns)
+        // is caught too.
+        #expect(!Self.lidLanePathFailures(Self.mutate(sources, "NtfyMessageSender.swift") {
+            $0.replacingOccurrences(of: Self.allowedSenderSetting, with: "configuration.waitsForConnectivity = true")
+        }).isEmpty, "canary 'publishes wait for connectivity' was NOT caught")
+        let canaries: [(String, String, String)] = [
+            ("lid gate reads the offline flag", "LidGuardController.swift", "\nlet c = finishAlert.connectivityOffline"),
+            ("lid controller holds the interface", "LidGuardController.swift", "\nlet c: ConnectivityInterface? = nil"),
+            ("sender reads the healing phase", "NtfyMessageSender.swift", "\nlet p = AlertHealingPhase.offline"),
+            ("policy reads a path", "LidGuardPolicy.swift", "\nlet p: NWPath? = nil"),
+        ]
+        for (name, file, code) in canaries {
+            #expect(!Self.lidLanePathFailures(Self.mutate(sources, file) { $0 + code }).isEmpty,
+                    "canary '\(name)' was NOT caught")
+        }
+        // Comments may name the boundary (the sources are comment-stripped).
+        #expect(Self.lidLanePathFailures(Self.mutate(sources, "LidGuardController.swift") {
+            $0 + LidGuardStructureTests.codeOnly("\n// never reads connectivity or healing state")
+        }).isEmpty)
+    }
+
     // MARK: - Zero wakeups
 
     /// Nothing in the subsystem runs periodically or defers work: the real

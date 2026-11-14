@@ -131,12 +131,21 @@ final class FakeFinishConfig: FinishAlertConfigSource {
     var finishAlertArmingState: LidGuardArmingState = .armed
     var storedDestination: NtfyDestination? = LidGuardPolicy.destination(server: "https://ntfy.sh",
                                                                          topic: "napcat-finish-4k7q2w")
+    /// Alert healing: the LID alert's own arming, and its pre-connect misses.
+    var lidAlertArmingState: LidGuardArmingState = .off
+    var lidAlertMissCount = 0
 }
 
 @MainActor
 final class NowBox {
     var value: Double
     init(_ value: Double) { self.value = value }
+}
+
+@MainActor
+final class FlagBox {
+    var value: Bool
+    init(_ value: Bool) { self.value = value }
 }
 
 /// Lets every main-queue hop queued so far (and the hops THOSE queue, up to
@@ -169,17 +178,25 @@ final class FinishAlertHarness {
     let scheduler = ManualScheduler()
     let factory = WatcherFactory()
     let clock = NowBox(Double(t0))
+    /// Alert healing: the observed Stay Awake state the controller reads.
+    let stayAwake = FlagBox(false)
     let sender: MessageSender
+    /// nil ⇒ alert healing is ABSENT: the rows written before it lock the
+    /// pre-healing behaviour (which also applies whenever healing is
+    /// disarmed). The healing rows pass a simulator.
+    let connectivity: ConnectivitySimulator?
     let controller: FinishAlertController
     private(set) var changeCount = 0
 
-    init(sender: MessageSender) throws {
+    init(sender: MessageSender, connectivity: ConnectivitySimulator? = nil) throws {
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("napcat-finishalert-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.sender = sender
+        self.connectivity = connectivity
         let factory = self.factory
         let clock = self.clock
+        let stayAwake = self.stayAwake
         controller = FinishAlertController(
             store: store,
             markerDirURL: dir,
@@ -187,7 +204,9 @@ final class FinishAlertHarness {
             sender: sender,
             makeWatcher: { factory.make($0) },
             scheduler: scheduler,
-            now: { clock.value }
+            now: { clock.value },
+            connectivity: connectivity,
+            stayAwakeOn: { stayAwake.value }
         )
         controller.setChangeHandler { [weak self] in self?.changeCount += 1 }
     }
@@ -235,9 +254,10 @@ final class FinishAlertHarness {
 @MainActor
 func withFinishAlertHarness(
     sender: MessageSender = RecordingMessageSender(),
+    connectivity: ConnectivitySimulator? = nil,
     _ body: (FinishAlertHarness) async throws -> Void
 ) async throws {
-    let harness = try FinishAlertHarness(sender: sender)
+    let harness = try FinishAlertHarness(sender: sender, connectivity: connectivity)
     defer { harness.cleanup() }
     try await body(harness)
 }
@@ -373,17 +393,24 @@ struct FinishAlertControllerTests {
     /// REAL marker dir.
     @Test func constructionIsGatedAndDoesNoIO() {
         withLidGuardHarness { lid in
+            let path = ConnectivitySimulator()
+            let mirror = ObservedStayAwakeMirror()
             #expect(FinishAlertController.makeIfEnabled(
-                debugBattery: true, lidGuard: lid.controller, sender: RecordingMessageSender()) == nil,
+                debugBattery: true, lidGuard: lid.controller, sender: RecordingMessageSender(),
+                connectivity: path, stayAwakeMirror: mirror) == nil,
                 "debugBattery mode must not construct the finish alert")
             #expect(FinishAlertController.makeIfEnabled(
-                debugBattery: false, lidGuard: nil, sender: RecordingMessageSender()) == nil)
+                debugBattery: false, lidGuard: nil, sender: RecordingMessageSender(),
+                connectivity: path, stayAwakeMirror: mirror) == nil)
             #expect(FinishAlertController.makeIfEnabled(
-                debugBattery: false, lidGuard: lid.controller, sender: nil) == nil)
+                debugBattery: false, lidGuard: lid.controller, sender: nil,
+                connectivity: path, stayAwakeMirror: mirror) == nil)
             let built = FinishAlertController.makeIfEnabled(
-                debugBattery: false, lidGuard: lid.controller, sender: RecordingMessageSender())
+                debugBattery: false, lidGuard: lid.controller, sender: RecordingMessageSender(),
+                connectivity: path, stayAwakeMirror: mirror)
             #expect(built != nil)
             #expect(built?.isWatching == false, "construction alone watches nothing")
+            #expect(!path.isRunning && path.startCount == 0, "construction alone observes no path")
         }
     }
 
@@ -1084,6 +1111,503 @@ struct FinishAlertControllerTests {
 
 private extension TimeInterval {
     var toInt: Int { Int(self) }
+}
+
+// MARK: - Alert-channel healing (issue #23), controller half
+
+extension FinishAlertHarness {
+    /// The simulated path (healing rows only).
+    var path: ConnectivitySimulator {
+        guard let connectivity else { preconditionFailure("a healing row must pass a ConnectivitySimulator") }
+        return connectivity
+    }
+
+    var pathDebounces: [ManualScheduler.Work] { scheduler.pending(delay: AlertHealingTuning.pathDebounceSeconds) }
+
+    /// The path drops and the hop lands; returns the path debounce it armed
+    /// (nil when it armed none).
+    func pathDown() async -> ManualScheduler.Work? {
+        let before = scheduler.scheduled.count
+        path.status = .unsatisfied
+        await drainMain()
+        return scheduler.scheduled.count > before ? scheduler.scheduled.last : nil
+    }
+
+    func pathUp() async {
+        path.status = .satisfied
+        await drainMain()
+    }
+
+    /// A path loss sustained for the full debounce: OFFLINE, anchored at the
+    /// moment the path dropped.
+    func goOfflineByPath() async {
+        let debounce = await pathDown()
+        advance(Int(AlertHealingTuning.pathDebounceSeconds))
+        debounce?.fire()
+        await drainMain()
+    }
+}
+
+/// Alert-channel healing (issue #23) through the REAL controller: the
+/// arming predicate and its zero footprint, the offline hold replacing the
+/// FA-7 retry (each alert sent exactly once more, by the flush), the 429
+/// hold winning over a flush and its restore push, coalesced triggers, the
+/// 12 h held-digest max age, and the lid-lane exemption. Fakes only: the
+/// path is a `ConnectivitySimulator`, the sender a recorder.
+@MainActor
+struct FinishAlertHealingTests {
+    typealias H = FinishAlertHarness
+    static let offline = MessageSendOutcome.sendFailed("this Mac had no internet connection")
+
+    // MARK: Arming + zero footprint
+
+    /// Disarmed: no monitor, nothing scheduled. Stay Awake ON arms ONE fresh
+    /// observation cycle; OFF disarms it again (stop, nothing pending).
+    @Test func healingHasZeroFootprintUntilSomethingIsInPlay() async throws {
+        let path = ConnectivitySimulator()
+        try await withFinishAlertHarness(connectivity: path) { h in
+            h.controller.reconcile()
+            #expect(h.controller.isWatching, "session alerts are armed")
+            #expect(h.controller.healing.phase == .disarmed, "…but nothing is in play")
+            #expect(!path.isRunning && path.startCount == 0)
+            #expect(h.scheduler.scheduled.isEmpty)
+
+            h.stayAwake.value = true
+            h.controller.reconcile()
+            #expect(h.controller.healing.phase == .online)
+            #expect(path.isRunning && path.startCount == 1)
+            await drainMain()
+            #expect(h.scheduler.scheduled.isEmpty, "a satisfied path schedules nothing")
+            h.controller.reconcile()
+            #expect(path.startCount == 1, "idempotent")
+
+            h.stayAwake.value = false
+            h.controller.reconcile()
+            #expect(h.controller.healing.phase == .disarmed)
+            #expect(!path.isRunning && path.stopCount == 1)
+            #expect(h.scheduler.pending.isEmpty, "zero footprint: nothing pending")
+
+            h.stayAwake.value = true
+            h.controller.reconcile()
+            #expect(path.startCount == 2, "every arm cycle starts a fresh observation")
+            h.controller.disarmForShutdown()
+            #expect(!path.isRunning && path.stopCount == 2, "quit stops the monitor")
+            #expect(h.controller.healing.phase == .disarmed)
+        }
+    }
+
+    /// Tracking a session arms healing; the LAST session's finish keeps it
+    /// armed while that alert is still in the lane, and only its completion
+    /// lets it disarm — so the last alert is never sent unprotected.
+    @Test func theLastSessionsFinishIsSentWithHealingStillArmed() async throws {
+        let path = ConnectivitySimulator()
+        let sender = DeferredMessageSender()
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            #expect(h.controller.healing.phase == .online)
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.count == 1)
+            #expect(h.controller.tracked.isEmpty)
+            #expect(h.controller.healing.phase == .online, "the finish is in flight — the lane still holds it")
+            sender.completeAll(.accepted)
+            await drainMain()
+            #expect(h.controller.healing.phase == .disarmed, "nothing in play any more")
+            #expect(!path.isRunning && path.stopCount == 1)
+            #expect(h.scheduler.pending.isEmpty)
+        }
+    }
+
+    /// The lid alert alone arms healing too (Stay Awake ON), with no watcher.
+    @Test func aLidOnlyConfigurationArmsWithoutTheWatcher() async throws {
+        let path = ConnectivitySimulator()
+        try await withFinishAlertHarness(connectivity: path) { h in
+            h.config.finishAlertArmingState = .off
+            h.config.lidAlertArmingState = .armed
+            h.stayAwake.value = true
+            h.controller.reconcile()
+            #expect(!h.controller.isWatching)
+            #expect(h.controller.healing.phase == .online)
+            #expect(path.isRunning)
+            h.config.storedDestination = nil
+            h.controller.reconcile()
+            #expect(h.controller.healing.phase == .disarmed, "nothing to heal toward")
+        }
+    }
+
+    // MARK: Entry, the single send, the flush
+
+    /// Captive portal + FA-7 superseded: the path reads SATISFIED but the
+    /// send fails pre-connect ⇒ OFFLINE, and NO retry is scheduled. However
+    /// long it waits (past the 5 min retry max age too) nothing is re-sent
+    /// into the outage; the menu-open flush sends the alert exactly ONCE
+    /// more, then the restore push.
+    @Test func aPreConnectFailureHoldsInsteadOfRetryingAndTheAlertIsSentExactlyOnceMore() async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender(outcome: Self.offline)
+        let finished = LidGuardMessageKind.sessionFinished(minutes: 42, folded: 1, stillWorking: 0)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 2520)
+            h.controller.reconcile()
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [finished])
+            #expect(h.controller.connectivityOffline, "satisfied path + pre-connect failure ⇒ OFFLINE")
+            #expect(h.pendingRetries.isEmpty, "the offline hold replaces the FA-7 retry")
+            #expect(h.controller.healing.outage?.startedAt == Double(H.t0))
+
+            h.advance(600)
+            for work in h.scheduler.pending { work.fire() }
+            await drainMain()
+            #expect(h.sends.count == 1, "nothing is sent into the outage")
+
+            sender.setOutcome(.accepted)
+            h.controller.menuOpened()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [finished, finished,
+                                            .connectionRestored(minutes: 10, deliveredLate: 1, dropped: 0, lidMissed: 0)])
+            #expect(!h.controller.connectivityOffline)
+            #expect(h.controller.healing.phase == .disarmed, "healed, and nothing in play any more")
+            for work in h.scheduler.pending { work.fire() }
+            await drainMain()
+            #expect(h.sends.count == 3, "exactly once — no straggler retry")
+        }
+    }
+
+    /// A flap shorter than the debounce does nothing; a sustained loss holds.
+    /// A session event while offline is a flush trigger — it fails pre-connect
+    /// and the lane is OFFLINE again with the ORIGINAL anchor; the path coming
+    /// back flushes ONCE and the restore push measures the whole outage.
+    @Test func aSustainedPathLossHoldsAndThePathComingBackFlushesOnce() async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender()
+        let finished = LidGuardMessageKind.sessionFinished(minutes: 11, folded: 1, stillWorking: 1)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.store.put(H.s2, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+
+            let armed = await h.pathDown()
+            let flap = try #require(armed)
+            #expect(flap.delay == AlertHealingTuning.pathDebounceSeconds)
+            await h.pathUp()
+            #expect(flap.cancelled, "a flap shorter than the debounce cancels it")
+            #expect(!h.controller.connectivityOffline)
+
+            await h.goOfflineByPath()
+            #expect(h.controller.connectivityOffline)
+            #expect(h.controller.healing.outage?.startedAt == Double(H.t0), "anchored when the path dropped")
+            #expect(h.sends.isEmpty)
+
+            sender.setOutcome(Self.offline)
+            h.advance(100)
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [finished], "the event triggered ONE attempt")
+            #expect(h.controller.connectivityOffline, "it failed pre-connect: OFFLINE again")
+            #expect(h.controller.healing.outage?.startedAt == Double(H.t0), "the ORIGINAL anchor is kept")
+            #expect(h.pendingRetries.isEmpty)
+
+            sender.setOutcome(.accepted)
+            h.advance(400)
+            await h.pathUp()
+            #expect(h.sends.map(\.kind) == [finished, finished,
+                                            .connectionRestored(minutes: 9, deliveredLate: 1, dropped: 0, lidMissed: 0)],
+                    "502 s from the original anchor ⇒ 9 min")
+            #expect(!h.controller.connectivityOffline)
+            #expect(h.controller.healing.phase == .online, "s2 is still tracked")
+        }
+    }
+
+    /// An outage shorter than the 60 s floor heals silently: the held alert
+    /// is delivered, the restore push is suppressed.
+    @Test func anOutageUnderTheFloorDeliversButSendsNoRestorePush() async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender(outcome: Self.offline)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.store.put(H.s2, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.connectivityOffline)
+            sender.setOutcome(.accepted)
+            h.advance(59)
+            h.controller.menuOpened()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == Array(repeating: .sessionFinished(minutes: 10, folded: 1, stillWorking: 1),
+                                                 count: 2), "delivered, and no restore push under 60 s")
+            #expect(h.controller.healing.phase == .online)
+        }
+    }
+
+    // MARK: The 429 hold wins
+
+    /// A 429 DURING the flush: the queued rest of the flush folds back, the
+    /// restore push is NOT sent into the rate limit — it waits for the hold
+    /// end, where ONE flush carries the refolded alert and then the push.
+    @Test func a429DuringTheFlushRefoldsAndTheRestorePushWaitsForTheHoldEnd() async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender()
+        let waiting = LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 1)
+        let finished = LidGuardMessageKind.sessionFinished(minutes: 20, folded: 1, stillWorking: 2)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            await h.goOfflineByPath()                                   // anchor t0, now t0 + 2
+
+            sender.setOutcome(Self.offline)
+            h.store.put(H.s1, ts: h.now, event: H.waiting)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [waiting], "the event's attempt failed at its first message")
+            #expect(h.controller.connectivityOffline)
+
+            sender.setOutcome(.rejected(429))
+            h.advance(300)
+            await h.pathUp()
+            #expect(h.sends.map(\.kind) == [waiting, waiting], "the flush's first message hit the rate limit")
+            #expect(h.controller.healing.phase == .flushing, "not healed: the flush has not succeeded")
+            #expect(!h.controller.connectivityOffline)
+            let holdEnd = try #require(h.scheduler.pending(delay: FinishAlertTuning.rateLimitHoldSeconds).first)
+            #expect(h.scheduler.pending.count == 1, "only the hold's flush is pending")
+
+            sender.setOutcome(.accepted)
+            h.controller.menuOpened()                                   // not OFFLINE: no bypass
+            await drainMain()
+            #expect(h.sends.count == 2, "nothing — not the refolded alert, not the restore push — bypasses the hold")
+
+            h.advance(600)
+            holdEnd.fire()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [waiting, waiting, finished,
+                                            .connectionRestored(minutes: 6, deliveredLate: 1, dropped: 0, lidMissed: 0)],
+                    "the refolded finish, then the push (302 s ⇒ 6 min; the refused buzz is not counted late)")
+            #expect(h.controller.healing.phase == .online)
+        }
+    }
+
+    /// Lid-only: the restore push itself hits a 429 — it is recomposed and
+    /// sent once, at the hold end, never into the rate limit.
+    @Test func aLidOnlyRestorePushRefusedWith429WaitsForTheHoldEnd() async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender(outcome: .rejected(429))
+        let push = LidGuardMessageKind.connectionRestored(minutes: 5, deliveredLate: 0, dropped: 0, lidMissed: 1)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.config.finishAlertArmingState = .off
+            h.config.lidAlertArmingState = .armed
+            h.stayAwake.value = true
+            h.controller.reconcile()
+            await drainMain()
+            await h.goOfflineByPath()
+            h.config.lidAlertMissCount = 1
+            h.advance(298)
+            await h.pathUp()
+            #expect(h.sends.map(\.kind) == [push], "lid-only: the push goes immediately")
+            let holdEnd = try #require(h.scheduler.pending(delay: FinishAlertTuning.rateLimitHoldSeconds).first)
+            #expect(h.controller.healing.phase == .flushing)
+
+            sender.setOutcome(.accepted)
+            h.advance(600)
+            holdEnd.fire()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [push, push], "recomposed once at the hold end")
+            #expect(h.controller.healing.phase == .online)
+        }
+    }
+
+    // MARK: Coalescing
+
+    /// The path coming back, the menu opening (twice) and a repeated path
+    /// update in the same turn cause ONE flush attempt.
+    @Test func simultaneousFlushTriggersCauseOneAttempt() async throws {
+        let path = ConnectivitySimulator()
+        let sender = DeferredMessageSender()
+        let finished = LidGuardMessageKind.sessionFinished(minutes: 10, folded: 1, stillWorking: 1)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.store.put(H.s2, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            sender.completeAll(Self.offline)
+            await drainMain()
+            #expect(h.controller.connectivityOffline)
+            h.advance(120)
+            let none = await h.pathDown()
+            #expect(none == nil, "OFFLINE: a path loss arms no debounce")
+
+            path.status = .satisfied                // its hop is still queued…
+            h.controller.menuOpened()               // …when the menu opens
+            h.controller.menuOpened()
+            await drainMain()
+            path.redeliver()
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [finished, finished], "ONE attempt for every trigger")
+            #expect(h.controller.healing.phase == .flushing)
+
+            sender.completeAll(.accepted)
+            await drainMain()
+            sender.completeAll(.accepted)
+            await drainMain()
+            #expect(h.sends.map(\.kind) == [finished, finished,
+                                            .connectionRestored(minutes: 2, deliveredLate: 1, dropped: 0, lidMissed: 0)])
+            #expect(h.controller.healing.phase == .online)
+        }
+    }
+
+    /// A path delivery queued before a disarm / re-arm is ignored: only the
+    /// live arm's update arms a debounce.
+    @Test func aPathDeliveryFromAnEarlierArmIsIgnored() async throws {
+        let path = ConnectivitySimulator()
+        try await withFinishAlertHarness(connectivity: path) { h in
+            h.stayAwake.value = true
+            h.controller.reconcile()
+            await drainMain()
+            path.status = .unsatisfied              // hop queued for arm 1
+            h.stayAwake.value = false
+            h.controller.reconcile()                // disarm
+            h.stayAwake.value = true
+            h.controller.reconcile()                // arm 2: delivers .unsatisfied again
+            await drainMain()
+            #expect(path.startCount == 2)
+            #expect(h.pathDebounces.count == 1, "exactly one debounce — arm 1's delivery was dropped")
+        }
+    }
+
+    // MARK: The 12 h held-digest max age
+
+    /// Exactly 12 h: the held alert is delivered late. One second more: it is
+    /// DROPPED (counted), never delivered, and the push says so — dropped
+    /// wins. (The single retry's 5 min max age never applies to the hold.)
+    @Test(arguments: [(43_200, false), (43_201, true)])
+    func theHeldDigestMaxAgeDecidesDeliveredLateOrDropped(_ age: Int, _ dropped: Bool) async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender(outcome: Self.offline)
+        let finished = LidGuardMessageKind.sessionFinished(minutes: 10, folded: 1, stillWorking: 1)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.store.put(H.s2, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.connectivityOffline)
+
+            sender.setOutcome(.accepted)
+            h.advance(age)
+            h.controller.menuOpened()
+            await drainMain()
+            let minutes = (age + 59) / 60
+            if dropped {
+                #expect(h.sends.map(\.kind) == [finished,
+                                                .connectionRestored(minutes: minutes, deliveredLate: 0, dropped: 1,
+                                                                    lidMissed: 0)])
+            } else {
+                #expect(h.sends.map(\.kind) == [finished, finished,
+                                                .connectionRestored(minutes: minutes, deliveredLate: 1, dropped: 0,
+                                                                    lidMissed: 0)])
+            }
+        }
+    }
+
+    // MARK: The lid lane is exempt
+
+    /// The REAL lid guard on the shared sender, the finish alert OFFLINE: the
+    /// WillSleep lid alert is attempted AT ONCE (never gated, queued or
+    /// held), its pre-connect failure is only COUNTED, it is never re-sent at
+    /// the flush, and the restore push reports the miss.
+    @Test func theLidLaneAttemptsAtOnceWhileOfflineAndItsMissIsOnlyCounted() async throws {
+        let suite = "com.muratalkan.napcat.tests.healing.lid.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-healing-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let sender = RecordingMessageSender()
+        let lid = LidGuardHarness(defaults: defaults, sender: sender)
+        lid.arm()
+        defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+        let store = FakeMarkerStore()
+        store.put(H.s1, ts: H.t0 - 600)
+        let path = ConnectivitySimulator()
+        let scheduler = ManualScheduler()
+        let factory = WatcherFactory()
+        let clock = NowBox(Double(H.t0))
+        let finish = FinishAlertController(
+            store: store, markerDirURL: dir, config: lid.controller, sender: sender,
+            makeWatcher: { factory.make($0) }, scheduler: scheduler, now: { clock.value },
+            connectivity: path, stayAwakeOn: { false })
+        finish.reconcile()
+        await drainMain()
+        #expect(finish.isWatching && finish.healing.phase == .online)
+
+        path.status = .unsatisfied
+        await drainMain()
+        clock.value += AlertHealingTuning.pathDebounceSeconds
+        scheduler.pending(delay: AlertHealingTuning.pathDebounceSeconds).first?.fire()
+        await drainMain()
+        #expect(finish.connectivityOffline)
+
+        sender.setOutcome(Self.offline)
+        let ack = lid.source.deliver(.systemWillSleep)
+        #expect(ack.performedCount == 1)
+        #expect(sender.sends.map(\.kind) == [.lidAlert(busySessionCount: 1)], "attempted AT ONCE while offline")
+        #expect(lid.controller.lidAlertMissCount == 1, "its pre-connect failure is counted")
+        #expect(finish.connectivityOffline, "the lid lane neither reads nor moves the healing state")
+        #expect(finish.healing.phase == .offline)
+
+        lid.source.deliver(.systemHasPoweredOn)
+        sender.setOutcome(.accepted)
+        clock.value += 298
+        path.status = .satisfied
+        await drainMain()
+        #expect(sender.sends.map(\.kind) == [.lidAlert(busySessionCount: 1),
+                                             .connectionRestored(minutes: 5, deliveredLate: 0, dropped: 0, lidMissed: 1)])
+        #expect(sender.sends.filter { LidGuardPolicy.lane(for: $0.kind) == .lid }.count == 1,
+                "the missed lid alert is never retried or re-sent")
+        #expect(!finish.connectivityOffline)
+        finish.disarmForShutdown()
+    }
+
+    /// Lid-only and nothing to report: the outage heals with NO push, and
+    /// switching Stay Awake off mid-outage disarms with nothing pending.
+    @Test func aLidOnlyOutageWithoutMissesHealsSilentlyAndDisarmsCleanly() async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender()
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.config.finishAlertArmingState = .off
+            h.config.lidAlertArmingState = .armed
+            h.stayAwake.value = true
+            h.controller.reconcile()
+            await drainMain()
+            await h.goOfflineByPath()
+            #expect(h.controller.connectivityOffline)
+            h.advance(600)
+            await h.pathUp()
+            #expect(h.sends.isEmpty, "no content ⇒ no restore push")
+            #expect(h.controller.healing.phase == .online)
+
+            await h.goOfflineByPath()
+            #expect(h.controller.connectivityOffline)
+            h.stayAwake.value = false
+            h.controller.reconcile()
+            #expect(h.controller.healing.phase == .disarmed, "an outage with nothing held does not pin the monitor")
+            #expect(!h.controller.connectivityOffline, "disarmed ⇒ no offline line")
+            #expect(!path.isRunning)
+            #expect(h.scheduler.pending.isEmpty)
+        }
+    }
 }
 
 // MARK: - The real kqueue watcher (integration, TEMP dirs only)
