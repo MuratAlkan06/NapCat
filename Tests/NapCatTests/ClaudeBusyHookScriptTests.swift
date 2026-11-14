@@ -569,28 +569,65 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
-    /// Canary (H2): drop the NUL mapping and the poisoned value collapses into
-    /// permission_prompt again — the marker is KEPT as waiting. Proves the
-    /// NUL rows above have teeth (bash 3.2 really does drop the byte).
+    /// Whether this machine's plutil accepts a JSON document carrying a
+    /// `\u0000` escape under the hook's own gate command. macOS 15's does;
+    /// newer releases reject the whole document ("Unsupported escaped
+    /// (unicode) null").
+    private func plutilAcceptsNullEscape(home: URL) throws -> Bool {
+        let probe = home.appendingPathComponent("null-escape-probe.json")
+        try Data(#"{"k":"a\u0000b"}"#.utf8).write(to: probe)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/plutil")
+        process.arguments = ["-convert", "json", "-o", "/dev/null", probe.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    /// Canary (H2, hook v6): strip BOTH NUL mappings — the `\u0000` escape
+    /// rewrite on the stdin capture and the `tr` on the extracted type — and
+    /// the poisoned value is no longer rejected as `invalid`. What happens
+    /// instead depends on this OS's plutil, probed at runtime: if it accepts
+    /// the escape, bash 3.2 drops the NUL and the type collapses into a forged
+    /// `waiting` keep; if it rejects it, the whole event is dropped at the
+    /// stdin gate (`stdin-not-json`, the marker left as it was). Either way
+    /// the NUL rows above have teeth on this OS.
     @Test func nulMappingCanary() throws {
         let original = try Self.read(Self.hookScriptURL)
-        let mapping = " | LC_ALL=C /usr/bin/tr '\\000' '#'"
-        let mutant = original.replacingOccurrences(of: mapping, with: "")
-        #expect(mutant != original, "canary setup: the NUL mapping must exist to be removed")
+        let trMapping = " | LC_ALL=C /usr/bin/tr '\\000' '#'"
+        let escapeMappedCapture = "  head -c \"$MAX_STDIN\" | LC_ALL=C /usr/bin/sed "
+        var lines = original.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let captures = lines.indices.filter { lines[$0].hasPrefix(escapeMappedCapture) }
+        try #require(captures.count == 1, "canary setup: exactly one escape-mapping stdin capture must exist")
+        lines[captures[0]] = "  head -c \"$MAX_STDIN\" >\"$payload\" 2>/dev/null"  // the pre-v6 capture
+        let mutant = lines.joined(separator: "\n").replacingOccurrences(of: trMapping, with: "")
+        #expect(original.contains(trMapping), "canary setup: the tr NUL mapping must exist to be removed")
+        #expect(!mutant.contains(trMapping) && !mutant.contains(escapeMappedCapture),
+                "canary setup: both mappings must be gone from the mutant")
 
-        withHome { home in
+        try withThrowingHome { home in
             let session = "c1000009-0029-4abc-8def-000000000029"
             let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
-            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            try mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
             _ = runScript(mutantURL, json: promptJSON(session), home: home)
             let marker = markerDir(home).appendingPathComponent(session)
             #expect(waitForFile(marker, present: true), "canary setup: marker must be set first")
 
             let poisoned = notificationJSON(session, notificationType: #""permission\u0000_prompt""#)
             _ = runScript(mutantURL, json: poisoned, home: home)
-            let token = ClaudeBusyConstants.waitingEventToken
-            #expect(waitForMarkerEvent(marker, event: token).contains("event=\(token) "),
-                    "without the NUL mapping the poisoned type must pass as waiting (so the H2 rows have teeth)")
+            if try plutilAcceptsNullEscape(home: home) {
+                let token = ClaudeBusyConstants.waitingEventToken
+                #expect(waitForMarkerEvent(marker, event: token).contains("event=\(token) "),
+                        "plutil accepts the escape: without the mappings the poisoned type must pass as waiting")
+            } else {
+                let log = hookLog(home)
+                #expect(log.hasSuffix(" ignore reason=stdin-not-json\n"),
+                        "plutil rejects the escape: without the mappings the event must be dropped, got \(String(reflecting: log))")
+                #expect(!log.contains("clear session=") && FileManager.default.fileExists(atPath: marker.path),
+                        "the dropped event must leave the marker untouched")
+            }
         }
     }
 
@@ -755,6 +792,33 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    /// Hook v6: newer plutil rejects a whole document carrying a `\u0000`
+    /// escape, so a NUL in a field the hook never reads used to drop a Stop
+    /// at the gate and leave the marker stuck. The escape is mapped before
+    /// the gate now: the Stop still CLEARS, logged exactly as a clean one —
+    /// for a top-level field and for one nested in a background task.
+    @Test func aNullEscapeInAnUnreadFieldNoLongerDropsTheEvent() {
+        let extras = [
+            #""last_assistant_message":"bin\u0000dump""#,
+            #""background_tasks":[{"id":"a","status":"completed","note":"x\u0000y"}]"#,
+        ]
+        for extra in extras {
+            withHome { home in
+                let session = "5a000004-0074-4abc-8def-000000000074"
+                primeMarker(session, home: home)
+                let json = #"{"hook_event_name":"Stop","session_id":"\#(session)",\#(extra)}"#
+                let result = runHook(json: json, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(extra)")
+                #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                        "a Stop with a null escape in \(extra) must still CLEAR the marker")
+                let log = hookLog(home)
+                #expect(log.hasSuffix(" clear session=\(session) event=Stop\n"), "\(String(reflecting: log))")
+                #expect(!log.contains("stdin-not-json"), "\(extra) must pass the stdin gate")
+                #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the payload is removed")
+            }
+        }
+    }
+
     /// …and the gate still rejects real garbage, logged as before.
     @Test func realGarbageStillFailsTheStdinGate() {
         let garbage = ["not json at all", "", #"{"hook_event_name":"Stop","session_id":"5a000002"#, "null", "{,}"]
@@ -878,7 +942,11 @@ struct ClaudeBusyHookScriptTests {
         let original = try Self.read(Self.hookScriptURL)
         try #require(Self.payloadTrapFailures(original).isEmpty, "canary baseline must be clean")
         let exitTrap = "  trap 'rm -f \"$payload\" 2>/dev/null' EXIT\n"
-        let read = "  head -c \"$MAX_STDIN\" >\"$payload\" 2>/dev/null\n"
+        // The stdin read is whatever capture pipeline the script ships (hook
+        // v6 pipes it through the `\u0000` escape mapping), taken verbatim.
+        let read = String(try #require(original.split(separator: "\n").first {
+            $0.hasPrefix("  head -c \"$MAX_STDIN\"")
+        })) + "\n"
         let mutants: [(String, (String) -> String)] = [
             ("EXIT trap dropped", { $0.replacingOccurrences(of: exitTrap, with: "") }),
             ("TERM trap resumes instead of exiting", {
@@ -989,8 +1057,8 @@ struct ClaudeBusyHookScriptTests {
         let script = try Self.read(Self.hookScriptURL)
         #expect(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion).isEmpty,
                 "\(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion))")
-        // 4 → 5: a post-Stop CLEAR-class Notification no longer clears the marker.
-        #expect(ClaudeBusyConstants.hookVersion == 5, "the contract value of this slice")
+        // 5 → 6: a `\u0000` escape on stdin is mapped before the plutil gate.
+        #expect(ClaudeBusyConstants.hookVersion == 6, "the contract value of this slice")
         #expect(ClaudeBusyConstants.hookVersionStampPrefix == "# napcat-hook-version: ")
     }
 
