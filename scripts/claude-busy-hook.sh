@@ -102,6 +102,8 @@
 #     `#` (U+0023, hook v6): newer macOS plutil rejects the whole document on
 #     that escape ("Unsupported escaped (unicode) null"), so a NUL in ANY
 #     field — even one this hook never reads — would otherwise drop the event.
+#     Every surrogate escape (`\uD800`-`\uDFFF`) is likewise rewritten as the
+#     escape for U+FFFD, since that plutil rejects a LONE one the same way.
 #   * The payload temp file is removed on every path; while it exists a trap
 #     removes it on EXIT, and on TERM/INT removes it and exits 0 (a hook killed
 #     at Claude's timeout never strands it, and still exits 0). The 60 s temp
@@ -331,12 +333,21 @@ main() {
   # payload is gone, so the rest of the run keeps the default dispositions.
   trap 'rm -f "$payload" 2>/dev/null' EXIT
   trap 'rm -f "$payload" 2>/dev/null; exit 0' TERM INT
-  # Rewrite the six-character JSON escape `\u0000` as the escape for `#`
-  # (U+0023) BEFORE the gate: newer macOS plutil rejects the whole document
-  # on it ("Unsupported escaped (unicode) null"), which would drop the event
-  # and could leave a marker stuck. A literal `\\u0000` text also becomes `\\u0023` — harmless,
-  # since no field this hook reads can legitimately contain a backslash.
-  head -c "$MAX_STDIN" | LC_ALL=C /usr/bin/sed 's/\\u0000/\\u0023/g' >"$payload" 2>/dev/null
+  # Map two JSON escapes BEFORE the gate (hook v6): newer macOS plutil rejects
+  # the whole document on either, which would drop the event and could leave a
+  # marker stuck.
+  #   * `\u0000` becomes the escape for `#` (U+0023) — "Unsupported escaped
+  #     (unicode) null".
+  #   * Every surrogate escape (`\uD800`-`\uDFFF`) becomes the escape for
+  #     U+FFFD: a LONE one is rejected, and JSON.stringify emits one when a
+  #     string is cut mid-emoji. A valid pair is mapped too (two U+FFFD) — an
+  #     accepted tradeoff, since no field this hook reads (event, session,
+  #     type, task status) can legitimately contain one.
+  # Each rewrite is six characters for six, so the payload never outgrows the
+  # cap, and the two patterns cannot overlap. A literal `\\u0000` or `\\ud83d`
+  # text is rewritten too — harmless, since no field this hook reads can
+  # legitimately contain a backslash.
+  head -c "$MAX_STDIN" | LC_ALL=C /usr/bin/sed -E -e 's/\\u0000/\\u0023/g' -e 's/\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\ufffd/g' >"$payload" 2>/dev/null
   # JSON validity, not plist convertibility: `-convert xml1` rejects any JSON
   # null, so one nullable field would drop the whole event.
   if ! plutil -convert json -o /dev/null "$payload" 2>/dev/null; then
