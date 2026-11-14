@@ -146,7 +146,7 @@ enum ClaudeBusyConstants {
     /// shell script's `# napcat-hook-version: N` stamp (parity lint); bump
     /// both whenever the hook's behavior changes, so an installed copy left
     /// behind by an earlier install reads as out of date in the menu.
-    static let hookVersion = 5
+    static let hookVersion = 6
 
     /// The stamp line's fixed prefix; the rest of the line is the decimal
     /// version. It must sit within the first `installedHookReadBytes` bytes.

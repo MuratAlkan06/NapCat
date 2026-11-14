@@ -1,5 +1,5 @@
 #!/bin/bash
-# napcat-hook-version: 5
+# napcat-hook-version: 6
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
 #
@@ -98,6 +98,12 @@
 #     `plutil -convert json` — NOT `-convert xml1`, which rejects any JSON
 #     `null` (plist has no null), so a nullable field added to a payload would
 #     silently drop the whole event. A null-valued field reads as absent.
+#     Before that gate every `\u0000` escape is rewritten as the escape for
+#     `#` (U+0023, hook v6): newer macOS plutil rejects the whole document on
+#     that escape ("Unsupported escaped (unicode) null"), so a NUL in ANY
+#     field — even one this hook never reads — would otherwise drop the event.
+#     Every surrogate escape (`\uD800`-`\uDFFF`) is likewise rewritten as the
+#     escape for U+FFFD, since that plutil rejects a LONE one the same way.
 #   * The payload temp file is removed on every path; while it exists a trap
 #     removes it on EXIT, and on TERM/INT removes it and exits 0 (a hook killed
 #     at Claude's timeout never strands it, and still exits 0). The 60 s temp
@@ -114,8 +120,8 @@
 # best-effort (recorded `unknown` when SUPERCONDUCTOR_MANAGED_AGENT is absent);
 # `src` is DEBUG-ONLY and never a policy input.
 #
-# Stock macOS only: bash 3.2, plutil, date, stat, mktemp, head, grep, tr. No
-# jq, no sudo.
+# Stock macOS only: bash 3.2, plutil, date, stat, mktemp, head, grep, tr,
+# sed. No jq, no sudo.
 
 umask 077
 
@@ -254,8 +260,11 @@ has_running_background_task() {
 # fails the newline guard instead of silently passing as permission_prompt.
 # bash 3.2 silently DROPS NUL bytes inside $(…), so a "permission\u0000_prompt"
 # value would otherwise collapse into permission_prompt: every NUL is mapped to
-# `#` first (a byte NTYPE_RE rejects ⇒ `invalid`). pipefail keeps plutil's own
-# status as the pipeline's, so a non-string still takes the `?` branch.
+# `#` first (a byte NTYPE_RE rejects ⇒ `invalid`). Since hook v6 the stdin
+# capture in main() already maps the `\u0000` escape to `#`, so no NUL should
+# reach this point; the mapping here stays as defence in depth. pipefail keeps
+# plutil's own status as the pipeline's, so a non-string still takes the `?`
+# branch.
 # On failure plutil writes its error to stdout, so the capture is discarded.
 #   $1 payload file
 notification_type() {
@@ -324,7 +333,21 @@ main() {
   # payload is gone, so the rest of the run keeps the default dispositions.
   trap 'rm -f "$payload" 2>/dev/null' EXIT
   trap 'rm -f "$payload" 2>/dev/null; exit 0' TERM INT
-  head -c "$MAX_STDIN" >"$payload" 2>/dev/null
+  # Map two JSON escapes BEFORE the gate (hook v6): newer macOS plutil rejects
+  # the whole document on either, which would drop the event and could leave a
+  # marker stuck.
+  #   * `\u0000` becomes the escape for `#` (U+0023) — "Unsupported escaped
+  #     (unicode) null".
+  #   * Every surrogate escape (`\uD800`-`\uDFFF`) becomes the escape for
+  #     U+FFFD: a LONE one is rejected, and JSON.stringify emits one when a
+  #     string is cut mid-emoji. A valid pair is mapped too (two U+FFFD) — an
+  #     accepted tradeoff, since no field this hook reads (event, session,
+  #     type, task status) can legitimately contain one.
+  # Each rewrite is six characters for six, so the payload never outgrows the
+  # cap, and the two patterns cannot overlap. A literal `\\u0000` or `\\ud83d`
+  # text is rewritten too — harmless, since no field this hook reads can
+  # legitimately contain a backslash.
+  head -c "$MAX_STDIN" | LC_ALL=C /usr/bin/sed -E -e 's/\\u0000/\\u0023/g' -e 's/\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\ufffd/g' >"$payload" 2>/dev/null
   # JSON validity, not plist convertibility: `-convert xml1` rejects any JSON
   # null, so one nullable field would drop the whole event.
   if ! plutil -convert json -o /dev/null "$payload" 2>/dev/null; then
