@@ -569,13 +569,14 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
-    /// Whether this machine's plutil accepts a JSON document carrying a
-    /// `\u0000` escape under the hook's own gate command. macOS 15's does;
-    /// newer releases reject the whole document ("Unsupported escaped
-    /// (unicode) null").
-    private func plutilAcceptsNullEscape(home: URL) throws -> Bool {
-        let probe = home.appendingPathComponent("null-escape-probe.json")
-        try Data(#"{"k":"a\u0000b"}"#.utf8).write(to: probe)
+    /// Whether this machine's plutil accepts a JSON document carrying the
+    /// JSON `escape` (a `\u0000`, or a lone surrogate) under the hook's own
+    /// gate command. macOS 15's accepts `\u0000`; newer releases reject the
+    /// whole document ("Unsupported escaped (unicode) null"), and Tahoe's
+    /// rejects a lone surrogate the same way.
+    private func plutilAcceptsEscape(_ escape: String, home: URL) throws -> Bool {
+        let probe = home.appendingPathComponent("escape-probe.json")
+        try Data(#"{"k":"a\#(escape)b"}"#.utf8).write(to: probe)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/plutil")
         process.arguments = ["-convert", "json", "-o", "/dev/null", probe.path]
@@ -617,7 +618,7 @@ struct ClaudeBusyHookScriptTests {
 
             let poisoned = notificationJSON(session, notificationType: #""permission\u0000_prompt""#)
             _ = runScript(mutantURL, json: poisoned, home: home)
-            if try plutilAcceptsNullEscape(home: home) {
+            if try plutilAcceptsEscape(#"\u0000"#, home: home) {
                 let token = ClaudeBusyConstants.waitingEventToken
                 #expect(waitForMarkerEvent(marker, event: token).contains("event=\(token) "),
                         "plutil accepts the escape: without the mappings the poisoned type must pass as waiting")
@@ -815,6 +816,168 @@ struct ClaudeBusyHookScriptTests {
                 #expect(log.hasSuffix(" clear session=\(session) event=Stop\n"), "\(String(reflecting: log))")
                 #expect(!log.contains("stdin-not-json"), "\(extra) must pass the stdin gate")
                 #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the payload is removed")
+            }
+        }
+    }
+
+    /// Hook v6: Tahoe's plutil also rejects a whole document carrying a LONE
+    /// surrogate escape (JSON.stringify emits one when a string is cut
+    /// mid-emoji), so such a Stop used to be dropped at the gate and leave the
+    /// marker stuck. Every surrogate escape is mapped to U+FFFD before the
+    /// gate now, so the payload passes it whatever this OS's plutil makes of
+    /// lone surrogates (no probe needed): the Stop CLEARS, logged exactly as a
+    /// clean one — for a lone high and a lone low surrogate, top-level and
+    /// nested, and for a valid pair (mapped too, by design).
+    @Test func aSurrogateEscapeInAnUnreadFieldNoLongerDropsTheEvent() {
+        let pair = "\\ud83d\\ude00"  // a VALID pair (U+1F600), as its two JSON escapes
+        let extras = [
+            #""last_assistant_message":"cut \ud83d""#,
+            #""background_tasks":[{"id":"a","status":"completed","note":"\ude00 tail"}]"#,
+            #""last_assistant_message":"ok \#(pair)""#,
+        ]
+        for extra in extras {
+            withHome { home in
+                let session = "5a000005-0075-4abc-8def-000000000075"
+                primeMarker(session, home: home)
+                let json = #"{"hook_event_name":"Stop","session_id":"\#(session)",\#(extra)}"#
+                let result = runHook(json: json, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(extra)")
+                #expect(waitForFile(markerDir(home).appendingPathComponent(session), present: false),
+                        "a Stop with a surrogate escape in \(extra) must still CLEAR the marker")
+                let log = hookLog(home)
+                #expect(log.hasSuffix(" clear session=\(session) event=Stop\n"), "\(String(reflecting: log))")
+                #expect(!log.contains("stdin-not-json"), "\(extra) must pass the stdin gate")
+                #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the payload is removed")
+            }
+        }
+    }
+
+    /// Canary (hook v6): strip ONLY the surrogate mapping and replay the
+    /// lone-surrogate Stop. Where plutil rejects a lone surrogate (probed at
+    /// runtime — Tahoe does) the event is dropped at the gate and the marker
+    /// is left stuck, so the row above has teeth there; a plutil that accepts
+    /// one never had the defect, and the Stop still clears.
+    @Test func surrogateMappingCanary() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let surrogateMapping = #" -e 's/\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\ufffd/g'"#
+        let mutant = original.replacingOccurrences(of: surrogateMapping, with: "")
+        #expect(mutant != original, "canary setup: the surrogate mapping must exist to be removed")
+        #expect(mutant.contains(#"/usr/bin/sed -E -e 's/\\u0000/\\u0023/g' >"$payload""#),
+                "canary setup: the NUL mapping must stay in the mutant")
+
+        try withThrowingHome { home in
+            let session = "5a000007-0077-4abc-8def-000000000077"
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            _ = runScript(mutantURL, json: promptJSON(session), home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            #expect(waitForFile(marker, present: true), "canary setup: marker must be set first")
+
+            let json = #"{"hook_event_name":"Stop","session_id":"\#(session)","last_assistant_message":"cut \ud83d"}"#
+            _ = runScript(mutantURL, json: json, home: home)
+            let log = hookLog(home)
+            if try plutilAcceptsEscape(#"\ud83d"#, home: home) {
+                #expect(waitForFile(marker, present: false) && log.hasSuffix(" clear session=\(session) event=Stop\n"),
+                        "plutil accepts a lone surrogate: the Stop must still clear, got \(String(reflecting: log))")
+            } else {
+                #expect(log.hasSuffix(" ignore reason=stdin-not-json\n"),
+                        "plutil rejects a lone surrogate: without the mapping the Stop must be dropped, got \(String(reflecting: log))")
+                #expect(FileManager.default.fileExists(atPath: marker.path), "the dropped Stop leaves the marker stuck")
+            }
+        }
+    }
+
+    /// Runs the SHIPPED stdin-capture line, verbatim (with the script's own
+    /// MAX_STDIN line), on `json`; returns the mapped payload's byte count
+    /// and the decoded text of its `k` field (nil when plutil cannot read it).
+    private func runShippedCapture(_ json: String, home: URL) throws -> (bytes: Int, text: String?) {
+        let lines = try Self.read(Self.hookScriptURL).split(separator: "\n").map(String.init)
+        let cap = try #require(lines.first { $0.hasPrefix("MAX_STDIN=") })
+        let capture = try #require(lines.first { $0.hasPrefix("  head -c \"$MAX_STDIN\"") })
+        let payload = home.appendingPathComponent("mapped-payload.json")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", cap + "\n" + capture]
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "payload": payload.path]
+        let stdin = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        stdin.fileHandleForWriting.write(Data(json.utf8))
+        try stdin.fileHandleForWriting.close()
+        process.waitUntilExit()
+        let bytes = try Data(contentsOf: payload).count
+
+        let extract = Process()
+        extract.executableURL = URL(fileURLWithPath: "/usr/bin/plutil")
+        extract.arguments = ["-extract", "k", "raw", "-o", "-", payload.path]
+        let out = Pipe()
+        extract.standardOutput = out
+        extract.standardError = FileHandle.nullDevice
+        try extract.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        extract.waitUntilExit()
+        guard extract.terminationStatus == 0, var text = String(data: data, encoding: .utf8) else { return (bytes, nil) }
+        if text.hasSuffix("\n") { text.removeLast() }
+        return (bytes, text)
+    }
+
+    /// The capture's mapping, row by row, through the shipped line: the
+    /// decoded text afterwards, and a payload exactly as long as the input
+    /// (every rewrite is six characters for six, so the cap still holds). An
+    /// escaped backslash before `u0000` / `ud83d` makes it TEXT, which is
+    /// rewritten harmlessly; `\\\u0000` is a backslash plus `#`; the surrogate
+    /// range matches either hex case and stops exactly at D800 and DFFF.
+    @Test func theStdinCaptureMapsNulAndSurrogateEscapesInPlace() throws {
+        let pair = "\\ud83d\\ude00"   // a valid pair (U+1F600)
+        let edges = "\\uD7FF\\uE000"  // the code points either side of the surrogate range
+        let rows: [(json: String, text: String)] = [
+            (#"{"k":"a\u0000b"}"#, "a#b"),
+            (#"{"k":"\\u0000"}"#, "\\u0023"),              // escaped backslash + text
+            (#"{"k":"\\\u0000"}"#, "\\#"),                 // escaped backslash, then a NUL escape
+            (#"{"k":"cut \ud83d"}"#, "cut \u{FFFD}"),      // lone high surrogate
+            (#"{"k":"\udc00x"}"#, "\u{FFFD}x"),            // lone low surrogate
+            (#"{"k":"\uDbFf"}"#, "\u{FFFD}"),              // mixed-case hex
+            (#"{"k":"\#(pair)"}"#, "\u{FFFD}\u{FFFD}"),    // a valid pair is mapped too
+            (#"{"k":"\\ud83d"}"#, "\\ufffd"),              // escaped backslash + text
+            (#"{"k":"\#(edges)"}"#, "\u{D7FF}\u{E000}"),   // outside the range: untouched
+        ]
+        try withThrowingHome { home in
+            for (json, text) in rows {
+                let mapped = try runShippedCapture(json, home: home)
+                #expect(mapped.text == text,
+                        "\(json) must read back as \(String(reflecting: text)), got \(String(reflecting: mapped.text))")
+                #expect(mapped.bytes == json.utf8.count, "\(json): the rewrite must be length-preserving")
+            }
+        }
+    }
+
+    /// A `\u0000` escape in a field the hook DOES read becomes `#`, which its
+    /// strict checks reject — so a NUL that bash 3.2 would drop inside $(…)
+    /// can never splice a valid value together: "St\u0000op" is logged as
+    /// `unhandled-event event=invalid`, a session id with a NUL inside is a
+    /// `bad-session`, and the marker a forged Stop would clear survives both.
+    @Test func aNulEscapeCannotForgeTheEventNameOrTheSession() {
+        let session = "5a000006-0076-4abc-8def-000000000076"
+        let nul = #"\u0000"#
+        let poisonedSession = String(session.prefix(24)) + nul + String(session.dropFirst(24))
+        let cases: [(json: String, expected: String)] = [
+            (#"{"hook_event_name":"St\#(nul)op","session_id":"\#(session)"}"#,
+             " ignore reason=unhandled-event event=invalid\n"),
+            (#"{"hook_event_name":"Stop","session_id":"\#(poisonedSession)"}"#,
+             " ignore reason=bad-session event=Stop\n"),
+        ]
+        for (json, expected) in cases {
+            withHome { home in
+                primeMarker(session, home: home)
+                let result = runHook(json: json, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(json)")
+                let log = hookLog(home)
+                #expect(log.hasSuffix(expected), "\(json) must log '\(expected)', got \(String(reflecting: log))")
+                #expect(!log.contains("clear session="), "\(json) must never pass as a Stop")
+                #expect(FileManager.default.fileExists(atPath: markerDir(home).appendingPathComponent(session).path),
+                        "\(json): the marker a forged Stop would clear must survive")
             }
         }
     }
