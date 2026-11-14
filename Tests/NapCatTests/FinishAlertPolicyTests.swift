@@ -25,6 +25,11 @@ struct FinishAlertPolicyTests {
         IdentifiedBusyMarker(sessionID: id, marker: BusyMarker(ts: ts, event: event, pid: 1, src: "unknown"))
     }
 
+    /// A hook v7 marker: the same, plus the RAW `ep` text (nil = a v6 marker).
+    static func marker(_ id: String, _ ts: Int, _ event: String, ep: String?) -> IdentifiedBusyMarker {
+        IdentifiedBusyMarker(sessionID: id, marker: BusyMarker(ts: ts, event: event, pid: 1, src: "unknown", ep: ep))
+    }
+
     static func session(firstSeen: Int, exact: Bool, lastTs: Int, lastEvent: String = ups,
                         buzzed: Bool = false) -> TrackedSession {
         TrackedSession(firstSeen: firstSeen, exactStart: exact, lastTs: lastTs, lastEvent: lastEvent,
@@ -502,6 +507,168 @@ struct FinishAlertPolicyTests {
                                                 now: Self.t0 + 150)
         #expect(resumed.events.isEmpty)
         #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting-after-stop ends the episode")
+    }
+
+    // MARK: - Hook v7: the episode start (`ep`), validated here only
+
+    struct EpisodeStartRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let raw: String?
+        let expected: EpisodeStartReading
+        var testDescription: String { "\(id): \(raw.map { String($0.prefix(24)) } ?? "nil") → \(expected)" }
+    }
+
+    /// Judged at `t0`. Row ids are LOCKED.
+    static let episodeStartRows: [EpisodeStartRow] = {
+        let t0 = Self.t0, cap = Self.cap
+        return [
+            EpisodeStartRow(id: "P1 absent (hook v6)", raw: nil, expected: .absent),
+            EpisodeStartRow(id: "P2 valid", raw: String(t0 - 600), expected: .valid(t0 - 600)),
+            EpisodeStartRow(id: "P3 exactly now", raw: String(t0), expected: .valid(t0)),
+            EpisodeStartRow(id: "P4 exactly the 12 h horizon", raw: String(t0 - cap), expected: .valid(t0 - cap)),
+            EpisodeStartRow(id: "P5 one second past the horizon", raw: String(t0 - cap - 1), expected: .invalid),
+            EpisodeStartRow(id: "P6 one second in the future", raw: String(t0 + 1), expected: .invalid),
+            EpisodeStartRow(id: "P7 empty", raw: "", expected: .invalid),
+            EpisodeStartRow(id: "P8 zero", raw: "0", expected: .invalid),
+            // Signs, letters, spaces and non-ASCII digits fail the ASCII-digit
+            // check (Int alone would accept a sign).
+            EpisodeStartRow(id: "P9 negative", raw: "-600", expected: .invalid),
+            EpisodeStartRow(id: "P10 plus sign", raw: "+179999940", expected: .invalid),
+            EpisodeStartRow(id: "P11 letters", raw: "abc", expected: .invalid),
+            EpisodeStartRow(id: "P12 hex", raw: "0x6b49d200", expected: .invalid),
+            EpisodeStartRow(id: "P13 trailing junk", raw: "179999940s", expected: .invalid),
+            EpisodeStartRow(id: "P14 inner space", raw: "17999 9940", expected: .invalid),
+            EpisodeStartRow(id: "P15 non-ASCII digits", raw: "١٢٣٤٥", expected: .invalid),
+            EpisodeStartRow(id: "P16 fullwidth digits", raw: "１２３", expected: .invalid),
+            // Eleven characters that WOULD convert to a valid, fresh Int: only
+            // the length check (run before the conversion) rejects them.
+            EpisodeStartRow(id: "P17 11 chars, leading zero", raw: "0\(t0 - 600)", expected: .invalid),
+            EpisodeStartRow(id: "P18 past Int.max", raw: "99999999999999999999", expected: .invalid),
+            EpisodeStartRow(id: "P19 huge", raw: String(repeating: "9", count: 100_000), expected: .invalid),
+            EpisodeStartRow(id: "P20 10 digits, leading zero, too old", raw: "0001800000", expected: .invalid),
+            EpisodeStartRow(id: "P21 NUL inside", raw: "17999\u{0}9400", expected: .invalid),
+        ]
+    }()
+
+    @Test(arguments: episodeStartRows)
+    func episodeStartTable(_ row: EpisodeStartRow) {
+        #expect(FinishAlertPolicy.episodeStart(row.raw, now: Self.t0) == row.expected, "\(row.id)")
+    }
+
+    @Test func episodeStartDigitBoundIsTheParityConstant() {
+        #expect(ClaudeBusyConstants.episodeStartMaxDigits == 10)
+        // The largest 10-digit value parses; it is only too far in the future.
+        #expect(FinishAlertPolicy.episodeStart("9999999999", now: 9_999_999_999) == .valid(9_999_999_999))
+        #expect(FinishAlertPolicy.episodeStart("1", now: 1) == .valid(1), "a 1-digit start at the same now")
+    }
+
+    /// The anchor of an id seen for the FIRST time — at the arm-time baseline
+    /// or in a diff — prefers a valid `ep` (exact, whatever the token); an
+    /// absent `ep` keeps the pre-v7 rule; a rejected one falls back to it AND
+    /// is counted (counts only — the reading never carries the raw value).
+    @Test func aFirstSightingPrefersAValidEpisodeStart() {
+        let t = Self.t0
+        let current = [
+            Self.marker(Self.s1, t - 60, "Stop", ep: String(t - 1_800)),          // valid: exact from ep
+            Self.marker(Self.s2, t - 60, "Stop", ep: nil),                         // v6: ts, inexact
+            Self.marker(Self.s3, t - 60, Self.ups, ep: "abc"),                    // invalid: ts, exact (UPS)
+            Self.marker(Self.s4, t - 30, Self.waiting, ep: String(t + 60)),       // future: ts, inexact
+            Self.marker(Self.s5, t - 60, "Stop", ep: String(t - Self.cap - 1)),   // too old: ts, inexact
+        ]
+        let expected: [String: TrackedSession] = [
+            Self.s1: Self.session(firstSeen: t - 1_800, exact: true, lastTs: t - 60, lastEvent: "Stop"),
+            Self.s2: Self.session(firstSeen: t - 60, exact: false, lastTs: t - 60, lastEvent: "Stop"),
+            Self.s3: Self.session(firstSeen: t - 60, exact: true, lastTs: t - 60),
+            Self.s4: Self.session(firstSeen: t - 30, exact: false, lastTs: t - 30, lastEvent: Self.waiting),
+            Self.s5: Self.session(firstSeen: t - 60, exact: false, lastTs: t - 60, lastEvent: "Stop"),
+        ]
+        #expect(FinishAlertPolicy.baseline(current: current, now: t) == expected)
+        #expect(FinishAlertPolicy.invalidEpisodeStartCount(in: current, now: t) == 3, "abc, future, too old")
+
+        let observation = FinishAlertPolicy.observe(previous: [:], current: current, now: t)
+        #expect(observation.tracked == expected, "a new id in a diff follows the same rule as the baseline")
+        #expect(observation.invalidEpisodeStarts == 3)
+        #expect(observation.suppressed == [.underMinimumRun], "s4: new id already waiting, 60 s floor not met")
+        #expect(observation.events.isEmpty)
+
+        // Counted once, at first sight: the same markers again count nothing.
+        let again = FinishAlertPolicy.observe(previous: observation.tracked, current: current, now: t + 30)
+        #expect(again.invalidEpisodeStarts == 0)
+        #expect(FinishAlertPolicy.invalidEpisodeStartCount(in: [], now: t) == 0)
+        #expect(FinishAlertPolicy.invalidEpisodeStartCount(in: [Self.marker(Self.s1, t, Self.ups)], now: t) == 0,
+                "an absent ep (hook v6) is the normal fallback, never counted")
+    }
+
+    /// Rule 2 holds for `ep` too: an id already tracked never adopts a later
+    /// marker's `ep` — a hook v6 → v7 swap mid-episode writes a FRESH, later
+    /// one, which would under-count the run.
+    @Test func aTrackedIdNeverAdoptsALaterEpisodeStart() {
+        let t = Self.t0
+        let start = FinishAlertPolicy.observe(previous: [:], current: [Self.marker(Self.s1, t, Self.ups)], now: t + 2)
+        let swapped = FinishAlertPolicy.observe(previous: start.tracked,
+                                                current: [Self.marker(Self.s1, t + 600, "Notification", ep: String(t + 600))],
+                                                now: t + 602)
+        #expect(swapped.tracked[Self.s1]?.firstSeen == t, "the anchor taken at first sight stands")
+        #expect(swapped.invalidEpisodeStarts == 0)
+        let finish = FinishAlertPolicy.observe(previous: swapped.tracked, current: [], now: t + 1_800)
+        #expect(finish.events == [.finished(minutes: 30)], "not 20")
+    }
+
+    /// Issue #24 — the restart-survival scenario. ONE episode: a prompt at
+    /// t, then keeps, an automated prompt and more keeps, finished at
+    /// t + 1 800. Each `restartAt` drops the app-side anchor there — the new
+    /// process starts from a baseline of the marker on disk at that moment —
+    /// and replays the rest. With hook v7 markers (every write carries
+    /// `ep=t`) the reported minutes are the uninterrupted 30 at EVERY restart
+    /// point; with hook v6 markers the old re-anchoring stays as it was.
+    @Test func aRestartMidEpisodeNoLongerChangesTheReportedMinutes() {
+        let t = Self.t0
+        let writes: [(ts: Int, event: String)] = [
+            (t, Self.ups), (t + 300, "Notification"), (t + 600, "Stop"), (t + 900, Self.ups),
+            (t + 1_100, "SubagentStop"), (t + 1_500, "Stop"),
+        ]
+        func finish(restartAt: Int?, ep: String?) -> [FinishAlertEvent] {
+            var tracked: [String: TrackedSession] = [:]
+            var restarted = restartAt == nil
+            // NapCat relaunched: in-memory state gone, baseline from disk.
+            func restart(at moment: Int) {
+                let onDisk = writes.last { $0.ts <= moment }.map { [Self.marker(Self.s1, $0.ts, $0.event, ep: ep)] } ?? []
+                tracked = FinishAlertPolicy.baseline(current: onDisk, now: moment)
+                restarted = true
+            }
+            for write in writes {
+                if !restarted, let restartAt, write.ts > restartAt { restart(at: restartAt) }
+                tracked = FinishAlertPolicy.observe(previous: tracked,
+                                                    current: [Self.marker(Self.s1, write.ts, write.event, ep: ep)],
+                                                    now: write.ts + 2).tracked
+            }
+            if !restarted, let restartAt { restart(at: restartAt) }   // after the last write
+            #expect(restarted)
+            return FinishAlertPolicy.observe(previous: tracked, current: [], now: t + 1_800).events
+        }
+
+        let v7 = String(t)
+        #expect(finish(restartAt: nil, ep: v7) == [.finished(minutes: 30)], "uninterrupted")
+        #expect(finish(restartAt: nil, ep: nil) == [.finished(minutes: 30)], "uninterrupted, hook v6")
+        for restartAt in [t + 100, t + 450, t + 700, t + 1_000, t + 1_200, t + 1_600] {
+            #expect(finish(restartAt: restartAt, ep: v7) == [.finished(minutes: 30)],
+                    "hook v7, restart at t+\(restartAt - t): the minutes must not change")
+        }
+        // Hook v6 (no ep): unchanged fallback — the documented under-count.
+        #expect(finish(restartAt: t + 1_000, ep: nil) == [.finished(minutes: 15)], "re-anchored at the t+900 prompt")
+        #expect(finish(restartAt: t + 1_200, ep: nil) == [.finished(minutes: nil)], "re-anchored at a keep: inexact")
+    }
+
+    /// The waiting buzz after a restart reports the episode minutes too.
+    @Test func aWaitingBuzzAfterARestartUsesTheEpisodeStart() {
+        let t = Self.t0
+        let baseline = FinishAlertPolicy.baseline(current: [Self.marker(Self.s1, t + 600, "Stop", ep: String(t))],
+                                                  now: t + 700)
+        let observation = FinishAlertPolicy.observe(
+            previous: baseline,
+            current: [Self.marker(Self.s1, t + 1_500, ClaudeBusyConstants.waitingAfterStopEventToken, ep: String(t))],
+            now: t + 1_502)
+        #expect(observation.events == [.waiting(minutes: 25)])
     }
 
     /// Ids are internal keys: every event payload leaf is an Int (or nil).

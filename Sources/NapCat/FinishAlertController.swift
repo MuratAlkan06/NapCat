@@ -222,10 +222,15 @@ final class FinishAlertController {
         watcher = candidate
         // Baseline AFTER the watcher runs: a change racing the arm lands in
         // the baseline or raises an event, never in neither. Markers present
-        // now are tracked from their own ts; disappearances that happened
-        // while disarmed are unknown and never alerted.
-        tracked = FinishAlertPolicy.baseline(current: store.identifiedMarkers(), now: Int(now()))
+        // now are tracked from their recorded episode start (a valid hook v7
+        // `ep` — so a relaunch keeps the run minutes) or else their own ts;
+        // disappearances that happened while disarmed are unknown and never
+        // alerted.
+        let markers = store.identifiedMarkers()
+        let armedAt = Int(now())
+        tracked = FinishAlertPolicy.baseline(current: markers, now: armedAt)
         Self.logger.notice("finish alert: armed, tracking \(self.tracked.count, privacy: .public) session(s)")
+        logUnusableEpisodeStarts(FinishAlertPolicy.invalidEpisodeStartCount(in: markers, now: armedAt))
         notifyChanged()
     }
 
@@ -288,6 +293,7 @@ final class FinishAlertController {
         tracked = observation.tracked
         latestStillWorking = observation.stillWorking
         logSuppressed(observation.suppressed)
+        logUnusableEpisodeStarts(observation.invalidEpisodeStarts)
         guard !observation.events.isEmpty else { return }
         Self.logger.notice("finish alert: \(observation.events.count, privacy: .public) alert event(s) observed")
         for event in observation.events {
@@ -302,6 +308,14 @@ final class FinishAlertController {
             guard count > 0 else { continue }
             Self.logger.notice("finish alert: \(count, privacy: .public) transition(s) suppressed (\(reason.rawValue, privacy: .public))")
         }
+    }
+
+    /// Hook v7: markers whose `ep` the policy rejected fell back to NapCat's
+    /// own anchor. Logged as a COUNT only — never a session id, the raw value
+    /// or anything about the destination.
+    private func logUnusableEpisodeStarts(_ count: Int) {
+        guard count > 0 else { return }
+        Self.logger.notice("finish alert: \(count, privacy: .public) unusable episode start(s), run minutes use the app's own anchor")
     }
 
     // MARK: - Outbox

@@ -606,11 +606,17 @@ pushes, and the row says so.
   then, iOS shows a normal notification and silent mode applies.
 - **Session alerts have a horizon.** Detectable run length is capped at 12 h
   since the session's last hook event.
-- **A restart can under-count the minutes.** The busy marker does not record
-  when its episode began, so if NapCat restarts mid-run (or Session alerts are
-  switched off and back on), it re-anchors that session's start at the marker's
-  latest hook event: the minutes in its pushes can come out low or be left out,
-  and a run that ends within 60 seconds of that point stays quiet.
+- **A restart can under-count the minutes with an older hook.** Since busy
+  hook version 7 the marker records when its episode began, so a NapCat
+  restart mid-run (or Session alerts switched off and back on) keeps that
+  session's run minutes. Markers written by hook version 6 or earlier carry no
+  episode start, so until the hook is reinstalled such a session is still
+  re-anchored at its latest hook event: the minutes in its pushes can come out
+  low or be left out, and a run that ends within 60 seconds of that point stays
+  quiet. Upgrade in this order: rebuild and relaunch NapCat first, then
+  reinstall the hook (`./scripts/install-claude-busy-hook.sh`) and start a new
+  Claude Code session. A NapCat build older than the hook cannot read version 7
+  markers at all.
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.
