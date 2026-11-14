@@ -11,9 +11,19 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test
-    runs-on: macos-15
+    # The macos-15 leg's name must stay exactly "Build and test": the main
+    # branch ruleset requires that literal status-check context.
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: Build and test
+          - os: macos-26
+            name: Build and test (macos-26)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
