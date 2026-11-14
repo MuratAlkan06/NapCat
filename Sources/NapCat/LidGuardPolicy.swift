@@ -80,6 +80,11 @@ enum LidGuardTuning {
     static let finishTagsValue = "white_check_mark"
     static let attentionPriorityValue = "high"
     static let attentionTagsValue = "raised_hand"
+    /// Alert healing (issue #23): the one "connection was down" push after an
+    /// outage. It mirrors the informational session kinds — `high` (p4),
+    /// below the lid alert's critical-alert p5 — with a signal-bars tag.
+    static let restoredPriorityValue = "high"
+    static let restoredTagsValue = "signal_strength"
     static let ntfyContentTypeHeader = "Content-Type"
     static let ntfyContentTypeValue = "text/plain; charset=utf-8"
 }
@@ -192,7 +197,7 @@ struct LidGuardGateInputs: Equatable, Sendable {
 
 // MARK: - Message shape
 
-/// The messages NapCat can ever send: exactly four closed kinds. There is
+/// The messages NapCat can ever send: exactly five closed kinds. There is
 /// deliberately no free-text case: every body is built by
 /// `LidGuardPolicy.messageBody` from a fixed template plus, at most, the event
 /// clock time and Int COUNTS / MINUTES, so nothing from a Claude session,
@@ -211,6 +216,12 @@ enum LidGuardMessageKind: Equatable, Sendable {
     /// Track C waiting buzz: a session stopped to ask for approval/input
     /// `minutes` into its run (session lane).
     case needsAttention(minutes: Int?, stillWorking: Int)
+    /// Alert healing (issue #23): the ONE push after a connectivity outage
+    /// healed — how many `minutes` the connection was down (rounded up, at
+    /// least 1), how many held session alerts were `deliveredLate` or
+    /// `dropped` (past the held digest's max age), and how many lid alerts
+    /// were `lidMissed` while offline (session lane).
+    case connectionRestored(minutes: Int, deliveredLate: Int, dropped: Int, lidMissed: Int)
 }
 
 /// The two per-kind ntfy headers. Both values are FIXED ASCII constants from
@@ -495,7 +506,11 @@ enum LidGuardPolicy {
     /// - `sessionFinished`, folded ≥ 2: "3 Claude sessions finished — none
     ///   still working" (minutes deliberately omitted — they differ per session);
     /// - `needsAttention`: "Claude is waiting for your approval — 12 min in"
-    ///   (+ " — 1 other still working" / " — N others still working").
+    ///   (+ " — 1 other still working" / " — N others still working");
+    /// - `connectionRestored` (alert healing): "Connection was down 14 min."
+    ///   plus one segment per non-zero count, singular or plural — "1 session
+    ///   alert delivered late." / "K session alerts delivered late.", the same
+    ///   for "dropped" and "lid alert(s) missed" — never "0 min".
     static func messageBody(kind: LidGuardMessageKind, clockTime: String) -> String {
         switch kind {
         case .lidAlert(let busySessionCount):
@@ -520,6 +535,17 @@ enum LidGuardPolicy {
             default: others = " — \(stillWorking) others still working"
             }
             return "Claude is waiting for your approval" + elapsed + others
+        case .connectionRestored(let minutes, let deliveredLate, let dropped, let lidMissed):
+            // A count below 1 adds no segment; 1 is singular.
+            func segment(_ count: Int, _ one: String, _ many: String) -> String? {
+                count < 1 ? nil : count == 1 ? "1 \(one)." : "\(count) \(many)."
+            }
+            let segments = [
+                segment(deliveredLate, "session alert delivered late", "session alerts delivered late"),
+                segment(dropped, "session alert dropped", "session alerts dropped"),
+                segment(lidMissed, "lid alert missed", "lid alerts missed"),
+            ].compactMap { $0 }
+            return (["Connection was down \(max(1, minutes)) min."] + segments).joined(separator: " ")
         }
     }
 
@@ -553,6 +579,8 @@ enum LidGuardPolicy {
             return NtfyHeaders(priority: LidGuardTuning.finishPriorityValue, tags: LidGuardTuning.finishTagsValue)
         case .needsAttention:
             return NtfyHeaders(priority: LidGuardTuning.attentionPriorityValue, tags: LidGuardTuning.attentionTagsValue)
+        case .connectionRestored:
+            return NtfyHeaders(priority: LidGuardTuning.restoredPriorityValue, tags: LidGuardTuning.restoredTagsValue)
         }
     }
 
@@ -562,7 +590,7 @@ enum LidGuardPolicy {
     static func lane(for kind: LidGuardMessageKind) -> NtfySendLane {
         switch kind {
         case .lidAlert, .test: return .lid
-        case .sessionFinished, .needsAttention: return .session
+        case .sessionFinished, .needsAttention, .connectionRestored: return .session
         }
     }
 

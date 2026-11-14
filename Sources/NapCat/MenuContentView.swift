@@ -108,8 +108,12 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         panelItem.action = #selector(NSApplication.terminate(_:))
         menu.addItem(panelItem)
 
-        // Observed-state pushes → published mirrors.
-        sleep.onObservedStateChange = { [weak self] _ in self?.model.refresh() }
+        // Observed-state pushes → published mirrors. A Stay Awake flip also
+        // re-gates alert healing (Stay Awake ON is one of its arming inputs).
+        sleep.onObservedStateChange = { [weak self] _ in
+            self?.finishAlert?.reconcile()
+            self?.model.refresh()
+        }
         limiter.onChange = { [weak self] in self?.model.refresh() }
 
         // View actions that need AppKit flows.
@@ -161,6 +165,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // the pause flag and the dir (a re-arm takes a fresh baseline — never
         // a send).
         finishAlert?.reconcile()
+        // Alert healing: the menu-open reconcile is a flush trigger — an
+        // OFFLINE session lane attempts its held alerts once (coalesced).
+        finishAlert?.menuOpened()
         model.refresh()
         // Section visibility (charge limit, debug) and the Details state can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's

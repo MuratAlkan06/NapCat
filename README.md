@@ -51,7 +51,8 @@ light/dark menu bars.
   [Claude busy detection](#claude-busy-detection-track-b--optional-read-only).
 - **Session alerts (ntfy)** — a push when a Claude Code session finishes (main
   turn plus any background subagents) or stops to wait for your input; same
-  topic as the lid alert — see
+  topic as the lid alert. If the connection drops, they are held and delivered
+  once it returns — see
   [Session alerts](#session-alerts--finish-and-waiting-pushes).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
@@ -573,13 +574,30 @@ pushes, and the row says so.
   in". Both publish at ntfy priority `high`, tagged `white_check_mark`
   (finished) or `raised_hand` (waiting).
 - **The menu shows the outcome of the last session alert** under **Details**; a
-  refused or failed one moves up next to the toggle. A failed send is retried
-  once only when it provably never left the Mac (no connection, DNS, TLS);
-  anything that may have reached ntfy — one the server refused (for example,
-  rate-limited), or one whose answer never came back — is never retried, so you
-  may occasionally miss one rather than get a duplicate. After ntfy answers a
-  session alert with HTTP 429 (rate-limited), session alerts are held and folded
-  for ten minutes, then sent as one message; the lid alert is unaffected.
+  refused or failed one moves up next to the toggle. A send that provably never
+  left the Mac (no connection, DNS, TLS) is held and delivered once the
+  connection is back (next bullet); anything that may have reached ntfy — one
+  the server refused (for example, rate-limited), or one whose answer never came
+  back — is never sent again, so you may occasionally miss one rather than get a
+  duplicate. After ntfy answers a session alert with HTTP 429 (rate-limited),
+  session alerts are held and folded for ten minutes, then sent as one message;
+  the lid alert is unaffected.
+- **Session alerts heal across a lost connection.** When this Mac loses its
+  network (for more than two seconds), or a session alert cannot leave the Mac,
+  NapCat holds session alerts instead of dropping them. They go out once, in
+  order, as soon as the connection is back: when the network returns, on the
+  next session event, or the next time you open the menu, whichever comes
+  first. An open rate-limit hold still comes first. If the outage lasted at
+  least a minute, one more push follows, for example "Connection was down 14 min.
+  2 session alerts delivered late." (priority `high`, tagged `signal_strength`).
+  A held alert older than 12 h is dropped and counted ("1 session alert
+  dropped.") rather than delivered stale. While session alerts are held the
+  menu shows one warning under Session alerts. NapCat watches the network only
+  while that could matter: Stay Awake is on, a Claude session is being tracked,
+  or something is still held. **Lid alerts are unaffected.** A lid alert fires
+  the moment the Mac starts sleeping and is never held for later, because one
+  delivered at wake would be stale. If it cannot leave the Mac during an outage,
+  it is only counted ("1 lid alert missed.") in that same push.
 - **The marker folder has to exist.** Until the busy hook is installed — or
   after its folder is deleted — the row says it is waiting for the Claude hook.
   After the folder is created or recreated, the feature re-arms on the next
@@ -617,6 +635,10 @@ pushes, and the row says so.
   reinstall the hook (`./scripts/install-claude-busy-hook.sh`) and start a new
   Claude Code session. A NapCat build older than the hook cannot read version 7
   markers at all.
+- **An outage lives in memory only.** When an outage began and which alerts are
+  held across it are kept by the running app, not saved. Quitting or
+  restarting NapCat mid-outage forgets the outage and its held alerts: they are
+  not delivered, and no "Connection was down" push follows.
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.

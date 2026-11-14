@@ -74,6 +74,9 @@ struct QuietRowsPanel: View {
                         PanelRow(symbol: PanelSymbol.sessionAlerts, title: "Session alerts") {
                             SessionAlertsToggle(model: model)
                         }
+                        // The session-alerts slot: the alert-healing offline
+                        // warning takes it while offline (offline > 429 hold
+                        // > nominal — MenuStateModel.sessionAlertsSlot).
                         indentedCaption(model.finishAlertStatus)
                         SessionAlertsSurfacedLines(model: model)
                             .padding(.leading, PanelMetrics.titleIndent)

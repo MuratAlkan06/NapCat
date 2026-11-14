@@ -107,6 +107,9 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var finishAlertLastOutcome: MessageSendOutcome?
     @Published private(set) var finishAlertLastOutcomeAt: Double?
     @Published private(set) var finishAlertLastKind: LidGuardMessageKind?
+    /// Alert healing (issue #23): healing is armed AND the session lane is
+    /// OFFLINE (holding). False whenever healing is disarmed — no line then.
+    @Published private(set) var sessionAlertsOffline = false
 
     // Panel redesign (2026-10-18).
     /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
@@ -219,6 +222,7 @@ final class MenuStateModel: ObservableObject {
         finishAlertLastOutcome = finishAlert?.lastSendOutcome
         finishAlertLastOutcomeAt = finishAlert?.lastSendOutcomeAt
         finishAlertLastKind = finishAlert?.lastSendKind
+        sessionAlertsOffline = finishAlert?.connectivityOffline ?? false
     }
 
     // MARK: Actions (forwarded)
@@ -327,7 +331,16 @@ final class MenuStateModel: ObservableObject {
         Self.lidAlertTestSendAvailable(server: lidGuardServer, topic: lidGuardTopic)
     }
 
+    /// The session-alerts SLOT (the caption under the Session alerts row):
+    /// the alert-healing offline warning while the lane is offline, else the
+    /// session status line — so offline > 429 hold > nominal.
     var finishAlertStatus: PanelLine {
+        Self.sessionAlertsSlot(offline: sessionAlertsOffline, status: finishAlertStatusWithoutOffline)
+    }
+
+    /// The session status line itself, before the offline precedence. The
+    /// Details badge reads this one: the offline warning has no Details home.
+    private var finishAlertStatusWithoutOffline: PanelLine {
         Self.finishAlertStatus(for: finishAlertDisplayState, lastOutcome: finishAlertLastOutcome,
                                lastOutcomeAt: finishAlertLastOutcomeAt,
                                lidLastOutcome: lidGuardLastOutcome, lidLastOutcomeAt: lidGuardLastOutcomeAt)
@@ -362,7 +375,8 @@ final class MenuStateModel: ObservableObject {
         }
         // Session alerts share the ntfy settings + test send in Details.
         if finishAlertVisible {
-            let sessionWithoutThePause = finishAlertDisplayState == .paused ? .nominal : finishAlertStatus.severity
+            let sessionWithoutThePause = finishAlertDisplayState == .paused
+                ? .nominal : finishAlertStatusWithoutOffline.severity
             severities += [sessionWithoutThePause,
                            Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
         }
@@ -796,6 +810,20 @@ final class MenuStateModel: ObservableObject {
         }
     }
 
+    /// Alert healing (issue #23): the ONE fixed top-level warning while
+    /// healing is armed and the session lane is OFFLINE. Neutral and true in
+    /// both arming modes (session alerts held; lid alerts still attempted,
+    /// so they may not get through).
+    nonisolated static let sessionAlertsOfflineLine = PanelLine(
+        text: "Offline — session alerts are held until the connection returns; lid alerts may be missed",
+        severity: .warning)
+
+    /// The session-alerts slot's precedence: offline > the status line (whose
+    /// own armed branch puts the 429-hold caption above nominal).
+    nonisolated static func sessionAlertsSlot(offline: Bool, status: PanelLine) -> PanelLine {
+        offline ? sessionAlertsOfflineLine : status
+    }
+
     /// B-1: the last session send was refused with HTTP 429. The controller
     /// then holds the session lane (events fold, one message when the hold
     /// ends), so the caption says so — a WARNING, not the generic error:
@@ -912,6 +940,7 @@ final class MenuStateModel: ObservableObject {
         switch kind {
         case .sessionFinished?: return " (finished)"
         case .needsAttention?: return " (waiting)"
+        case .connectionRestored?: return " (connection restored)"
         case .lidAlert?, .test?, nil: return ""
         }
     }

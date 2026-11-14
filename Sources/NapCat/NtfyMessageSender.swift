@@ -16,14 +16,16 @@ import os
 ///
 ///     <app-generated body>
 ///
-/// PER-KIND HEADERS (Track C; chosen ONLY by `LidGuardPolicy.ntfyHeaders(for:)`
-/// from fixed ASCII constants in `LidGuardTuning` — never from any input):
+/// PER-KIND HEADERS (Track C + alert healing; chosen ONLY by
+/// `LidGuardPolicy.ntfyHeaders(for:)` from fixed ASCII constants in
+/// `LidGuardTuning` — never from any input):
 ///
-///     kind              lane      Priority  Tags
-///     lidAlert          lid       urgent    zzz,warning
-///     test              lid       urgent    zzz,warning
-///     sessionFinished   session   high      white_check_mark
-///     needsAttention    session   high      raised_hand
+///     kind                 lane      Priority  Tags
+///     lidAlert             lid       urgent    zzz,warning
+///     test                 lid       urgent    zzz,warning
+///     sessionFinished      session   high      white_check_mark
+///     needsAttention       session   high      raised_hand
+///     connectionRestored   session   high      signal_strength
 ///
 /// PER-LANE SINGLE FLIGHT (risk F2): each `NtfySendLane` has its own in-flight
 /// claim, so a session alert (which may run for the full

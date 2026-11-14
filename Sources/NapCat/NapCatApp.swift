@@ -93,10 +93,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // kqueue watcher exists only while armed. Every lid-guard arming
         // refresh (toggle / topic / server / priming — the last one completes
         // off the main thread) re-runs the finish-alert reconciliation on main.
+        // Alert healing (issue #23): the connectivity startup swap — in
+        // debugBattery mode the real path monitor is never constructed (the
+        // simulator stands in, and the finish alert itself is absent). The
+        // monitor observes only while healing is armed.
         let finishAlert = FinishAlertController.makeIfEnabled(
             debugBattery: isDebugBattery,
             lidGuard: lidGuard,
-            sender: sender
+            sender: sender,
+            connectivity: ConnectivityWiring.makeInterface(debugBattery: isDebugBattery),
+            stayAwakeMirror: sleepController.observedMirror
         )
         self.finishAlert = finishAlert
         lidGuard?.setArmingRefreshHook { [weak finishAlert] in

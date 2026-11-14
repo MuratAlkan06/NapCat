@@ -12,7 +12,7 @@ struct RecordedMessageSend: Equatable, Sendable {
 ///
 /// BODY IS APP-GENERATED, ENFORCED BY THE API SHAPE: there is exactly one entry
 /// point and it takes NO free-text parameter — not even a String. The caller
-/// passes a `LidGuardMessageKind` (a closed enum of four kinds whose ONLY
+/// passes a `LidGuardMessageKind` (a closed enum of five kinds whose ONLY
 /// associated values are Int counts and Int minutes) plus a pre-validated
 /// `NtfyDestination`; the body itself is built by `LidGuardPolicy.messageBody`
 /// from a fixed template. Nothing from a Claude session, transcript, prompt,

@@ -327,6 +327,40 @@ struct MenuStateModelTests {
         }
     }
 
+    /// Alert healing (issue #23): refresh() mirrors the controller's OFFLINE
+    /// flag — true only while healing is armed and holding; false once it
+    /// heals, and false whenever there is no controller at all.
+    @Test @MainActor func refreshMirrorsTheAlertHealingOfflineFlag() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness(connectivity: ConnectivitySimulator()) { h in
+            let suite = "com.muratalkan.napcat.tests.menustatemodel.healing.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let lid = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+            defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            let model = MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter,
+                                       lidGuard: lid.controller, finishAlert: h.controller)
+            #expect(!model.sessionAlertsOffline)
+
+            await h.goOfflineByPath()
+            #expect(!model.sessionAlertsOffline, "mirrors update on refresh(), not by magic")
+            model.refresh()
+            #expect(model.sessionAlertsOffline)
+            #expect(model.finishAlertStatus == MenuStateModel.sessionAlertsOfflineLine)
+
+            await h.pathUp()
+            model.refresh()
+            #expect(!model.sessionAlertsOffline, "healed: the line is gone")
+            #expect(model.finishAlertStatus.severity == .nominal)
+        }
+        #expect(!makeModel().sessionAlertsOffline, "no controller (debugBattery wiring): never offline")
+    }
+
     /// No controller (debugBattery wiring): the row is absent and everything
     /// reads off/none, even with the stored toggle on.
     @Test @MainActor func withoutTheControllerTheSessionAlertsRowIsAbsentAndOff() {
