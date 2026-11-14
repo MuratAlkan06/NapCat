@@ -60,7 +60,7 @@ light/dark menu bars.
 ## Requirements
 
 - macOS 14 (Sonoma) or later. Developed and tested on a MacBook Pro 16"
-  (M4 Pro, macOS Sequoia 15.6.1).
+  (M4 Pro, macOS Sequoia 15.6.1); also verified on macOS 27.2.1.
 - Apple Silicon for the charge limit. Stay Awake also works on Intel.
 - Xcode Command Line Tools to build (`xcode-select --install`).
 
@@ -606,6 +606,11 @@ pushes, and the row says so.
   then, iOS shows a normal notification and silent mode applies.
 - **Session alerts have a horizon.** Detectable run length is capped at 12 h
   since the session's last hook event.
+- **A restart can under-count the minutes.** The busy marker does not record
+  when its episode began, so if NapCat restarts mid-run (or Session alerts are
+  switched off and back on), it re-anchors that session's start at the marker's
+  latest hook event: the minutes in its pushes can come out low or be left out,
+  and a run that ends within 60 seconds of that point stays quiet.
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.
@@ -653,11 +658,22 @@ Notes:
   pushes, `v1.4.1` the quieter menu panel, `v1.4.2` hardened alert delivery,
   hook and build, `v1.4.3` the masked ntfy topic field in the settings
   dialog and the Lock Screen button moved into the panel header, and
-  `v1.4.4` session alerts only after at least 60 seconds of work, plus
-  docs and code-comment parity — the topic field's AutoFill comment and
-  the Lock Screen button wording). Each
+  `v1.4.4` session alerts only after at least 60 seconds of work, no
+  false "finished" push while a background subagent or background shell
+  is still running, run minutes measured from the start of the episode
+  (when the session first became busy), the busy-hook fix for newer macOS
+  described below, plus docs and code-comment parity — the topic field's
+  AutoFill comment and the Lock Screen button wording). Each
   annotated tag carries its release notes (`git tag -n99`); the detailed
   build plan and verification matrix are maintained privately.
+- **v1.4.4 ships busy hook version 6 — refresh it.** On newer macOS (seen on
+  macOS 27.2.1) the system `plutil` rejects `\u0000` and lone-surrogate JSON
+  escapes. The busy hook validates each payload with `plutil` and used to drop
+  such payloads whole, which could leave a stale busy marker behind — NapCat
+  then kept showing a finished session as running. The hook now maps those
+  escapes before validation. Re-run `./scripts/install-claude-busy-hook.sh`
+  and start a new Claude Code session; until then **Details → Claude
+  detection** reports the installed copy as out of date.
 
 ## Security
 
