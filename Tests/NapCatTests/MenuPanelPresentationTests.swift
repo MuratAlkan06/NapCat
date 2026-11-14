@@ -331,6 +331,139 @@ struct MenuPanelPresentationTests {
         #expect(line.text.contains("armed —") == (row.state == .armed && row.severity == .nominal))
     }
 
+    // MARK: Alert healing (issue #23): the offline warning owns the slot
+
+    static let sessionAlertsOfflineText =
+        "Offline — session alerts are held until the connection returns; lid alerts may be missed"
+    static let sessionAlertsArmedText = "Session alerts: armed — a push when a Claude session finishes or waits for you"
+
+    struct SlotRow: CustomTestStringConvertible, Sendable {
+        let id: String
+        let offline: Bool
+        let state: FinishAlertDisplayState
+        let outcome: MessageSendOutcome?
+        let expected: PanelLine
+        var testDescription: String { id }
+    }
+
+    /// Precedence in the session-alerts slot: offline > 429 hold > nominal —
+    /// and no offline line at all while healing is not offline (disarmed).
+    static let slotRows: [SlotRow] = [
+        SlotRow(id: "P1 offline beats the 429-hold caption", offline: true, state: .armed, outcome: .rejected(429),
+                expected: PanelLine(text: sessionAlertsOfflineText, severity: .warning)),
+        SlotRow(id: "P2 the 429-hold caption beats nominal", offline: false, state: .armed, outcome: .rejected(429),
+                expected: PanelLine(text: sessionRateLimitedText, severity: .warning)),
+        SlotRow(id: "P3 nominal when neither", offline: false, state: .armed, outcome: .accepted,
+                expected: PanelLine(text: sessionAlertsArmedText, severity: .nominal)),
+        SlotRow(id: "P4 offline beats nominal", offline: true, state: .armed, outcome: .accepted,
+                expected: PanelLine(text: sessionAlertsOfflineText, severity: .warning)),
+        SlotRow(id: "P5 offline beats a failed-send downgrade", offline: true, state: .armed,
+                outcome: .sendFailed("this Mac had no internet connection"),
+                expected: PanelLine(text: sessionAlertsOfflineText, severity: .warning)),
+        SlotRow(id: "P6 lid-only mode (session alerts off): the same one line", offline: true, state: .off,
+                outcome: nil, expected: PanelLine(text: sessionAlertsOfflineText, severity: .warning)),
+        SlotRow(id: "P7 not offline (healing disarmed) ⇒ no offline line", offline: false, state: .off, outcome: nil,
+                expected: PanelLine(text: "Session alerts: off", severity: .nominal)),
+        SlotRow(id: "P8 not offline: a failed send keeps its error", offline: false, state: .armed,
+                outcome: .sendFailed("this Mac had no internet connection"),
+                expected: PanelLine(text: "Session alerts: the last message did not go out — re-run Send test message",
+                                    severity: .error)),
+    ]
+
+    @Test(arguments: slotRows)
+    func sessionAlertsSlotPrecedenceTable(_ row: SlotRow) {
+        let status = MenuStateModel.finishAlertStatus(
+            for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcome == nil ? nil : Self.sessionSendAt,
+            lidLastOutcome: nil, lidLastOutcomeAt: nil)
+        #expect(MenuStateModel.sessionAlertsSlot(offline: row.offline, status: status) == row.expected, "\(row.id)")
+    }
+
+    /// ONE fixed, neutral line: a WARNING (so it can only render at top level
+    /// — the iron rule), the exact text, and nothing variable in it.
+    @Test func theOfflineWarningIsOneFixedTopLevelWarning() {
+        let line = MenuStateModel.sessionAlertsOfflineLine
+        #expect(line == PanelLine(text: Self.sessionAlertsOfflineText, severity: .warning))
+        #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel)
+        #expect(MenuStateModel.severitySymbol(line.severity) == PanelSymbol.warning, "icon + text, never color alone")
+        #expect(!line.text.contains { $0.isNumber }, "no count, minute or address in the fixed line")
+        for secret in ["ntfy.sh", "https", "topic", "Topic"] {
+            #expect(!line.text.contains(secret))
+        }
+    }
+
+    /// PLACEMENT LINT: the offline warning reaches the panel ONLY through the
+    /// session-alerts slot (`model.finishAlertStatus`, rendered once, as the
+    /// Session alerts row's top-level caption above the Details tier) — no
+    /// view names the mirror or the line, Details never renders the slot,
+    /// and the model's slot really applies the precedence.
+    static func offlinePlacementFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        let owners: [String: Set<String>] = [
+            "sessionAlertsOfflineLine": ["MenuStateModel.swift"],
+            "sessionAlertsOffline": ["MenuStateModel.swift"],
+            "connectivityOffline": ["MenuStateModel.swift", "FinishAlertController.swift"],
+        ]
+        for (token, allowed) in owners {
+            for (name, text) in sources where text.contains(token) && !allowed.contains(name) {
+                failures.append("'\(token)' in \(name) — the offline line reaches the panel only via the slot")
+            }
+        }
+        let views = sources.filter { MenuPanelStructureTests.viewFiles.contains($0.name) }.map(\.text)
+            .joined(separator: "\n")
+        if views.components(separatedBy: "model.finishAlertStatus").count - 1 != 1 {
+            failures.append("model.finishAlertStatus must be rendered exactly once")
+        }
+        let layout = MenuPanelStructureTests.structChunk(MenuPanelStructureTests.layout,
+                                                         in: sources.first { $0.name == MenuPanelStructureTests.layoutFile }?.text ?? "") ?? ""
+        if let caption = layout.range(of: "indentedCaption(model.finishAlertStatus)"),
+           let detailsDivider = layout.range(of: "Divider()", options: .backwards) {
+            if caption.lowerBound > detailsDivider.lowerBound {
+                failures.append("the slot must render above the Details tier")
+            }
+        } else {
+            failures.append("the layout must render the slot as the Session alerts row's top-level caption")
+        }
+        let panelView = sources.first { $0.name == "MenuPanelView.swift" }?.text ?? ""
+        let details = MenuPanelStructureTests.structChunk("PanelDetailsContent", in: panelView) ?? ""
+        if details.isEmpty || details.contains("finishAlertStatus") {
+            failures.append("Details must never render the session-alerts slot")
+        }
+        let model = sources.first { $0.name == "MenuStateModel.swift" }?.text ?? ""
+        if !model.contains("Self.sessionAlertsSlot(offline: sessionAlertsOffline, status: finishAlertStatusWithoutOffline)") {
+            failures.append("the model's finishAlertStatus must apply the offline precedence")
+        }
+        return failures
+    }
+
+    @Test func theOfflineWarningOnlyRendersThroughTheTopLevelSessionAlertsSlot() throws {
+        let sources = try LidGuardStructureTests.swiftSources()
+        #expect(Self.offlinePlacementFailures(sources).isEmpty, "\(Self.offlinePlacementFailures(sources))")
+        func mutate(_ name: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
+            sources.map { $0.name == name ? ($0.name, transform($0.text)) : $0 }
+        }
+        let detailsAnchor = "            generalGroup\n"
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("a view names the mirror", mutate("MenuPanelView.swift") {
+                $0 + "\nstruct Canary: View { @ObservedObject var model: MenuStateModel\n"
+                    + "    var body: some View { if model.sessionAlertsOffline { Text(\"x\") } } }" }),
+            ("a view renders the line directly", mutate("MenuPanelVariants.swift") {
+                $0 + "\nlet canary = MenuStateModel.sessionAlertsOfflineLine" }),
+            ("Details renders the slot", mutate("MenuPanelView.swift") {
+                $0.replacingOccurrences(of: detailsAnchor,
+                                        with: detailsAnchor + "            TuckedLine(line: model.finishAlertStatus)\n") }),
+            ("the slot loses its precedence", mutate("MenuStateModel.swift") {
+                $0.replacingOccurrences(
+                    of: "Self.sessionAlertsSlot(offline: sessionAlertsOffline, status: finishAlertStatusWithoutOffline)",
+                    with: "finishAlertStatusWithoutOffline") }),
+            ("the menu owner reads the flag", mutate("MenuContentView.swift") {
+                $0 + "\nlet canary = finishAlert?.connectivityOffline" }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(mutant.map(\.text) != sources.map(\.text), "canary setup '\(name)'")
+            #expect(!Self.offlinePlacementFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: Session caption recovery (C6)
 
     /// The failed-send caption tells the user to re-run the test send, so an
@@ -1060,6 +1193,74 @@ struct MenuPanelPresentationTests {
                 model.refresh()
                 #expect(model.finishAlertStatus == PanelLine(text: Self.sessionArmedText, severity: .nominal))
                 #expect(model.finishAlertLastSend(now: Double(H.t0) + 120) == last)
+            }
+        }
+    }
+
+    /// Alert healing end to end: a 429-held session lane shows the rate-limit
+    /// caption; the path dropping hands the slot to the ONE offline warning
+    /// (offline > 429 hold); the path coming back — the flush deferred to the
+    /// still-open hold — hands it back to the rate-limit caption.
+    @Test @MainActor func theOfflineWarningOutranksTheRateLimitCaptionEndToEnd() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(429)),
+                                         connectivity: ConnectivitySimulator()) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.store.put(H.s2, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.lastSendOutcome == .rejected(429))
+
+            let lidSuite = "com.muratalkan.napcat.tests.menupanel.offline.\(UUID().uuidString)"
+            let lidDefaults = UserDefaults(suiteName: lidSuite)!
+            defer { lidDefaults.removePersistentDomain(forName: lidSuite) }
+            let lid = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+            lid.arm()
+            lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+
+            withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
+                #expect(model.finishAlertStatus == PanelLine(text: Self.sessionRateLimitedText, severity: .warning))
+            }
+            await h.goOfflineByPath()
+            withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
+                #expect(model.sessionAlertsOffline)
+                #expect(model.finishAlertStatus == PanelLine(text: Self.sessionAlertsOfflineText, severity: .warning),
+                        "offline > 429 hold")
+                #expect(MenuStateModel.placement(ofDetailsLine: model.finishAlertStatus.severity) == .topLevel)
+            }
+            await h.pathUp()
+            #expect(h.controller.healing.phase == .flushing, "the flush waits for the open 429 hold")
+            withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
+                #expect(!model.sessionAlertsOffline)
+                #expect(model.finishAlertStatus == PanelLine(text: Self.sessionRateLimitedText, severity: .warning))
+            }
+        }
+    }
+
+    /// The offline warning has no Details home, so it never raises the
+    /// collapsed Details badge (everything else here is healthy).
+    @Test @MainActor func theOfflineWarningNeverRaisesTheDetailsBadge() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness(connectivity: ConnectivitySimulator()) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            await drainMain()
+            await h.goOfflineByPath()
+            #expect(h.controller.connectivityOffline)
+
+            let lidSuite = "com.muratalkan.napcat.tests.menupanel.offlinebadge.\(UUID().uuidString)"
+            let lidDefaults = UserDefaults(suiteName: lidSuite)!
+            defer { lidDefaults.removePersistentDomain(forName: lidSuite) }
+            let lid = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+            lid.arm()
+            lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+
+            try withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
+                try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
+                #expect(model.finishAlertStatus == MenuStateModel.sessionAlertsOfflineLine)
+                #expect(model.detailsBadge == .nominal, "the offline warning must not raise the badge")
             }
         }
     }
