@@ -25,9 +25,11 @@ final class FakeMarkerStore: BusyMarkerStore {
     func installedHookVersion() -> Int? { nil }
 
     /// Create or rewrite one marker (a rewrite is the hook's mktemp + mv).
-    func put(_ id: String, ts: Int, event: String = ClaudeBusyConstants.setEvent) {
+    /// `ep` is the hook v7 episode-start text (nil = a hook v6 marker).
+    func put(_ id: String, ts: Int, event: String = ClaudeBusyConstants.setEvent, ep: String? = nil) {
         remove(id)
-        current.append(IdentifiedBusyMarker(sessionID: id, marker: BusyMarker(ts: ts, event: event, pid: 1, src: "unknown")))
+        current.append(IdentifiedBusyMarker(sessionID: id,
+                                            marker: BusyMarker(ts: ts, event: event, pid: 1, src: "unknown", ep: ep)))
     }
 
     func remove(_ id: String) {
@@ -443,6 +445,72 @@ struct FinishAlertControllerTests {
             #expect(h.controller.tracked[H.s1]?.firstSeen == H.t0 - 600, "the episode anchor is never moved")
             #expect(h.controller.tracked[H.s1]?.lastTs == H.t0 + 5)
             #expect(h.controller.tracked[H.s1]?.exactStart == true)
+        }
+    }
+
+    // MARK: Issue #24 — the run clock survives a NapCat restart (hook v7 `ep`)
+
+    /// The SAME 30-minute episode watched by two app processes: one armed
+    /// before it began, and one RELAUNCHED mid-episode — a fresh controller
+    /// whose baseline of the marker on disk is all it knows. With hook v7
+    /// markers both report 30 min; with hook v6 markers the relaunched app
+    /// re-anchors at the marker's own ts (the unchanged fallback).
+    @Test(arguments: [true, false])
+    func aRelaunchMidEpisodeKeepsTheRunMinutes(_ hookV7: Bool) async throws {
+        let start = H.t0
+        let ep: String? = hookV7 ? String(start) : nil
+        var uninterrupted: [LidGuardMessageKind] = []
+        try await withFinishAlertHarness { h in
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: h.now, ep: ep)                       // the prompt: the episode begins
+            await h.settle()
+            h.advance(600)
+            h.store.put(H.s1, ts: h.now, event: "Stop", ep: ep)        // background work keeps it
+            await h.settle()
+            h.advance(1_200)
+            h.store.remove(H.s1)
+            await h.settle()
+            uninterrupted = h.sends.map(\.kind)
+        }
+        var relaunched: [LidGuardMessageKind] = []
+        try await withFinishAlertHarness { h in
+            h.advance(600)
+            h.store.put(H.s1, ts: h.now, event: "Stop", ep: ep)        // on disk when NapCat relaunches
+            h.controller.reconcile()                                   // the new process: a baseline only
+            #expect(h.controller.tracked[H.s1]?.firstSeen == (hookV7 ? start : start + 600))
+            #expect(h.controller.tracked[H.s1]?.exactStart == hookV7)
+            h.advance(1_200)
+            h.store.remove(H.s1)
+            await h.settle()
+            relaunched = h.sends.map(\.kind)
+        }
+        #expect(uninterrupted == [.sessionFinished(minutes: 30, folded: 1, stillWorking: 0)])
+        if hookV7 {
+            #expect(relaunched == uninterrupted, "a relaunch must not change the reported minutes")
+        } else {
+            #expect(relaunched == [.sessionFinished(minutes: nil, folded: 1, stillWorking: 0)],
+                    "hook v6: re-anchored at a keep, so the minutes are left out (as before)")
+        }
+    }
+
+    /// A rejected `ep` (malformed, future, past the 12 h horizon) never
+    /// breaks the alert: the session falls back to the pre-v7 anchor — at
+    /// arm time and when first seen in a diff alike.
+    @Test func anUnusableEpisodeStartFallsBackToTheAppsOwnAnchor() async throws {
+        try await withFinishAlertHarness { h in
+            h.store.put(H.s1, ts: H.t0 - 600, ep: "not-a-number")
+            h.store.put(H.s2, ts: H.t0 - 600, ep: String(H.t0 + 3_600))
+            h.controller.reconcile()
+            #expect(h.controller.tracked[H.s1]?.firstSeen == H.t0 - 600, "baseline: malformed ⇒ the marker's ts")
+            #expect(h.controller.tracked[H.s2]?.firstSeen == H.t0 - 600, "baseline: future ⇒ the marker's ts")
+            h.store.put(H.s3, ts: h.now, event: "Stop",
+                        ep: String(H.t0 - ClaudeBusyConstants.freshnessCapSeconds - 1))
+            await h.settle()
+            #expect(h.controller.tracked[H.s3]?.firstSeen == H.t0, "first seen in a diff: too old ⇒ the marker's ts")
+            #expect(h.controller.tracked[H.s3]?.exactStart == false)
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: 10, folded: 1, stillWorking: 2)])
         }
     }
 

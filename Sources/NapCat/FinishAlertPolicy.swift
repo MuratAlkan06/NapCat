@@ -1,8 +1,9 @@
 import Foundation
 
 // Pure Track C decision logic for the Claude finish alert and the waiting
-// buzz: marker-set diffing, the 60 s run floor, the 12 h stale cap, the batch
-// digest, the outbox and retry tables, and the arming/display predicates.
+// buzz: marker-set diffing, the hook v7 episode-start check, the 60 s run
+// floor, the 12 h stale cap, the batch digest, the outbox and retry tables,
+// and the arming/display predicates.
 // I/O-free by construction — no filesystem, no timers, no network, no
 // subprocess, no logging, no defaults reads. `FinishAlertStructureTests` locks
 // that (canary-proven), and `FinishAlertPolicyTests` exercises every rule as a
@@ -44,9 +45,11 @@ enum FinishAlertTuning {
 struct TrackedSession: Equatable, Sendable {
     /// Epoch seconds anchoring the current busy EPISODE's start: set when the
     /// id first appears and never moved while it stays present (C3 rule 2).
+    /// Hook v7: the marker's valid `ep` when it has one, else its own ts.
     var firstSeen: Int
-    /// True iff `firstSeen` came from an OBSERVED `event=UserPromptSubmit`
-    /// marker (otherwise it is only "when we first saw it" — minutes unknown).
+    /// True iff `firstSeen` came from a valid hook v7 `ep` or from an
+    /// OBSERVED `event=UserPromptSubmit` marker (otherwise it is only "when
+    /// we first saw it" — minutes unknown).
     var exactStart: Bool
     /// The marker `ts` / `event` as last observed.
     var lastTs: Int
@@ -87,6 +90,24 @@ struct FinishAlertObservation: Equatable, Sendable {
     /// IS counted; `FinishAlertDigest.messages()` subtracts the waiting
     /// session itself for the `.needsAttention` "others" count.
     let stillWorking: Int
+    /// Hook v7: ids seen for the FIRST time in this diff whose marker carried
+    /// an `ep` the policy rejected (`EpisodeStartReading.invalid`) — they fell
+    /// back to the pre-v7 anchor. A count for the controller's log line only.
+    let invalidEpisodeStarts: Int
+}
+
+/// Hook v7: what one marker's RAW `ep` text says about its episode start.
+/// Log-safe by construction: `.invalid` never carries the raw value.
+enum EpisodeStartReading: Equatable, Sendable {
+    /// No `ep` field — a hook v6 or earlier marker. The pre-v7 anchor applies,
+    /// silently.
+    case absent
+    /// Present but unusable: not 1–10 ASCII digits, zero, in the future, or
+    /// older than the 12 h horizon. The pre-v7 anchor applies, and it is
+    /// counted for the log.
+    case invalid
+    /// A usable episode start (epoch seconds).
+    case valid(Int)
 }
 
 /// Events folded inside one batch window, flushed as at most two messages.
@@ -211,20 +232,25 @@ enum FinishAlertPolicy {
     /// Arm-time baseline: every present marker becomes tracked and NOTHING is
     /// emitted — disappearances that happened while disarmed are never
     /// alerted. A session already waiting at arm time is never buzzed for
-    /// that episode (no transition was observed). `now` is deliberately
-    /// unused: the baseline judges nothing time-based (a stale baseline
-    /// marker stays tracked so its later sweep is classified `.stale`); it is
-    /// kept for call-site symmetry with `observe`.
+    /// that episode (no transition was observed). Each anchor follows rule 1
+    /// of `observe`, so a hook v7 marker's valid `ep` survives a NapCat
+    /// restart or a disarm/re-arm; `now` judges only that `ep` (a stale
+    /// baseline marker stays tracked so its later sweep is classified
+    /// `.stale`). Rejected `ep` values are counted by
+    /// `invalidEpisodeStartCount`, for the controller's log line.
     static func baseline(current: [IdentifiedBusyMarker], now: Int) -> [String: TrackedSession] {
-        uniqueMarkers(current).mapValues(newTrackedSession)
+        uniqueMarkers(current).mapValues { newTrackedSession($0, now: now) }
     }
 
     /// Diff `current` against `previous` (PLAN.md Track C slice C3, rules 1–4
     /// and 6 of the C3a contract; table-tested row by row):
-    /// 1. NEW id ⇒ tracked from its own ts; exact only if it is a
-    ///    UserPromptSubmit marker; a new id already `waiting` is a transition.
-    ///    This is the EPISODE anchor (`firstSeen` / `exactStart`): set here
-    ///    once and kept until the id disappears.
+    /// 1. NEW id ⇒ the EPISODE anchor (`firstSeen` / `exactStart`), set here
+    ///    once and kept until the id disappears. Hook v7: a valid `ep`
+    ///    (`episodeStart`) is the episode start the hook recorded, so it
+    ///    anchors EXACTLY whatever the marker's token; otherwise (no `ep`, or
+    ///    one rejected — counted in `invalidEpisodeStarts`) the id is tracked
+    ///    from its own ts, exact only if it is a UserPromptSubmit marker. A
+    ///    new id already `waiting` is a transition.
     /// 2. EXISTING id ⇒ the anchor never moves (AMENDED 2026-10-27, user
     ///    ruling): any rewrite — a newer UserPromptSubmit included — updates
     ///    only lastTs/lastEvent; leaving waiting (either waiting token, B-2)
@@ -233,9 +259,11 @@ enum FinishAlertPolicy {
     ///    typed prompt but also when a scheduled task fires, a background
     ///    subagent reports back, or a cross-session message arrives, so
     ///    re-anchoring on it made a long busy episode report the minutes since
-    ///    its last automated prompt. Known residual: a disarm/re-arm
-    ///    mid-episode re-anchors at the marker's CURRENT ts (the baseline) —
-    ///    the marker grammar has no episode-start field (backlog).
+    ///    its last automated prompt. A later marker's `ep` is never consulted
+    ///    for a tracked id either (a hook v6 → v7 swap mid-episode writes a
+    ///    FRESH, later `ep`). The baseline (a NapCat restart, a disarm/re-arm)
+    ///    applies rule 1, so with hook v7 it re-anchors at the recorded
+    ///    episode start; a hook v6 marker still re-anchors at its CURRENT ts.
     /// 3. DISAPPEARED id ⇒ stale (last ts beyond the 12 h cap; exactly the cap
     ///    is NOT stale) / clockJump (negative run) / underMinimumRun, else
     ///    `.finished`.
@@ -255,6 +283,7 @@ enum FinishAlertPolicy {
         var observed: [String: TrackedSession] = [:]
         var events: [FinishAlertEvent] = []
         var suppressed: [FinishAlertSuppression] = []
+        var invalidEpisodeStarts = 0
 
         for id in present.keys.sorted() {
             guard let marker = present[id] else { continue }
@@ -269,7 +298,8 @@ enum FinishAlertPolicy {
                 session.lastEvent = marker.event
                 isTransitionToWaiting = isWaiting && !wasWaiting
             } else {
-                session = newTrackedSession(marker)
+                session = newTrackedSession(marker, now: now)
+                if episodeStart(marker.ep, now: now) == .invalid { invalidEpisodeStarts += 1 }
                 isTransitionToWaiting = isWaiting
             }
 
@@ -303,11 +333,40 @@ enum FinishAlertPolicy {
             ClaudeActivityPolicy.markerIsFresh(ts: $0.lastTs, now: now)
         }.count
         return FinishAlertObservation(tracked: observed, events: events,
-                                      suppressed: suppressed, stillWorking: stillWorking)
+                                      suppressed: suppressed, stillWorking: stillWorking,
+                                      invalidEpisodeStarts: invalidEpisodeStarts)
     }
 
-    /// Rule 5: run minutes for a message. Known only when the anchor was an
-    /// observed UserPromptSubmit AND the run lasted at least a minute.
+    // MARK: Episode start (hook v7 `ep`)
+
+    /// Validates a marker's RAW `ep` text (`BusyMarker.ep` is never trusted
+    /// upstream). The LENGTH is checked first, so nothing longer than
+    /// `ClaudeBusyConstants.episodeStartMaxDigits` ever reaches the integer
+    /// conversion; then ASCII digits only; then a positive value inside the
+    /// same `[now − 12 h, now]` window as marker freshness — a future start,
+    /// or one past the 12 h horizon, is invalid (exactly 12 h still counts).
+    /// nil ⇒ `.absent` (a hook v6 or earlier marker).
+    static func episodeStart(_ raw: String?, now: Int) -> EpisodeStartReading {
+        guard let raw else { return .absent }
+        let bytes = raw.utf8
+        guard (1...ClaudeBusyConstants.episodeStartMaxDigits).contains(bytes.count),
+              bytes.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }),
+              let value = Int(raw), value > 0,
+              ClaudeActivityPolicy.markerIsFresh(ts: value, now: now) else { return .invalid }
+        return .valid(value)
+    }
+
+    /// How many of `current` — one marker per id, exactly as `baseline`
+    /// reads them — carry an `ep` the policy rejects: they fell back to the
+    /// pre-v7 anchor. The controller logs it as a count when it arms;
+    /// `observe` reports the same for ids it sees for the first time.
+    static func invalidEpisodeStartCount(in current: [IdentifiedBusyMarker], now: Int) -> Int {
+        uniqueMarkers(current).values.filter { episodeStart($0.ep, now: now) == .invalid }.count
+    }
+
+    /// Rule 5: run minutes for a message. Known only when the anchor was
+    /// exact (a valid hook v7 `ep`, or an observed UserPromptSubmit) AND the
+    /// run lasted at least a minute.
     static func minutes(duration: Int, exact: Bool) -> Int? {
         guard exact, duration >= 60 else { return nil }
         return duration / 60
@@ -328,12 +387,21 @@ enum FinishAlertPolicy {
         return nil
     }
 
-    private static func newTrackedSession(_ marker: BusyMarker) -> TrackedSession {
-        TrackedSession(firstSeen: marker.ts,
-                       exactStart: marker.event == ClaudeBusyConstants.setEvent,
-                       lastTs: marker.ts,
-                       lastEvent: marker.event,
-                       waitingBuzzed: false)
+    /// Rule 1's anchor for an id seen for the first time: a valid hook v7
+    /// `ep`, exact; else the marker's own ts, exact only for a
+    /// UserPromptSubmit marker (the pre-v7 rule, unchanged).
+    private static func newTrackedSession(_ marker: BusyMarker, now: Int) -> TrackedSession {
+        var firstSeen = marker.ts
+        var exactStart = marker.event == ClaudeBusyConstants.setEvent
+        if case .valid(let start) = episodeStart(marker.ep, now: now) {
+            firstSeen = start
+            exactStart = true
+        }
+        return TrackedSession(firstSeen: firstSeen,
+                              exactStart: exactStart,
+                              lastTs: marker.ts,
+                              lastEvent: marker.event,
+                              waitingBuzzed: false)
     }
 
     /// A directory cannot hold two files of one name, but the API takes an

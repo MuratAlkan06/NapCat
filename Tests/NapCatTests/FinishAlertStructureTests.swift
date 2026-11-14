@@ -366,6 +366,64 @@ struct FinishAlertStructureTests {
                                        file: Self.controllerFile).isEmpty)
     }
 
+    // MARK: - Hook v7: the episode-start fallback (counts-only log, bounded check)
+
+    /// An `ep` the policy rejects is logged by the controller as a COUNT —
+    /// one log call, whose only interpolation is that count at `.public` —
+    /// at both points where the policy reads a first sighting (the arm-time
+    /// baseline and every diff). Canaries: logging the raw value or a
+    /// session id, at any privacy level, trips the shell lint.
+    @Test func anUnusableEpisodeStartIsLoggedAsACountOnly() throws {
+        let source = try Self.shipped(Self.controllerFile)
+        let code = LidGuardStructureTests.codeOnly(source)
+        let calls = LidGuardStructureTests.logCalls(in: code).filter { $0.text.contains("episode start") }
+        #expect(calls.count == 1, "exactly one episode-start log call, found \(calls.count)")
+        #expect(calls.flatMap { Self.interpolations(in: $0.text) } == ["count, privacy: .public"],
+                "the only interpolation is the count")
+        #expect(code.contains("logUnusableEpisodeStarts(observation.invalidEpisodeStarts)"), "logged after a diff")
+        #expect(code.contains("logUnusableEpisodeStarts(FinishAlertPolicy.invalidEpisodeStartCount(in: markers, now: armedAt))"),
+                "logged after the arm-time baseline")
+
+        let anchor = "final class FinishAlertController {"
+        try #require(source.contains(anchor))
+        let leaks = [
+            "    func canary(_ m: BusyMarker) { Self.logger.notice(\"\\(m.ep ?? \"\", privacy: .public)\") }",
+            "    func canary(_ m: BusyMarker) { Self.logger.notice(\"\\(m.ep ?? \"\", privacy: .private)\") }",
+            "    func canary(_ m: IdentifiedBusyMarker) { Self.logger.notice(\"\\(m.sessionID, privacy: .public)\") }",
+            "    func canary(_ m: BusyMarker) { Self.logger.notice(\"episode start \\(m.ep ?? \"\")\") }",
+        ]
+        for line in leaks {
+            let mutant = source.replacingOccurrences(of: anchor, with: anchor + "\n" + line)
+            #expect(!Self.shellLintFailures(mutant, file: Self.controllerFile).isEmpty,
+                    "canary was NOT caught: \(line)")
+        }
+    }
+
+    /// The policy's `ep` check rejects an over-long value BEFORE any integer
+    /// conversion: in `episodeStart(`, the digit-bound check precedes the
+    /// first `Int(`. Canary: hoisting the conversion above it is caught.
+    static func episodeStartOrderFailures(_ policySource: String) -> [String] {
+        let code = LidGuardStructureTests.codeOnly(policySource)
+        guard let open = code.range(of: "static func episodeStart(") else { return ["episodeStart( not found"] }
+        let tail = code[open.upperBound...]
+        let body = tail[..<(tail.range(of: "\n    }\n")?.lowerBound ?? tail.endIndex)]
+        guard let bound = body.range(of: "ClaudeBusyConstants.episodeStartMaxDigits") else {
+            return ["episodeStart( does not check the digit bound"]
+        }
+        guard let conversion = body.range(of: "Int(") else { return ["episodeStart( has no Int conversion"] }
+        return bound.lowerBound < conversion.lowerBound ? [] : ["the Int conversion runs before the length check"]
+    }
+
+    @Test func theEpisodeStartLengthIsCheckedBeforeAnyIntConversion() throws {
+        let source = try Self.shippedPolicy()
+        #expect(Self.episodeStartOrderFailures(source).isEmpty, "\(Self.episodeStartOrderFailures(source))")
+        let hoisted = source.replacingOccurrences(
+            of: "        guard let raw else { return .absent }\n",
+            with: "        guard let raw else { return .absent }\n        _ = Int(raw)\n")
+        #expect(hoisted != source, "canary setup: the absent guard must exist")
+        #expect(!Self.episodeStartOrderFailures(hoisted).isEmpty, "canary: a hoisted conversion was NOT caught")
+    }
+
     // MARK: - H5: the tracked map stays inside the controller
 
     /// `FinishAlertController.tracked` holds session ids (internal diff keys)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# napcat-hook-version: 6
+# napcat-hook-version: 7
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
 #
@@ -78,6 +78,16 @@
 # post-Stop Notification leaves the marker untouched (logged
 # `reason=poststop-clear-notification`, hook v5 — see C1 above).
 #
+# Hook v7 — the marker's sixth field `ep` is the EPISODE START (epoch
+# seconds): when the session became busy. A write that starts a NEW episode
+# (no marker, or one without a usable `ep`) records this run's own clock; every
+# in-episode rewrite (Notification, waiting, SubagentStop, a kept Stop, or a
+# UserPromptSubmit while the marker persists) carries the existing value over,
+# but only when it passes this script's own strict read (marker_episode).
+# NapCat uses it for the run minutes, so a NapCat restart mid-run no longer
+# re-anchors them. The phase probe below only reads the event token, so it
+# is unaffected by the extra field.
+#
 # HARD UX-SAFETY LAYERS (a buggy hook must never be able to break the user's
 # Claude Code experience — lint-enforced by ClaudeBusyHookScriptTests):
 #   * FORCED EXIT 0 on every path. All work happens in main(); the file ends
@@ -145,6 +155,8 @@ NTYPE_RE='^[a-z_]{1,32}$'
 EVENT_RE='^[A-Za-z]{1,32}$'
 TOKEN_RE='^[A-Za-z-]{1,32}$'
 MARKER_RE='^v1 ts=[0-9]+ event=([^ ]+)( |$)'
+EP_MARKER_RE='^v1 ts=[0-9]+ event=[^ ]+ pid=[0-9]+ src=[^ ]+ ep=([^ ]+)$'
+EP_RE='^[1-9][0-9]{0,9}$'
 WAITING_EVENT=waiting
 WAITING_AFTER_STOP_EVENT=waiting-after-stop
 MAX_STDIN=262144
@@ -193,11 +205,17 @@ valid_event() {
 # Layer 4 — atomic, fire-and-forget marker write. Called BACKGROUNDED so a
 # stalled filesystem cannot delay the prompt. mktemp in the SAME directory + mv
 # is a rename(2), so a reader never sees a half-written marker.
+# Hook v7: the sixth field `ep` (the episode start) is the CURRENT marker's
+# value when marker_episode accepts it — an in-episode rewrite keeps it —
+# otherwise this write's own ts, which starts a new episode. The read happens
+# here, inside the backgrounded write, so it adds nothing to the prompt path.
 #   $1 dest  $2 ts  $3 event  $4 src
 write_marker() {
-  local tmp
+  local tmp ep
+  ep=$(marker_episode "$1")
+  [ -n "$ep" ] || ep=$2
   tmp=$(mktemp "$STATE_DIR/.marker.XXXXXX" 2>/dev/null) || return 0
-  printf 'v1 ts=%s event=%s pid=%s src=%s\n' "$2" "$3" "$PPID" "$4" >"$tmp" 2>/dev/null
+  printf 'v1 ts=%s event=%s pid=%s src=%s ep=%s\n' "$2" "$3" "$PPID" "$4" "$ep" >"$tmp" 2>/dev/null
   mv -f "$tmp" "$1" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
@@ -311,6 +329,27 @@ marker_phase() {
     *)
       printf none ;;
   esac
+  return 0
+}
+
+# Hook v7 — read-only, VALIDATED episode-start probe of the CURRENT marker.
+# Prints the marker's `ep` value only when the first line is the complete
+# six-field grammar (EP_MARKER_RE) AND the value passes the strict whole-string
+# EP_RE check (1-10 digits, no leading zero); prints nothing otherwise (no
+# marker, a FIFO or other non-regular file, a v6 marker without the field, an
+# extra field, or a malformed value), so the caller anchors a fresh episode.
+# Same read discipline as marker_phase: a REGULAR file only, at most 256
+# bytes, NULs mapped to `#`, first line only. The value is never logged.
+#   $1 marker path
+marker_episode() {
+  local line ep
+  [ -f "$1" ] || return 0
+  line=$(head -c 256 "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#')
+  line=${line%%"$NL"*}
+  [[ $line =~ $EP_MARKER_RE ]] || return 0
+  ep=${BASH_REMATCH[1]}
+  [[ $ep =~ $EP_RE ]] || return 0
+  printf '%s' "$ep"
   return 0
 }
 
