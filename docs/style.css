@@ -1,0 +1,251 @@
+/* NapCat landing page. Plain CSS, no frameworks, no web fonts, no images. */
+
+:root {
+  color-scheme: light dark;
+
+  /* Color tokens (light) */
+  --color-bg: #fbfaf7;
+  --color-surface: #f1efe9;
+  --color-text: #1f1d1a;
+  --color-text-muted: #5c5750;
+  --color-border: #dcd8cf;
+  --color-accent: #2f5fb3;
+  --color-accent-hover: #244c91;
+  --color-on-accent: #ffffff;
+  --color-focus: #2f5fb3;
+
+  /* Spacing scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* Type scale */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-hero: 2.5rem;
+  --leading-body: 1.6;
+  --leading-tight: 1.2;
+
+  /* Shape and layout */
+  --radius: 0.5rem;
+  --measure: 42rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #161513;
+    --color-surface: #211f1c;
+    --color-text: #ece9e3;
+    --color-text-muted: #aaa49a;
+    --color-border: #3a3631;
+    --color-accent: #7ea6ec;
+    --color-accent-hover: #a2c0f3;
+    --color-on-accent: #10213f;
+    --color-focus: #a2c0f3;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-body);
+}
+
+.wrap {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 var(--space-4);
+}
+
+a {
+  color: var(--color-accent);
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  color: var(--color-accent-hover);
+}
+
+a:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: calc(-1 * var(--space-7));
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border-radius: var(--radius);
+}
+
+.skip-link:focus {
+  top: var(--space-4);
+}
+
+/* Hero */
+
+.hero {
+  padding: var(--space-7) 0 var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+h1 {
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: var(--text-hero);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-lg);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.button {
+  display: inline-block;
+  padding: var(--space-3) var(--space-5);
+  border-radius: var(--radius);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.button:hover {
+  background: var(--color-accent-hover);
+  color: var(--color-on-accent);
+}
+
+/* Content */
+
+main {
+  padding-bottom: var(--space-7);
+}
+
+section {
+  padding-top: var(--space-6);
+}
+
+h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xl);
+  line-height: var(--leading-tight);
+}
+
+h3 {
+  margin: var(--space-5) 0 var(--space-2);
+  font-size: var(--text-base);
+}
+
+p,
+ul,
+ol {
+  margin: 0 0 var(--space-4);
+}
+
+ul,
+ol {
+  padding-left: var(--space-5);
+}
+
+li + li {
+  margin-top: var(--space-2);
+}
+
+.features {
+  list-style: none;
+  padding-left: 0;
+}
+
+.features li {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border-radius: var(--radius);
+}
+
+.note {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  line-height: 1.5;
+}
+
+pre code {
+  overflow-wrap: normal;
+}
+
+/* Footer */
+
+.site-footer {
+  padding: var(--space-5) 0;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.site-footer p {
+  margin: 0;
+}
+
+@media (min-width: 40rem) {
+  :root {
+    --text-hero: 3rem;
+  }
+
+  .wrap {
+    padding: 0 var(--space-5);
+  }
+}
