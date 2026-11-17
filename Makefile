@@ -3,6 +3,19 @@ DIST     := dist
 APP      := $(DIST)/$(APP_NAME).app
 BINARY   := .build/release/$(APP_NAME)
 
+# Code-signing identity for the bundle. The default `-` is the ad-hoc signature
+# a plain `make` has always produced: no certificate, no network. The release
+# workflow passes a Developer ID identity instead (make SIGN_IDENTITY="...");
+# any identity other than `-` also gets the hardened runtime and a secure
+# timestamp, both of which notarization requires (the timestamp needs network).
+# The ad-hoc branch spells out the exact command `make` has always run.
+SIGN_IDENTITY := -
+ifeq ($(strip $(SIGN_IDENTITY)),-)
+CODESIGN := codesign --force -s -
+else
+CODESIGN := codesign --force --options runtime --timestamp -s "$(SIGN_IDENTITY)"
+endif
+
 # With Command Line Tools only (no Xcode.app), SwiftPM fails to pass -F for
 # the toolchain's Testing.framework to its derived test-runner target, so a
 # bare `swift test` builds but silently SKIPS test execution (exit 0 with no
@@ -11,7 +24,7 @@ BINARY   := .build/release/$(APP_NAME)
 # See PLAN.md decision log 2026-07-09.
 CLT_FRAMEWORKS := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
 
-.PHONY: all run test clean frames smc
+.PHONY: all run test clean frames smc release-artifacts
 
 all: smc
 	swift build -c release
@@ -21,7 +34,7 @@ all: smc
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	install -m 0755 Resources/napcat-watchdog.sh $(APP)/Contents/Resources/napcat-watchdog.sh
 	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
-	codesign --force -s - $(APP)
+	$(CODESIGN) $(APP)
 
 # pkill only SIGNALS the running instance; `open` issued while it is still
 # exiting can hand off to the dying process, and nothing launches. So wait for
@@ -31,6 +44,12 @@ run: all
 	pkill -x $(APP_NAME) || true
 	@i=0; while pgrep -x $(APP_NAME) >/dev/null && [ $$i -lt 50 ]; do sleep 0.1; i=$$((i + 1)); done
 	open $(APP)
+
+# Release packaging: the bundle (`all`, signed with SIGN_IDENTITY — ad-hoc by
+# default), then scripts/make-dmg.sh wraps it into dist/NapCat-<version>.dmg
+# plus a .sha256 next to it. Unprivileged; the dmg itself is not signed here.
+release-artifacts: all
+	./scripts/make-dmg.sh
 
 test:
 	@if [ -d "$(CLT_FRAMEWORKS)" ]; then \
