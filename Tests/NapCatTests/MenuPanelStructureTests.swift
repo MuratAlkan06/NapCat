@@ -425,6 +425,22 @@ struct MenuPanelStructureTests {
         #expect(!toggleView.contains("cancelTracking") && !toggleView.contains("setDetailsExpanded"))
     }
 
+    /// Issue #34 non-goal: the session alerts' run floor is set ONLY in the
+    /// "ntfy settings…" editor (MenuContentView). No panel view — the
+    /// controls tier, the Details tier, the footer — renders or edits it, and
+    /// the panel keeps exactly one route to the editor.
+    @Test func theRunFloorNeverReachesThePanel() throws {
+        let views = try Self.allViewCode()
+        for token in ["finishAlertMinimumRunSeconds", "minimumRunSeconds", "sessionAlertsFloor",
+                      "SessionAlertsFloorGroup"] {
+            #expect(!views.contains(token), "'\(token)' in a panel view — the floor lives in the ntfy settings editor")
+        }
+        #expect(Self.occurrences(of: "model.editLidGuardSettings()", in: views) == 1,
+                "one \"ntfy settings…\" button opens the editor")
+        // Vacuity: the editor really carries the group.
+        #expect(try Self.code("MenuContentView.swift").contains("SessionAlertsFloorGroup(seconds:"))
+    }
+
     /// F3 (2026-10-18): the Pause detection kill switch exists ONCE, inside the
     /// Details content — out of casual reach. (The top-level "Claude: paused"
     /// footer label is the mapping's job, tested in MenuPanelPresentationTests.)

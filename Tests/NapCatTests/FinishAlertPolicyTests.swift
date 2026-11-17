@@ -607,6 +607,7 @@ struct FinishAlertPolicyTests {
             ("Int.max", Int.max, 600),
             ("a plist integer", NSNumber(value: 120), 120),
             ("a plist fraction", NSNumber(value: 120.5), 60),
+            ("a plist Bool (reads as 1)", NSNumber(value: true), 30),
             ("a string", "junk", 60),
             ("a numeric string", "120", 60),
             ("an array", [1, 2], 60),

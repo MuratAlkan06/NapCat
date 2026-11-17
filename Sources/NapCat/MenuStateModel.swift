@@ -110,6 +110,10 @@ final class MenuStateModel: ObservableObject {
     /// Alert healing (issue #23): healing is armed AND the session lane is
     /// OFFLINE (holding). False whenever healing is disarmed — no line then.
     @Published private(set) var sessionAlertsOffline = false
+    /// Issue #34: the run floor the controller applies (clamped, live). It
+    /// feeds the "Session alerts" group of the ntfy settings editor only —
+    /// the panel never renders it (nothing in the Details tier).
+    @Published private(set) var finishAlertMinimumRunSeconds = FinishAlertTuning.minimumRunSeconds
 
     // Panel redesign (2026-10-18).
     /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
@@ -223,6 +227,7 @@ final class MenuStateModel: ObservableObject {
         finishAlertLastOutcomeAt = finishAlert?.lastSendOutcomeAt
         finishAlertLastKind = finishAlert?.lastSendKind
         sessionAlertsOffline = finishAlert?.connectivityOffline ?? false
+        finishAlertMinimumRunSeconds = finishAlert?.minimumRunSeconds ?? FinishAlertTuning.minimumRunSeconds
     }
 
     // MARK: Actions (forwarded)
@@ -943,6 +948,49 @@ final class MenuStateModel: ObservableObject {
         case .connectionRestored?: return " (connection restored)"
         case .lidAlert?, .test?, nil: return ""
         }
+    }
+
+    // MARK: - Issue #34: the run-floor group of the ntfy settings editor
+
+    /// The "Session alerts" group's title in the "ntfy settings…" editor —
+    /// the same name as the panel row it configures. The group holds ONE
+    /// popup of preset floors for `finishAlertMinimumRunSeconds`; it never
+    /// appears in the panel itself.
+    nonisolated static let sessionAlertsFloorGroupTitle = "Session alerts"
+
+    /// The popup's leading label.
+    nonisolated static let sessionAlertsFloorLabel = "Only alert for runs longer than:"
+
+    /// The popup's VoiceOver name; its value is the selected row's text.
+    nonisolated static let sessionAlertsFloorAccessibilityLabel = "Minimum run before alerting"
+
+    /// Under the popup, small and secondary.
+    nonisolated static let sessionAlertsFloorCaption = "Shorter runs finish silently."
+
+    /// The popup's preset floors in seconds, ascending: both clamp bounds and
+    /// the 60 s default (pre-selected while nothing is stored). There is no
+    /// reset row — "1 minute" is the default.
+    nonisolated static let sessionAlertsFloorPresets = [30, 60, 120, 300, 600]
+
+    /// The popup's rows for a (clamped) floor: the presets, plus — only when
+    /// the floor is not one of them, e.g. 90 set with `defaults write` — ONE
+    /// extra row for it, in order. Opening the editor shows a stored value as
+    /// it is instead of snapping it to a preset; only a Save of a different
+    /// choice writes the key.
+    nonisolated static func sessionAlertsFloorChoices(seconds: Int) -> [Int] {
+        guard !sessionAlertsFloorPresets.contains(seconds) else { return sessionAlertsFloorPresets }
+        return (sessionAlertsFloorPresets + [seconds]).sorted()
+    }
+
+    /// A floor as the popup shows it: a formatted duration, never raw seconds
+    /// above 59 — "30 seconds", "1 minute", "10 minutes", "1 min 30 s". Each
+    /// floor gets its own text (a popup merges rows with the same title).
+    nonisolated static func sessionAlertsFloorText(seconds: Int) -> String {
+        let minutes = seconds / 60
+        let rest = seconds % 60
+        if minutes == 0 { return rest == 1 ? "1 second" : "\(rest) seconds" }
+        if rest == 0 { return minutes == 1 ? "1 minute" : "\(minutes) minutes" }
+        return "\(minutes) min \(rest) s"
     }
 
     // MARK: - Panel tiers + severity (UI redesign 2026-10-18)
