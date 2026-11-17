@@ -9,7 +9,7 @@ BINARY   := .build/release/$(APP_NAME)
 # any identity other than `-` also gets the hardened runtime and a secure
 # timestamp, both of which notarization requires (the timestamp needs network).
 # The ad-hoc branch spells out the exact command `make` has always run.
-SIGN_IDENTITY ?= -
+SIGN_IDENTITY := -
 ifeq ($(strip $(SIGN_IDENTITY)),-)
 CODESIGN := codesign --force -s -
 else

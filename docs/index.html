@@ -61,12 +61,12 @@
       </ul>
 
       <h3>How to run it</h3>
-      <p>The script and the helper's source live in the repository, not in the disk image. You need an administrator account and the Xcode Command Line Tools (<code>xcode-select --install</code>):</p>
-      <pre><code>git clone https://github.com/MuratAlkan06/NapCat.git
+      <p>The script and the helper's source live in the repository, not in the disk image. Replace <code>vX.Y.Z</code> with the tag of the release you downloaded. You need an administrator account and the Xcode Command Line Tools (<code>xcode-select --install</code>):</p>
+      <pre><code>git clone --branch vX.Y.Z https://github.com/MuratAlkan06/NapCat.git
 cd NapCat
 make smc
 sudo ./scripts/setup.sh</code></pre>
-      <p>Read the script before you run it; it is short on purpose. To remove everything again, run <code>sudo ./scripts/uninstall.sh</code>.</p>
+      <p>Read the script before you run it. To remove everything again, run <code>sudo ./scripts/uninstall.sh</code>.</p>
 
       <h3>The trade-off</h3>
       <p>Once setup is installed, anything running as your user can run those same few commands without a password. The worst they can do is keep the Mac awake, or pause and resume charging. If that is not acceptable to you, skip the setup: NapCat still shows the battery percentage and charging state without it. The README's <a href="https://github.com/MuratAlkan06/NapCat#security-model">Security model</a> section explains every part of the design.</p>
