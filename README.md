@@ -63,9 +63,25 @@ light/dark menu bars.
 - macOS 14 (Sonoma) or later. Developed and tested on a MacBook Pro 16"
   (M4 Pro, macOS Sequoia 15.6.1); also verified on macOS 27.2.1.
 - Apple Silicon for the charge limit. Stay Awake also works on Intel.
-- Xcode Command Line Tools to build (`xcode-select --install`).
+- Xcode Command Line Tools (`xcode-select --install`) to build from source
+  and to run the one-time setup below.
 
 ## Install
+
+### From a release disk image
+
+1. Download `NapCat-<version>.dmg` from the
+   [latest release](https://github.com/MuratAlkan06/NapCat/releases/latest).
+2. Open it and drag **NapCat** onto **Applications**.
+3. Open NapCat from Applications. The cat appears in the menu bar (there is
+   no Dock icon).
+
+If the latest release has no `.dmg` attached yet, install from source
+instead. Each `.dmg` comes with a `.sha256` file:
+`shasum -a 256 -c NapCat-<version>.dmg.sha256`, run in the folder holding
+both, catches a corrupted download. It is a checksum, not a signature.
+
+### From source
 
 ```sh
 git clone https://github.com/MuratAlkan06/NapCat.git NapCat
@@ -74,9 +90,15 @@ make            # swift build + assemble dist/NapCat.app (ad-hoc signed)
 open dist/NapCat.app
 ```
 
+### One-time privileged setup
+
 The app runs immediately, but both power features need a **one-time
 privileged setup** that you run yourself (the app never asks for or uses
-your password):
+your password). It runs from a clone of this repository: the script lives
+there, and on Apple Silicon it installs the SMC helper you build from the
+vendored source. If you installed from the disk image, clone the repository
+first, ideally at the tag matching your NapCat version
+(`git clone --branch v<version> …`), then run:
 
 ```sh
 make            # ensures dist/smc is built
@@ -298,8 +320,9 @@ still root-owned and not writable by anyone else; if they are not, that one
 step is skipped and reported, and everything else still runs), then
 removes the sudoers file, `/usr/local/napcat`, the failsafe LaunchAgent, and
 NapCat's saved settings (including the ntfy topic), and prints a summary of
-everything it reverted. Then delete the repo /
-`dist/NapCat.app` and, if you enabled Launch at Login, remove the NapCat
+everything it reverted. Then delete the app (`/Applications/NapCat.app` if
+you installed the disk image) and the repo / `dist/NapCat.app` and, if you
+enabled Launch at Login, remove the NapCat
 entry in System Settings › General › Login Items (or toggle it off in the
 menu before uninstalling).
 
@@ -662,6 +685,7 @@ make run        # build, then (re)launch the app
 make test       # unit tests (Swift Testing)
 make frames     # re-render the pixel-art frames from in-code grids
 make smc        # build the vendored smc CLI to dist/smc
+make release-artifacts  # make, then dist/NapCat-<version>.dmg + .sha256
 make clean      # remove .build/ and dist/
 ```
 
