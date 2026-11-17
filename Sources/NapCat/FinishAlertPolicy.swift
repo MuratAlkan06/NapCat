@@ -1,8 +1,9 @@
 import Foundation
 
 // Pure Track C decision logic for the Claude finish alert and the waiting
-// buzz: marker-set diffing, the hook v7 episode-start check, the 60 s run
-// floor, the 12 h stale cap, the batch digest, the outbox and retry tables,
+// buzz: marker-set diffing, the hook v7 episode-start check, the run floor
+// (60 s by default, user-adjustable — issue #34), the 12 h stale cap, the
+// batch digest, the outbox and retry tables,
 // and the arming/display predicates — plus alert-channel healing (issue #23):
 // the offline-hold state machine, its arming predicate, the held digest's max
 // age and the lost-connection restore push.
@@ -16,14 +17,23 @@ import Foundation
 // else. Every value that leaves this file toward a message is an Int count or
 // minutes (`FinishAlertEvent`, `FinishAlertDigest`, `LidGuardMessageKind`).
 
-/// Track C tunables. CODE CONSTANTS, not UserDefaults keys — the only new
-/// persisted key of Track C is the `claudeFinishAlertEnabled` toggle.
+/// Track C tunables. CODE CONSTANTS, not UserDefaults keys — Track C persists
+/// only the `claudeFinishAlertEnabled` toggle and the run floor
+/// (`finishAlertMinimumRunSeconds`, issue #34), whose DEFAULT and bounds live
+/// here.
 enum FinishAlertTuning {
-    /// Run-length floor (user ruling): a run shorter than this never alerts —
-    /// neither a finish nor a waiting buzz (you are still looking). Raised
-    /// from 30 to 60 on 2026-10-23 by user ruling; a run of exactly the floor
-    /// with an exact anchor reads "1 min" (`minutes(duration:exact:)`).
+    /// Run-length floor DEFAULT (user ruling): a run shorter than the floor
+    /// never alerts — neither a finish nor a waiting buzz (you are still
+    /// looking). Raised from 30 to 60 on 2026-10-23 by user ruling; a run of
+    /// exactly 60 s with an exact anchor reads "1 min"
+    /// (`minutes(duration:exact:)`). Since issue #34 the LIVE floor is the
+    /// user's `finishAlertMinimumRunSeconds` setting, read through
+    /// `FinishAlertPolicy.minimumRunSeconds(stored:)` and passed to `observe`;
+    /// this is what an unset or unusable stored value reads as.
     static let minimumRunSeconds = 60
+    /// Issue #34: the adjustable floor's bounds (30 s – 10 min). A stored value
+    /// outside them is clamped on read.
+    static let minimumRunSecondsRange = 30...600
     /// One-shot debounce armed ONLY by a filesystem event — never periodic
     /// (B1 amendment, PLAN.md Track C).
     static let debounceSeconds: TimeInterval = 2
@@ -71,7 +81,7 @@ enum FinishAlertEvent: Equatable, Sendable {
 
 /// Why a transition produced no event (log-safe reason, never an id).
 enum FinishAlertSuppression: String, Equatable, Sendable {
-    /// Shorter than `FinishAlertTuning.minimumRunSeconds`.
+    /// Shorter than the run floor (`observe`'s `minimumRunSeconds`).
     case underMinimumRun
     /// Last-known marker ts older than the 12 h cap: the hook's sweep.
     case stale
@@ -250,6 +260,21 @@ enum FinishAlertPolicy {
         !debugBattery
     }
 
+    // MARK: Run floor (issue #34)
+
+    /// The run floor a STORED `finishAlertMinimumRunSeconds` value stands for
+    /// — the one clamp rule, applied on every read. Missing (nil) or not an
+    /// integer (a string, a fraction, an array — a hand-edited plist) ⇒ the
+    /// 60 s default; an integer outside `minimumRunSecondsRange` ⇒ the nearer
+    /// bound. Only the alert floor of `observe` follows it: the healing
+    /// outage floor (`AlertHealingTuning.minimumOutageSeconds`) and the held
+    /// digest's max age stay fixed constants.
+    static func minimumRunSeconds(stored: Any?) -> Int {
+        guard let value = stored as? Int else { return FinishAlertTuning.minimumRunSeconds }
+        let range = FinishAlertTuning.minimumRunSecondsRange
+        return min(range.upperBound, max(range.lowerBound, value))
+    }
+
     // MARK: Marker-set diffing
 
     /// Arm-time baseline: every present marker becomes tracked and NOTHING is
@@ -295,10 +320,15 @@ enum FinishAlertPolicy {
     ///    set. A suppressed transition leaves the flag false; rewrites that
     ///    stay waiting — including `waiting` ⇄ `waiting-after-stop` — are
     ///    never a transition.
+    ///
+    /// `minimumRunSeconds` is the ONE floor of rules 3 and 4 — the finish and
+    /// the waiting buzz share it (`runSuppression`). The controller passes the
+    /// user's live setting (issue #34); it defaults to the 60 s constant.
     static func observe(
         previous: [String: TrackedSession],
         current: [IdentifiedBusyMarker],
-        now: Int
+        now: Int,
+        minimumRunSeconds: Int = FinishAlertTuning.minimumRunSeconds
     ) -> FinishAlertObservation {
         let present = uniqueMarkers(current)
         // Not named `tracked`: outside FinishAlertController no Sources file
@@ -328,7 +358,7 @@ enum FinishAlertPolicy {
 
             if isTransitionToWaiting && !session.waitingBuzzed {
                 let duration = now - session.firstSeen
-                if let reason = runSuppression(duration: duration) {
+                if let reason = runSuppression(duration: duration, minimumRunSeconds: minimumRunSeconds) {
                     suppressed.append(reason)
                 } else {
                     events.append(.waiting(minutes: minutes(duration: duration, exact: session.exactStart)))
@@ -345,7 +375,7 @@ enum FinishAlertPolicy {
                 continue
             }
             let duration = now - gone.firstSeen
-            if let reason = runSuppression(duration: duration) {
+            if let reason = runSuppression(duration: duration, minimumRunSeconds: minimumRunSeconds) {
                 suppressed.append(reason)
             } else {
                 events.append(.finished(minutes: minutes(duration: duration, exact: gone.exactStart)))
@@ -403,10 +433,10 @@ enum FinishAlertPolicy {
     }
 
     /// Floor + clock checks shared by finishes and waiting buzzes; nil = the
-    /// run qualifies.
-    private static func runSuppression(duration: Int) -> FinishAlertSuppression? {
+    /// run qualifies (exactly the floor does).
+    private static func runSuppression(duration: Int, minimumRunSeconds: Int) -> FinishAlertSuppression? {
         if duration < 0 { return .clockJump }
-        if duration < FinishAlertTuning.minimumRunSeconds { return .underMinimumRun }
+        if duration < minimumRunSeconds { return .underMinimumRun }
         return nil
     }
 

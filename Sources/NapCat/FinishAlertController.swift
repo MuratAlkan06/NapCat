@@ -124,6 +124,10 @@ final class FinishAlertController {
     private let connectivity: ConnectivityInterface?
     /// Alert healing: the OBSERVED Stay Awake state (true only when known on).
     private let stayAwakeOn: () -> Bool
+    /// Issue #34: the user's run floor (finish AND waiting), already clamped.
+    /// Read at EVERY marker diff — never cached — so a change in the ntfy
+    /// settings applies to the next diff, with no restart and no re-arm.
+    private let readMinimumRunSeconds: () -> Int
 
     // MARK: State (main actor only)
 
@@ -171,6 +175,9 @@ final class FinishAlertController {
     /// True while the kqueue watcher is running — the ONLY meaning of "armed".
     var isWatching: Bool { watcher?.isRunning == true }
 
+    /// The run floor the next marker diff will apply (issue #34), read live.
+    var minimumRunSeconds: Int { readMinimumRunSeconds() }
+
     /// Alert healing: armed and OFFLINE — session alerts are being held. The
     /// panel's one offline warning shows exactly while this is true.
     var connectivityOffline: Bool { healing.phase == .offline }
@@ -201,7 +208,8 @@ final class FinishAlertController {
         scheduler: FinishAlertScheduling,
         now: @escaping () -> Double,
         connectivity: ConnectivityInterface? = nil,
-        stayAwakeOn: @escaping () -> Bool = { false }
+        stayAwakeOn: @escaping () -> Bool = { false },
+        minimumRunSeconds: @escaping () -> Int = { FinishAlertTuning.minimumRunSeconds }
     ) {
         self.store = store
         self.markerDirURL = markerDirURL
@@ -213,6 +221,7 @@ final class FinishAlertController {
         self.now = now
         self.connectivity = connectivity
         self.stayAwakeOn = stayAwakeOn
+        self.readMinimumRunSeconds = minimumRunSeconds
     }
 
     /// The single construction site, gated by the debug-sim wiring predicate
@@ -223,13 +232,15 @@ final class FinishAlertController {
     /// `reconcile()` finds the feature armable. Alert healing: `connectivity`
     /// comes from the startup swap (`ConnectivityWiring.makeInterface`) and
     /// is observed only while healing is armed; Stay Awake is read from the
-    /// OBSERVED mirror.
+    /// OBSERVED mirror. Issue #34: the run floor is read from `defaults`
+    /// (`finishAlertMinimumRunSeconds`, clamped by the policy) at every diff.
     static func makeIfEnabled(
         debugBattery: Bool,
         lidGuard: LidGuardController?,
         sender: MessageSender?,
         connectivity: ConnectivityInterface,
-        stayAwakeMirror: ObservedStayAwakeMirror
+        stayAwakeMirror: ObservedStayAwakeMirror,
+        defaults: UserDefaults = .standard
     ) -> FinishAlertController? {
         guard FinishAlertPolicy.finishAlertMayBeConstructed(debugBattery: debugBattery) else { return nil }
         guard let lidGuard, let sender else { return nil }
@@ -243,7 +254,10 @@ final class FinishAlertController {
             scheduler: MainQueueFinishAlertScheduler(),
             now: { Date().timeIntervalSince1970 },
             connectivity: connectivity,
-            stayAwakeOn: { stayAwakeMirror.value == true }
+            stayAwakeOn: { stayAwakeMirror.value == true },
+            minimumRunSeconds: {
+                FinishAlertPolicy.minimumRunSeconds(stored: defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds))
+            }
         )
     }
 
@@ -377,7 +391,8 @@ final class FinishAlertController {
         let observation = FinishAlertPolicy.observe(
             previous: tracked,
             current: store.identifiedMarkers(),
-            now: Int(observedAt)
+            now: Int(observedAt),
+            minimumRunSeconds: readMinimumRunSeconds()
         )
         tracked = observation.tracked
         latestStillWorking = observation.stillWorking

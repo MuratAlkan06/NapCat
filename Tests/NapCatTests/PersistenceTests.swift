@@ -26,6 +26,8 @@ struct PersistenceTests {
         // Track C (Claude finish alert) — ONE toggle; it shares the lid-guard
         // topic / server / primed-at above instead of adding its own.
         #expect(DefaultsKey.claudeFinishAlertEnabled == "claudeFinishAlertEnabled")
+        // Issue #34 — the session alerts' run floor (finish + waiting).
+        #expect(DefaultsKey.finishAlertMinimumRunSeconds == "finishAlertMinimumRunSeconds")
         // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
         // live key — retired at the design freeze (RetiredDefaultsKey).
     }
@@ -51,6 +53,38 @@ struct PersistenceTests {
             first.controller.setFinishAlertEnabled(false)
             #expect(!LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
                 .controller.finishAlertEnabled)
+        }
+    }
+
+    /// Issue #34: the session alerts' run floor, through the controller the
+    /// app builds (`makeIfEnabled`, on an isolated suite — the controller is
+    /// never reconciled, so nothing is watched). Unset reads as 60 and is not
+    /// eagerly written; a stored value is clamped on READ (29 → 30, 601 →
+    /// 600) and junk reads as 60. Every read is LIVE: the one controller built
+    /// at launch follows each later write — no rebuild, so no restart.
+    @Test func finishAlertMinimumRunDefaultsTo60AndClampsOnRead() {
+        withLidGuardHarness { lid in
+            let built = FinishAlertController.makeIfEnabled(
+                debugBattery: false, lidGuard: lid.controller, sender: RecordingMessageSender(),
+                connectivity: ConnectivitySimulator(), stayAwakeMirror: ObservedStayAwakeMirror(),
+                defaults: lid.defaults)
+            guard let finish = built else {
+                Issue.record("makeIfEnabled must build the controller here")
+                return
+            }
+            #expect(finish.minimumRunSeconds == 60)
+            #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == nil,
+                    "the default is computed, not eagerly written")
+            for (stored, expected) in [(29, 30), (30, 30), (120, 120), (600, 600), (601, 600)] {
+                lid.defaults.set(stored, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+                #expect(finish.minimumRunSeconds == expected, "stored \(stored)")
+            }
+            lid.defaults.set("junk", forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            #expect(finish.minimumRunSeconds == 60, "a non-integer falls back to the default")
+            lid.defaults.set(90.5, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            #expect(finish.minimumRunSeconds == 60, "so does a fraction")
+            lid.defaults.removeObject(forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            #expect(finish.minimumRunSeconds == 60, "missing again ⇒ the default")
         }
     }
 
@@ -253,7 +287,7 @@ struct PersistenceTests {
                     DefaultsKey.heatWarningAcknowledged, DefaultsKey.debugBattery,
                     DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
                     DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
-                    DefaultsKey.claudeFinishAlertEnabled]
+                    DefaultsKey.claudeFinishAlertEnabled, DefaultsKey.finishAlertMinimumRunSeconds]
         for key in RetiredDefaultsKey.all {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }
