@@ -1,0 +1,326 @@
+name: Release
+
+# Builds the release disk image (make release-artifacts) for a version tag.
+#
+# Signing, notarization, stapling and publishing a GitHub Release happen ONLY
+# on a vMAJOR.MINOR.PATCH tag push AND only when every signing secret below is
+# configured. Without them the run fails soft: it uploads the image as a
+# workflow artifact named NapCat-<version>-UNSIGNED and never attaches it to a
+# GitHub Release. workflow_dispatch is always such an unsigned dry run.
+#
+# Secrets used by the signed path (none are needed for the unsigned one):
+#   MACOS_SIGN_IDENTITY           codesign identity, e.g. its SHA-1 or
+#                                 "Developer ID Application: <name> (<team>)"
+#   MACOS_CERTIFICATE_P12_BASE64  base64 of the Developer ID .p12 export
+#   MACOS_CERTIFICATE_PASSWORD    password of that .p12
+#   NOTARY_API_KEY_P8_BASE64      base64 of the App Store Connect API key (.p8)
+#   NOTARY_API_KEY_ID             its key ID
+#   NOTARY_API_ISSUER_ID          its issuer ID
+# Secrets reach run steps only through env:, never through ${{ }} in a script.
+#
+# There is deliberately no pull_request or pull_request_target trigger: code
+# from a pull request must never run in this workflow.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          Dry run: test, build and upload an UNSIGNED workflow artifact.
+          Never signs or publishes; only a vX.Y.Z tag push can. Leave checked.
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate trigger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+      publish: ${{ steps.check.outputs.publish }}
+      tag-version: ${{ steps.check.outputs.tag-version }}
+    steps:
+      - name: Check the event and tag
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          case "$EVENT_NAME" in
+            push)
+              if [ "$REF_TYPE" != "tag" ] || ! [[ "$REF_NAME" =~ $tag_pattern ]]; then
+                echo "::notice title=Not a release tag::Release tags look like v1.2.3 and this one does not, so there is nothing to build."
+                echo "proceed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              {
+                echo "proceed=true"
+                echo "publish=true"
+                echo "tag-version=${REF_NAME#v}"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              if [ "$DRY_RUN" != "true" ]; then
+                echo "::notice title=Dry runs only::A manual run never signs or publishes; only a vX.Y.Z tag push can. Run it again with dry_run checked."
+                echo "proceed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              {
+                echo "proceed=true"
+                echo "publish=false"
+                echo "tag-version="
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unexpected trigger for the release workflow."
+              exit 1
+              ;;
+          esac
+
+  build:
+    name: Build release artifacts
+    needs: validate
+    if: needs.validate.outputs.proceed == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.gate.outputs.sign }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the version
+        id: version
+        env:
+          TAG_VERSION: ${{ needs.validate.outputs.tag-version }}
+        run: |
+          set -euo pipefail
+          version_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
+          version="$(plutil -extract CFBundleShortVersionString raw -o - Resources/Info.plist)"
+          if ! [[ "$version" =~ $version_pattern ]]; then
+            echo "::error::CFBundleShortVersionString in Resources/Info.plist is not MAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          if [ -n "$TAG_VERSION" ] && [ "$TAG_VERSION" != "$version" ]; then
+            echo "::error::The tag is v$TAG_VERSION but Resources/Info.plist says $version. Bump the bundle version before tagging."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests
+        run: make test
+
+      # Signing is attempted only for a tag push with EVERY secret present.
+      # The secrets are compared to '' here, so only true/false reaches env.
+      - name: Decide whether this run can sign
+        id: gate
+        env:
+          PUBLISH: ${{ needs.validate.outputs.publish }}
+          HAVE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY != '' }}
+          HAVE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
+          HAVE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+          HAVE_NOTARY_KEY: ${{ secrets.NOTARY_API_KEY_P8_BASE64 != '' }}
+          HAVE_NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID != '' }}
+          HAVE_NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ "$HAVE_SIGN_IDENTITY" = "true" ] || missing="$missing MACOS_SIGN_IDENTITY"
+          [ "$HAVE_CERTIFICATE" = "true" ] || missing="$missing MACOS_CERTIFICATE_P12_BASE64"
+          [ "$HAVE_CERTIFICATE_PASSWORD" = "true" ] || missing="$missing MACOS_CERTIFICATE_PASSWORD"
+          [ "$HAVE_NOTARY_KEY" = "true" ] || missing="$missing NOTARY_API_KEY_P8_BASE64"
+          [ "$HAVE_NOTARY_KEY_ID" = "true" ] || missing="$missing NOTARY_API_KEY_ID"
+          [ "$HAVE_NOTARY_ISSUER_ID" = "true" ] || missing="$missing NOTARY_API_ISSUER_ID"
+          if [ "$PUBLISH" != "true" ]; then
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Dry run::This run builds an UNSIGNED disk image as a workflow artifact only. Nothing is signed or published."
+          elif [ -z "$missing" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Unsigned build::Signing secrets are not configured (missing:$missing). Building an UNSIGNED disk image as a workflow artifact only; no GitHub Release is created or changed."
+          fi
+
+      - name: Import the signing certificate into a temporary keychain
+        if: steps.gate.outputs.sign == 'true'
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keychain="$RUNNER_TEMP/napcat-release.keychain-db"
+          certificate="$RUNNER_TEMP/napcat-signing.p12"
+          # Random, used only inside this step, never printed.
+          keychain_password="$(openssl rand -hex 32)"
+          printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -f pkcs12 -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+
+      - name: Build the bundle and disk image
+        env:
+          SIGNING: ${{ steps.gate.outputs.sign }}
+          DEVELOPER_ID: ${{ steps.gate.outputs.sign == 'true' && secrets.MACOS_SIGN_IDENTITY || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$SIGNING" = "true" ]; then
+            make release-artifacts SIGN_IDENTITY="$DEVELOPER_ID"
+          else
+            make release-artifacts
+          fi
+
+      - name: Sign, notarize and staple the disk image
+        if: steps.gate.outputs.sign == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DEVELOPER_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dmg="dist/NapCat-$VERSION.dmg"
+          notary_key="$RUNNER_TEMP/napcat-notary-key.p8"
+          result="$RUNNER_TEMP/napcat-notary-result.json"
+          codesign --force --timestamp -s "$DEVELOPER_ID" "$dmg"
+          printf '%s' "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$notary_key"
+          xcrun notarytool submit "$dmg" --key "$notary_key" --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait --timeout 30m --output-format json > "$result"
+          rm -f "$notary_key"
+          status="$(plutil -extract status raw -o - "$result")"
+          if [ "$status" != "Accepted" ]; then
+            echo "::error::Notarization status is '$status', not Accepted. 'xcrun notarytool log <submission id>' explains why."
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose "$dmg"
+          # Signing and stapling rewrote the image, so recompute its checksum.
+          (cd dist && shasum -a 256 "NapCat-$VERSION.dmg" > "NapCat-$VERSION.dmg.sha256")
+
+      - name: Upload the UNSIGNED disk image (workflow artifact only)
+        if: steps.gate.outputs.sign != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NapCat-${{ steps.version.outputs.version }}-UNSIGNED
+          path: |
+            dist/NapCat-${{ steps.version.outputs.version }}.dmg
+            dist/NapCat-${{ steps.version.outputs.version }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Summarize the UNSIGNED result
+        if: steps.gate.outputs.sign != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## NapCat $VERSION: UNSIGNED build, not published"
+            echo
+            echo "The disk image was built without a Developer ID signature and without notarization."
+            echo "It is available only as the workflow artifact \`NapCat-$VERSION-UNSIGNED\`."
+            echo "No GitHub Release was created or changed."
+            echo
+            echo '```'
+            cat "dist/NapCat-$VERSION.dmg.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Unsigned artifact::NapCat-$VERSION-UNSIGNED uploaded as a workflow artifact; nothing was published."
+
+      - name: Upload the disk image for the publish job
+        if: steps.gate.outputs.sign == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: NapCat-${{ steps.version.outputs.version }}-release
+          path: |
+            dist/NapCat-${{ steps.version.outputs.version }}.dmg
+            dist/NapCat-${{ steps.version.outputs.version }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Remove the temporary keychain and key files
+        if: always()
+        run: |
+          keychain="$RUNNER_TEMP/napcat-release.keychain-db"
+          if [ -e "$keychain" ]; then
+            security delete-keychain "$keychain" || true
+          fi
+          rm -f "$RUNNER_TEMP/napcat-signing.p12" "$RUNNER_TEMP/napcat-notary-key.p8" \
+            "$RUNNER_TEMP/napcat-notary-result.json"
+
+  publish:
+    name: Publish the GitHub Release
+    needs: [validate, build]
+    if: needs.validate.outputs.publish == 'true' && needs.build.outputs.signed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the disk image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: NapCat-${{ needs.build.outputs.version }}-release
+          path: release
+
+      - name: Create the release, or attach to the existing one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
+          if ! [[ "$VERSION" =~ $version_pattern ]]; then
+            echo "::error::Unexpected version from the build job."
+            exit 1
+          fi
+          tag="v$VERSION"
+          dmg="release/NapCat-$VERSION.dmg"
+          checksum="$dmg.sha256"
+          (cd release && sha256sum --check "NapCat-$VERSION.dmg.sha256")
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # Never --clobber: an asset that is already there stays untouched.
+            gh release upload "$tag" "$dmg" "$checksum"
+          else
+            notes="$RUNNER_TEMP/release-notes.md"
+            object_type="$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type')"
+            if [ "$object_type" = "tag" ]; then
+              object_sha="$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.sha')"
+              gh api "repos/$GH_REPO/git/tags/$object_sha" --jq '.message' > "$notes"
+            else
+              printf 'NapCat %s\n' "$VERSION" > "$notes"
+            fi
+            gh release create "$tag" "$dmg" "$checksum" --verify-tag --title "$tag" --notes-file "$notes"
+          fi
