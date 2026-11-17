@@ -324,6 +324,14 @@ struct MenuStateModelTests {
             defaults.set(false, forKey: DefaultsKey.claudeFinishAlertEnabled)
             model.refresh()
             #expect(!model.finishAlertEnabled)
+
+            // Issue #34: the run floor the ntfy settings editor is fed with
+            // is the controller's live value, re-read on refresh.
+            #expect(model.finishAlertMinimumRunSeconds == 60)
+            h.runFloor.value = 120
+            #expect(model.finishAlertMinimumRunSeconds == 60, "mirrors update on refresh(), not by magic")
+            model.refresh()
+            #expect(model.finishAlertMinimumRunSeconds == 120)
         }
     }
 
@@ -375,8 +383,71 @@ struct MenuStateModelTests {
             #expect(model.finishAlertDisplayState == .off)
             #expect(model.finishAlertLastOutcome == nil && model.finishAlertLastOutcomeAt == nil
                     && model.finishAlertLastKind == nil)
+            lid.defaults.set(120, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            model.refresh()
+            #expect(model.finishAlertMinimumRunSeconds == FinishAlertTuning.minimumRunSeconds,
+                    "no controller: the editor shows no floor group, the mirror stays the default")
         }
         #expect(!makeModel().finishAlertVisible)
+    }
+
+    /// Issue #34: the "Session alerts" group of the ntfy settings editor.
+    /// Its strings are fixed (the title is the panel row's own name), and the
+    /// popup offers five presets — both clamp bounds and the default among
+    /// them — as formatted durations.
+    @Test func theSessionAlertsFloorGroupPresentation() {
+        #expect(MenuStateModel.sessionAlertsFloorGroupTitle == "Session alerts")
+        #expect(MenuStateModel.sessionAlertsFloorLabel == "Only alert for runs longer than:")
+        #expect(MenuStateModel.sessionAlertsFloorAccessibilityLabel == "Minimum run before alerting")
+        #expect(MenuStateModel.sessionAlertsFloorCaption == "Shorter runs finish silently.")
+
+        let presets = MenuStateModel.sessionAlertsFloorPresets
+        let range = FinishAlertTuning.minimumRunSecondsRange
+        #expect(presets == [30, 60, 120, 300, 600])
+        #expect(presets.map(MenuStateModel.sessionAlertsFloorText(seconds:))
+                == ["30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"])
+        #expect(presets == presets.sorted() && Set(presets).count == presets.count)
+        #expect(presets.first == range.lowerBound && presets.last == range.upperBound, "both bounds are reachable")
+        #expect(presets.contains(FinishAlertTuning.minimumRunSeconds), "the default is a preset — no reset row")
+    }
+
+    /// Issue #34: the popup's formatter. Under a minute in seconds, whole
+    /// minutes in minutes, anything else as "N min S s" — never raw seconds
+    /// above 59. Across the whole clamp range every floor gets its own text
+    /// (a popup merges rows with the same title).
+    @Test func theSessionAlertsFloorFormatter() {
+        let rows: [(seconds: Int, text: String)] = [
+            (1, "1 second"), (30, "30 seconds"), (45, "45 seconds"), (59, "59 seconds"),
+            (60, "1 minute"), (61, "1 min 1 s"), (90, "1 min 30 s"), (119, "1 min 59 s"),
+            (120, "2 minutes"), (150, "2 min 30 s"), (300, "5 minutes"), (599, "9 min 59 s"),
+            (600, "10 minutes"),
+        ]
+        for row in rows {
+            #expect(MenuStateModel.sessionAlertsFloorText(seconds: row.seconds) == row.text, "\(row.seconds) s")
+        }
+
+        let range = FinishAlertTuning.minimumRunSecondsRange
+        var seen = Set<String>()
+        for seconds in range {
+            let text = MenuStateModel.sessionAlertsFloorText(seconds: seconds)
+            let numbers = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+            #expect(!numbers.isEmpty && numbers.allSatisfy { $0 <= 59 }, "\(seconds) s reads '\(text)'")
+            #expect(seen.insert(text).inserted, "'\(text)' is shown for two floors")
+        }
+    }
+
+    /// Issue #34: the popup's rows. A preset floor (the default included)
+    /// gets exactly the five presets; a floor that is not one — 90 written
+    /// with `defaults write` — gets ONE extra row of its own, in order,
+    /// rather than being snapped to a neighbour.
+    @Test func aNonPresetFloorGetsOneExtraRowOfItsOwn() {
+        let presets = MenuStateModel.sessionAlertsFloorPresets
+        for preset in presets {
+            #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: preset) == presets, "\(preset) s")
+        }
+        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 90) == [30, 60, 90, 120, 300, 600])
+        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 31) == [30, 31, 60, 120, 300, 600])
+        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 599) == [30, 60, 120, 300, 599, 600])
     }
 
     /// The real owner wired to fakes: a MenuContentView whose finish alert

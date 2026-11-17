@@ -249,6 +249,137 @@ struct ScaffoldTests {
         }
     }
 
+    /// Issue #34: the session alerts' run floor rides the SAME editor and the
+    /// SAME Save. Lint-style (the modal cannot be driven headlessly): the
+    /// group is built only while session alerts exist, prefilled from the
+    /// model's mirror; the floor is saved after the validation check and only
+    /// on that path; and the key is written in exactly one place, through the
+    /// policy's clamp, only when it changed. The topic row, its validation
+    /// and its setters are untouched (locked above and in
+    /// TopicFieldVisibilityTests).
+    @Test func theSessionAlertsFloorIsSavedWithTheNtfySettingsAfterValidation() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/NapCat/MenuContentView.swift")
+        let source = LidGuardStructureTests.codeOnly(try String(contentsOf: sourceURL, encoding: .utf8))
+
+        let prompt = try #require(Self.functionChunk(named: "presentLidAlertSettingsPrompt", in: source))
+        #expect(prompt.contains("minimumRunSeconds: model.finishAlertVisible ? model.finishAlertMinimumRunSeconds : nil"),
+                "prefilled from the model's mirror, and only while session alerts exist")
+        let checkedAt = try #require(prompt.range(of: "lidAlertSettingsError("))
+        let savedAt = try #require(prompt.range(of: "saveSessionAlertsFloor(seconds)"))
+        #expect(checkedAt.lowerBound < savedAt.lowerBound, "the floor must not save before the validation check")
+        #expect(Self.occurrences(of: "saveSessionAlertsFloor(", in: source) == 2, "one definition, one call")
+
+        let editor = try #require(Self.functionChunk(named: "runLidAlertSettingsEditor", in: source))
+        #expect(editor.contains("entry.minimumRunSeconds.map { SessionAlertsFloorGroup(seconds: $0, width: 300) }"))
+        #expect(editor.contains("if let floorGroup { stack.addSubview(floorGroup.view) }"))
+        #expect(editor.contains("floorGroup?.view.frame.width"), "the editor is as wide as the group's row")
+        #expect(editor.contains("minimumRunSeconds: floorGroup?.seconds"), "Save hands the popup's choice back")
+
+        let save = try #require(Self.functionChunk(named: "saveSessionAlertsFloor", in: source))
+        let clamp = try #require(save.range(of: "FinishAlertPolicy.minimumRunSeconds(stored: seconds)"))
+        let unchanged = try #require(save.range(of: "guard floor != model.finishAlertMinimumRunSeconds else { return }"))
+        let write = try #require(save.range(of: "defaults.set(floor, forKey: DefaultsKey.finishAlertMinimumRunSeconds)"))
+        #expect(clamp.lowerBound < unchanged.lowerBound && unchanged.lowerBound < write.lowerBound)
+        #expect(Self.occurrences(of: "DefaultsKey.finishAlertMinimumRunSeconds", in: source) == 1,
+                "the key is written in exactly one place in the menu")
+
+        // The group never sees the topic: its class names no topic at all.
+        let start = try #require(source.range(of: "final class SessionAlertsFloorGroup"))
+        let tail = source[start.upperBound...]
+        let group = tail[..<(tail.range(of: "\nfinal class ")?.lowerBound ?? tail.endIndex)]
+        #expect(group.contains("@objc func chose("), "vacuity: the chunk is the group class")
+        #expect(!group.lowercased().contains("topic"), "the floor group must never touch the topic")
+        #expect(!source.contains("NSStepper"), "the floor is a preset popup, not a stepper")
+    }
+
+    /// Issue #34, headless: the editor's floor group at the default. One
+    /// popup of exactly the five presets with "1 minute" pre-selected, under
+    /// the "Session alerts" title, after the exact label and above the exact
+    /// caption (small, secondary). VoiceOver: a fixed name, the selected
+    /// row's text as the value — kept current by the popup's action.
+    @Test func theSessionAlertsFloorGroupOffersFivePresetsWithOneMinuteSelected() {
+        let group = SessionAlertsFloorGroup(seconds: 60, width: 300)
+        #expect(group.popup.itemTitles == ["30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"])
+        #expect(group.popup.itemArray.map(\.tag) == [30, 60, 120, 300, 600])
+        #expect(!group.popup.pullsDown)
+        #expect(group.popup.titleOfSelectedItem == "1 minute")
+        #expect(group.seconds == 60)
+        #expect(group.titleLabel.stringValue == "Session alerts")
+        #expect(group.rowLabel.stringValue == "Only alert for runs longer than:")
+        #expect(group.caption.stringValue == "Shorter runs finish silently.")
+        #expect(group.caption.font?.pointSize == NSFont.smallSystemFontSize)
+        #expect(group.caption.textColor == .secondaryLabelColor)
+        #expect(group.popup.accessibilityLabel() == "Minimum run before alerting")
+        #expect(group.popup.accessibilityValue() as? String == "1 minute")
+        #expect(group.popup.target === group)
+        #expect(group.popup.action == #selector(SessionAlertsFloorGroup.chose(_:)))
+
+        group.popup.selectItem(withTag: 300)
+        group.chose(group.popup)
+        #expect(group.seconds == 300, "Save hands the chosen preset back")
+        #expect(group.popup.accessibilityValue() as? String == "5 minutes")
+
+        // The prefill goes through the one clamp rule, like every read — an
+        // out-of-range value lands on a bound, which is a preset.
+        for (stored, title) in [(29, "30 seconds"), (601, "10 minutes")] {
+            let clamped = SessionAlertsFloorGroup(seconds: stored, width: 300)
+            #expect(clamped.popup.numberOfItems == 5, "\(stored) s")
+            #expect(clamped.popup.titleOfSelectedItem == title, "\(stored) s")
+        }
+    }
+
+    /// Issue #34, headless: a stored floor that is not a preset (90, written
+    /// with `defaults write`) shows as ONE extra row, in order and selected.
+    /// Untouched, Save hands 90 back unchanged, and the save path writes only
+    /// a changed floor (locked above) — so opening the editor never rewrites
+    /// the stored value.
+    @Test func aStoredNonPresetFloorShowsAsItsOwnSelectedRow() {
+        let group = SessionAlertsFloorGroup(seconds: 90, width: 300)
+        #expect(group.popup.itemTitles
+                == ["30 seconds", "1 minute", "1 min 30 s", "2 minutes", "5 minutes", "10 minutes"])
+        #expect(group.popup.indexOfSelectedItem == 2)
+        #expect(group.popup.titleOfSelectedItem == "1 min 30 s")
+        #expect(group.seconds == 90, "untouched, Save returns the stored value as it is")
+        #expect(group.popup.accessibilityValue() as? String == "1 min 30 s")
+
+        group.popup.selectItem(withTag: 120)
+        group.chose(group.popup)
+        #expect(group.seconds == 120, "an explicit choice replaces it")
+    }
+
+    /// Issue #34, headless: the group's geometry. Label then popup on one row
+    /// and one baseline, neither truncated (the group widens past the
+    /// editor's 300 pt instead); the title above and the caption below, both
+    /// flush with the label — nothing overlapping, nothing outside the view.
+    @Test func theSessionAlertsFloorGroupLaysOutOneRowBetweenTitleAndCaption() {
+        for seconds in [60, 90] {
+            let group = SessionAlertsFloorGroup(seconds: seconds, width: 300)
+            let bounds = group.view.bounds
+            #expect(bounds.width >= 300)
+            for view in [group.titleLabel, group.rowLabel, group.popup, group.caption] {
+                #expect(view.superview === group.view)
+                #expect(bounds.contains(view.frame), "\(view.frame) leaves the group's \(bounds)")
+            }
+            #expect(group.rowLabel.frame.width >= group.rowLabel.fittingSize.width, "the label is not truncated")
+            #expect(group.popup.frame.width >= group.popup.fittingSize.width, "the popup is not truncated")
+            #expect(group.rowLabel.frame.maxX < group.popup.frame.minX)
+            let labelBaseline = group.rowLabel.frame.maxY - group.rowLabel.firstBaselineOffsetFromTop
+            let popupBaseline = group.popup.frame.maxY - group.popup.firstBaselineOffsetFromTop
+            #expect(abs(labelBaseline - popupBaseline) < 0.5, "label and popup title share a baseline")
+            #expect(group.caption.frame.maxY <= min(group.rowLabel.frame.minY, group.popup.frame.minY))
+            #expect(group.titleLabel.frame.minY >= max(group.rowLabel.frame.maxY, group.popup.frame.maxY))
+            #expect(group.titleLabel.frame.minX == 0 && group.rowLabel.frame.minX == 0 && group.caption.frame.minX == 0)
+        }
+    }
+
+    private static func occurrences(of token: String, in text: String) -> Int {
+        text.components(separatedBy: token).count - 1
+    }
+
     /// Menu-open must stay off the network: the panel renders stored config and
     /// the last recorded outcome, never a live probe. (Before B4 this slot held
     /// the silent Automation-permission probe; the ntfy channel has nothing to

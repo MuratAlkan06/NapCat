@@ -43,9 +43,17 @@ enum DefaultsKey {
     /// Whether the Claude session alerts (finish + waiting buzz) are switched
     /// on (Bool, default false). The finish alert reuses the lid-guard topic /
     /// server / primed-at — one ntfy destination, one priming test send — so
-    /// this toggle is the only key it adds; its tunables are code constants,
-    /// not settings.
+    /// this toggle and the run floor below are the only keys it adds; every
+    /// other tunable is a code constant, not a setting.
     static let claudeFinishAlertEnabled = "claudeFinishAlertEnabled"
+    /// The session alerts' run floor in seconds (Int, issue #34): a run
+    /// shorter than this never alerts — neither a finish nor a waiting buzz.
+    /// Unset reads as `FinishAlertTuning.minimumRunSeconds` (60); a stored
+    /// value is CLAMPED to `FinishAlertTuning.minimumRunSecondsRange` (30–600)
+    /// on read, and a non-integer one reads as the default
+    /// (`FinishAlertPolicy.minimumRunSeconds(stored:)`). Read live at every
+    /// marker diff, so a change applies without a restart.
+    static let finishAlertMinimumRunSeconds = "finishAlertMinimumRunSeconds"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

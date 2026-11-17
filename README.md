@@ -585,9 +585,16 @@ pushes, and the row says so.
   has never been tested sends the test message first, and nothing arms until it
   is accepted — a session alert is never the first thing your topic is trusted
   with. The two toggles are otherwise independent.
-- **At least 60 seconds of work** (measured from when the session became busy)
-  before either push fires: a quick answer, or a permission prompt seconds after
-  you hit Enter, stays quiet — you are still looking.
+- **A minimum run before either push fires** — configurable, default 60 s
+  (measured from when the session became busy): a quick answer, or a permission
+  prompt seconds after you hit Enter, stays quiet — you are still looking.
+  Choose it under **Details → ntfy settings… → Session alerts** ("Only alert
+  for runs longer than"): 30 seconds, or 1, 2, 5 or 10 minutes. One value
+  covers both pushes, and a change takes effect at once, without restarting
+  NapCat. Any other whole number of seconds from 30 to 600 can be set with
+  `defaults write com.muratalkan.napcat finishAlertMinimumRunSeconds -int <seconds>`
+  (values outside that range are clamped); the dialog shows it as its own entry
+  and keeps it until you save a different choice.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
   — none still working"), which also keeps the feed clear of ntfy's rate limit.
 - **One waiting push per turn**, unless the session stops or resumes in between.
@@ -653,11 +660,12 @@ pushes, and the row says so.
   session's run minutes. Markers written by hook version 6 or earlier carry no
   episode start, so until the hook is reinstalled such a session is still
   re-anchored at its latest hook event: the minutes in its pushes can come out
-  low or be left out, and a run that ends within 60 seconds of that point stays
-  quiet. Upgrade in this order: rebuild and relaunch NapCat first, then
-  reinstall the hook (`./scripts/install-claude-busy-hook.sh`) and start a new
-  Claude Code session. A NapCat build older than the hook cannot read version 7
-  markers at all.
+  low or be left out, and a run that ends within the minimum run (60 seconds by
+  default) of that point stays quiet. Upgrade in this order: rebuild and
+  relaunch NapCat first, then reinstall the hook
+  (`./scripts/install-claude-busy-hook.sh`) and start a new Claude Code
+  session. A NapCat build older than the hook cannot read version 7 markers at
+  all.
 - **An outage lives in memory only.** When an outage began and which alerts are
   held across it are kept by the running app, not saved. Quitting or
   restarting NapCat mid-outage forgets the outage and its held alerts: they are

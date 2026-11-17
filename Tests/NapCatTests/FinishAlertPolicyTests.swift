@@ -39,7 +39,11 @@ struct FinishAlertPolicyTests {
     // MARK: - Tunables (user rulings are code constants)
 
     @Test func tunablesAreTheContractValues() {
-        #expect(FinishAlertTuning.minimumRunSeconds == 60)   // 30 → 60: user ruling 2026-10-23
+        // The run floor's DEFAULT (30 → 60: user ruling 2026-10-23); since
+        // issue #34 the live floor is the user's setting, clamped to 30–600.
+        #expect(FinishAlertTuning.minimumRunSeconds == 60)
+        #expect(FinishAlertTuning.minimumRunSecondsRange == 30...600)
+        #expect(FinishAlertTuning.minimumRunSecondsRange.contains(FinishAlertTuning.minimumRunSeconds))
         #expect(FinishAlertTuning.debounceSeconds == 2)
         #expect(FinishAlertTuning.batchWindowSeconds == 30)
         #expect(FinishAlertTuning.retryDelaySeconds == 30)
@@ -70,14 +74,9 @@ struct FinishAlertPolicyTests {
         return [
             DisappearRow(id: "D1", gone: session(firstSeen: t0 - 2_520, exact: true, lastTs: t0 - 100),
                          events: [.finished(minutes: 42)], suppressed: []),
-            // Floor boundary (60 s since 2026-10-23): 59 s suppressed; exactly
-            // 60 s is sent and, with an exact anchor, already reads 1 min.
-            DisappearRow(id: "D2", gone: session(firstSeen: t0 - 59, exact: true, lastTs: t0 - 59),
-                         events: [], suppressed: [.underMinimumRun]),
-            DisappearRow(id: "D3", gone: session(firstSeen: t0 - 60, exact: true, lastTs: t0 - 60),
-                         events: [.finished(minutes: 1)], suppressed: []),
-            DisappearRow(id: "D4", gone: session(firstSeen: t0 - 61, exact: true, lastTs: t0 - 61),
-                         events: [.finished(minutes: 1)], suppressed: []),
+            // D2–D4 (the hard-coded 59 / 60 / 61 s floor rows) moved to
+            // `floorRows` (issue #34): the boundary is checked at several
+            // floors there, the finish and the waiting buzz alike.
             DisappearRow(id: "D5", gone: session(firstSeen: t0 - cap, exact: true, lastTs: t0 - cap),
                          events: [.finished(minutes: 720)], suppressed: []),
             DisappearRow(id: "D6", gone: session(firstSeen: t0 - cap - 1, exact: true, lastTs: t0 - cap - 1),
@@ -361,16 +360,8 @@ struct FinishAlertPolicyTests {
                         Step(m1(t + 100, w), now: t + 100),
                         Step(m1(t + 200, w), now: t + 200),
                      ]),
-            Scenario(id: "W7", note: "floor boundary: 59 s ⇒ suppressed",
-                     baseline: nil, steps: [
-                        Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 59, w), now: t + 59, suppressed: [.underMinimumRun]),
-                     ]),
-            Scenario(id: "W8", note: "floor boundary: 60 s ⇒ sent (exact anchor, a full minute ⇒ minutes 1)",
-                     baseline: nil, steps: [
-                        Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 60, w), now: t + 60, [.waiting(minutes: 1)]),
-                     ]),
+            // W7–W8 (the hard-coded 59 / 60 s waiting-floor rows) moved to
+            // `floorRows` (issue #34), checked at several floors.
             Scenario(id: "W9", note: "bg-running / resume keeps are never waiting",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
@@ -507,6 +498,123 @@ struct FinishAlertPolicyTests {
                                                 now: Self.t0 + 150)
         #expect(resumed.events.isEmpty)
         #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting-after-stop ends the episode")
+    }
+
+    // MARK: - Issue #34: the adjustable run floor (finish AND waiting)
+
+    /// One run, measured from an EXACT anchor, judged against one floor —
+    /// passed to `observe` the way the controller passes the user's setting.
+    /// They replace the hard-coded 59 / 60 / 61 s rows (D2–D4, W7–W8): the
+    /// boundary (one second under / exactly / one second over) is checked at
+    /// the lower bound, the default, a raised floor and the upper bound.
+    /// `minutes` is what a SENT run reads: under a full minute it is unknown
+    /// (rule 5), even though the run qualifies. Row ids are LOCKED.
+    struct FloorRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let floor: Int
+        let run: Int
+        let sent: Bool
+        let minutes: Int?
+        var testDescription: String { "\(id): floor \(floor) s, run \(run) s → \(sent ? "sent" : "suppressed")" }
+    }
+
+    static let floorRows: [FloorRow] = [
+        FloorRow(id: "F30a", floor: 30, run: 29, sent: false, minutes: nil),
+        FloorRow(id: "F30b", floor: 30, run: 30, sent: true, minutes: nil),
+        FloorRow(id: "F30c", floor: 30, run: 31, sent: true, minutes: nil),
+        FloorRow(id: "F60a", floor: 60, run: 59, sent: false, minutes: nil),
+        FloorRow(id: "F60b", floor: 60, run: 60, sent: true, minutes: 1),
+        FloorRow(id: "F60c", floor: 60, run: 61, sent: true, minutes: 1),
+        FloorRow(id: "F120a", floor: 120, run: 119, sent: false, minutes: nil),
+        FloorRow(id: "F120b", floor: 120, run: 120, sent: true, minutes: 2),
+        FloorRow(id: "F120c", floor: 120, run: 121, sent: true, minutes: 2),
+        FloorRow(id: "F600a", floor: 600, run: 599, sent: false, minutes: nil),
+        FloorRow(id: "F600b", floor: 600, run: 600, sent: true, minutes: 10),
+        FloorRow(id: "F600c", floor: 600, run: 601, sent: true, minutes: 10),
+    ]
+
+    /// The default floor's rows must also hold WITHOUT the argument: the
+    /// parameter's default is the 60 s constant.
+    static func expectTheDefaultFloorMatches(_ row: FloorRow, _ observation: FinishAlertObservation,
+                                             _ observeWithTheDefault: () -> FinishAlertObservation) {
+        guard row.floor == FinishAlertTuning.minimumRunSeconds else { return }
+        #expect(observeWithTheDefault() == observation, "\(row.id): the default floor is the 60 s constant")
+    }
+
+    /// Rule 3 (a disappearance) at the given floor.
+    @Test(arguments: floorRows)
+    func theFinishFloorFollowsTheSetting(_ row: FloorRow) {
+        let gone = [Self.s1: Self.session(firstSeen: Self.t0 - row.run, exact: true, lastTs: Self.t0 - row.run)]
+        let observation = FinishAlertPolicy.observe(previous: gone, current: [], now: Self.t0,
+                                                    minimumRunSeconds: row.floor)
+        #expect(observation.events == (row.sent ? [.finished(minutes: row.minutes)] : []), "\(row.id)")
+        #expect(observation.suppressed == (row.sent ? [] : [.underMinimumRun]), "\(row.id)")
+        #expect(observation.tracked.isEmpty, "\(row.id)")
+        Self.expectTheDefaultFloorMatches(row, observation) {
+            FinishAlertPolicy.observe(previous: gone, current: [], now: Self.t0)
+        }
+    }
+
+    /// Rule 4 (a waiting transition) at the SAME floor: the knob governs the
+    /// waiting buzz too. A suppressed transition leaves the dedupe flag false.
+    @Test(arguments: floorRows)
+    func theWaitingFloorFollowsTheSetting(_ row: FloorRow) {
+        let busy = [Self.s1: Self.session(firstSeen: Self.t0 - row.run, exact: true, lastTs: Self.t0 - row.run)]
+        let waiting = Self.m1(Self.t0, Self.waiting)
+        let observation = FinishAlertPolicy.observe(previous: busy, current: waiting, now: Self.t0,
+                                                    minimumRunSeconds: row.floor)
+        #expect(observation.events == (row.sent ? [.waiting(minutes: row.minutes)] : []), "\(row.id)")
+        #expect(observation.suppressed == (row.sent ? [] : [.underMinimumRun]), "\(row.id)")
+        #expect(observation.tracked[Self.s1]?.waitingBuzzed == row.sent, "\(row.id)")
+        Self.expectTheDefaultFloorMatches(row, observation) {
+            FinishAlertPolicy.observe(previous: busy, current: waiting, now: Self.t0)
+        }
+    }
+
+    /// One diff, one floor: a waiting buzz under it and a finish over it are
+    /// judged against the same value; a negative run is still a clock jump,
+    /// whatever the floor.
+    @Test func oneFloorGovernsBothRulesInOneDiff() {
+        let t = Self.t0
+        let previous = [
+            Self.s1: Self.session(firstSeen: t - 119, exact: true, lastTs: t - 119),
+            Self.s2: Self.session(firstSeen: t - 121, exact: true, lastTs: t - 121),
+            Self.s3: Self.session(firstSeen: t + 10, exact: true, lastTs: t + 10),
+        ]
+        let observation = FinishAlertPolicy.observe(previous: previous, current: Self.m1(t, Self.waiting), now: t,
+                                                    minimumRunSeconds: 120)
+        #expect(observation.events == [.finished(minutes: 2)], "s2 finished over the floor")
+        #expect(observation.suppressed == [.underMinimumRun, .clockJump], "s1 waiting under it; s3 a clock jump")
+    }
+
+    /// The ONE clamp rule for a stored `finishAlertMinimumRunSeconds` value:
+    /// missing or not an integer ⇒ the 60 s default; outside 30–600 ⇒ the
+    /// nearer bound (29 → 30, 601 → 600).
+    @Test func aStoredFloorIsClampedAndJunkReadsAsTheDefault() {
+        let rows: [(id: String, stored: Any?, expected: Int)] = [
+            ("missing", nil, 60),
+            ("29 clamps up", 29, 30),
+            ("the lower bound", 30, 30),
+            ("31", 31, 31),
+            ("the default", 60, 60),
+            ("120", 120, 120),
+            ("599", 599, 599),
+            ("the upper bound", 600, 600),
+            ("601 clamps down", 601, 600),
+            ("zero", 0, 30),
+            ("negative", -120, 30),
+            ("Int.min", Int.min, 30),
+            ("Int.max", Int.max, 600),
+            ("a plist integer", NSNumber(value: 120), 120),
+            ("a plist fraction", NSNumber(value: 120.5), 60),
+            ("a plist Bool (reads as 1)", NSNumber(value: true), 30),
+            ("a string", "junk", 60),
+            ("a numeric string", "120", 60),
+            ("an array", [1, 2], 60),
+        ]
+        for row in rows {
+            #expect(FinishAlertPolicy.minimumRunSeconds(stored: row.stored) == row.expected, "\(row.id)")
+        }
     }
 
     // MARK: - Hook v7: the episode start (`ep`), validated here only

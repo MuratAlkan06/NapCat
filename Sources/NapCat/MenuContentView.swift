@@ -395,9 +395,16 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// the user typed and an inline error naming the offending field — until
     /// both halves are usable or the user cancels. The keep-the-old-value
     /// behaviour in the controller is unchanged; only the honesty of the UI is.
+    ///
+    /// Issue #34: while session alerts exist, the editor also carries their
+    /// run floor (prefilled from the model's mirror of the controller). It is
+    /// saved on the same Save, after the same validation — never on Cancel,
+    /// never while the editor is re-presented with an error.
     private func presentLidAlertSettingsPrompt() {
         guard let lidGuard else { return }
-        var entry = LidAlertSettingsEntry(topic: lidGuard.storedTopic, server: lidGuard.storedServer)
+        var entry = LidAlertSettingsEntry(
+            topic: lidGuard.storedTopic, server: lidGuard.storedServer,
+            minimumRunSeconds: model.finishAlertVisible ? model.finishAlertMinimumRunSeconds : nil)
         var error: String?
         while let entered = runLidAlertSettingsEditor(entry: entry, error: error) {
             entry = entered
@@ -412,12 +419,25 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             // own arming check below sees the final configuration.
             lidGuard.setServer(entered.server)
             lidGuard.setTopic(entered.topic)
+            if let seconds = entered.minimumRunSeconds {
+                saveSessionAlertsFloor(seconds)
+            }
             if lidGuard.armingState == .needsTestSend {
                 lidGuard.sendTestMessage()
             }
             model.refresh()
             return
         }
+    }
+
+    /// Issue #34: persists the session alerts' run floor — through the
+    /// policy's one clamp rule, and only when it changed, so an untouched
+    /// default is never eagerly written. FinishAlertController reads the key
+    /// at every marker diff: nothing to re-arm, no restart.
+    private func saveSessionAlertsFloor(_ seconds: Int) {
+        let floor = FinishAlertPolicy.minimumRunSeconds(stored: seconds)
+        guard floor != model.finishAlertMinimumRunSeconds else { return }
+        defaults.set(floor, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
     }
 
     /// One pass of the two-field editor. Returns exactly what the user typed
@@ -434,15 +454,22 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.informativeText = [error, Self.lidAlertSettingsExplanation]
             .compactMap { $0 }
             .joined(separator: "\n\n")
+        // Issue #34: the "Session alerts" group sits UNDER the two fields
+        // (bottom-up coordinates), so they move up by its height plus a gap.
+        let floorGroup = entry.minimumRunSeconds.map { SessionAlertsFloorGroup(seconds: $0, width: 300) }
+        let fieldsY = floorGroup.map { $0.view.frame.height + SessionAlertsFloorGroup.gapAbove } ?? 0
         // Masked by default (issue #10): the topic is the feed's password, and
         // this dialog opens wherever the screen happens to be visible.
-        let topicRow = MaskedTopicRow(topic: entry.topic, fieldFrame: NSRect(x: 0, y: 30, width: 300, height: 24))
-        let serverField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let topicRow = MaskedTopicRow(topic: entry.topic,
+                                      fieldFrame: NSRect(x: 0, y: fieldsY + 30, width: 300, height: 24))
+        let serverField = NSTextField(frame: NSRect(x: 0, y: fieldsY, width: 300, height: 24))
         serverField.stringValue = entry.server
         serverField.placeholderString = LidGuardTuning.defaultNtfyServer
-        let stack = NSView(frame: NSRect(x: 0, y: 0, width: max(300, topicRow.maxX), height: 54))
+        let stackWidth = max(300, topicRow.maxX, floorGroup?.view.frame.width ?? 0)
+        let stack = NSView(frame: NSRect(x: 0, y: 0, width: stackWidth, height: fieldsY + 54))
         topicRow.addSubviews(to: stack)
         stack.addSubview(serverField)
+        if let floorGroup { stack.addSubview(floorGroup.view) }
         alert.accessoryView = stack
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
@@ -450,8 +477,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.window.initialFirstResponder = topicRow.secureField
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         // `topicRow` stays alive through the modal run (it is read here), which
-        // the checkbox needs: NSButton holds its target weakly.
-        return LidAlertSettingsEntry(topic: topicRow.topic, server: serverField.stringValue)
+        // the checkbox needs: NSButton holds its target weakly. So does
+        // `floorGroup`, its popup's target.
+        return LidAlertSettingsEntry(topic: topicRow.topic, server: serverField.stringValue,
+                                     minimumRunSeconds: floorGroup?.seconds)
     }
 
     private static let lidAlertSettingsExplanation = """
@@ -468,10 +497,13 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 
     /// Raw, UNVALIDATED text from one pass of the ntfy settings editor. It
     /// exists so the editor can hand its two fields back for validation without
-    /// anything being committed first.
+    /// anything being committed first. `minimumRunSeconds` is the session
+    /// alerts' run floor (issue #34) — nil while session alerts do not exist,
+    /// and then the editor shows no group for it.
     private struct LidAlertSettingsEntry {
         let topic: String
         let server: String
+        let minimumRunSeconds: Int?
     }
 
     private func presentFailureAlert(_ detail: String) {
@@ -579,6 +611,93 @@ private final class MaskedTopicRow: NSObject {
         secureField.isHidden = visibility.secureFieldHidden
         plainField.isHidden = visibility.plainFieldHidden
         showCheckbox.state = visibility.checkboxState
+    }
+}
+
+/// Issue #34: the "Session alerts" group of the ntfy settings editor — ONE
+/// popup of preset floors for the session alerts' run floor
+/// (`finishAlertMinimumRunSeconds`), every row a formatted duration
+/// (`MenuStateModel.sessionAlertsFloorText`). A stored floor that is not a
+/// preset gets one extra row of its own, selected, so merely opening the
+/// editor never changes it. It never sees the topic.
+///
+/// Its own view, laid out bottom-up (AppKit's default coordinates) and at
+/// least the editor's field width: the caption, then the control row (the
+/// label, then the popup, on one baseline), then the group title — small,
+/// semibold, secondary, like the panel's Details group headers. The row
+/// widens the group rather than truncate either half. System fonts, semantic
+/// colors and the panel's `PanelMetrics` spacing only.
+@MainActor
+final class SessionAlertsFloorGroup: NSObject {
+    let view = NSView()
+    let titleLabel = NSTextField(labelWithString: MenuStateModel.sessionAlertsFloorGroupTitle)
+    let rowLabel = NSTextField(labelWithString: MenuStateModel.sessionAlertsFloorLabel)
+    let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let caption = NSTextField(wrappingLabelWithString: MenuStateModel.sessionAlertsFloorCaption)
+
+    /// The gap between the editor's server field and this group's title —
+    /// the panel's spacing between feature blocks.
+    static let gapAbove = PanelMetrics.loose
+
+    /// `seconds` is clamped by the policy's one rule, like every read; each
+    /// row's tag is its floor in seconds.
+    init(seconds: Int, width: CGFloat) {
+        super.init()
+        let floor = FinishAlertPolicy.minimumRunSeconds(stored: seconds)
+        for choice in MenuStateModel.sessionAlertsFloorChoices(seconds: floor) {
+            popup.addItem(withTitle: MenuStateModel.sessionAlertsFloorText(seconds: choice))
+            popup.lastItem?.tag = choice
+        }
+        popup.selectItem(withTag: floor)
+        popup.target = self
+        popup.action = #selector(chose(_:))
+        popup.setAccessibilityLabel(MenuStateModel.sessionAlertsFloorAccessibilityLabel)
+
+        titleLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        titleLabel.textColor = .secondaryLabelColor
+        caption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        caption.textColor = .secondaryLabelColor
+        show()
+        layOut(width: width)
+    }
+
+    /// The floor as Save returns it: the selected row's seconds.
+    var seconds: Int { popup.selectedTag() }
+
+    /// The popup's action: keep its spoken value on the new choice.
+    @objc func chose(_ sender: NSPopUpButton) {
+        show()
+    }
+
+    private func show() {
+        popup.setAccessibilityValue(MenuStateModel.sessionAlertsFloorText(seconds: seconds))
+    }
+
+    private func layOut(width: CGFloat) {
+        // Fitting sizes (whole points): the popup's covers its widest row.
+        let labelSize = rowLabel.fittingSize
+        let popupSize = popup.fittingSize
+        let groupWidth = max(width, labelSize.width + PanelMetrics.regular + popupSize.width)
+
+        let unbounded = NSRect(x: 0, y: 0, width: groupWidth, height: .greatestFiniteMagnitude)
+        let captionHeight = ceil(caption.cell?.cellSize(forBounds: unbounded).height ?? caption.fittingSize.height)
+        caption.frame = NSRect(x: 0, y: 0, width: groupWidth, height: captionHeight)
+
+        let rowY = captionHeight + PanelMetrics.tight
+        popup.frame = NSRect(origin: NSPoint(x: labelSize.width + PanelMetrics.regular, y: rowY), size: popupSize)
+        // The label's text on the popup title's baseline.
+        let baseline = popup.frame.maxY - popup.firstBaselineOffsetFromTop
+        rowLabel.frame = NSRect(
+            origin: NSPoint(x: 0, y: baseline + rowLabel.firstBaselineOffsetFromTop - labelSize.height),
+            size: labelSize
+        )
+
+        let titleHeight = titleLabel.fittingSize.height
+        titleLabel.frame = NSRect(x: 0, y: popup.frame.maxY + PanelMetrics.tight, width: groupWidth, height: titleHeight)
+        view.frame = NSRect(x: 0, y: 0, width: groupWidth, height: titleLabel.frame.maxY)
+        for subview in [caption, rowLabel, popup, titleLabel] {
+            view.addSubview(subview)
+        }
     }
 }
 

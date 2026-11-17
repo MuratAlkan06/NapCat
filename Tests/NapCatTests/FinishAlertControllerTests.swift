@@ -148,6 +148,12 @@ final class FlagBox {
     init(_ value: Bool) { self.value = value }
 }
 
+@MainActor
+final class IntBox {
+    var value: Int
+    init(_ value: Int) { self.value = value }
+}
+
 /// Lets every main-queue hop queued so far (and the hops THOSE queue, up to
 /// `rounds` deep) run before the test continues.
 @MainActor
@@ -180,6 +186,8 @@ final class FinishAlertHarness {
     let clock = NowBox(Double(t0))
     /// Alert healing: the observed Stay Awake state the controller reads.
     let stayAwake = FlagBox(false)
+    /// Issue #34: the user's run floor, as the controller reads it (live).
+    let runFloor = IntBox(FinishAlertTuning.minimumRunSeconds)
     let sender: MessageSender
     /// nil ⇒ alert healing is ABSENT: the rows written before it lock the
     /// pre-healing behaviour (which also applies whenever healing is
@@ -197,6 +205,7 @@ final class FinishAlertHarness {
         let factory = self.factory
         let clock = self.clock
         let stayAwake = self.stayAwake
+        let runFloor = self.runFloor
         controller = FinishAlertController(
             store: store,
             markerDirURL: dir,
@@ -206,7 +215,8 @@ final class FinishAlertHarness {
             scheduler: scheduler,
             now: { clock.value },
             connectivity: connectivity,
-            stayAwakeOn: { stayAwake.value }
+            stayAwakeOn: { stayAwake.value },
+            minimumRunSeconds: { runFloor.value }
         )
         controller.setChangeHandler { [weak self] in self?.changeCount += 1 }
     }
@@ -990,6 +1000,33 @@ struct FinishAlertControllerTests {
         }
     }
 
+    /// Issue #34, no restart: the user's floor is read at EVERY diff, so a
+    /// change made while armed applies to the very next one — the finish and
+    /// the waiting buzz alike — with the same watcher (no re-arm). A run that
+    /// qualifies under a minute carries no minutes (rule 5).
+    @Test func theFloorIsReadLiveAtEveryDiff() async throws {
+        try await withFinishAlertHarness { h in
+            h.store.put(H.s1, ts: H.t0 - 90)
+            h.store.put(H.s2, ts: H.t0 - 45)
+            h.controller.reconcile()
+            #expect(h.controller.minimumRunSeconds == 60)
+
+            h.runFloor.value = 120
+            #expect(h.controller.minimumRunSeconds == 120)
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.isEmpty, "a 90 s run is under a raised 120 s floor")
+            #expect(Set(h.controller.tracked.keys) == [H.s2])
+
+            h.runFloor.value = 30
+            h.store.put(H.s2, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: nil, stillWorking: 0)],
+                    "45 s in clears a lowered 30 s floor")
+            #expect(h.factory.made.count == 1 && h.watcher?.startCount == 1, "never re-armed")
+        }
+    }
+
     // MARK: Waiting buzz
 
     @Test func aWaitingTransitionBuzzesOnceAndRewritesDoNot() async throws {
@@ -1343,6 +1380,37 @@ struct FinishAlertHealingTests {
             #expect(h.sends.map(\.kind) == Array(repeating: .sessionFinished(minutes: 10, folded: 1, stillWorking: 1),
                                                  count: 2), "delivered, and no restore push under 60 s")
             #expect(h.controller.healing.phase == .online)
+        }
+    }
+
+    /// Issue #34 DECOUPLING: the user's session-alert floor is NOT the
+    /// outage floor. At the lowest and the highest setting alike, an outage
+    /// of 59 s heals silently and one of exactly 60 s earns the restore push
+    /// — `AlertHealingTuning.minimumOutageSeconds` stays a fixed constant.
+    @Test(arguments: [(30, 59, false), (30, 60, true), (600, 59, false), (600, 60, true)])
+    func theOutageFloorDoesNotFollowTheSessionAlertFloor(_ setting: Int, _ outage: Int, _ restorePush: Bool) async throws {
+        let path = ConnectivitySimulator()
+        let sender = RecordingMessageSender(outcome: Self.offline)
+        let finished = LidGuardMessageKind.sessionFinished(minutes: 42, folded: 1, stillWorking: 1)
+        try await withFinishAlertHarness(sender: sender, connectivity: path) { h in
+            h.runFloor.value = setting
+            h.store.put(H.s1, ts: H.t0 - 2520)
+            h.store.put(H.s2, ts: H.t0 - 2520)
+            h.controller.reconcile()
+            await drainMain()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.connectivityOffline)
+            sender.setOutcome(.accepted)
+            h.advance(outage)
+            h.controller.menuOpened()
+            await drainMain()
+            let restore: [LidGuardMessageKind] = restorePush
+                ? [.connectionRestored(minutes: 1, deliveredLate: 1, dropped: 0, lidMissed: 0)] : []
+            #expect(h.sends.map(\.kind) == [finished, finished] + restore,
+                    "setting \(setting) s, outage \(outage) s")
+            #expect(h.controller.minimumRunSeconds == setting)
+            #expect(AlertHealingTuning.minimumOutageSeconds == 60)
         }
     }
 
