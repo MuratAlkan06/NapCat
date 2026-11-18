@@ -2,21 +2,34 @@ name: Release
 
 # Builds the release disk image (make release-artifacts) for a version tag.
 #
-# Signing, notarization, stapling and publishing a GitHub Release happen ONLY
-# on a vMAJOR.MINOR.PATCH tag push AND only when every signing secret below is
-# configured. Without them the run fails soft: it uploads the image as a
+# Signing, notarization, stapling and creating a DRAFT GitHub Release happen
+# ONLY on a vMAJOR.MINOR.PATCH tag push AND only when every signing secret below
+# is configured. Without them the run fails soft: it uploads the image as a
 # workflow artifact named NapCat-<version>-UNSIGNED and never attaches it to a
 # GitHub Release. workflow_dispatch is always such an unsigned dry run.
 #
-# Secrets used by the signed path (none are needed for the unsigned one):
-#   MACOS_SIGN_IDENTITY           codesign identity, e.g. its SHA-1 or
-#                                 "Developer ID Application: <name> (<team>)"
-#   MACOS_CERTIFICATE_P12_BASE64  base64 of the Developer ID .p12 export
+# Secrets used by the signed path (none are needed for the unsigned one) live in
+# the `release` environment, whose required reviewer is the owner. Only the
+# build job of a release tag push enters that environment, so every signing run
+# waits for the owner's approval. The environment and its reviewer are
+# owner-side settings made in the GitHub UI.
+#   MACOS_SIGN_IDENTITY           SHA-1 fingerprint of the Developer ID
+#                                 Application certificate: exactly 40
+#                                 uppercase hex characters, nothing else
+#   MACOS_CERTIFICATE_P12_BASE64  base64 of the Developer ID .p12, re-wrapped
+#                                 by OpenSSL 3+ with AES-256-CBC (PBES2). A
+#                                 Keychain Access export (legacy 3DES/RC2 PBE)
+#                                 is refused.
 #   MACOS_CERTIFICATE_PASSWORD    password of that .p12
 #   NOTARY_API_KEY_P8_BASE64      base64 of the App Store Connect API key (.p8)
 #   NOTARY_API_KEY_ID             its key ID
 #   NOTARY_API_ISSUER_ID          its issuer ID
 # Secrets reach run steps only through env:, never through ${{ }} in a script.
+#
+# The GitHub Release is only ever created as a DRAFT; the owner reviews and
+# publishes it by hand. "Immutable releases" is a repository setting the owner
+# configures in the GitHub UI; this workflow never publishes, so it never
+# depends on or changes that setting.
 #
 # There is deliberately no pull_request or pull_request_target trigger: code
 # from a pull request must never run in this workflow.
@@ -103,6 +116,11 @@ jobs:
     if: needs.validate.outputs.proceed == 'true'
     runs-on: macos-15
     timeout-minutes: 45
+    # The signing and notary secrets are scoped to the `release` environment,
+    # so they resolve only in this job, and only for a release tag push (which
+    # pauses for the owner's approval). A dry run enters no environment: no
+    # approval prompt, no signing secrets, never signs.
+    environment: ${{ needs.validate.outputs.publish == 'true' && 'release' || '' }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       signed: ${{ steps.gate.outputs.sign }}
@@ -128,6 +146,119 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The PATH openssl on macos-15 is OpenSSL 1.1.1, which cannot read an
+      # AES-256 (PBES2) .p12. So every .p12 check in this job uses the binary
+      # picked here: the first of these fixed Homebrew paths that reports
+      # OpenSSL 3 or later. Nothing is installed.
+      - name: Select OpenSSL 3 or later
+        id: openssl
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /opt/homebrew/opt/openssl@3/bin/openssl /opt/homebrew/opt/openssl@4/bin/openssl; do
+            [ -x "$candidate" ] || continue
+            case "$("$candidate" version 2> /dev/null || true)" in
+              "OpenSSL "[3-9]*)
+                selected="$candidate"
+                break
+                ;;
+            esac
+          done
+          if [ -z "$selected" ]; then
+            echo "::error::Neither /opt/homebrew/opt/openssl@3/bin/openssl nor /opt/homebrew/opt/openssl@4/bin/openssl is an OpenSSL 3 or later on this runner, so a .p12 wrap cannot be checked. The PATH openssl (1.1.1 on macos-15) is never used for that."
+            exit 1
+          fi
+          echo "Selected $selected: $("$selected" version)"
+          echo "path=$selected" >> "$GITHUB_OUTPUT"
+
+      # Runs on every trigger, dry runs included, and reads no secret. It makes
+      # two throwaway self-signed identities, exports each as an AES-256 (PBES2)
+      # .p12 with the selected OpenSSL (one with the default MAC, one with
+      # -macalg sha1), runs the signing path's wrap check on both and imports
+      # both into a throwaway keychain the way the signing path does, so a dry
+      # run proves that chain on this runner. The search list is never changed
+      # by hand; the keychain and every file are removed on exit, pass or fail.
+      - name: Prove the .p12 import chain with throwaway identities
+        env:
+          OPENSSL: ${{ steps.openssl.outputs.path }}
+        run: |
+          set -euo pipefail
+          umask 077
+          echo "OpenSSL for the .p12 checks: $OPENSSL"
+          "$OPENSSL" version
+          work="$(mktemp -d "$RUNNER_TEMP/napcat-p12-prover.XXXXXX")"
+          keychain="$work/napcat-p12-prover.keychain-db"
+          cleanup() {
+            status=$?
+            if [ -e "$keychain" ] && ! security delete-keychain "$keychain"; then
+              echo "::error::Could not delete the prover's throwaway keychain."
+              status=1
+            fi
+            rm -rf "$work"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          # Random, used only inside this step, never printed.
+          PROVER_KEY_PASSWORD="$("$OPENSSL" rand -hex 32)"
+          PROVER_P12_PASSWORD="$("$OPENSSL" rand -hex 32)"
+          export PROVER_KEY_PASSWORD PROVER_P12_PASSWORD
+          keychain_password="$("$OPENSSL" rand -hex 32)"
+          # $1 names the identity; any further arguments go to pkcs12 -export.
+          make_p12() {
+            local label="$1"
+            shift
+            "$OPENSSL" req -x509 -newkey rsa:2048 -days 1 -quiet -subj "/CN=napcat-prover-$label" \
+              -keyout "$work/$label.key.pem" -out "$work/$label.cert.pem" -passout env:PROVER_KEY_PASSWORD
+            "$OPENSSL" pkcs12 -export -in "$work/$label.cert.pem" -inkey "$work/$label.key.pem" \
+              -passin env:PROVER_KEY_PASSWORD -out "$work/$label.p12" -passout env:PROVER_P12_PASSWORD "$@"
+          }
+          # The same check the signing path runs on MACOS_CERTIFICATE_P12_BASE64.
+          check_wrap() {
+            local label="$1" p12_info p12_wraps
+            if ! p12_info="$("$OPENSSL" pkcs12 -in "$work/$label.p12" -info -noout -passin env:PROVER_P12_PASSWORD 2>&1)"; then
+              echo "::error::OpenSSL could not open the prover's $label .p12."
+              return 1
+            fi
+            p12_wraps="$(grep -E '^(PKCS7 Encrypted data|Shrouded Keybag):' <<< "$p12_info" || true)"
+            if ! grep -q '^Shrouded Keybag:' <<< "$p12_wraps" \
+              || grep -qv 'PBES2, PBKDF2, AES-256-CBC' <<< "$p12_wraps"; then
+              echo "::error::The prover's $label .p12 is not wrapped with AES-256-CBC (PBES2) throughout."
+              return 1
+            fi
+            echo "$label .p12 wrap check passed:"
+            grep -E '^(MAC|PKCS7 Encrypted data|Shrouded Keybag):' <<< "$p12_info"
+          }
+          fingerprint() {
+            local value
+            value="$("$OPENSSL" x509 -in "$work/$1.cert.pem" -noout -fingerprint -sha1)"
+            value="${value#*=}"
+            printf '%s\n' "${value//:/}" | tr 'a-f' 'A-F'
+          }
+          make_p12 default-mac
+          make_p12 sha1-mac -macalg sha1
+          check_wrap default-mac
+          check_wrap sha1-mac
+          # Every security call names the throwaway keychain explicitly.
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          for label in default-mac sha1-mac; do
+            if ! security import "$work/$label.p12" -k "$keychain" -f pkcs12 -P "$PROVER_P12_PASSWORD" -T /usr/bin/codesign; then
+              echo "::error::security could not import the prover's $label AES-256 .p12 into the throwaway keychain."
+              exit 1
+            fi
+          done
+          identities="$(security find-identity "$keychain")"
+          printf '%s\n' "$identities"
+          for label in default-mac sha1-mac; do
+            identity_hash="$(fingerprint "$label")"
+            if ! [[ "$identity_hash" =~ ^[0-9A-F]{40}$ ]] || ! grep -qF "$identity_hash" <<< "$identities"; then
+              echo "::error::The prover's $label identity is not in the throwaway keychain after its import."
+              exit 1
+            fi
+          done
+          echo "Both AES-256 .p12 files (default MAC and SHA-1 MAC) imported into the throwaway keychain."
 
       - name: Run unit tests
         run: make test
@@ -163,9 +294,24 @@ jobs:
             echo "::warning title=Unsigned build::Signing secrets are not configured (missing:$missing). Building an UNSIGNED disk image as a workflow artifact only; no GitHub Release is created or changed."
           fi
 
+      # Checked before any codesign use. A SHA-1 fingerprint names exactly one
+      # identity and is safe on a command line. The value is never printed.
+      - name: Validate the signing identity format
+        if: steps.gate.outputs.sign == 'true'
+        env:
+          DEVELOPER_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          identity_pattern='^[0-9A-F]{40}$'
+          if ! [[ "$DEVELOPER_ID" =~ $identity_pattern ]]; then
+            echo "::error::MACOS_SIGN_IDENTITY must be the signing certificate's SHA-1 fingerprint: exactly 40 uppercase hexadecimal characters (0-9, A-F), with no spaces, colons or name."
+            exit 1
+          fi
+
       - name: Import the signing certificate into a temporary keychain
         if: steps.gate.outputs.sign == 'true'
         env:
+          OPENSSL: ${{ steps.openssl.outputs.path }}
           CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
@@ -173,15 +319,45 @@ jobs:
           umask 077
           keychain="$RUNNER_TEMP/napcat-release.keychain-db"
           certificate="$RUNNER_TEMP/napcat-signing.p12"
+          # The OpenSSL from "Select OpenSSL 3 or later", which the prover step
+          # exercised; never the PATH openssl. Re-checked before the secret is
+          # decoded.
+          case "$("$OPENSSL" version 2> /dev/null || true)" in
+            "OpenSSL "[3-9]*) ;;
+            *)
+              echo "::error::No OpenSSL 3 or later was selected for this job (see the step \"Select OpenSSL 3 or later\"), so the .p12 wrap cannot be checked."
+              exit 1
+              ;;
+          esac
           # Random, used only inside this step, never printed.
-          keychain_password="$(openssl rand -hex 32)"
+          keychain_password="$("$OPENSSL" rand -hex 32)"
           printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+          # Only an AES-256 (PBES2) re-wrapped .p12 is accepted. security import
+          # would silently take a Keychain Access export's legacy 3DES/RC2 wrap,
+          # so OpenSSL 3+ inspects it first. The password goes through env:.
+          if ! p12_info="$("$OPENSSL" pkcs12 -in "$certificate" -info -noout -passin env:CERTIFICATE_PASSWORD 2>&1)"; then
+            echo "::error::OpenSSL 3 could not open MACOS_CERTIFICATE_P12_BASE64 with MACOS_CERTIFICATE_PASSWORD: the password is wrong, or the .p12 has a legacy wrap (a Keychain Access export does). Re-wrap it with AES-256-CBC (PBES2) using OpenSSL 3+ and upload that."
+            exit 1
+          fi
+          p12_wraps="$(grep -E '^(PKCS7 Encrypted data|Shrouded Keybag):' <<< "$p12_info" || true)"
+          if ! grep -q '^Shrouded Keybag:' <<< "$p12_wraps" \
+            || grep -qv 'PBES2, PBKDF2, AES-256-CBC' <<< "$p12_wraps"; then
+            echo "::error::MACOS_CERTIFICATE_P12_BASE64 is not wrapped with AES-256-CBC (PBES2) throughout; legacy PBE (3DES, RC2) is not accepted. Re-wrap the Keychain Access export using OpenSSL 3+ and upload that."
+            exit 1
+          fi
+          # Every security call below names the temporary keychain explicitly.
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$certificate" -k "$keychain" -f pkcs12 -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          if ! security import "$certificate" -k "$keychain" -f pkcs12 -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
+            echo "::error::security could not import the AES-256 .p12 into the temporary keychain."
+            exit 1
+          fi
           rm -f "$certificate"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          # codesign builds the identity's certificate chain through the user
+          # search list, so the temporary keychain joins it for this job only.
+          # The always() cleanup step deletes it, which also drops it from there.
           security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
 
       - name: Build the bundle and disk image
@@ -191,7 +367,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$SIGNING" = "true" ]; then
-            make release-artifacts SIGN_IDENTITY="$DEVELOPER_ID"
+            keychain="$RUNNER_TEMP/napcat-release.keychain-db"
+            # The Makefile's signed CODESIGN command plus --keychain, so codesign
+            # looks for the identity only in the temporary keychain.
+            make release-artifacts SIGN_IDENTITY="$DEVELOPER_ID" \
+              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s '$DEVELOPER_ID'"
           else
             make release-artifacts
           fi
@@ -208,9 +388,10 @@ jobs:
           set -euo pipefail
           umask 077
           dmg="dist/NapCat-$VERSION.dmg"
+          keychain="$RUNNER_TEMP/napcat-release.keychain-db"
           notary_key="$RUNNER_TEMP/napcat-notary-key.p8"
           result="$RUNNER_TEMP/napcat-notary-result.json"
-          codesign --force --timestamp -s "$DEVELOPER_ID" "$dmg"
+          codesign --force --timestamp --keychain "$keychain" -s "$DEVELOPER_ID" "$dmg"
           printf '%s' "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$notary_key"
           xcrun notarytool submit "$dmg" --key "$notary_key" --key-id "$NOTARY_KEY_ID" \
             --issuer "$NOTARY_ISSUER_ID" --wait --timeout 30m --output-format json > "$result"
@@ -280,7 +461,7 @@ jobs:
             "$RUNNER_TEMP/napcat-notary-result.json"
 
   publish:
-    name: Publish the GitHub Release
+    name: Create the draft GitHub Release
     needs: [validate, build]
     if: needs.validate.outputs.publish == 'true' && needs.build.outputs.signed == 'true'
     runs-on: ubuntu-24.04
@@ -294,7 +475,10 @@ jobs:
           name: NapCat-${{ needs.build.outputs.version }}-release
           path: release
 
-      - name: Create the release, or attach to the existing one
+      # Always a DRAFT: the owner reviews and publishes it by hand, and nothing
+      # here publishes an existing release either. "Immutable releases" is an
+      # owner-configured repository setting, not something this job changes.
+      - name: Create the draft release, or attach to the existing one
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -312,6 +496,7 @@ jobs:
           (cd release && sha256sum --check "NapCat-$VERSION.dmg.sha256")
           if gh release view "$tag" > /dev/null 2>&1; then
             # Never --clobber: an asset that is already there stays untouched.
+            # The release's draft or published state is left exactly as it is.
             gh release upload "$tag" "$dmg" "$checksum"
           else
             notes="$RUNNER_TEMP/release-notes.md"
@@ -322,5 +507,5 @@ jobs:
             else
               printf 'NapCat %s\n' "$VERSION" > "$notes"
             fi
-            gh release create "$tag" "$dmg" "$checksum" --verify-tag --title "$tag" --notes-file "$notes"
+            gh release create "$tag" "$dmg" "$checksum" --draft --verify-tag --title "$tag" --notes-file "$notes"
           fi
