@@ -147,6 +147,119 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # The PATH openssl on macos-15 is OpenSSL 1.1.1, which cannot read an
+      # AES-256 (PBES2) .p12. So every .p12 check in this job uses the binary
+      # picked here: the first of these fixed Homebrew paths that reports
+      # OpenSSL 3 or later. Nothing is installed.
+      - name: Select OpenSSL 3 or later
+        id: openssl
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /opt/homebrew/opt/openssl@3/bin/openssl /opt/homebrew/opt/openssl@4/bin/openssl; do
+            [ -x "$candidate" ] || continue
+            case "$("$candidate" version 2> /dev/null || true)" in
+              "OpenSSL "[3-9]*)
+                selected="$candidate"
+                break
+                ;;
+            esac
+          done
+          if [ -z "$selected" ]; then
+            echo "::error::Neither /opt/homebrew/opt/openssl@3/bin/openssl nor /opt/homebrew/opt/openssl@4/bin/openssl is an OpenSSL 3 or later on this runner, so a .p12 wrap cannot be checked. The PATH openssl (1.1.1 on macos-15) is never used for that."
+            exit 1
+          fi
+          echo "Selected $selected: $("$selected" version)"
+          echo "path=$selected" >> "$GITHUB_OUTPUT"
+
+      # Runs on every trigger, dry runs included, and reads no secret. It makes
+      # two throwaway self-signed identities, exports each as an AES-256 (PBES2)
+      # .p12 with the selected OpenSSL (one with the default MAC, one with
+      # -macalg sha1), runs the signing path's wrap check on both and imports
+      # both into a throwaway keychain the way the signing path does, so a dry
+      # run proves that chain on this runner. The search list is never changed
+      # by hand; the keychain and every file are removed on exit, pass or fail.
+      - name: Prove the .p12 import chain with throwaway identities
+        env:
+          OPENSSL: ${{ steps.openssl.outputs.path }}
+        run: |
+          set -euo pipefail
+          umask 077
+          echo "OpenSSL for the .p12 checks: $OPENSSL"
+          "$OPENSSL" version
+          work="$(mktemp -d "$RUNNER_TEMP/napcat-p12-prover.XXXXXX")"
+          keychain="$work/napcat-p12-prover.keychain-db"
+          cleanup() {
+            status=$?
+            if [ -e "$keychain" ] && ! security delete-keychain "$keychain"; then
+              echo "::error::Could not delete the prover's throwaway keychain."
+              status=1
+            fi
+            rm -rf "$work"
+            exit "$status"
+          }
+          trap cleanup EXIT
+          # Random, used only inside this step, never printed.
+          PROVER_KEY_PASSWORD="$("$OPENSSL" rand -hex 32)"
+          PROVER_P12_PASSWORD="$("$OPENSSL" rand -hex 32)"
+          export PROVER_KEY_PASSWORD PROVER_P12_PASSWORD
+          keychain_password="$("$OPENSSL" rand -hex 32)"
+          # $1 names the identity; any further arguments go to pkcs12 -export.
+          make_p12() {
+            local label="$1"
+            shift
+            "$OPENSSL" req -x509 -newkey rsa:2048 -days 1 -quiet -subj "/CN=napcat-prover-$label" \
+              -keyout "$work/$label.key.pem" -out "$work/$label.cert.pem" -passout env:PROVER_KEY_PASSWORD
+            "$OPENSSL" pkcs12 -export -in "$work/$label.cert.pem" -inkey "$work/$label.key.pem" \
+              -passin env:PROVER_KEY_PASSWORD -out "$work/$label.p12" -passout env:PROVER_P12_PASSWORD "$@"
+          }
+          # The same check the signing path runs on MACOS_CERTIFICATE_P12_BASE64.
+          check_wrap() {
+            local label="$1" p12_info p12_wraps
+            if ! p12_info="$("$OPENSSL" pkcs12 -in "$work/$label.p12" -info -noout -passin env:PROVER_P12_PASSWORD 2>&1)"; then
+              echo "::error::OpenSSL could not open the prover's $label .p12."
+              return 1
+            fi
+            p12_wraps="$(grep -E '^(PKCS7 Encrypted data|Shrouded Keybag):' <<< "$p12_info" || true)"
+            if ! grep -q '^Shrouded Keybag:' <<< "$p12_wraps" \
+              || grep -qv 'PBES2, PBKDF2, AES-256-CBC' <<< "$p12_wraps"; then
+              echo "::error::The prover's $label .p12 is not wrapped with AES-256-CBC (PBES2) throughout."
+              return 1
+            fi
+            echo "$label .p12 wrap check passed:"
+            grep -E '^(MAC|PKCS7 Encrypted data|Shrouded Keybag):' <<< "$p12_info"
+          }
+          fingerprint() {
+            local value
+            value="$("$OPENSSL" x509 -in "$work/$1.cert.pem" -noout -fingerprint -sha1)"
+            value="${value#*=}"
+            printf '%s\n' "${value//:/}" | tr 'a-f' 'A-F'
+          }
+          make_p12 default-mac
+          make_p12 sha1-mac -macalg sha1
+          check_wrap default-mac
+          check_wrap sha1-mac
+          # Every security call names the throwaway keychain explicitly.
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          for label in default-mac sha1-mac; do
+            if ! security import "$work/$label.p12" -k "$keychain" -f pkcs12 -P "$PROVER_P12_PASSWORD" -T /usr/bin/codesign; then
+              echo "::error::security could not import the prover's $label AES-256 .p12 into the throwaway keychain."
+              exit 1
+            fi
+          done
+          identities="$(security find-identity "$keychain")"
+          printf '%s\n' "$identities"
+          for label in default-mac sha1-mac; do
+            identity_hash="$(fingerprint "$label")"
+            if ! [[ "$identity_hash" =~ ^[0-9A-F]{40}$ ]] || ! grep -qF "$identity_hash" <<< "$identities"; then
+              echo "::error::The prover's $label identity is not in the throwaway keychain after its import."
+              exit 1
+            fi
+          done
+          echo "Both AES-256 .p12 files (default MAC and SHA-1 MAC) imported into the throwaway keychain."
+
       - name: Run unit tests
         run: make test
 
@@ -198,6 +311,7 @@ jobs:
       - name: Import the signing certificate into a temporary keychain
         if: steps.gate.outputs.sign == 'true'
         env:
+          OPENSSL: ${{ steps.openssl.outputs.path }}
           CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
@@ -205,20 +319,23 @@ jobs:
           umask 077
           keychain="$RUNNER_TEMP/napcat-release.keychain-db"
           certificate="$RUNNER_TEMP/napcat-signing.p12"
+          # The OpenSSL from "Select OpenSSL 3 or later", which the prover step
+          # exercised; never the PATH openssl. Re-checked before the secret is
+          # decoded.
+          case "$("$OPENSSL" version 2> /dev/null || true)" in
+            "OpenSSL "[3-9]*) ;;
+            *)
+              echo "::error::No OpenSSL 3 or later was selected for this job (see the step \"Select OpenSSL 3 or later\"), so the .p12 wrap cannot be checked."
+              exit 1
+              ;;
+          esac
           # Random, used only inside this step, never printed.
-          keychain_password="$(openssl rand -hex 32)"
+          keychain_password="$("$OPENSSL" rand -hex 32)"
           printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
           # Only an AES-256 (PBES2) re-wrapped .p12 is accepted. security import
           # would silently take a Keychain Access export's legacy 3DES/RC2 wrap,
           # so OpenSSL 3+ inspects it first. The password goes through env:.
-          case "$(openssl version)" in
-            "OpenSSL "[3-9]*) ;;
-            *)
-              echo "::error::The runner's openssl is not OpenSSL 3 or later, so the .p12 wrap cannot be checked."
-              exit 1
-              ;;
-          esac
-          if ! p12_info="$(openssl pkcs12 -in "$certificate" -info -noout -passin env:CERTIFICATE_PASSWORD 2>&1)"; then
+          if ! p12_info="$("$OPENSSL" pkcs12 -in "$certificate" -info -noout -passin env:CERTIFICATE_PASSWORD 2>&1)"; then
             echo "::error::OpenSSL 3 could not open MACOS_CERTIFICATE_P12_BASE64 with MACOS_CERTIFICATE_PASSWORD: the password is wrong, or the .p12 has a legacy wrap (a Keychain Access export does). Re-wrap it with AES-256-CBC (PBES2) using OpenSSL 3+ and upload that."
             exit 1
           fi
@@ -254,7 +371,7 @@ jobs:
             # The Makefile's signed CODESIGN command plus --keychain, so codesign
             # looks for the identity only in the temporary keychain.
             make release-artifacts SIGN_IDENTITY="$DEVELOPER_ID" \
-              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s $DEVELOPER_ID"
+              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s '$DEVELOPER_ID'"
           else
             make release-artifacts
           fi
