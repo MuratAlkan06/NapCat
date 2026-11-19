@@ -150,7 +150,9 @@ struct TopicFieldVisibilityTests {
     }
 
     /// USE lock: the editor's topic row is an NSSecureTextField that opens
-    /// masked and focused, the state comes from the pure type, and Save hands
+    /// masked and focused (on an error pass that rejected only the server,
+    /// the server field takes focus instead), the state comes from the pure
+    /// type, and Save hands
     /// back the visible field's text — not a field prefilled on the side.
     /// Security-review follow-ups are locked too (code shape only). M1: a
     /// secure field with no content type is inferred as a password field, and
@@ -171,7 +173,10 @@ struct TopicFieldVisibilityTests {
         try #require(menu.contains("final class MenuContentView"))
         for token in [
             "MaskedTopicRow(topic: entry.topic,",
-            "alert.window.initialFirstResponder = topicRow.secureField",
+            // Issue #42: an error pass focuses the first offending field — the
+            // masked topic, unless only the server was rejected.
+            "let serverOnlyRejected = error != nil && LidGuardPolicy.validateTopic(entry.topic) != .invalid",
+            "alert.window.initialFirstResponder = serverOnlyRejected ? serverField : topicRow.secureField",
             "LidAlertSettingsEntry(topic: topicRow.topic,",
             "secureField = NSSecureTextField(frame: fieldFrame)",
             "private var visibility = TopicFieldVisibility.initial",

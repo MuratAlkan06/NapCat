@@ -441,6 +441,84 @@ struct MenuPanelStructureTests {
         #expect(try Self.code("MenuContentView.swift").contains("SessionAlertsFloorGroup(seconds:"))
     }
 
+    /// Issue #42: a failed Save used to join the validation error into the
+    /// alert's informative text, so every re-presented pass came back 2-4
+    /// wrapped lines taller. Now the informative text is the explanation
+    /// alone on every pass, and the error lives in a caption band reserved on
+    /// EVERY pass at the top of the accessory stack — its height measured
+    /// (`cellSize(forBounds:)`, like SessionAlertsFloorGroup's caption) for
+    /// the worst-case message at the stack width, never a fixed point count,
+    /// and before the pass's own text goes in. Lint-style: the modal cannot
+    /// be driven headlessly.
+    @Test func theNtfyEditorReservesAFixedErrorBand() throws {
+        let source = try Self.code("MenuContentView.swift")
+        let start = try #require(source.range(of: "func runLidAlertSettingsEditor("), "editor not found — keep this lock updated")
+        let tail = source[start.upperBound...]
+        let end = ["\n    private func ", "\n    func ", "\n    static func ", "\n    nonisolated static func "]
+            .compactMap { tail.range(of: $0)?.lowerBound }
+            .min() ?? tail.endIndex
+        let editor = String(tail[..<end])
+        #expect(editor.contains("alert.runModal()"), "vacuity: the chunk is the editor")
+
+        // The informative text: the constant explanation, never the error.
+        #expect(editor.contains("alert.informativeText = Self.lidAlertSettingsExplanation\n"))
+        #expect(Self.occurrences(of: "informativeText", in: editor) == 1)
+        #expect(!editor.contains(".joined("), "nothing is joined into the dialog's text any more")
+        #expect(editor.contains("alert.alertStyle = error == nil ? .informational : .warning"))
+
+        // The band: a small red wrapping caption, sized for the worst case.
+        for token in [
+            "let errorCaption = NSTextField(wrappingLabelWithString:\n"
+                + "            MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid) ?? \"\")",
+            "errorCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)",
+            "errorCaption.textColor = .systemRed",
+            "let worstCaseBounds = NSRect(x: 0, y: 0, width: stackWidth, height: .greatestFiniteMagnitude)",
+            "errorCaption.cell?.cellSize(forBounds: worstCaseBounds).height",
+            "let errorBandY = fieldsY + 54 + PanelMetrics.regular",
+            "errorCaption.frame = NSRect(x: 0, y: errorBandY, width: stackWidth, height: errorBandHeight)",
+            "errorCaption.stringValue = error ?? \"\"",
+            "errorCaption.setAccessibilityElement(!errorCaption.stringValue.isEmpty)",
+            "height: errorBandY + errorBandHeight))",
+            "\n        stack.addSubview(errorCaption)\n",
+        ] {
+            #expect(editor.contains(token), "'\(token)' not found — the reserved error band was rewired")
+        }
+        // Measured BEFORE the pass's own text replaces the worst case, and
+        // added on every pass (at the method's top level, not under an `if`).
+        let measured = try #require(editor.range(of: "cellSize(forBounds: worstCaseBounds)"))
+        let filled = try #require(editor.range(of: "errorCaption.stringValue = error"))
+        #expect(measured.upperBound <= filled.lowerBound, "the band must be sized for the worst case, not this pass")
+        #expect(Self.occurrences(of: "errorCaption.stringValue =", in: editor) == 1)
+        // Nothing that sizes the band or the stack depends on this pass's error.
+        for line in editor.split(separator: "\n") where line.contains("errorBand") || line.contains("let stack =") {
+            #expect(!line.contains("error ?") && !line.contains("error =="), "pass-dependent geometry: \(line)")
+        }
+    }
+
+    /// Issue #42, headless: "worst case" really is the tallest message. At
+    /// the editor's 300 pt and at a widened stack, neither single-field error
+    /// wraps taller than both-fields-invalid, at the band's own font.
+    @Test func theBothFieldsErrorIsTheTallestEditorMessage() throws {
+        let worst = try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid))
+        let singles = [
+            try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .empty)),
+            try #require(MenuStateModel.lidAlertSettingsError(topic: .empty, server: .invalid)),
+        ]
+        func height(_ text: String, width: CGFloat) -> CGFloat {
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            let bounds = NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
+            return ceil(label.cell?.cellSize(forBounds: bounds).height ?? 0)
+        }
+        for width: CGFloat in [300, 320, 360] {
+            let reserved = height(worst, width: width)
+            #expect(reserved > height("Nothing was saved.", width: width), "vacuity: the worst case wraps")
+            for message in singles {
+                #expect(height(message, width: width) <= reserved, "\(width) pt: '\(message)' outgrows the band")
+            }
+        }
+    }
+
     /// F3 (2026-10-18): the Pause detection kill switch exists ONCE, inside the
     /// Details content — out of casual reach. (The top-level "Claude: paused"
     /// footer label is the mapping's job, tested in MenuPanelPresentationTests.)

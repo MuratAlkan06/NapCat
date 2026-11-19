@@ -442,8 +442,13 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 
     /// One pass of the two-field editor. Returns exactly what the user typed
     /// (unvalidated — the caller decides), or nil when they cancelled. `error`
-    /// is rendered above the explanation, so a rejected value comes back for
-    /// correction instead of disappearing silently.
+    /// is rendered in the caption band above the topic field, so a rejected
+    /// value comes back for correction instead of disappearing silently.
+    ///
+    /// Issue #42: every pass builds the SAME frame. The informative text is
+    /// the explanation alone, and the band is reserved on every pass — as tall
+    /// as the worst-case message wraps — so a failed Save never grows the
+    /// dialog.
     private func runLidAlertSettingsEditor(
         entry: LidAlertSettingsEntry,
         error: String?
@@ -451,9 +456,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         let alert = NSAlert()
         alert.alertStyle = error == nil ? .informational : .warning
         alert.messageText = "Where should NapCat notify you?"
-        alert.informativeText = [error, Self.lidAlertSettingsExplanation]
-            .compactMap { $0 }
-            .joined(separator: "\n\n")
+        alert.informativeText = Self.lidAlertSettingsExplanation
         // Issue #34: the "Session alerts" group sits UNDER the two fields
         // (bottom-up coordinates), so they move up by its height plus a gap.
         let floorGroup = entry.minimumRunSeconds.map { SessionAlertsFloorGroup(seconds: $0, width: 300) }
@@ -466,7 +469,24 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         serverField.stringValue = entry.server
         serverField.placeholderString = LidGuardTuning.defaultNtfyServer
         let stackWidth = max(300, topicRow.maxX, floorGroup?.view.frame.width ?? 0)
-        let stack = NSView(frame: NSRect(x: 0, y: 0, width: stackWidth, height: fieldsY + 54))
+        // Issue #42: the error band, at the top of the stack. Its height is
+        // MEASURED (as SessionAlertsFloorGroup measures its caption) for the
+        // worst-case message — both fields invalid — at the stack width, then
+        // the pass's own text goes in: empty on a nominal pass.
+        let errorCaption = NSTextField(wrappingLabelWithString:
+            MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid) ?? "")
+        errorCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        errorCaption.textColor = .systemRed
+        let worstCaseBounds = NSRect(x: 0, y: 0, width: stackWidth, height: .greatestFiniteMagnitude)
+        let errorBandHeight = ceil(errorCaption.cell?.cellSize(forBounds: worstCaseBounds).height
+                                   ?? errorCaption.fittingSize.height)
+        let errorBandY = fieldsY + 54 + PanelMetrics.regular
+        errorCaption.frame = NSRect(x: 0, y: errorBandY, width: stackWidth, height: errorBandHeight)
+        errorCaption.stringValue = error ?? ""
+        // A blank band is no element: VoiceOver must never land on an empty row.
+        errorCaption.setAccessibilityElement(!errorCaption.stringValue.isEmpty)
+        let stack = NSView(frame: NSRect(x: 0, y: 0, width: stackWidth, height: errorBandY + errorBandHeight))
+        stack.addSubview(errorCaption)
         topicRow.addSubviews(to: stack)
         stack.addSubview(serverField)
         if let floorGroup { stack.addSubview(floorGroup.view) }
@@ -474,7 +494,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()
-        alert.window.initialFirstResponder = topicRow.secureField
+        // Focus: the topic (masked, as every pass opens) — unless an error
+        // pass rejected only the server, which then gets it.
+        let serverOnlyRejected = error != nil && LidGuardPolicy.validateTopic(entry.topic) != .invalid
+        alert.window.initialFirstResponder = serverOnlyRejected ? serverField : topicRow.secureField
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         // `topicRow` stays alive through the modal run (it is read here), which
         // the checkbox needs: NSButton holds its target weakly. So does
