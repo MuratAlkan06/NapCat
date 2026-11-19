@@ -600,8 +600,8 @@ pushes, and the row says so.
 - **One waiting push per turn**, unless the session stops or resumes in between.
 - **The message vocabulary is closed** — counts and minutes only; nothing from
   your session ever leaves the Mac. For example: "A Claude session finished
-  after 42 min — 1 still working", "Claude is waiting for your approval — 12 min
-  in". Both publish at ntfy priority `high`, tagged `white_check_mark`
+  after 42 min — 1 still working", "Claude is waiting for you — 12 min in".
+  Both publish at ntfy priority `high`, tagged `white_check_mark`
   (finished) or `raised_hand` (waiting).
 - **The menu shows the outcome of the last session alert** under **Details**; a
   refused or failed one moves up next to the toggle. A send that provably never
@@ -629,7 +629,7 @@ pushes, and the row says so.
   delivered at wake would be stale. If it cannot leave the Mac during an outage,
   it is only counted ("1 lid alert missed.") in that same push.
 - **The marker folder has to exist.** Until the busy hook is installed — or
-  after its folder is deleted — the row says it is waiting for the Claude hook.
+  after its folder is deleted — the row says to install the Claude busy hook first.
   After the folder is created or recreated, the feature re-arms on the next
   menu open.
 

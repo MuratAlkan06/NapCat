@@ -292,7 +292,7 @@ struct MenuPanelPresentationTests {
                        text: "Session alerts: on — but Claude detection is paused; alerts cannot fire",
                        severity: .warning),
             SessionRow(state: .hookNotInstalled, outcome: outcome,
-                       text: "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)",
+                       text: "Session alerts: on — install the Claude busy hook first (see below)",
                        severity: .warning),
             armed,
         ]
@@ -315,7 +315,7 @@ struct MenuPanelPresentationTests {
     }
 
     static let sessionDegradedPhrases = ["set an ntfy topic", "send the test message", "cannot fire",
-                                         "waiting for the Claude hook", "did not go out", "rate-limiting"]
+                                         "install the Claude busy hook", "did not go out", "rate-limiting"]
 
     /// Severity per row, cross-checked against the text in BOTH directions (a
     /// degraded line is never nominal; a nominal one never reads degraded),
@@ -540,7 +540,7 @@ struct MenuPanelPresentationTests {
                                text: sessionRateLimitedText, severity: .warning),
             SessionRecoveryRow(id: "R17 429 never overrides a non-armed state", state: .hookNotInstalled,
                                outcome: .rejected(429), outcomeAt: t, lidOutcome: nil, lidOutcomeAt: nil,
-                               text: "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)",
+                               text: "Session alerts: on — install the Claude busy hook first (see below)",
                                severity: .warning),
         ]
     }()

@@ -380,6 +380,47 @@ struct ScaffoldTests {
         text.components(separatedBy: token).count - 1
     }
 
+    /// UI audit H2 (2026-11-19): someone who installed from the disk image has
+    /// no clone, so the Setup Required alert tells them to clone first and
+    /// points at the disk image's READ ME, which must therefore carry the
+    /// commands (setup, and the optional Claude hook for the phone alerts).
+    /// The hook lines name the repository instead of a bare repo-relative
+    /// path. Lint-style: the alert is an AppKit modal and the READ ME is a
+    /// heredoc in the packaging script.
+    @Test func firstRunGuidanceReachesDiskImageUsers() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let menu = try String(contentsOf: root.appendingPathComponent("Sources/NapCat/MenuContentView.swift"),
+                              encoding: .utf8)
+        let alert = try #require(Self.functionChunk(named: "presentSetupRequiredAlert", in: menu))
+        #expect(alert.contains("sudo ./scripts/setup.sh"))
+        #expect(alert.contains("Installed from the disk image? Clone github.com/MuratAlkan06/NapCat"))
+        #expect(alert.contains("the READ ME on the disk image has the exact commands."))
+
+        let packager = try String(contentsOf: root.appendingPathComponent("scripts/make-dmg.sh"), encoding: .utf8)
+        let start = try #require(packager.range(of: "cat > \"$STAGE/READ ME.txt\" <<EOF\n"), "READ ME heredoc not found")
+        let tail = packager[start.upperBound...]
+        let end = try #require(tail.range(of: "\nEOF\n"), "READ ME heredoc is not terminated")
+        let readMe = String(tail[..<end.lowerBound])
+        for command in ["git clone --branch v$VERSION https://github.com/MuratAlkan06/NapCat.git",
+                        "sudo ./scripts/setup.sh", "./scripts/install-claude-busy-hook.sh"] {
+            #expect(readMe.contains(command), "the READ ME lost '\(command)'")
+        }
+        #expect(readMe.contains("Optional: phone alerts for Claude Code"))
+        #expect(readMe.contains("\"ntfy settings...\""), "the READ ME names the menu item that sets the alerts up")
+        let plainASCII = readMe.unicodeScalars.allSatisfy { $0.isASCII }
+        #expect(plainASCII, "READ ME.txt stays plain ASCII")
+
+        // Not installed, and installed but never seen: both name the fix.
+        for installed in [false, true] {
+            let line = MenuStateModel.claudeHookLine(installed: installed, everSeen: false, lastSeenSeconds: nil)
+            #expect(line.hasSuffix("— run install-claude-busy-hook.sh from the NapCat repository"), "\(line)")
+            #expect(!line.contains("scripts/"), "a bare repo-relative path means nothing outside a clone")
+        }
+    }
+
     /// Menu-open must stay off the network: the panel renders stored config and
     /// the last recorded outcome, never a live probe. (Before B4 this slot held
     /// the silent Automation-permission probe; the ntfy channel has nothing to

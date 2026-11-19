@@ -537,10 +537,10 @@ final class MenuStateModel: ObservableObject {
         lastSeenSeconds: Int?
     ) -> String {
         guard installed else {
-            return "Busy hook: not installed — run scripts/install-claude-busy-hook.sh"
+            return "Busy hook: not installed — run install-claude-busy-hook.sh from the NapCat repository"
         }
         guard everSeen, let seconds = lastSeenSeconds else {
-            return "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh"
+            return "Busy hook: not seen yet — run install-claude-busy-hook.sh from the NapCat repository"
         }
         return "Busy hook: last seen \(ClaudeActivityPolicy.relativeTime(seconds: seconds))"
     }
@@ -802,7 +802,7 @@ final class MenuStateModel: ObservableObject {
         case .paused:
             return "Session alerts: on — but Claude detection is paused; alerts cannot fire"
         case .hookNotInstalled:
-            return "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)"
+            return "Session alerts: on — install the Claude busy hook first (see below)"
         case .armed:
             if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                                          lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {

@@ -129,6 +129,16 @@ keep the Mac awake or pause and resume charging. The README's "Security
 model" section explains the design:
 https://github.com/MuratAlkan06/NapCat#security-model
 
+Optional: phone alerts for Claude Code
+--------------------------------------
+NapCat can send a push to your phone through ntfy when a long Claude Code
+run finishes or waits for you, or when the lid closes mid-task. Set them
+up in the NapCat menu: open Details, click "ntfy settings...", then turn
+on "Lid alert" or "Session alerts". Both need the Claude hook, which you
+install from a clone of the repository (the same clone as above):
+
+    ./scripts/install-claude-busy-hook.sh
+
 Source, issues and license (MIT): https://github.com/MuratAlkan06/NapCat
 EOF
 

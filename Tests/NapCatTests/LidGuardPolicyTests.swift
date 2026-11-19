@@ -454,14 +454,15 @@ struct LidGuardPolicyTests {
 
     /// The body is a fixed template + the clock time + the COUNT. It must never
     /// contain anything that could have come from a session. The B4 channel
-    /// swap deliberately left this wording untouched.
+    /// swap deliberately left this wording untouched; the 2026-11-19 UI audit
+    /// (N5) dropped only the "NapCat: " prefix — the push Title carries it.
     @Test(arguments: [0, 1, 2, 7])
     func lidAlertBodyIsTemplatePlusTimeAndCount(count: Int) {
         let body = LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: count), clockTime: "22:49")
-        #expect(body == "NapCat: this Mac started going to sleep at 22:49 while "
+        #expect(body == "This Mac started going to sleep at 22:49 while "
                 + LidGuardPolicy.taskPhrase(count)
                 + " still running, and Stay Awake is off.")
-        #expect(body.contains("NapCat"))
+        #expect(!body.contains("NapCat"), "the app name is the push Title, not the body (N5)")
         #expect(body.contains("22:49"))
         #expect(body.contains("Stay Awake is off"))
         if count > 1 {
@@ -477,28 +478,31 @@ struct LidGuardPolicyTests {
     }
 
     /// The test message primes BOTH features (lid alert and session alerts
-    /// share the destination and the priming), so it names both. Literal (C6).
+    /// share the destination and the priming), so it names both. Literal (C6;
+    /// N5 dropped the "NapCat " prefix — the push Title carries it).
     @Test func testMessageBodyIsSelfExplainingAndNamesTheChannel() {
         let body = LidGuardPolicy.messageBody(kind: .test, clockTime: "09:05")
-        #expect(body == "NapCat test message (09:05). ntfy push works — "
+        #expect(body == "Test message (09:05). ntfy push works — "
                 + "this is how the lid-close and session alerts will reach you.")
-        #expect(body.contains("NapCat test message"))
+        #expect(body.hasPrefix("Test message"))
+        #expect(!body.contains("NapCat"), "the app name is the push Title, not the body (N5)")
         #expect(body.contains("09:05"))
         #expect(body.contains("ntfy"))
         #expect(body.contains("lid-close") && body.contains("session alerts"))
         #expect(!body.contains("Messages"), "no iMessage wording survives the channel swap")
     }
 
-    /// C6 changed only the TEST body: the lid alert stays byte-identical.
+    /// C6 changed only the TEST body: the lid alert stays byte-identical
+    /// (since N5, 2026-11-19, without the "NapCat: " prefix).
     @Test func lidAlertBodyIsByteIdentical() {
         #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 1), clockTime: "22:49")
-                == "NapCat: this Mac started going to sleep at 22:49 while 1 Claude Code task was still running, "
+                == "This Mac started going to sleep at 22:49 while 1 Claude Code task was still running, "
                 + "and Stay Awake is off.")
         #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 3), clockTime: "07:05")
-                == "NapCat: this Mac started going to sleep at 07:05 while 3 Claude Code tasks were still running, "
+                == "This Mac started going to sleep at 07:05 while 3 Claude Code tasks were still running, "
                 + "and Stay Awake is off.")
         #expect(LidGuardPolicy.messageBody(kind: .lidAlert(busySessionCount: 0), clockTime: "00:00")
-                == "NapCat: this Mac started going to sleep at 00:00 while a Claude Code task was still running, "
+                == "This Mac started going to sleep at 00:00 while a Claude Code task was still running, "
                 + "and Stay Awake is off.")
     }
 
@@ -672,23 +676,23 @@ struct LidGuardPolicyTests {
 
     static let needsAttentionRows: [BodyRow] = [
         BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0),
-                expected: "Claude is waiting for your approval — 12 min in"),
+                expected: "Claude is waiting for you — 12 min in"),
         BodyRow(kind: .needsAttention(minutes: 1, stillWorking: 0),
-                expected: "Claude is waiting for your approval — 1 min in"),
+                expected: "Claude is waiting for you — 1 min in"),
         BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 0),
-                expected: "Claude is waiting for your approval"),
+                expected: "Claude is waiting for you"),
         BodyRow(kind: .needsAttention(minutes: 0, stillWorking: 0),
-                expected: "Claude is waiting for your approval"),
+                expected: "Claude is waiting for you"),
         BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 1),
-                expected: "Claude is waiting for your approval — 42 min in — 1 other still working"),
+                expected: "Claude is waiting for you — 42 min in — 1 other still working"),
         BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 3),
-                expected: "Claude is waiting for your approval — 42 min in — 3 others still working"),
+                expected: "Claude is waiting for you — 42 min in — 3 others still working"),
         BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 1),
-                expected: "Claude is waiting for your approval — 1 other still working"),
+                expected: "Claude is waiting for you — 1 other still working"),
         BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 2),
-                expected: "Claude is waiting for your approval — 2 others still working"),
+                expected: "Claude is waiting for you — 2 others still working"),
         BodyRow(kind: .needsAttention(minutes: -3, stillWorking: -1),
-                expected: "Claude is waiting for your approval"),
+                expected: "Claude is waiting for you"),
     ]
 
     @Test(arguments: sessionFinishedRows + needsAttentionRows)
@@ -722,7 +726,7 @@ struct LidGuardPolicyTests {
                     } else {
                         #expect(finished.hasPrefix("A Claude session finished"))
                     }
-                    #expect(waiting.hasPrefix("Claude is waiting for your approval"))
+                    #expect(waiting.hasPrefix("Claude is waiting for you"))
                 }
             }
         }
