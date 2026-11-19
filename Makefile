@@ -24,7 +24,7 @@ endif
 # See PLAN.md decision log 2026-07-09.
 CLT_FRAMEWORKS := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
 
-.PHONY: all run test clean frames smc release-artifacts
+.PHONY: all run test clean frames appicon smc release-artifacts
 
 all: smc
 	swift build -c release
@@ -72,6 +72,13 @@ clean:
 # re-rendering.
 frames:
 	swift scripts/render_frames.swift
+
+# Regenerates Resources/AppIcon.iconset/*.png, the app icon ("Night Groom"):
+# the grooming cat from art/groom-source.png re-inked on a night-blue squircle,
+# with hand-tuned 32/16 px cells. Byte-deterministic like `frames`; the iconset
+# PNGs are committed AND regenerable.
+appicon:
+	swift scripts/render_appicon.swift Resources/AppIcon.iconset
 
 # Vendored GPL-2.0 smc CLI (third_party/smc/PROVENANCE.md). Native arch build;
 # NOT bundled into the .app and NOT installed anywhere — the user-run
