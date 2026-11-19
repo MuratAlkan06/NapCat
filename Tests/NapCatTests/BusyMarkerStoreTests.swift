@@ -316,9 +316,11 @@ struct BusyMarkerStoreTests {
 
     /// A session-shaped FIFO — and a session-shaped symlink to it — must be
     /// skipped WITHOUT blocking: `O_NONBLOCK` keeps the open from waiting for
-    /// a writer and `fstat` of the descriptor refuses a non-regular file. A
-    /// regression would hang here (hence the time limit), not fail quietly.
-    @Test(.timeLimit(.minutes(1)))
+    /// a writer and `fstat` of the descriptor refuses a non-regular file. The
+    /// in-body elapsed check is the real bound; the time limit is only a hang
+    /// backstop (in this `@MainActor` suite it also counts main-actor queue
+    /// time, so a tight one fails on a slow run, not on a regression — #32).
+    @Test(.timeLimit(.minutes(10)))
     func aSessionShapedFifoIsSkippedWithoutBlocking() throws {
         try withTempDir { root in
             let store = MarkerDirectoryStore(root: root)
@@ -328,9 +330,11 @@ struct BusyMarkerStoreTests {
                                                        withDestinationURL: fifo)
             Self.write(root, Self.idA, "v1 ts=100 event=UserPromptSubmit pid=10 src=unknown\n")
 
+            let started = Date()
             #expect(store.identifiedMarkers().map(\.sessionID) == [Self.idA],
                     "the FIFO and the link to it are skipped; the real marker still parses")
             #expect(store.markers().map(\.pid) == [10])
+            #expect(Date().timeIntervalSince(started) < 3, "the reads must not block on a FIFO")
         }
     }
 
@@ -428,8 +432,9 @@ struct BusyMarkerStoreTests {
     }
 
     /// Same descriptor checks as a marker: a symlink (even to a valid hook),
-    /// a directory and a FIFO are refused — the FIFO without blocking.
-    @Test(.timeLimit(.minutes(1)))
+    /// a directory and a FIFO are refused — the FIFO without blocking (the
+    /// elapsed check; the time limit is only a hang backstop, as above).
+    @Test(.timeLimit(.minutes(10)))
     func installedHookVersionRefusesNonRegularFiles() throws {
         try withTempDir { root in
             let real = root.appendingPathComponent("real-hook.sh")
@@ -446,7 +451,9 @@ struct BusyMarkerStoreTests {
 
             let fifo = root.appendingPathComponent("fifo-hook.sh")
             try #require(mkfifo(fifo.path, 0o600) == 0, "setup: mkfifo failed (errno \(errno))")
+            let started = Date()
             #expect(MarkerDirectoryStore(root: root, installedHookURL: fifo).installedHookVersion() == nil)
+            #expect(Date().timeIntervalSince(started) < 3, "the read must not block on a FIFO")
         }
     }
 
