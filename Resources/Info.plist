@@ -4,6 +4,9 @@
 <dict>
 	<key>CFBundleExecutable</key>
 	<string>NapCat</string>
+	<!-- Contents/Resources/AppIcon.icns, compiled from Resources/AppIcon.iconset by `make`. -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.muratalkan.napcat</string>
 	<key>CFBundleName</key>
@@ -12,6 +15,9 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.5.0</string>
+	<!-- Same value as CFBundleShortVersionString (lint-locked): bump both together. -->
+	<key>CFBundleVersion</key>
+	<string>1.5.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<!-- NO NSAppleEventsUsageDescription: since the B4 channel swap the
@@ -19,5 +25,7 @@
 	     so NapCat requests no Automation (TCC) permission at all. -->
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Murat Alkan</string>
 </dict>
 </plist>
