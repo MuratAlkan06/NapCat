@@ -267,9 +267,9 @@ struct ClaudeActivityPolicyTests {
 
     @Test func hookLinePresentation() {
         #expect(MenuStateModel.claudeHookLine(installed: false, everSeen: false, lastSeenSeconds: nil)
-                == "Busy hook: not installed — run scripts/install-claude-busy-hook.sh")
+                == "Busy hook: not installed — run install-claude-busy-hook.sh from the NapCat repository")
         #expect(MenuStateModel.claudeHookLine(installed: true, everSeen: false, lastSeenSeconds: nil)
-                == "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh")
+                == "Busy hook: not seen yet — run install-claude-busy-hook.sh from the NapCat repository")
         #expect(MenuStateModel.claudeHookLine(installed: true, everSeen: true, lastSeenSeconds: 65)
                 == "Busy hook: last seen 1m ago")
     }

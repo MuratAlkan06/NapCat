@@ -300,11 +300,15 @@ final class MenuStateModel: ObservableObject {
     /// Tucked under Details › Claude detection; present only while true.
     var claudeAwakeLine: PanelLine? { Self.claudeHoldingAwakeLine(holdingAwake: claudeHoldingAwake) }
 
+    /// A warning only while the lid alert or session alerts are switched on
+    /// (H1); otherwise it tucks into Details › Claude detection.
     var hookStatus: PanelLine {
         Self.claudeHookStatus(
             installed: claudeHookInstalled,
             everSeen: claudeHookEverSeen,
-            lastSeenSeconds: claudeHookLastSeenSeconds
+            lastSeenSeconds: claudeHookLastSeenSeconds,
+            lidAlertEnabled: lidGuardEnabled,
+            sessionAlertsEnabled: finishAlertEnabled
         )
     }
 
@@ -365,7 +369,8 @@ final class MenuStateModel: ObservableObject {
     /// not even through its echoes: the lid line counts with the severity it
     /// would have WITHOUT the pause, and the session line's `.paused` (only
     /// ever armed-but-paused) counts as nominal. Every non-pause problem still
-    /// counts (a failed send, a missing topic, a missing hook, …).
+    /// counts (a failed send, a missing topic, a missing hook an alert
+    /// needs, …).
     var detailsBadge: PanelSeverity {
         var severities = [launchAtLoginCaption?.severity ?? .nominal, lockScreenStatus.severity]
         if claudeDetectionVisible {
@@ -517,14 +522,28 @@ final class MenuStateModel: ObservableObject {
     nonisolated static let pauseDetectionCaption =
         "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
 
-    /// Hook liveness with its severity: not installed / never seen are
-    /// problems (they escape Details); "last seen …" is nominal. A long gap is
-    /// NOT flagged — it may simply mean Claude has not been used.
-    nonisolated static func claudeHookStatus(installed: Bool, everSeen: Bool, lastSeenSeconds: Int?) -> PanelLine {
+    /// Hook liveness with its severity: "last seen …" is nominal. A long gap
+    /// is NOT flagged — it may simply mean Claude has not been used.
+    ///
+    /// Not installed / never seen are problems (they escape Details) ONLY
+    /// while an alert that needs the hook is switched on — the lid alert or
+    /// session alerts (UI audit H1, owner ruling 2026-11-19). With both off,
+    /// nothing depends on the hook, so a fresh install that only wants Stay
+    /// Awake must not open on a warning: the SAME text is nominal and tucks
+    /// into Details › Claude detection. Neither toggle has a default, so a
+    /// caller cannot silently get the quiet line.
+    nonisolated static func claudeHookStatus(
+        installed: Bool,
+        everSeen: Bool,
+        lastSeenSeconds: Int?,
+        lidAlertEnabled: Bool,
+        sessionAlertsEnabled: Bool
+    ) -> PanelLine {
         let healthy = installed && everSeen && lastSeenSeconds != nil
+        let anAlertNeedsTheHook = lidAlertEnabled || sessionAlertsEnabled
         return PanelLine(
             text: claudeHookLine(installed: installed, everSeen: everSeen, lastSeenSeconds: lastSeenSeconds),
-            severity: healthy ? .nominal : .warning
+            severity: healthy || !anAlertNeedsTheHook ? .nominal : .warning
         )
     }
 
@@ -537,10 +556,10 @@ final class MenuStateModel: ObservableObject {
         lastSeenSeconds: Int?
     ) -> String {
         guard installed else {
-            return "Busy hook: not installed — run scripts/install-claude-busy-hook.sh"
+            return "Busy hook: not installed — run install-claude-busy-hook.sh from the NapCat repository"
         }
         guard everSeen, let seconds = lastSeenSeconds else {
-            return "Busy hook: not seen yet — run scripts/install-claude-busy-hook.sh"
+            return "Busy hook: not seen yet — run install-claude-busy-hook.sh from the NapCat repository"
         }
         return "Busy hook: last seen \(ClaudeActivityPolicy.relativeTime(seconds: seconds))"
     }
@@ -747,8 +766,11 @@ final class MenuStateModel: ObservableObject {
     ) -> String? {
         var problems: [String] = []
         if topic == .invalid {
+            // The topic field opens masked (issue #10), so the user cannot see
+            // the typo — point at the checkbox that reveals it (UI audit M3).
             problems.append("The topic can only contain letters, digits, “_” and “-”, "
-                + "up to \(LidGuardTuning.maxTopicLength) characters.")
+                + "up to \(LidGuardTuning.maxTopicLength) characters. "
+                + "Tick \(TopicFieldVisibility.checkboxTitle) to check what you typed.")
         }
         if server == .invalid {
             problems.append("The server must be an https address with no path, "
@@ -802,7 +824,7 @@ final class MenuStateModel: ObservableObject {
         case .paused:
             return "Session alerts: on — but Claude detection is paused; alerts cannot fire"
         case .hookNotInstalled:
-            return "Session alerts: on — waiting for the Claude hook (no marker folder to watch yet)"
+            return "Session alerts: on — install the Claude busy hook first (see below)"
         case .armed:
             if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                                          lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {

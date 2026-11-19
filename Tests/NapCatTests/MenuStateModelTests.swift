@@ -247,6 +247,15 @@ struct MenuStateModelTests {
         let both = try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid))
         #expect(both.contains("topic"))
         #expect(both.contains("server"))
+
+        // UI audit M3: the topic field opens masked, so the topic sentence
+        // points at the "Show" checkbox that reveals it — the topic sentence
+        // only, and it stays attached to it when both fields are invalid.
+        #expect(badTopic == "Nothing was saved. The topic can only contain letters, digits, “_” and “-”, "
+                + "up to \(LidGuardTuning.maxTopicLength) characters. Tick Show to check what you typed.")
+        #expect(TopicFieldVisibility.checkboxTitle == "Show", "the hint names the checkbox as it is labelled")
+        #expect(!badServer.contains("Tick"))
+        #expect(both.hasPrefix(badTopic + " The server"))
     }
 
     /// The message is shown in a dialog the user can screenshot, so — like

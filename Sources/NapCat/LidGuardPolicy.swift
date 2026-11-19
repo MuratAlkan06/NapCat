@@ -505,7 +505,8 @@ enum LidGuardPolicy {
     ///   42 min — 1 still working" (the "after N min" part only when known);
     /// - `sessionFinished`, folded ≥ 2: "3 Claude sessions finished — none
     ///   still working" (minutes deliberately omitted — they differ per session);
-    /// - `needsAttention`: "Claude is waiting for your approval — 12 min in"
+    /// - `needsAttention` (any wait — permission, elicitation, input, quota):
+    ///   "Claude is waiting for you — 12 min in"
     ///   (+ " — 1 other still working" / " — N others still working");
     /// - `connectionRestored` (alert healing): "Connection was down 14 min."
     ///   plus one segment per non-zero count, singular or plural — "1 session
@@ -514,11 +515,11 @@ enum LidGuardPolicy {
     static func messageBody(kind: LidGuardMessageKind, clockTime: String) -> String {
         switch kind {
         case .lidAlert(let busySessionCount):
-            return "NapCat: this Mac started going to sleep at \(clockTime) while "
+            return "This Mac started going to sleep at \(clockTime) while "
                 + taskPhrase(busySessionCount)
                 + " still running, and Stay Awake is off."
         case .test:
-            return "NapCat test message (\(clockTime)). ntfy push works — "
+            return "Test message (\(clockTime)). ntfy push works — "
                 + "this is how the lid-close and session alerts will reach you."
         case .sessionFinished(let minutes, let folded, let stillWorking):
             if folded >= 2 {
@@ -534,7 +535,7 @@ enum LidGuardPolicy {
             case 1: others = " — 1 other still working"
             default: others = " — \(stillWorking) others still working"
             }
-            return "Claude is waiting for your approval" + elapsed + others
+            return "Claude is waiting for you" + elapsed + others
         case .connectionRestored(let minutes, let deliveredLate, let dropped, let lidMissed):
             // A count below 1 adds no segment; 1 is singular.
             func segment(_ count: Int, _ one: String, _ many: String) -> String? {

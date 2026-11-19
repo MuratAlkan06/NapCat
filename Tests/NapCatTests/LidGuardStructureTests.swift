@@ -611,7 +611,7 @@ struct LidGuardStructureTests {
             #expect(body == LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49"))
         }
         #expect(bodies[2] == "A Claude session finished after 42 min — 1 still working")
-        #expect(bodies[3] == "Claude is waiting for your approval — 12 min in")
+        #expect(bodies[3] == "Claude is waiting for you — 12 min in")
         #expect(bodies[4] == "Connection was down 14 min. 2 session alerts delivered late. 1 lid alert missed.")
         // Closed-set lock: a sixth kind will not compile until it is added here.
         for kind in kinds {

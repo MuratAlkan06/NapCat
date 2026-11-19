@@ -375,6 +375,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 
             sudo ./scripts/setup.sh
 
+            Installed from the disk image? Clone github.com/MuratAlkan06/NapCat \
+            first — the READ ME on the disk image has the exact commands.
+
             Then toggle Stay Awake again.
             """
         alert.addButton(withTitle: "OK")
