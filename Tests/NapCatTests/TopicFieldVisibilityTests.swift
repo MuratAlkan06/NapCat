@@ -122,6 +122,33 @@ struct TopicFieldVisibilityTests {
         #expect(TopicFieldVisibility.checkboxAccessibilityLabel == "Show topic")
     }
 
+    /// Issue #39: the old 43-character placeholder needed ~290 pt and clipped
+    /// in the 300 pt field (~292 pt text rect once the bezel insets are taken).
+    /// The budget is 270 pt — the frame minus the insets and a margin — at the
+    /// fields' own font, the system font at its regular size.
+    @Test func thePlaceholderFitsTheTopicField() {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let width = (TopicFieldVisibility.fieldPlaceholder as NSString).size(withAttributes: [.font: font]).width
+        #expect(width <= 270, "the topic placeholder needs \(width) pt — over the 270 pt budget, it clips")
+        #expect(width > 0, "vacuity: the measurement saw text")
+    }
+
+    /// The placeholder shows the SHAPE of a topic, never one to copy: a
+    /// placeholder pasted verbatim would become a shared, publicly-known feed.
+    /// Its suffix is a bracketed description, so the tail after "napcat-" is
+    /// not a bare topic, and neither it nor the whole string passes the
+    /// topic grammar.
+    @Test func thePlaceholderIsNotAPasteReadyTopic() throws {
+        let placeholder = TopicFieldVisibility.fieldPlaceholder
+        #expect(placeholder.contains("<") && placeholder.contains(">"))
+        let prefix = try #require(placeholder.range(of: "napcat-"), "the example keeps its napcat- prefix")
+        let tail = String(placeholder[prefix.upperBound...])
+        #expect(!tail.isEmpty)
+        #expect(tail.wholeMatch(of: /[A-Za-z0-9_-]+/) == nil, "'\(tail)' would be a paste-ready topic")
+        #expect(LidGuardPolicy.validateTopic(tail) == .invalid)
+        #expect(LidGuardPolicy.validateTopic(placeholder) == .invalid)
+    }
+
     /// USE lock: the editor's topic row is an NSSecureTextField that opens
     /// masked and focused, the state comes from the pure type, and Save hands
     /// back the visible field's text — not a field prefilled on the side.
@@ -156,9 +183,12 @@ struct TopicFieldVisibilityTests {
             "secureField.stringValue = topic",
             "let hidden: NSTextField = visibility.isRevealed ? secureField : plainField",
             "hidden.stringValue = \"\"",
+            "field.placeholderString = TopicFieldVisibility.fieldPlaceholder",
         ] {
             #expect(menu.contains(token), "'\(token)' not found in MenuContentView.swift — the masked topic row was rewired")
         }
+        #expect(menu.components(separatedBy: "placeholderString = ").count - 1 == 2,
+                "the topic twins share one placeholder assignment; the server field has its own")
         #expect(!menu.contains("= entry.topic"), "the topic must reach the editor only through MaskedTopicRow")
         #expect(menu.components(separatedBy: "stringValue = topic").count - 1 == 1,
                 "only the secure field may be prefilled with the topic")

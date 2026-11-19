@@ -523,8 +523,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 /// pure state onto them.
 ///
 /// The fields keep the editor's full 300 pt width and the checkbox sits to
-/// their right: the placeholder needs ~290 pt at the system font, so a field
-/// narrowed to make room would clip it.
+/// their right. The placeholder's budget is its fitting width at the system
+/// font: at most 270 pt (the 300 pt frame minus the bezel's text insets and a
+/// margin), checked in TopicFieldVisibilityTests — so neither a longer
+/// placeholder nor a field narrowed to make room may clip it.
 @MainActor
 private final class MaskedTopicRow: NSObject {
     let secureField: NSSecureTextField
@@ -555,9 +557,8 @@ private final class MaskedTopicRow: NSObject {
         secureField.isAutomaticTextCompletionEnabled = false
         plainField.isAutomaticTextCompletionEnabled = false
         for field in [secureField, plainField] {
-            // Deliberately NOT a paste-ready value: a placeholder someone could copy
-            // verbatim would become a shared, publicly-known feed.
-            field.placeholderString = "Topic — e.g. napcat-<your-own-random-suffix>"
+            // Deliberately NOT a paste-ready value (see the constant).
+            field.placeholderString = TopicFieldVisibility.fieldPlaceholder
             field.setAccessibilityLabel(TopicFieldVisibility.fieldAccessibilityLabel)
         }
         showCheckbox.target = self

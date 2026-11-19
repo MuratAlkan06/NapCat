@@ -45,4 +45,11 @@ enum TopicFieldVisibility {
     static let fieldAccessibilityLabel = "Topic"
     static let checkboxTitle = "Show"
     static let checkboxAccessibilityLabel = "Show topic"
+
+    /// Both twins' placeholder (issue #39). Deliberately NOT a paste-ready
+    /// value: a placeholder someone could copy verbatim would become a shared,
+    /// publicly-known feed, so the suffix is a bracketed description. Its
+    /// fitting width at the system font must stay within 270 pt — the 300 pt
+    /// field minus its bezel insets and a margin — or it clips (unit-tested).
+    static let fieldPlaceholder = "Topic — e.g. napcat-<random-suffix>"
 }
