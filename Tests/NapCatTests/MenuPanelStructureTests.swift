@@ -498,7 +498,7 @@ struct MenuPanelStructureTests {
     /// Issue #42, headless: "worst case" really is the tallest message. At
     /// the editor's 300 pt and at a widened stack, neither single-field error
     /// wraps taller than both-fields-invalid, at the band's own font.
-    @Test func theBothFieldsErrorIsTheTallestEditorMessage() throws {
+    @Test @MainActor func theBothFieldsErrorIsTheTallestEditorMessage() throws {
         let worst = try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid))
         let singles = [
             try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .empty)),
