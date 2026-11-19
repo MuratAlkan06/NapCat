@@ -766,8 +766,11 @@ final class MenuStateModel: ObservableObject {
     ) -> String? {
         var problems: [String] = []
         if topic == .invalid {
+            // The topic field opens masked (issue #10), so the user cannot see
+            // the typo — point at the checkbox that reveals it (UI audit M3).
             problems.append("The topic can only contain letters, digits, “_” and “-”, "
-                + "up to \(LidGuardTuning.maxTopicLength) characters.")
+                + "up to \(LidGuardTuning.maxTopicLength) characters. "
+                + "Tick \(TopicFieldVisibility.checkboxTitle) to check what you typed.")
         }
         if server == .invalid {
             problems.append("The server must be an https address with no path, "

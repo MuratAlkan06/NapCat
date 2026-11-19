@@ -497,10 +497,16 @@ struct MenuPanelStructureTests {
 
     /// Issue #42, headless: "worst case" really is the tallest message. At
     /// the editor's 300 pt and at a widened stack, neither single-field error
-    /// wraps taller than both-fields-invalid, at the band's own font.
+    /// wraps taller than both-fields-invalid, at the band's own font. UI
+    /// audit M3 lengthened the topic sentence ("Tick Show to check what you
+    /// typed."), so the measured band grew with it; what must hold is that
+    /// every pass — nominal, either single error, both — fits the ONE band,
+    /// so the frame stays the same across passes. No point count is pinned.
     @Test @MainActor func theBothFieldsErrorIsTheTallestEditorMessage() throws {
         let worst = try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid))
+        #expect(worst.contains("Tick Show to check what you typed."), "the band is measured WITH the M3 hint")
         let singles = [
+            "",   // a nominal pass: the band is reserved but empty
             try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .empty)),
             try #require(MenuStateModel.lidAlertSettingsError(topic: .empty, server: .invalid)),
         ]
