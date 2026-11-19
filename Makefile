@@ -34,6 +34,7 @@ all: smc
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	install -m 0755 Resources/napcat-watchdog.sh $(APP)/Contents/Resources/napcat-watchdog.sh
 	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
+	iconutil -c icns Resources/AppIcon.iconset -o $(APP)/Contents/Resources/AppIcon.icns
 	$(CODESIGN) $(APP)
 
 # pkill only SIGNALS the running instance; `open` issued while it is still
@@ -76,7 +77,9 @@ frames:
 # Regenerates Resources/AppIcon.iconset/*.png, the app icon ("Night Groom"):
 # the grooming cat from art/groom-source.png re-inked on a night-blue squircle,
 # with hand-tuned 32/16 px cells. Byte-deterministic like `frames`; the iconset
-# PNGs are committed AND regenerable.
+# PNGs are committed AND regenerable. `make all` compiles the committed iconset
+# into the bundle's AppIcon.icns with iconutil; the .icns is never committed
+# (iconutil's container bytes are not stable across macOS versions).
 appicon:
 	swift scripts/render_appicon.swift Resources/AppIcon.iconset
 
