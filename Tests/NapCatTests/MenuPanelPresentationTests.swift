@@ -151,15 +151,34 @@ struct MenuPanelPresentationTests {
 
     // MARK: - Severity classification of every line that can be a problem
 
-    @Test func hookStatusSeverity() {
-        #expect(MenuStateModel.claudeHookStatus(installed: false, everSeen: false, lastSeenSeconds: nil).severity == .warning)
-        #expect(MenuStateModel.claudeHookStatus(installed: true, everSeen: false, lastSeenSeconds: nil).severity == .warning)
-        #expect(MenuStateModel.claudeHookStatus(installed: true, everSeen: true, lastSeenSeconds: nil).severity == .warning)
-        let healthy = MenuStateModel.claudeHookStatus(installed: true, everSeen: true, lastSeenSeconds: 65)
-        #expect(healthy == PanelLine(text: "Busy hook: last seen 1m ago", severity: .nominal))
-        // A long gap is NOT a problem — Claude may simply not have been used.
-        #expect(MenuStateModel.claudeHookStatus(installed: true, everSeen: true, lastSeenSeconds: 9_000_000).severity
-                == .nominal)
+    /// H1 truth table (UI audit, owner ruling 2026-11-19): every liveness
+    /// class × both alert toggles. A liveness problem is a warning only while
+    /// the lid alert or session alerts need the hook; with both off it is the
+    /// same text, nominal, tucked in Details. The toggles never change the text.
+    @Test(arguments: [(false, false), (true, false), (false, true), (true, true)])
+    func hookStatusSeverity(lidAlertEnabled: Bool, sessionAlertsEnabled: Bool) {
+        let problem: PanelSeverity = lidAlertEnabled || sessionAlertsEnabled ? .warning : .nominal
+        let rows: [(installed: Bool, everSeen: Bool, lastSeen: Int?, severity: PanelSeverity)] = [
+            (false, false, nil, problem),        // not installed (a fresh install)
+            (true, false, nil, problem),         // installed, never seen
+            (true, true, nil, problem),          // seen, but no readable time
+            (true, true, 65, .nominal),          // healthy
+            (true, true, 9_000_000, .nominal),   // a long gap is NOT a problem — Claude may simply be unused
+        ]
+        for row in rows {
+            let line = MenuStateModel.claudeHookStatus(
+                installed: row.installed, everSeen: row.everSeen, lastSeenSeconds: row.lastSeen,
+                lidAlertEnabled: lidAlertEnabled, sessionAlertsEnabled: sessionAlertsEnabled)
+            #expect(line.severity == row.severity, "\(row) lid=\(lidAlertEnabled) session=\(sessionAlertsEnabled)")
+            #expect(line.text == MenuStateModel.claudeHookLine(
+                installed: row.installed, everSeen: row.everSeen, lastSeenSeconds: row.lastSeen))
+            #expect(MenuStateModel.placement(ofDetailsLine: line.severity)
+                    == (row.severity == .nominal ? .details : .topLevel))
+        }
+        #expect(MenuStateModel.claudeHookStatus(installed: true, everSeen: true, lastSeenSeconds: 65,
+                                                lidAlertEnabled: lidAlertEnabled,
+                                                sessionAlertsEnabled: sessionAlertsEnabled)
+                == PanelLine(text: "Busy hook: last seen 1m ago", severity: .nominal))
     }
 
     // MARK: - S7: is the installed hook copy current?
@@ -213,8 +232,11 @@ struct MenuPanelPresentationTests {
     @Test func aMissingHookIsReportedOnlyByTheHookLine() {
         #expect(MenuStateModel.claudeHookVersionStatus(installedVersion: nil, expectedVersion: 4,
                                                        markerDirExists: false) == nil)
-        #expect(MenuStateModel.claudeHookStatus(installed: false, everSeen: false, lastSeenSeconds: nil).text
-                .contains("not installed"))
+        for alertsOn in [false, true] {
+            #expect(MenuStateModel.claudeHookStatus(installed: false, everSeen: false, lastSeenSeconds: nil,
+                                                    lidAlertEnabled: alertsOn, sessionAlertsEnabled: false).text
+                    .contains("not installed"))
+        }
         #expect(Self.hookVersionRows.count == 10)
     }
 
@@ -697,15 +719,30 @@ struct MenuPanelPresentationTests {
         problemPhrases.contains { text.contains($0) }
     }
 
+    /// H1 (owner ruling 2026-11-19) — the ONE sanctioned exception to "a
+    /// problem string is never nominal": the hook-liveness texts while
+    /// neither alert needs the hook. Nothing is broken then, so the line is a
+    /// tucked fact; the same text warns at top level as soon as either alert
+    /// is on (`hookStatusSeverity`). The lint counts these lines exactly, so
+    /// the exception cannot quietly widen.
+    static let quietHookTexts: Set<String> = [
+        MenuStateModel.claudeHookLine(installed: false, everSeen: false, lastSeenSeconds: nil),
+        MenuStateModel.claudeHookLine(installed: true, everSeen: false, lastSeenSeconds: nil),
+    ]
+
     /// Every line whose HOME is the Details disclosure, across every input that
     /// can produce it. Zero non-nominal lines may stay tucked.
     static func everyDetailsHomeLine() -> [PanelLine] {
         var lines: [PanelLine] = []
+        // H1: every liveness input × both alert toggles (8 × 4).
         for installed in [false, true] {
             for everSeen in [false, true] {
                 for lastSeen: Int? in [nil, 65] {
-                    lines.append(MenuStateModel.claudeHookStatus(
-                        installed: installed, everSeen: everSeen, lastSeenSeconds: lastSeen))
+                    for (lid, session) in [(false, false), (true, false), (false, true), (true, true)] {
+                        lines.append(MenuStateModel.claudeHookStatus(
+                            installed: installed, everSeen: everSeen, lastSeenSeconds: lastSeen,
+                            lidAlertEnabled: lid, sessionAlertsEnabled: session))
+                    }
                 }
             }
         }
@@ -755,12 +792,20 @@ struct MenuPanelPresentationTests {
 
     @Test func noNonNominalLineStaysBehindTheDisclosure() {
         let lines = Self.everyDetailsHomeLine()
-        // 8 hook + 5 topic + 6 server + 10 last-send + 30 last-session-alert
-        // + 2 login captions + 1 holding-awake + 2 lock-screen + 9 hook-version
-        // (S7: 10 rows, one of which — no stamp, no dir — is no line).
-        #expect(lines.count == 73, "vacuity guard — update when the input set changes")
+        // 32 hook (H1: 8 liveness inputs × 4 alert-toggle states) + 5 topic
+        // + 6 server + 10 last-send + 30 last-session-alert + 2 login captions
+        // + 1 holding-awake + 2 lock-screen + 9 hook-version (S7: 10 rows, one
+        // of which — no stamp, no dir — is no line).
+        #expect(lines.count == 97, "vacuity guard — update when the input set changes")
         var surfaced = 0
+        var quietHook = 0
         for line in lines {
+            if line.severity == .nominal, Self.quietHookTexts.contains(line.text) {
+                // H1: nothing needs the hook, so it is a tucked fact.
+                quietHook += 1
+                #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .details)
+                continue
+            }
             let problem = Self.readsLikeAProblem(line.text)
             #expect(problem == (line.severity != .nominal),
                     "severity \(line.severity) disagrees with the text: \(line.text)")
@@ -773,6 +818,9 @@ struct MenuPanelPresentationTests {
             }
         }
         #expect(surfaced > 10, "vacuity guard — the input set must include problems")
+        // Exactly the 7 problem liveness inputs with BOTH toggles off — one
+        // more would mean an alert that needs the hook no longer warns.
+        #expect(quietHook == 7, "the H1 exception must stay exactly the alerts-off hook lines")
     }
 
     /// Tier-2 lines are always top level, but they must still be classified:
@@ -914,6 +962,111 @@ struct MenuPanelPresentationTests {
         try body(lid, finish)
     }
 
+    /// H1 acceptance harness: a FRESH INSTALL (no busy hook, no marker dir)
+    /// with the lid guard and a real finish-alert controller wired as in the
+    /// app. Each switched-on alert gets a set, primed destination, so its own
+    /// row is as healthy as it can be without the hook: the lid row reads
+    /// armed; the session row reads `.hookNotInstalled` (nothing to watch).
+    /// Fakes only: no network, no watcher, no real marker dir.
+    @MainActor
+    private func withFreshInstall(
+        lidAlert: Bool,
+        sessionAlerts: Bool,
+        _ body: (MenuStateModel) throws -> Void
+    ) throws {
+        try withDetection(hookInstalled: false) { detection in
+            detection.sample()
+            let suite = "com.muratalkan.napcat.tests.menupanel.freshinstall.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let sender = RecordingMessageSender()
+            let lid = LidGuardHarness(defaults: defaults, sender: sender)
+            if lidAlert || sessionAlerts {
+                defaults.set("napcat-fresh-7q2m9x", forKey: DefaultsKey.lidGuardNtfyTopic)
+                defaults.set(lid.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
+            }
+            defaults.set(lidAlert, forKey: DefaultsKey.lidGuardEnabled)
+            defaults.set(sessionAlerts, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            lid.controller.refreshArming()
+            let store = FakeMarkerStore()
+            store.dirExists = false
+            let factory = WatcherFactory()
+            let finish = FinishAlertController(
+                store: store,
+                markerDirURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("napcat-freshinstall-absent-\(UUID().uuidString)"),
+                config: lid.controller, sender: sender,
+                makeWatcher: { factory.make($0) }, scheduler: ManualScheduler(), now: { 1_800_000_000 })
+            try withModel(detection: detection, lidGuard: lid.controller, finishAlert: finish) { model, _, _ in
+                try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
+                try body(model)
+            }
+        }
+    }
+
+    /// Every line the hook and alert wiring can put on the panel: the footer
+    /// label, the top-level captions and every Details-home line. (Stay
+    /// Awake's caption reads pmset state this hermetic harness never samples;
+    /// it has its own tests and does not depend on the hook.)
+    @MainActor
+    private static func hookAndAlertLines(_ model: MenuStateModel, now: Double) -> [PanelLine] {
+        let always = [model.detailsLabel, model.hookStatus, model.lidStatus, model.lidTopicStatus,
+                      model.lidServerStatus, model.lidLastSend(now: now), model.finishAlertStatus,
+                      model.finishAlertLastSend(now: now), model.lockScreenStatus]
+        let optional = [model.hookVersionStatus, model.claudeAwakeLine, model.launchAtLoginCaption,
+                        model.chargeLimitCaption]
+        return always + optional.compactMap { $0 }
+    }
+
+    static let hookNotInstalledText =
+        "Busy hook: not installed — run install-claude-busy-hook.sh from the NapCat repository"
+
+    // MARK: H1 acceptance — a fresh install opens without a hook warning
+
+    /// No hook, both alerts off (someone who only wants Stay Awake or the
+    /// charge limit): the hook line keeps its text but is NOMINAL and tucked
+    /// in Details, so the panel shows no non-nominal line and no badge.
+    @Test @MainActor func aFreshInstallWithBothAlertsOffShowsNoHookWarning() throws {
+        try withFreshInstall(lidAlert: false, sessionAlerts: false) { model in
+            #expect(!model.claudeHookInstalled, "vacuity: no hook")
+            #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .nominal))
+            #expect(MenuStateModel.placement(ofDetailsLine: model.hookStatus.severity) == .details)
+            let lines = Self.hookAndAlertLines(model, now: 1_800_000_000)
+            #expect(lines.count >= 9, "vacuity guard")
+            let loud = lines.filter { $0.severity != .nominal }
+            #expect(loud.isEmpty, "a fresh install must open quiet: \(loud)")
+            #expect(model.detailsBadge == .nominal)
+        }
+    }
+
+    /// No hook, lid alert on: the lid alert cannot fire without a busy
+    /// marker, so the hook line warns at top level and raises the badge. The
+    /// lid row is armed and nominal, and session alerts are off, so the
+    /// warning can only be the hook's.
+    @Test @MainActor func aFreshInstallWithTheLidAlertOnSurfacesTheHookWarning() throws {
+        try withFreshInstall(lidAlert: true, sessionAlerts: false) { model in
+            #expect(model.lidStatus.severity == .nominal, "vacuity: the lid row is armed")
+            #expect(model.finishAlertStatus == PanelLine(text: "Session alerts: off", severity: .nominal))
+            #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .warning))
+            #expect(MenuStateModel.placement(ofDetailsLine: model.hookStatus.severity) == .topLevel)
+            #expect(model.detailsBadge == .warning)
+        }
+    }
+
+    /// No hook, session alerts on: the session row says to install the hook
+    /// "(see below)", and the hook warning it points at is surfaced.
+    @Test @MainActor func aFreshInstallWithSessionAlertsOnSurfacesTheHookWarning() throws {
+        try withFreshInstall(lidAlert: false, sessionAlerts: true) { model in
+            #expect(model.lidStatus == PanelLine(text: "Lid alert: off", severity: .nominal))
+            #expect(model.finishAlertDisplayState == .hookNotInstalled)
+            #expect(model.finishAlertStatus == PanelLine(
+                text: "Session alerts: on — install the Claude busy hook first (see below)", severity: .warning))
+            #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .warning))
+            #expect(MenuStateModel.placement(ofDetailsLine: model.hookStatus.severity) == .topLevel)
+            #expect(model.detailsBadge == .warning)
+        }
+    }
+
     /// The disclosure is in-memory UI state: it survives refreshes (menu
     /// reopen) but writes NOTHING to defaults.
     @Test @MainActor func detailsDisclosureIsInMemoryOnly() {
@@ -993,14 +1146,13 @@ struct MenuPanelPresentationTests {
                 #expect(model.detailsBadge == .nominal, "a paused Claude must not raise the badge")
             }
         }
-        // A hook problem raises it (and still surfaces through its twin).
-        try withDetection(hookInstalled: false) { detection in
-            detection.sample()
-            withModel(detection: detection) { model, _, _ in
-                #expect(model.detailsLabel.severity == .nominal)
-                #expect(model.hookStatus.severity == .warning)
-                #expect(model.detailsBadge == .warning)
-            }
+        // A hook problem an alert needs raises it (and still surfaces through
+        // its twin). With both alerts off it is a quiet, tucked fact (H1 —
+        // `aFreshInstallWithBothAlertsOffShowsNoHookWarning`).
+        try withFreshInstall(lidAlert: true, sessionAlerts: false) { model in
+            #expect(model.detailsLabel.severity == .nominal)
+            #expect(model.hookStatus.severity == .warning)
+            #expect(model.detailsBadge == .warning)
         }
         // An unavailable Lock Screen raises it.
         withModel(lockAvailable: false) { model, _, _ in
@@ -1284,7 +1436,8 @@ struct MenuPanelPresentationTests {
 // the real model or panel.
 
 final class StubMarkerStore: BusyMarkerStore {
-    /// false ⇒ no marker dir: the hook reads "not installed" (a warning).
+    /// false ⇒ no marker dir: the hook reads "not installed" (a warning
+    /// while an alert needs the hook, else a tucked fact — H1).
     let hookInstalled: Bool
     init(hookInstalled: Bool = true) { self.hookInstalled = hookInstalled }
     func markers() -> [BusyMarker] { [] }

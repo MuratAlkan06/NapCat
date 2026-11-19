@@ -300,11 +300,15 @@ final class MenuStateModel: ObservableObject {
     /// Tucked under Details › Claude detection; present only while true.
     var claudeAwakeLine: PanelLine? { Self.claudeHoldingAwakeLine(holdingAwake: claudeHoldingAwake) }
 
+    /// A warning only while the lid alert or session alerts are switched on
+    /// (H1); otherwise it tucks into Details › Claude detection.
     var hookStatus: PanelLine {
         Self.claudeHookStatus(
             installed: claudeHookInstalled,
             everSeen: claudeHookEverSeen,
-            lastSeenSeconds: claudeHookLastSeenSeconds
+            lastSeenSeconds: claudeHookLastSeenSeconds,
+            lidAlertEnabled: lidGuardEnabled,
+            sessionAlertsEnabled: finishAlertEnabled
         )
     }
 
@@ -365,7 +369,8 @@ final class MenuStateModel: ObservableObject {
     /// not even through its echoes: the lid line counts with the severity it
     /// would have WITHOUT the pause, and the session line's `.paused` (only
     /// ever armed-but-paused) counts as nominal. Every non-pause problem still
-    /// counts (a failed send, a missing topic, a missing hook, …).
+    /// counts (a failed send, a missing topic, a missing hook an alert
+    /// needs, …).
     var detailsBadge: PanelSeverity {
         var severities = [launchAtLoginCaption?.severity ?? .nominal, lockScreenStatus.severity]
         if claudeDetectionVisible {
@@ -517,14 +522,28 @@ final class MenuStateModel: ObservableObject {
     nonisolated static let pauseDetectionCaption =
         "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
 
-    /// Hook liveness with its severity: not installed / never seen are
-    /// problems (they escape Details); "last seen …" is nominal. A long gap is
-    /// NOT flagged — it may simply mean Claude has not been used.
-    nonisolated static func claudeHookStatus(installed: Bool, everSeen: Bool, lastSeenSeconds: Int?) -> PanelLine {
+    /// Hook liveness with its severity: "last seen …" is nominal. A long gap
+    /// is NOT flagged — it may simply mean Claude has not been used.
+    ///
+    /// Not installed / never seen are problems (they escape Details) ONLY
+    /// while an alert that needs the hook is switched on — the lid alert or
+    /// session alerts (UI audit H1, owner ruling 2026-11-19). With both off,
+    /// nothing depends on the hook, so a fresh install that only wants Stay
+    /// Awake must not open on a warning: the SAME text is nominal and tucks
+    /// into Details › Claude detection. Neither toggle has a default, so a
+    /// caller cannot silently get the quiet line.
+    nonisolated static func claudeHookStatus(
+        installed: Bool,
+        everSeen: Bool,
+        lastSeenSeconds: Int?,
+        lidAlertEnabled: Bool,
+        sessionAlertsEnabled: Bool
+    ) -> PanelLine {
         let healthy = installed && everSeen && lastSeenSeconds != nil
+        let anAlertNeedsTheHook = lidAlertEnabled || sessionAlertsEnabled
         return PanelLine(
             text: claudeHookLine(installed: installed, everSeen: everSeen, lastSeenSeconds: lastSeenSeconds),
-            severity: healthy ? .nominal : .warning
+            severity: healthy || !anAlertNeedsTheHook ? .nominal : .warning
         )
     }
 
