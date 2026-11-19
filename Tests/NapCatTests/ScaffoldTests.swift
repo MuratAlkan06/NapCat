@@ -49,6 +49,39 @@ struct ScaffoldTests {
         ))
     }
 
+    /// UI audit M1b (2026-11-19): the status item's button — only the cat
+    /// image, no text — is named "NapCat" for VoiceOver and shows it as a
+    /// tooltip. Headless on a plain NSButton (a test must never add an item
+    /// to the real menu bar); the lint half locks that the controller names
+    /// its real button at creation, before the frame load can bail out to
+    /// the placeholder icon.
+    @Test func statusItemButtonIsNamedForVoiceOverAndHover() throws {
+        let button = NSButton(image: StatusItemController.placeholderIcon(), target: nil, action: nil)
+        #expect(button.toolTip == nil && button.accessibilityLabel() != "NapCat", "vacuity: an unnamed image button")
+        StatusItemController.nameButton(button)
+        #expect(button.accessibilityLabel() == "NapCat")
+        #expect(button.toolTip == "NapCat")
+        // Every animation frame swaps the image; the name stays.
+        button.image = StatusItemController.placeholderIcon()
+        #expect(button.accessibilityLabel() == "NapCat")
+        #expect(button.toolTip == "NapCat")
+
+        let source = LidGuardStructureTests.codeOnly(try String(
+            contentsOf: LidGuardStructureTests.sourcesDir().appendingPathComponent("StatusItemController.swift"),
+            encoding: .utf8
+        ))
+        let start = try #require(source.range(of: "init(menuContent: MenuContentView) {"), "init not found")
+        let end = try #require(source[start.upperBound...].range(of: "\n    }\n"))
+        let initBody = source[start.upperBound..<end.lowerBound]
+        let created = try #require(initBody.range(of: "statusItem = NSStatusBar.system.statusItem("))
+        let named = try #require(initBody.range(of: "if let button = statusItem.button { Self.nameButton(button) }"),
+                                 "the controller must name its status item's button")
+        let frames = try #require(initBody.range(of: "guard"), "the frame-load guard not found")
+        #expect(created.upperBound < named.lowerBound && named.upperBound < frames.lowerBound,
+                "named right after creation, before the frame load can fall back to the placeholder")
+        #expect(Self.occurrences(of: "Self.nameButton(", in: source) == 1)
+    }
+
     /// P3b: the menu is a single view-based item hosting the SwiftUI panel.
     @Test func menuHostsExactlyOneSwiftUIPanelItem() throws {
         let menuContent = makeMenuContent()

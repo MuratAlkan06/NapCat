@@ -27,6 +27,7 @@ final class StatusItemController {
         self.menuContent = menuContent
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = Self.placeholderIcon()
+        if let button = statusItem.button { Self.nameButton(button) }
         statusItem.menu = menuContent.menu
 
         guard
@@ -62,6 +63,20 @@ final class StatusItemController {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// The status item's name for VoiceOver and its hover tooltip.
+    static let statusItemName = "NapCat"
+
+    /// UI audit M1b (2026-11-19): the button shows only the cat image, so
+    /// VoiceOver had no name to read and hovering showed nothing. Applied once
+    /// at creation — before the frames load, so the placeholder fallback is
+    /// named too — and kept across every animation frame's image swap.
+    /// Internal so tests can apply it to a plain NSButton (a test must never
+    /// add an item to the real menu bar).
+    static func nameButton(_ button: NSButton) {
+        button.setAccessibilityLabel(statusItemName)
+        button.toolTip = statusItemName
     }
 
     /// Loads every animation frame from a frames directory as an

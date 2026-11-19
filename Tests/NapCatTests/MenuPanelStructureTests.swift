@@ -286,6 +286,57 @@ struct MenuPanelStructureTests {
                 "the button sits below the panel edge, in the header's top half")
     }
 
+    /// UI audit M1a (2026-11-19): VoiceOver used to meet the header as the
+    /// ring ("Battery", "85%") and then the headline ("Battery 85%") and the
+    /// charging line, so the percent was read twice. The header ROW is now
+    /// ONE element: children ignored, labelled "Battery", valued by
+    /// `BatteryHeader.spokenValue` — the percent once, then the charging
+    /// line, from the same mappings the text column shows. The modifiers sit
+    /// on the row, before the 76pt frame and its overlay, so the Lock Screen
+    /// button stays outside the element: its own button. The row outranks it
+    /// in the reading order (sort priority 1 — measured on the accessibility
+    /// tree: without it the button, which shares the row's top edge, is read
+    /// first), so VoiceOver meets "Battery" and then "Lock Screen". Neither
+    /// the ring nor the desktop symbol carries accessibility of its own.
+    @Test func theBatteryHeaderIsOneVoiceOverElement() throws {
+        let (body, ring, interior) = try Self.batteryHeaderParts()
+        let flat = body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        #expect(flat.contains("Spacer(minLength: 0) } .accessibilityElement(children: .ignore)"
+                              + " .accessibilityLabel(\"Battery\") .accessibilityValue(Self.spokenValue("),
+                "the header row itself is the element — not the ring, not the text column")
+        #expect(flat.contains("adapterConnected: model.adapterConnected )) .accessibilitySortPriority(1)"
+                              + " .frame(minHeight: 76) .overlay(alignment: .topTrailing) {"),
+                "the element is closed before the frame, so the overlaid Lock Screen button stays its own, read after it")
+        for token in [".accessibilityElement(", ".accessibilityLabel(", ".accessibilityValue(", ".accessibilitySortPriority("] {
+            #expect(Self.occurrences(of: token, in: body) == 1, "'\(token)' — the header has ONE element")
+        }
+        let button = try #require(Self.structChunk("LockScreenButton", in: try Self.code("MenuPanelView.swift")))
+        #expect(!button.contains(".accessibilitySortPriority("), "the button keeps the default priority, below the row")
+        #expect(!ring.contains(".accessibility") && !interior.contains(".accessibility"),
+                "the ring and the desktop symbol are part of the header element, never elements of their own")
+
+        // The value: the percent exactly once, then the charging line.
+        let cases: [(hasBattery: Bool, percent: Int?, charging: Bool, adapter: Bool, spoken: String)] = [
+            (true, 85, false, false, "85%, On battery"),
+            (true, 62, true, true, "62%, Charging"),
+            (true, 100, false, true, "100%, Fully charged"),
+            (true, 80, false, true, "80%, On AC power — not charging"),
+            (true, nil, false, false, "—, On battery"),
+            (false, nil, false, true, "Desktop Mac — no battery"),
+        ]
+        for c in cases {
+            let spoken = BatteryHeader.spokenValue(hasBattery: c.hasBattery, percent: c.percent,
+                                                   isCharging: c.charging, adapterConnected: c.adapter)
+            #expect(spoken == c.spoken)
+            #expect(spoken.hasSuffix(MenuStateModel.chargingStatusLine(
+                hasBattery: c.hasBattery, percent: c.percent, isCharging: c.charging, adapterConnected: c.adapter)),
+                "the charging line is the visible one, not a second vocabulary")
+            if let percent = c.percent {
+                #expect(Self.occurrences(of: "\(percent)%", in: spoken) == 1, "the percent is spoken once")
+            }
+        }
+    }
+
     /// Inside Details, every line that can be a problem goes through
     /// `TuckedLine` (absent while non-nominal) — never rendered raw — and its
     /// top-level twin goes through `SurfacedLine`. Same accessor, opposite

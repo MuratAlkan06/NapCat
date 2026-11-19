@@ -405,10 +405,13 @@ struct PanelFooterRow: View {
 /// (`PanelMetrics.headerLockInset`). An overlay takes no room in the HStack,
 /// so ring, headline and charging line keep their frozen layout; the longest
 /// charging line ("On AC power — not charging") still clears the button.
+///
+/// VoiceOver (UI audit M1a, 2026-11-19): the ring and the text column are
+/// ONE element — "Battery", valued "85%, Charging" — so the percent is spoken
+/// once, not once by the ring and again by the headline. The Lock Screen
+/// overlay sits outside that element and stays its own button, after it.
 struct BatteryHeader: View {
     @ObservedObject var model: MenuStateModel
-
-    private var percent: String { MenuStateModel.percentText(model.batteryPercent) }
 
     var body: some View {
         HStack(spacing: PanelMetrics.loose) {
@@ -423,6 +426,17 @@ struct BatteryHeader: View {
             }
             Spacer(minLength: 0)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery")
+        .accessibilityValue(Self.spokenValue(
+            hasBattery: model.hasBattery,
+            percent: model.batteryPercent,
+            isCharging: model.isCharging,
+            adapterConnected: model.adapterConnected
+        ))
+        // Measured: as one element the row would otherwise be read AFTER the
+        // overlaid Lock Screen button that shares its top edge.
+        .accessibilitySortPriority(1)
         .frame(minHeight: 76)
         .overlay(alignment: .topTrailing) {
             LockScreenButton(model: model)
@@ -440,8 +454,24 @@ struct BatteryHeader: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// The header element's VoiceOver value, built from the same two strings
+    /// the text column shows: "<percent>, <charging line>" ("85%, Charging"),
+    /// or the charging line alone on a desktop Mac ("Desktop Mac — no
+    /// battery"), which has no percent to state.
+    nonisolated static func spokenValue(hasBattery: Bool, percent: Int?, isCharging: Bool,
+                                        adapterConnected: Bool) -> String {
+        let state = MenuStateModel.chargingStatusLine(
+            hasBattery: hasBattery,
+            percent: percent,
+            isCharging: isCharging,
+            adapterConnected: adapterConnected
+        )
+        return hasBattery ? "\(MenuStateModel.percentText(percent)), \(state)" : state
+    }
+
     /// The full-size ring (no desktop: the desktop symbol at the same
-    /// footprint). What sits inside the ring is `ringInterior`.
+    /// footprint). What sits inside the ring is `ringInterior`. Neither
+    /// carries accessibility of its own: the header row is the one element.
     @ViewBuilder private var gauge: some View {
         if model.hasBattery {
             Gauge(value: MenuStateModel.gaugeFraction(model.batteryPercent)) {
@@ -450,14 +480,11 @@ struct BatteryHeader: View {
                 ringInterior
             }
             .gaugeStyle(.accessoryCircularCapacity)
-            .accessibilityLabel("Battery")
-            .accessibilityValue(percent)
         } else {
             Image(systemName: PanelSymbol.desktop)
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
                 .frame(width: 60, height: 60)
-                .accessibilityHidden(true)
         }
     }
 
