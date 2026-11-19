@@ -1136,66 +1136,8 @@ struct ClaudeBusyHookScriptTests {
         ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix(".payload.") }
     }
 
-    /// Runs `scriptURL` with stdin left OPEN (so it blocks reading stdin with
-    /// the payload temp file in place), sends SIGTERM once the payload exists,
-    /// then closes stdin. Returns the exit status, whether it was a signal
-    /// death, and whether the payload was seen at all.
-    private func runTerminatedInPayloadWindow(_ scriptURL: URL, home: URL)
-        -> (status: Int32, signalled: Bool, sawPayload: Bool) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [scriptURL.path]
-        process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        let stdin = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return (-1, false, false) }
-        stdin.fileHandleForWriting.write(Data(#"{"hook_event_name":"Stop","#.utf8))
-        let deadline = Date().addingTimeInterval(5)
-        var sawPayload = false
-        while Date() < deadline {
-            if !payloadTempFiles(in: markerDir(home)).isEmpty { sawPayload = true; break }
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        process.terminate()
-        Thread.sleep(forTimeInterval: 0.2)   // let the signal land while stdin is still open
-        try? stdin.fileHandleForWriting.close()
-        process.waitUntilExit()
-        return (process.terminationStatus, process.terminationReason == .uncaughtSignal, sawPayload)
-    }
-
-    /// A hook TERMed (Claude's timeout) while the payload temp file exists
-    /// removes it and still exits 0 — it never resumes the run.
-    @Test(.timeLimit(.minutes(1)))
-    func aTermInThePayloadWindowRemovesThePayloadAndExitsZero() {
-        withHome { home in
-            let run = runTerminatedInPayloadWindow(Self.hookScriptURL, home: home)
-            #expect(run.sawPayload, "setup: the payload temp file must have existed")
-            #expect(!run.signalled && run.status == 0, "TERM must end the hook with exit 0, got \(run)")
-            #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the trap removed the payload")
-            #expect(hookLog(home).isEmpty, "the run ended in the trap — it never resumed")
-        }
-    }
-
-    /// Canary: without the traps a TERM kills bash outright and strands the
-    /// payload (only the 60 s sweep would reclaim it) — the test above has teeth.
-    @Test(.timeLimit(.minutes(1)))
-    func withoutTheTrapsATermStrandsThePayload() throws {
-        let original = try Self.read(Self.hookScriptURL)
-        let mutant = original
-            .replacingOccurrences(of: "  trap 'rm -f \"$payload\" 2>/dev/null' EXIT\n", with: "")
-            .replacingOccurrences(of: "  trap 'rm -f \"$payload\" 2>/dev/null; exit 0' TERM INT\n", with: "")
-        #expect(mutant != original, "canary setup: the traps must exist")
-        withHome { home in
-            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
-            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
-            let run = runTerminatedInPayloadWindow(mutantURL, home: home)
-            #expect(run.sawPayload)
-            #expect(run.signalled, "without a trap the TERM kills bash")
-            #expect(!payloadTempFiles(in: markerDir(home)).isEmpty, "and the payload is stranded")
-        }
-    }
+    // The SIGTERM-in-the-payload-window runs live in
+    // `ClaudeBusyHookSignalWindowTests` (end of this file), off the main actor.
 
     // MARK: - S7: the version stamp (shell ↔ Swift parity) + the installer
 
@@ -2458,6 +2400,134 @@ struct ClaudeBusyHookScriptTests {
                     #expect(!code.contains(">"), "installer must not redirect to settings.json: \(code)")
                 }
             }
+        }
+    }
+}
+
+/// The SIGTERM-in-the-payload-window runs, kept OFF the main actor (#32): a
+/// `.timeLimit` on a `@MainActor` test also counts the time the test waits for
+/// the main actor, which on a loaded full run approaches the whole run's wall
+/// time. Nothing here touches a main-actor type, so the limit measures the
+/// hook run itself. The helpers are copies of `ClaudeBusyHookScriptTests`'
+/// (whose statics are main-actor isolated there).
+struct ClaudeBusyHookSignalWindowTests {
+    private static var hookScriptURL: URL {
+        URL(fileURLWithPath: #filePath)  // Tests/NapCatTests/<this file>
+            .deletingLastPathComponent() // Tests/NapCatTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("scripts/claude-busy-hook.sh")
+    }
+
+    private static func read(_ url: URL) throws -> String { try String(contentsOf: url, encoding: .utf8) }
+
+    private func markerDir(_ home: URL) -> URL {
+        home.appendingPathComponent(ClaudeBusyConstants.markerDirRelativePath)
+    }
+
+    private func withHome(_ body: (URL) -> Void) {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("napcat-b1-hook-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        body(home)
+    }
+
+    private func hookLog(_ home: URL) -> String {
+        let url = markerDir(home).appendingPathComponent(ClaudeBusyConstants.logFileName)
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    private func payloadTempFiles(in dir: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix(".payload.") }
+    }
+
+    /// Whether process `pid` has a direct child named `head` right now.
+    private func hasHeadChild(_ pid: Int32) -> Bool {
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-P", String(pid), "head"]
+        pgrep.standardOutput = FileHandle.nullDevice
+        pgrep.standardError = FileHandle.nullDevice
+        guard (try? pgrep.run()) != nil else { return false }
+        pgrep.waitUntilExit()
+        return pgrep.terminationReason == .exit && pgrep.terminationStatus == 0
+    }
+
+    /// Runs `scriptURL` with stdin left OPEN (so it blocks reading stdin with
+    /// the payload temp file in place), sends SIGTERM once the payload exists
+    /// AND the stdin `head` has started, then closes stdin. Returns the exit
+    /// status, whether it was a signal death, and whether the payload was seen
+    /// at all.
+    ///
+    /// Waiting for `head` closes the #29 race: the payload exists from its
+    /// `mktemp`, but the traps are set a few lines later, and a TERM landing in
+    /// between kills bash with the payload stranded. The stdin `head` starts
+    /// only after the traps, so its presence proves they are installed; the
+    /// no-traps mutant reaches `head` too, so the canary still runs.
+    private func runTerminatedInPayloadWindow(_ scriptURL: URL, home: URL)
+        -> (status: Int32, signalled: Bool, sawPayload: Bool) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptURL.path]
+        process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let stdin = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (-1, false, false) }
+        stdin.fileHandleForWriting.write(Data(#"{"hook_event_name":"Stop","#.utf8))
+        let deadline = Date().addingTimeInterval(5)
+        var sawPayload = false
+        while Date() < deadline {
+            if !payloadTempFiles(in: markerDir(home)).isEmpty { sawPayload = true; break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        let headDeadline = Date().addingTimeInterval(5)
+        var sawHead = false
+        while Date() < headDeadline {
+            if hasHeadChild(process.processIdentifier) { sawHead = true; break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if !sawHead {
+            Issue.record("setup: the hook's stdin `head` never started within 5 s — a TERM now could land before the payload traps are set (#29)")
+        }
+        process.terminate()
+        Thread.sleep(forTimeInterval: 0.2)   // let the signal land while stdin is still open
+        try? stdin.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return (process.terminationStatus, process.terminationReason == .uncaughtSignal, sawPayload)
+    }
+
+    /// A hook TERMed (Claude's timeout) while the payload temp file exists
+    /// removes it and still exits 0 — it never resumes the run.
+    @Test(.timeLimit(.minutes(1)))
+    func aTermInThePayloadWindowRemovesThePayloadAndExitsZero() {
+        withHome { home in
+            let run = runTerminatedInPayloadWindow(Self.hookScriptURL, home: home)
+            #expect(run.sawPayload, "setup: the payload temp file must have existed")
+            #expect(!run.signalled && run.status == 0, "TERM must end the hook with exit 0, got \(run)")
+            #expect(payloadTempFiles(in: markerDir(home)).isEmpty, "the trap removed the payload")
+            #expect(hookLog(home).isEmpty, "the run ended in the trap — it never resumed")
+        }
+    }
+
+    /// Canary: without the traps a TERM kills bash outright and strands the
+    /// payload (only the 60 s sweep would reclaim it) — the test above has teeth.
+    @Test(.timeLimit(.minutes(1)))
+    func withoutTheTrapsATermStrandsThePayload() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = original
+            .replacingOccurrences(of: "  trap 'rm -f \"$payload\" 2>/dev/null' EXIT\n", with: "")
+            .replacingOccurrences(of: "  trap 'rm -f \"$payload\" 2>/dev/null; exit 0' TERM INT\n", with: "")
+        #expect(mutant != original, "canary setup: the traps must exist")
+        withHome { home in
+            let mutantURL = home.appendingPathComponent("mutant-busy-hook.sh")
+            try? mutant.write(to: mutantURL, atomically: true, encoding: .utf8)
+            let run = runTerminatedInPayloadWindow(mutantURL, home: home)
+            #expect(run.sawPayload)
+            #expect(run.signalled, "without a trap the TERM kills bash")
+            #expect(!payloadTempFiles(in: markerDir(home)).isEmpty, "and the payload is stranded")
         }
     }
 }
