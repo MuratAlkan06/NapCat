@@ -47,6 +47,39 @@ xcrun simctl install booted /tmp/NapCatPhone-DerivedData/Build/Products/Debug-ip
 xcrun simctl launch booted com.muratalkan.napcat.phone
 ```
 
+## Style variants and fixture states (part 1)
+
+Launch arguments choose what the screen shows. They are read from the
+`UserDefaults` argument domain, and unknown values fall back to the default.
+
+| Argument | Values | Default |
+|---|---|---|
+| `-NapCatTheme` | `nightGroom`, `systemPaper`, `pixelNap` | `systemPaper` |
+| `-NapCatFixture` | `populated`, `empty` | `populated` |
+| `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff` | `connected` |
+
+```sh
+xcrun simctl launch booted com.muratalkan.napcat.phone \
+  -NapCatTheme pixelNap -NapCatFixture empty -NapCatConnection notificationsOff
+xcrun simctl ui booted appearance dark      # or light; relaunch to compare
+xcrun simctl io booted screenshot shot.png  # wait ~3 s after launch first
+```
+
+The 3 s wait lets the row entrance (under 0.6 s) and the Pixel Nap cat's
+single groom-to-sit flip (about 2 s) settle.
+
+Every style decision lives in `NapCatPhone/Theme/`. `Theme.swift` defines
+the token set: colors, type, surfaces and spacing, the icon variant, the
+empty-state art treatment and the entrance curve. Each variant is one
+`Theme` value in its own file. The views read only the `theme` environment
+value. To apply the chosen variant, set `ThemeID.fallback` to it, then
+delete the other two variant files, their `ThemeID` cases and the
+`-NapCatTheme` argument.
+
+The fixtures are synthetic. Each alert carries exactly the wire record's
+three fields (body, lane, firedAt), and each body is written word for word as
+the Mac generates it. No topic, server, host or user name appears anywhere.
+
 ## How the project is put together
 
 - `project.yml` is the [XcodeGen](https://github.com/yonaskolb/XcodeGen)
