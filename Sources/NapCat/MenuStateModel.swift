@@ -288,6 +288,9 @@ final class MenuStateModel: ObservableObject {
     /// Slice W: the footer gear opens the Settings window — a window, so it
     /// goes through MenuContentView's dismissal gateway like ⌘, does.
     var requestOpenSettings: (() -> Void)?
+    /// Slice W: Settings › Alerts' run-floor popup. MenuContentView saves it
+    /// through the ntfy editor's own save path (one clamp, only when changed).
+    var requestSessionAlertsFloorChange: ((Int) -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
@@ -425,6 +428,9 @@ final class MenuStateModel: ObservableObject {
     // MARK: Track C action (forwarded — same rule as the lid toggle)
 
     func setFinishAlertEnabled(_ enabled: Bool) { requestFinishAlertToggle?(enabled) }
+
+    /// Slice W: the run floor picked in Settings › Alerts (issue #34's key).
+    func setFinishAlertMinimumRunSeconds(_ seconds: Int) { requestSessionAlertsFloorChange?(seconds) }
 
     // MARK: F3 stage 1 action — a stored toggle; no AppKit flow, no send
 
@@ -582,7 +588,33 @@ final class MenuStateModel: ObservableObject {
         switch pane {
         case .general:
             return Self.generalResidentSeverities(loginStatus: loginItemStatus, lockAvailable: lockScreenAvailable)
+        case .alerts:
+            return alertsResidentSeverities
         }
+    }
+
+    /// Alerts: everything whose fix is the pane's Destination (the ntfy
+    /// editor, the test send) — the lid and session status lines, counted
+    /// WITHOUT the detection pause exactly as the Details badge counts them
+    /// (the footer label carries the pause), the topic and server lines —
+    /// plus the History lines and the phone transport line.
+    private var alertsResidentSeverities: [PanelSeverity] {
+        guard lidGuardVisible else { return [] }
+        let lidWithoutThePause = Self.lidAlertStatus(
+            for: lidGuardArming, lastOutcome: lidGuardLastOutcome, detectionPaused: false)
+        var severities = [lidWithoutThePause.severity, lidTopicStatus.severity, lidServerStatus.severity,
+                          Self.lidAlertLastSendSeverity(lidGuardLastOutcome, at: lidGuardLastOutcomeAt)]
+        if finishAlertVisible {
+            let sessionWithoutThePause = finishAlertDisplayState == .paused
+                ? .nominal : finishAlertStatusWithoutOffline.severity
+            severities += [sessionWithoutThePause,
+                           Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
+        }
+        if phoneTransportVisible {
+            severities.append(Self.phoneAlertSeverity(enabled: phoneTransportEnabled, available: phoneTransportAvailable,
+                                                      outcome: phoneLastOutcome, at: phoneLastOutcomeAt))
+        }
+        return severities
     }
 
     /// General: the Launch at Login caption (approval / not found) and the

@@ -36,15 +36,46 @@ struct SettingsWindowTests {
     /// real ScreenLockController (resolution only — side-effect free) keeps
     /// the Lock Screen line nominal.
     @MainActor
-    private func withModel(_ body: (MenuStateModel, UserDefaults) throws -> Void) rethrows {
+    private func withModel(
+        detection: ClaudeActivityController? = nil,
+        lidGuard: LidGuardController? = nil,
+        finishAlert: FinishAlertController? = nil,
+        phoneTransport: CompositeMessageSender? = nil,
+        _ body: (MenuStateModel, UserDefaults) throws -> Void
+    ) rethrows {
         let suite = "com.muratalkan.napcat.tests.settings.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
         let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
         let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter,
-                                   screenLock: ScreenLockController())
+                                   screenLock: ScreenLockController(), detection: detection, lidGuard: lidGuard,
+                                   finishAlert: finishAlert, phoneTransport: phoneTransport)
         try body(model, defaults)
+    }
+
+    /// A finish-alert controller over fakes only (no watcher, no network, no
+    /// marker dir), its run floor read from `defaults` like the app's.
+    @MainActor
+    static func makeFinishAlert(_ lid: LidGuardHarness) -> FinishAlertController {
+        let factory = WatcherFactory()
+        let defaults = lid.defaults
+        return FinishAlertController(
+            store: FakeMarkerStore(),
+            markerDirURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("napcat-settings-absent-\(UUID().uuidString)"),
+            config: lid.controller, sender: RecordingMessageSender(),
+            makeWatcher: { factory.make($0) }, scheduler: ManualScheduler(), now: { 1_800_000_000 },
+            minimumRunSeconds: {
+                FinishAlertPolicy.minimumRunSeconds(stored: defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds))
+            })
+    }
+
+    /// The model's whole Settings content, as text — for "never the topic".
+    @MainActor
+    static func everyPaneAsText(_ model: MenuStateModel) -> String {
+        model.settingsPanes.map { String(describing: model.settingsContent(for: $0, now: 1_000_000)) }
+            .joined(separator: "\n")
     }
 
     /// The menu owner, built like ScaffoldTests builds it (simulator power,
@@ -211,8 +242,8 @@ struct SettingsWindowTests {
     /// re-composes on every refresh (the header follows the slider).
     @Test @MainActor func theModelComposesTheGeneralPaneFromItsMirrors() {
         withModel { model, _ in
-            #expect(model.settingsPanes == [.general])
-            #expect(model.settingsContent(for: .general) == model.generalPane)
+            #expect(model.settingsPanes == [.general], "no lid guard (debugBattery wiring): General only")
+            #expect(model.settingsContent(for: .general, now: 0) == model.generalPane)
             #expect(model.generalPane == MenuStateModel.generalPane(
                 loginStatus: model.loginItemStatus, featureState: model.featureState, limit: model.limit,
                 limitEnabled: model.limitEnabled, lockAvailable: model.lockScreenAvailable))
@@ -229,13 +260,172 @@ struct SettingsWindowTests {
         }
     }
 
+    // MARK: - Composition: the Alerts pane
+
+    static let secrecyNote = "Anyone who knows your topic name can read — and post to — your alerts. "
+        + "Pick a long, unguessable name and keep it private."
+    static let presets = [30, 60, 120, 300, 600]
+    static let noLidSend = PanelLine(text: "Last message: none since NapCat started", severity: .nominal)
+    static let noSessionSend = PanelLine(text: "Last session alert: none since NapCat started", severity: .nominal)
+    static let topicSet = PanelLine(text: "Topic: set (hidden — it is the password to your feed)", severity: .nominal)
+
+    static func destination(_ server: PanelLine, _ topic: PanelLine) -> SettingsSection {
+        SettingsSection(title: "Destination", rows: [.line(server), .line(topic), .ntfyButtons])
+    }
+
+    static func floorSection(_ seconds: Int, choices: [Int] = presets) -> SettingsSection {
+        SettingsSection(title: "Session alerts", rows: [
+            .minimumRun(label: "Only alert for runs longer than:", seconds: seconds, choices: choices,
+                        caption: "Shorter runs finish silently."),
+        ])
+    }
+
+    static func history(_ lines: PanelLine...) -> SettingsSection {
+        SettingsSection(title: "History", rows: lines.map(SettingsRow.line))
+    }
+
+    static func phoneSection(_ isOn: Bool) -> SettingsSection {
+        SettingsSection(title: nil, rows: [
+            .phoneAlerts(title: "Phone alerts (beta)", isOn: isOn,
+                         hint: "Sends alerts to the NapCat iPhone app through your iCloud first; ntfy stays the fallback."),
+        ])
+    }
+
+    struct AlertsRow: CustomTestStringConvertible, Sendable {
+        let name: String
+        let server: PanelLine
+        let topic: PanelLine
+        let lidLastSend: PanelLine
+        let session: (minimumRunSeconds: Int, lastSend: PanelLine)?
+        let phone: (isOn: Bool, line: PanelLine?)?
+        let sections: [SettingsSection]
+        var testDescription: String { name }
+    }
+
+    /// Lid guard only (no finish alert, no composite) up to everything wired,
+    /// a non-preset floor, and the problem lines (every one at its own
+    /// severity — Settings renders lines in full).
+    static let alertsRows: [AlertsRow] = {
+        let server = PanelLine(text: "Server: https://ntfy.sh", severity: .nominal)
+        let unusableServer = PanelLine(
+            text: "Server is not usable — it must be an https address like https://ntfy.sh", severity: .warning)
+        let unusableTopic = PanelLine(
+            text: "Topic is not usable — letters, digits, “_” and “-” only, max 64 characters", severity: .warning)
+        let refused = PanelLine(
+            text: "Last message: refused by the server 2m ago (HTTP 403) — check the topic and server", severity: .error)
+        let accepted = PanelLine(text: "Last message: accepted by ntfy 2m ago", severity: .nominal)
+        let noPhone = PanelLine(text: "Phone alert: none since NapCat started", severity: .nominal)
+        let unentitled = PanelLine(
+            text: "Phone alerts: unavailable in this build — it is not signed for iCloud, so alerts go to ntfy",
+            severity: .info)
+        return [
+            AlertsRow(name: "lid guard only, fresh", server: server,
+                      topic: PanelLine(text: "Topic: none set", severity: .nominal), lidLastSend: noLidSend,
+                      session: nil, phone: nil, sections: [
+                          destination(server, PanelLine(text: "Topic: none set", severity: .nominal)),
+                          history(noLidSend),
+                      ]),
+            AlertsRow(name: "everything wired, phone off", server: server, topic: topicSet, lidLastSend: accepted,
+                      session: (60, noSessionSend), phone: (false, nil), sections: [
+                          destination(server, topicSet), floorSection(60), history(accepted, noSessionSend),
+                          phoneSection(false),
+                      ]),
+            AlertsRow(name: "a stored non-preset floor, phone on", server: server, topic: topicSet,
+                      lidLastSend: accepted, session: (90, noSessionSend), phone: (true, noPhone), sections: [
+                          destination(server, topicSet), floorSection(90, choices: [30, 60, 90, 120, 300, 600]),
+                          history(accepted, noSessionSend, noPhone), phoneSection(true),
+                      ]),
+            AlertsRow(name: "problems render in full", server: unusableServer, topic: unusableTopic,
+                      lidLastSend: refused, session: (600, noSessionSend), phone: (true, unentitled), sections: [
+                          destination(unusableServer, unusableTopic), floorSection(600),
+                          history(refused, noSessionSend, unentitled), phoneSection(true),
+                      ]),
+        ]
+    }()
+
+    @Test(arguments: alertsRows)
+    func theAlertsPaneComposition(row: AlertsRow) {
+        let pane = MenuStateModel.alertsPane(server: row.server, topic: row.topic, lidLastSend: row.lidLastSend,
+                                             sessionAlerts: row.session, phone: row.phone)
+        #expect(pane == SettingsPaneContent(sections: row.sections, footnote: Self.secrecyNote))
+    }
+
+    /// The table's lines are the mappings' own output (no second vocabulary).
+    @Test func theAlertsTableLinesAreTheMappingsOwn() {
+        #expect(MenuStateModel.lidAlertServerStatus("") == PanelLine(text: "Server: https://ntfy.sh", severity: .nominal))
+        #expect(MenuStateModel.lidAlertServerStatus("http://ntfy.sh").severity == .warning)
+        #expect(MenuStateModel.lidAlertTopicStatus("napcat-x") == Self.topicSet)
+        #expect(MenuStateModel.lidAlertTopicStatus("bad/topic").severity == .warning)
+        #expect(MenuStateModel.lidAlertLastSend(outcome: .rejected(403), at: 999_880, now: 1_000_000).text
+                == "Last message: refused by the server 2m ago (HTTP 403) — check the topic and server")
+        #expect(MenuStateModel.lidAlertTopicSecrecyNote == Self.secrecyNote)
+        #expect(MenuStateModel.sessionAlertsFloorPresets == Self.presets)
+        #expect(MenuStateModel.phoneTransportToggleTitle == "Phone alerts (beta)")
+    }
+
+    /// Through the model, wired as in the app (lid guard + finish alert +
+    /// composite): the Alerts tab exists, the pane is the composition of the
+    /// model's own accessors, and the TOPIC never reaches it — only whether
+    /// one is set.
+    @Test @MainActor func theModelComposesTheAlertsPaneWithoutTheTopic() {
+        withLidGuardHarness { lid in
+            lid.arm()
+            lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            let composite = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
+                                                   defaults: lid.defaults, isEntitled: { false })
+            withModel(lidGuard: lid.controller, finishAlert: Self.makeFinishAlert(lid),
+                      phoneTransport: composite) { model, _ in
+                #expect(model.settingsPanes == [.general, .alerts])
+                let now = 1_000_000.0
+                #expect(model.settingsContent(for: .alerts, now: now) == MenuStateModel.alertsPane(
+                    server: model.lidServerStatus, topic: model.lidTopicStatus, lidLastSend: model.lidLastSend(now: now),
+                    sessionAlerts: (model.finishAlertMinimumRunSeconds, model.finishAlertLastSend(now: now)),
+                    phone: (model.phoneTransportEnabled, model.phoneAlertStatus(now: now))))
+                #expect(model.lidTopicStatus == Self.topicSet, "vacuity: a topic is stored")
+                let text = Self.everyPaneAsText(model)
+                #expect(!text.contains("napcat-lid-8f3k2p"), "the topic is the feed's password — never rendered")
+            }
+        }
+    }
+
+    /// The popup saves through the ntfy editor's own save path: the one
+    /// clamp, written only when it changed, and the pane follows.
+    @Test @MainActor func theRunFloorPopupSavesThroughTheEditorsSavePath() {
+        withLidGuardHarness { lid in
+            lid.arm()
+            lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: lid.defaults)
+            let menuContent = MenuContentView(
+                sleep: SleepStateController(), watchdog: WatchdogController(), power: simulator, limiter: limiter,
+                lidGuard: lid.controller, finishAlert: Self.makeFinishAlert(lid), defaults: lid.defaults,
+                settingsHooks: Self.recordingHooks(HookLog()))
+            let model = menuContent.model
+            #expect(model.finishAlertMinimumRunSeconds == 60)
+
+            model.setFinishAlertMinimumRunSeconds(60)
+            #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == nil,
+                    "the untouched default is never eagerly written")
+            model.setFinishAlertMinimumRunSeconds(300)
+            #expect(lid.defaults.integer(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == 300)
+            #expect(model.finishAlertMinimumRunSeconds == 300, "the mirror follows at once")
+            #expect(model.alertsPane(now: 0).sections.flatMap(\.rows).contains(
+                .minimumRun(label: "Only alert for runs longer than:", seconds: 300, choices: Self.presets,
+                            caption: "Shorter runs finish silently.")))
+            model.setFinishAlertMinimumRunSeconds(29)
+            #expect(lid.defaults.integer(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == 30, "the one clamp")
+        }
+    }
+
     // MARK: - The panes, their symbols, the restored pane
 
     @Test func thePanesAreLockedInToolbarOrder() {
         // Stored raw values: a rename would orphan every stored selection.
-        #expect(SettingsPane.allCases.map(\.rawValue) == ["general"])
-        #expect(SettingsPane.allCases.map(\.title) == ["General"])
-        #expect(SettingsPane.allCases.map(\.symbol) == ["gearshape"])
+        #expect(SettingsPane.allCases.map(\.rawValue) == ["general", "alerts"])
+        #expect(SettingsPane.allCases.map(\.title) == ["General", "Alerts"])
+        #expect(SettingsPane.allCases.map(\.symbol) == ["gearshape", "bell"])
+        #expect(MenuStateModel.settingsPanes(alertsVisible: true) == [.general, .alerts])
+        #expect(MenuStateModel.settingsPanes(alertsVisible: false) == [.general])
         for pane in SettingsPane.allCases {
             #expect(NSImage(systemSymbolName: pane.symbol, accessibilityDescription: nil) != nil,
                     "\(pane.symbol) does not resolve")
@@ -245,6 +435,7 @@ struct SettingsWindowTests {
     @Test(arguments: [
         ("unset", nil, SettingsPane.general),
         ("general", "general", .general),
+        ("alerts", "alerts", .alerts),
         ("unknown pane", "advanced", .general),
         ("wrong case", "General", .general),
         ("not a string", 3, .general),
@@ -255,6 +446,8 @@ struct SettingsWindowTests {
 
     @Test func restorationFallsBackToTheFirstAvailablePane() {
         #expect(SettingsPane.restored(stored: "general", available: []) == .general)
+        #expect(SettingsPane.restored(stored: "alerts", available: [.general]) == .general,
+                "a pane this wiring does not show (debugBattery mode) is never restored")
     }
 
     /// The controller opens on the stored pane; picking a pane stores it.
@@ -307,6 +500,56 @@ struct SettingsWindowTests {
 
             controller.show()
             #expect(controller.window === window, "reused, never rebuilt")
+        }
+    }
+
+    /// With the lid guard wired the window has an Alerts tab: picking it
+    /// shows the pane, retitles the window, selects the tab, stores the pane
+    /// — and the window takes the new pane's height (fixed width). A stored
+    /// pane is where the next window opens.
+    @Test @MainActor func pickingAPaneRetitlesResizesAndStoresIt() throws {
+        let suite = "com.muratalkan.napcat.tests.settings.lid.\(UUID().uuidString)"
+        let lidDefaults = UserDefaults(suiteName: suite)!
+        defer { lidDefaults.removePersistentDomain(forName: suite) }
+        let lid = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+        lid.arm()
+        do {
+            try withModel(lidGuard: lid.controller) { model, defaults in
+                let controller = SettingsWindowController(model: model, defaults: defaults,
+                                                          hooks: Self.recordingHooks(HookLog()))
+                controller.show()
+                let window = try #require(controller.window)
+                defer { window.delegate = nil }
+                #expect(window.toolbar?.items.map(\.label) == ["General", "Alerts"])
+                Self.settle(window)
+                let general = window.contentLayoutRect.size
+                let hosted = try #require(window.contentViewController?.view)
+                #expect(abs(general.height - hosted.fittingSize.height) < 1, "the window is the pane's height")
+
+                controller.select(.alerts)
+                Self.settle(window)
+                #expect(controller.selection.pane == .alerts)
+                #expect(window.title == "Alerts" && window.contentViewController?.title == "Alerts")
+                #expect(window.toolbar?.selectedItemIdentifier == SettingsWindowController.toolbarIdentifier(.alerts))
+                #expect(defaults.string(forKey: DefaultsKey.settingsSelectedPane) == "alerts")
+                let alerts = window.contentLayoutRect.size
+                #expect(abs(alerts.width - SettingsMetrics.width) < 1 && abs(general.width - SettingsMetrics.width) < 1)
+                #expect(abs(alerts.height - hosted.fittingSize.height) < 1, "the window follows the pane")
+                #expect(alerts.height != general.height, "vacuity: the panes differ in height — \(general) → \(alerts)")
+
+                let reopened = SettingsWindowController(model: model, defaults: defaults,
+                                                        hooks: Self.recordingHooks(HookLog()))
+                #expect(reopened.selection.pane == .alerts, "the next launch restores the stored pane")
+            }
+        }
+    }
+
+    /// A few layout passes + runloop turns so SwiftUI applies a pane switch.
+    @MainActor
+    static func settle(_ window: NSWindow) {
+        for _ in 0..<6 {
+            window.layoutIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
     }
 
@@ -516,6 +759,49 @@ struct SettingsWindowTests {
         #expect(noLock.settingsBadge == noLock.settingsPanes.flatMap(noLock.settingsResidentSeverities).max())
     }
 
+    /// Alerts' resident lines through the model: an armed lid guard is
+    /// quiet; a missing topic (the lid status line's fix is the editor) warns;
+    /// a refused send is an error; and the detection pause's echo in the lid
+    /// line does NOT raise it (the footer label carries the pause).
+    @Test @MainActor func theAlertsGearBadgeThroughTheModel() throws {
+        withLidGuardHarness { lid in
+            lid.arm()
+            withModel(lidGuard: lid.controller) { model, _ in
+                #expect(model.settingsBadge == .nominal)
+            }
+        }
+        withLidGuardHarness { lid in
+            lid.defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
+            lid.controller.refreshArming()
+            withModel(lidGuard: lid.controller) { model, _ in
+                #expect(model.lidStatus.severity == .warning, "vacuity: needs a topic")
+                #expect(model.settingsBadge == .warning)
+            }
+        }
+        withLidGuardHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { lid in
+            lid.arm()
+            lid.controller.sendTestMessage()
+            withModel(lidGuard: lid.controller) { model, _ in
+                #expect(model.settingsBadge == .error)
+            }
+        }
+        let markerDir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: markerDir) }
+        let detection = ClaudeActivityController(store: StubMarkerStore(), prober: StubProber(),
+                                                 assertions: StubAssertions(), markerDirURL: markerDir)
+        detection.setPaused(true)
+        detection.sample()
+        withLidGuardHarness { lid in
+            lid.arm()
+            withModel(detection: detection, lidGuard: lid.controller) { model, _ in
+                #expect(model.lidStatus.severity == .warning && model.lidStatus.text.contains("cannot fire"),
+                        "vacuity: the pause's echo")
+                #expect(model.settingsResidentSeverities(.alerts).allSatisfy { $0 == .nominal })
+            }
+        }
+    }
+
     /// Both routes reach the window through the one dismissal gateway.
     @Test func showSettingsGoesThroughTheDismissalGateway() throws {
         let owner = try Self.code("MenuContentView.swift")
@@ -558,7 +844,7 @@ struct SettingsWindowTests {
     /// composition, and the views carry no severity decision of their own.
     @Test func thePanesRenderTheCompositionAndNeverClassify() throws {
         let views = try Self.code(Self.settingsViewFile)
-        #expect(views.contains("model.settingsContent(for: selection.pane)"))
+        #expect(views.contains("model.settingsContent(for: selection.pane,"))
         for token in ["severity ==", "severity !=", ".severity", "placement(ofDetailsLine:", "SurfacedLine(",
                       "TuckedLine(", "featureState", "loginItemStatus"] {
             #expect(!views.contains(token), "'\(token)' in a Settings view — the composition decides")
@@ -590,6 +876,11 @@ struct SettingsWindowTests {
         "launchAtLoginCaption": "SurfacedLaunchAtLogin(model: model)",
         "chargeLimitCaption": "indentedCaption(model.chargeLimitCaption)",
         "lockScreenStatus": "SurfacedLine(line: model.lockScreenStatus)",
+        "lidServerStatus": "SurfacedLine(line: model.lidServerStatus)",
+        "lidTopicStatus": "SurfacedLine(line: model.lidTopicStatus)",
+        "lidLastSend": "SurfacedLine(line: model.lidLastSend(",
+        "finishAlertLastSend": "SurfacedLine(line: model.finishAlertLastSend(",
+        "phoneAlertStatus": "SurfacedLine(line: model.phoneAlertStatus(",
     ]
 
     static func settingsLineMappings() throws -> Set<String> {

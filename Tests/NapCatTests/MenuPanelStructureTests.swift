@@ -553,10 +553,11 @@ struct MenuPanelStructureTests {
         #expect(!toggleView.contains("cancelTracking") && !toggleView.contains("setDetailsExpanded"))
     }
 
-    /// Issue #34 non-goal: the session alerts' run floor is set ONLY in the
-    /// "ntfy settings…" editor (MenuContentView). No panel view — the
-    /// controls tier, the Details tier, the footer — renders or edits it, and
-    /// the panel keeps exactly one route to the editor.
+    /// Issue #34 non-goal: the session alerts' run floor is never set in the
+    /// panel — only in the "ntfy settings…" editor (MenuContentView) and,
+    /// since slice W, in Settings › Alerts (SettingsWindowTests). No panel
+    /// view — the controls tier, the Details tier, the footer — renders or
+    /// edits it, and the panel keeps exactly one route to the editor.
     @Test func theRunFloorNeverReachesThePanel() throws {
         let views = try Self.allViewCode()
         for token in ["finishAlertMinimumRunSeconds", "minimumRunSeconds", "sessionAlertsFloor",
@@ -915,7 +916,10 @@ struct MenuPanelStructureTests {
             "if candidate == phase {",
             "label.hidden()",
             "phase = MenuStateModel.testSendPhase(phase, on: .tapped)\n            model.sendLidGuardTestMessage()",
-            ".controlSize(.small)",
+            // Small in the panel by default; Settings › Alerts (slice W)
+            // passes the regular size.
+            "var controlSize: ControlSize = .small",
+            ".controlSize(controlSize)",
             ".disabled(!presentation.enabled)",
             ".onChange(of: model.lidGuardLastOutcomeAt)",
             "on: .outcome(model.lidGuardLastOutcome)",

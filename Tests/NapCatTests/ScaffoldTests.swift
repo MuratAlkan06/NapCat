@@ -309,7 +309,14 @@ struct ScaffoldTests {
         let checkedAt = try #require(prompt.range(of: "lidAlertSettingsError("))
         let savedAt = try #require(prompt.range(of: "saveSessionAlertsFloor(seconds)"))
         #expect(checkedAt.lowerBound < savedAt.lowerBound, "the floor must not save before the validation check")
-        #expect(Self.occurrences(of: "saveSessionAlertsFloor(", in: source) == 2, "one definition, one call")
+        // Slice W (issue #78): Settings › Alerts' popup forwards to the SAME
+        // save path — one definition, the editor's call, the popup's forward.
+        #expect(Self.occurrences(of: "saveSessionAlertsFloor(", in: source) == 3,
+                "one definition, the editor's call, the Settings popup's forward")
+        #expect(source.contains("model.requestSessionAlertsFloorChange = { [weak self] seconds in\n"
+                                + "            self?.saveSessionAlertsFloor(seconds)\n"
+                                + "            self?.model.refresh()\n"
+                                + "        }"), "the popup's forward saves through it, then republishes")
 
         let editor = try #require(Self.functionChunk(named: "runLidAlertSettingsEditor", in: source))
         #expect(editor.contains("entry.minimumRunSeconds.map { SessionAlertsFloorGroup(seconds: $0, width: 300) }"))

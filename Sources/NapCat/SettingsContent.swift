@@ -12,11 +12,13 @@ import ServiceManagement
 /// `DefaultsKey.settingsSelectedPane` stores.
 enum SettingsPane: String, CaseIterable, Sendable {
     case general
+    case alerts
 
     /// The toolbar label — and the window title while the pane is showing.
     var title: String {
         switch self {
         case .general: return "General"
+        case .alerts: return "Alerts"
         }
     }
 
@@ -24,6 +26,7 @@ enum SettingsPane: String, CaseIterable, Sendable {
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .alerts: return "bell"
         }
     }
 
@@ -54,6 +57,15 @@ enum SettingsRow: Equatable, Sendable {
     /// A status line in full, at whatever severity its mapping gave it
     /// (severity icon + text when not nominal).
     case line(PanelLine)
+    /// "ntfy settings…" — the EXISTING hardened editor (masked topic, server,
+    /// validation; not rewritten here) — and the test send with its shipped
+    /// feedback (`SendFeedbackButton`).
+    case ntfyButtons
+    /// The session alerts' run-floor popup (issue #34): the stored floor, the
+    /// rows it offers, and the caption under it.
+    case minimumRun(label: String, seconds: Int, choices: [Int], caption: String)
+    /// The phone transport checkbox (F3 stage 1) and its hint.
+    case phoneAlerts(title: String, isOn: Bool, hint: String)
 }
 
 /// One titled group of rows.
@@ -71,16 +83,19 @@ struct SettingsPaneContent: Equatable, Sendable {
 extension MenuStateModel {
     // MARK: Panes
 
-    /// The panes this wiring can show, in toolbar order.
-    nonisolated static func settingsPanes() -> [SettingsPane] {
-        [.general]
+    /// The panes this wiring can show, in toolbar order: Alerts only with the
+    /// lid guard (absent in debugBattery mode, like its panel rows).
+    nonisolated static func settingsPanes(alertsVisible: Bool) -> [SettingsPane] {
+        [.general] + (alertsVisible ? [.alerts] : [])
     }
 
-    var settingsPanes: [SettingsPane] { Self.settingsPanes() }
+    var settingsPanes: [SettingsPane] { Self.settingsPanes(alertsVisible: lidGuardVisible) }
 
-    func settingsContent(for pane: SettingsPane) -> SettingsPaneContent {
+    /// `now` dates the History lines' relative times.
+    func settingsContent(for pane: SettingsPane, now: Double) -> SettingsPaneContent {
         switch pane {
         case .general: return generalPane
+        case .alerts: return alertsPane(now: now)
         }
     }
 
@@ -117,5 +132,50 @@ extension MenuStateModel {
         }
         sections.append(SettingsSection(title: "Lock Screen", rows: [.line(lockScreenStatus(available: lockAvailable))]))
         return SettingsPaneContent(sections: sections, footnote: nil)
+    }
+
+    // MARK: Alerts
+
+    func alertsPane(now: Double) -> SettingsPaneContent {
+        Self.alertsPane(
+            server: lidServerStatus,
+            topic: lidTopicStatus,
+            lidLastSend: lidLastSend(now: now),
+            sessionAlerts: finishAlertVisible
+                ? (minimumRunSeconds: finishAlertMinimumRunSeconds, lastSend: finishAlertLastSend(now: now)) : nil,
+            phone: phoneTransportVisible ? (isOn: phoneTransportEnabled, line: phoneAlertStatus(now: now)) : nil)
+    }
+
+    /// Destination (the server and topic lines — the topic NEVER echoed —
+    /// then the existing ntfy editor and the test send), the session alerts'
+    /// run floor, History (the last message per lane), the Phone alerts
+    /// (beta) checkbox, and the topic-secrecy note as the pane's one
+    /// footnote. The session and phone parts exist only while their
+    /// controllers do (nil in debugBattery mode, like their panel rows).
+    nonisolated static func alertsPane(
+        server: PanelLine,
+        topic: PanelLine,
+        lidLastSend: PanelLine,
+        sessionAlerts: (minimumRunSeconds: Int, lastSend: PanelLine)?,
+        phone: (isOn: Bool, line: PanelLine?)?
+    ) -> SettingsPaneContent {
+        var sections = [SettingsSection(title: "Destination", rows: [.line(server), .line(topic), .ntfyButtons])]
+        if let sessionAlerts {
+            let floor = sessionAlerts.minimumRunSeconds
+            sections.append(SettingsSection(title: sessionAlertsFloorGroupTitle, rows: [
+                .minimumRun(label: sessionAlertsFloorLabel, seconds: floor,
+                            choices: sessionAlertsFloorChoices(seconds: floor), caption: sessionAlertsFloorCaption),
+            ]))
+        }
+        var history: [SettingsRow] = [.line(lidLastSend)]
+        if let sessionAlerts { history.append(.line(sessionAlerts.lastSend)) }
+        if let line = phone?.line { history.append(.line(line)) }
+        sections.append(SettingsSection(title: "History", rows: history))
+        if let phone {
+            sections.append(SettingsSection(title: nil, rows: [
+                .phoneAlerts(title: phoneTransportToggleTitle, isOn: phone.isOn, hint: phoneTransportToggleHint),
+            ]))
+        }
+        return SettingsPaneContent(sections: sections, footnote: lidAlertTopicSecrecyNote)
     }
 }

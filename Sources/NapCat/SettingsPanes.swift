@@ -15,7 +15,8 @@ struct SettingsRootView: View {
     @ObservedObject var selection: SettingsSelection
 
     var body: some View {
-        SettingsPaneView(model: model, content: model.settingsContent(for: selection.pane))
+        SettingsPaneView(model: model, content: model.settingsContent(for: selection.pane,
+                                                                      now: Date().timeIntervalSince1970))
             // A fresh identity per pane, so no row state carries across tabs.
             .id(selection.pane)
     }
@@ -120,6 +121,40 @@ struct SettingsRowView: View {
             }
         case let .line(line):
             PanelCaptionLine(line: line, font: .body)
+        case .ntfyButtons:
+            HStack(spacing: PanelMetrics.regular) {
+                // The existing hardened editor (masked topic, server,
+                // validation), presented through MenuContentView.
+                Button("ntfy settings…") { model.editLidGuardSettings() }
+                SendFeedbackButton(model: model, controlSize: .regular)
+            }
+        case let .minimumRun(label, seconds, choices, caption):
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Picker(label, selection: Binding(
+                    get: { seconds },
+                    set: { model.setFinishAlertMinimumRunSeconds($0) }
+                )) {
+                    ForEach(choices, id: \.self) { choice in
+                        Text(MenuStateModel.sessionAlertsFloorText(seconds: choice)).tag(choice)
+                    }
+                }
+                .accessibilityLabel(MenuStateModel.sessionAlertsFloorAccessibilityLabel)
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case let .phoneAlerts(title, isOn, hint):
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Toggle(title, isOn: Binding(
+                    get: { isOn },
+                    set: { model.setPhoneTransportEnabled($0) }
+                ))
+                .toggleStyle(.checkbox)
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

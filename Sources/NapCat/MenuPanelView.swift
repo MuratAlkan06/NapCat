@@ -850,9 +850,11 @@ struct PanelDetailsContent: View {
 /// Reserved width: every phase's label is laid out in one ZStack, all but the
 /// current one hidden, so the button always has the widest label's size
 /// ("Send test message") and the Details geometry never moves. Label swaps
-/// snap — no animation.
+/// snap — no animation. Settings › Alerts (slice W) reuses it at the regular
+/// control size; the panel keeps the default, small.
 struct SendFeedbackButton: View {
     @ObservedObject var model: MenuStateModel
+    var controlSize: ControlSize = .small
     @State private var phase = TestSendPhase.idle
 
     var body: some View {
@@ -872,7 +874,7 @@ struct SendFeedbackButton: View {
                 }
             }
         }
-        .controlSize(.small)
+        .controlSize(controlSize)
         .disabled(!presentation.enabled)
         .accessibilityLabel(presentation.title)
         .onChange(of: model.lidGuardLastOutcomeAt) {

@@ -150,6 +150,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         model.requestLidGuardTestSend = { [weak self] in self?.sendLidAlertTestMessage() }
         model.requestFinishAlertToggle = { [weak self] enabled in self?.toggleSessionAlerts(enabled) }
         model.requestOpenSettings = { [weak self] in self?.showSettings(nil) }
+        model.requestSessionAlertsFloorChange = { [weak self] seconds in
+            self?.saveSessionAlertsFloor(seconds)
+            self?.model.refresh()
+        }
 
         // The lid guard's own async events (send outcome, wake) republish
         // through the same refresh path as every other controller.
@@ -469,7 +473,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Issue #34: persists the session alerts' run floor — through the
     /// policy's one clamp rule, and only when it changed, so an untouched
     /// default is never eagerly written. FinishAlertController reads the key
-    /// at every marker diff: nothing to re-arm, no restart.
+    /// at every marker diff: nothing to re-arm, no restart. Two callers: the
+    /// editor's Save, and (slice W) Settings › Alerts' popup.
     private func saveSessionAlertsFloor(_ seconds: Int) {
         let floor = FinishAlertPolicy.minimumRunSeconds(stored: seconds)
         guard floor != model.finishAlertMinimumRunSeconds else { return }
