@@ -637,9 +637,7 @@ struct PanelDetailsContent: View {
             HStack(spacing: PanelMetrics.regular) {
                 Button("ntfy settings…") { model.editLidGuardSettings() }
                     .controlSize(.small)
-                Button("Send test message") { model.sendLidGuardTestMessage() }
-                    .controlSize(.small)
-                    .disabled(!model.lidAlertTestSendAvailable)
+                SendFeedbackButton(model: model)
             }
             .padding(.top, 2)
             Text(MenuStateModel.lidAlertTopicSecrecyNote)
@@ -687,6 +685,64 @@ struct PanelDetailsContent: View {
                 LaunchAtLoginRow(model: model)
             }
         }
+    }
+}
+
+/// The Details "Send test message" button (#67), acknowledging the tap within
+/// the Doherty threshold: "Sending…" (disabled) on the next frame after the
+/// click, then — once ntfy ACCEPTS the message — "Sent" + checkmark for
+/// `PanelMotion.sentRevert`, then back. A failure only re-enables it: the
+/// surfaced last-send line stays the one error signal. The phase is transient
+/// view state, moved only by `MenuStateModel.testSendPhase(_:on:)` and ended
+/// by the lid lane's existing outcome pipeline (`lidGuardLastOutcomeAt`,
+/// republished through `model.refresh()`).
+///
+/// Reserved width: every phase's label is laid out in one ZStack, all but the
+/// current one hidden, so the button always has the widest label's size
+/// ("Send test message") and the Details geometry never moves. Label swaps
+/// snap — no animation.
+struct SendFeedbackButton: View {
+    @ObservedObject var model: MenuStateModel
+    @State private var phase = TestSendPhase.idle
+
+    var body: some View {
+        let presentation = MenuStateModel.testSendButton(phase: phase, available: model.lidAlertTestSendAvailable)
+        Button {
+            phase = MenuStateModel.testSendPhase(phase, on: .tapped)
+            model.sendLidGuardTestMessage()
+        } label: {
+            ZStack {
+                ForEach(TestSendPhase.allCases, id: \.self) { candidate in
+                    let label = Self.label(MenuStateModel.testSendButton(phase: candidate, available: true))
+                    if candidate == phase {
+                        label
+                    } else {
+                        label.hidden()
+                    }
+                }
+            }
+        }
+        .controlSize(.small)
+        .disabled(!presentation.enabled)
+        .accessibilityLabel(presentation.title)
+        .onChange(of: model.lidGuardLastOutcomeAt) {
+            phase = MenuStateModel.testSendPhase(phase, on: .outcome(model.lidGuardLastOutcome))
+        }
+        .task(id: phase) {
+            guard phase == .sent else { return }
+            // Cut short (the panel closed) it reverts too — never a stale
+            // "Sent" on reopen. The mapping ignores the revert in any other
+            // phase, so a cancelled hold cannot undo a newer tap.
+            try? await Task.sleep(for: .seconds(PanelMotion.sentRevert))
+            phase = MenuStateModel.testSendPhase(phase, on: .revertElapsed)
+        }
+    }
+
+    /// The title, then the symbol inline in the same Text: the glyph sits on
+    /// the text's baseline and adds no height.
+    private static func label(_ presentation: TestSendButtonPresentation) -> Text {
+        guard let symbol = presentation.symbol else { return Text(presentation.title) }
+        return Text("\(presentation.title) \(Image(systemName: symbol))")
     }
 }
 

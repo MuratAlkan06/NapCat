@@ -45,9 +45,34 @@ enum PanelSymbol {
     static let info = "info.circle"
     static let warning = "exclamationmark.triangle.fill"
     static let error = "xmark.octagon.fill"
+    /// After "Sent" on the test-send button once ntfy accepted it (#67).
+    static let sent = "checkmark"
 
     static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts, disclosure,
-                      desktop, charging, battery, info, warning, error]
+                      desktop, charging, battery, info, warning, error, sent]
+}
+
+/// The test-send button's phase (#67): transient view state owned by
+/// `SendFeedbackButton` and moved ONLY by `MenuStateModel.testSendPhase(_:on:)`.
+enum TestSendPhase: CaseIterable, Equatable, Sendable {
+    case idle, sending, sent
+}
+
+/// What moves the test-send button.
+enum TestSendEvent: Equatable, Sendable {
+    case tapped
+    /// The lid lane recorded a send outcome (`lidGuardLastOutcomeAt` moved).
+    case outcome(MessageSendOutcome?)
+    /// `PanelMotion.sentRevert` elapsed.
+    case revertElapsed
+}
+
+/// What the test-send button renders in one phase.
+struct TestSendButtonPresentation: Equatable, Sendable {
+    let title: String
+    /// Drawn after the title; nil except on success.
+    let symbol: String?
+    let enabled: Bool
 }
 
 /// Observable bridge between the controllers and the SwiftUI menu panel
@@ -798,6 +823,39 @@ final class MenuStateModel: ObservableObject {
     /// The test send is offered only when there is something to publish TO.
     nonisolated static func lidAlertTestSendAvailable(server: String, topic: String) -> Bool {
         LidGuardPolicy.destination(server: server, topic: topic) != nil
+    }
+
+    /// #67: the test-send button acknowledges the tap at once. A tap moves it
+    /// to `.sending`; the lid lane's NEXT recorded outcome ends that — only
+    /// `.accepted` earns `.sent`, anything else goes straight back to `.idle`
+    /// (the surfaced last-send line stays the one error signal); `.sent`
+    /// reverts when its hold elapses. An outcome outside `.sending` (a
+    /// priming send from a toggle, say) never moves the button.
+    nonisolated static func testSendPhase(_ phase: TestSendPhase, on event: TestSendEvent) -> TestSendPhase {
+        switch (phase, event) {
+        case (_, .tapped):
+            return .sending
+        case (.sending, .outcome(let outcome)):
+            return outcome == .accepted ? .sent : .idle
+        case (.sent, .revertElapsed):
+            return .idle
+        default:
+            return phase
+        }
+    }
+
+    /// The button in each phase: "Sending…" is always disabled (no second
+    /// send while one is out); idle and "Sent" follow the destination's
+    /// availability.
+    nonisolated static func testSendButton(phase: TestSendPhase, available: Bool) -> TestSendButtonPresentation {
+        switch phase {
+        case .idle:
+            return TestSendButtonPresentation(title: "Send test message", symbol: nil, enabled: available)
+        case .sending:
+            return TestSendButtonPresentation(title: "Sending…", symbol: nil, enabled: false)
+        case .sent:
+            return TestSendButtonPresentation(title: "Sent", symbol: PanelSymbol.sent, enabled: available)
+        }
     }
 
     // MARK: - Track C (session alerts: finish + waiting pushes) presentation

@@ -673,6 +673,53 @@ struct MenuPanelStructureTests {
         }
     }
 
+    /// #67: Details renders the test send through `SendFeedbackButton` — once,
+    /// beside "ntfy settings…" — and the wrapper keeps its promises: every
+    /// phase's label is laid out (the current one shown, the rest hidden), so
+    /// the widest reserves the width; the phase moves only through the pure
+    /// mapping; the existing outcome pipeline ends "Sending…"; the "Sent" hold
+    /// is `PanelMotion.sentRevert`; nothing animates; and the only action is
+    /// `model.sendLidGuardTestMessage()`.
+    @Test func theTestSendAcknowledgesThroughOneWrapper() throws {
+        let source = try Self.code("MenuPanelView.swift")
+        let views = try Self.allViewCode()
+        let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
+        #expect(Self.occurrences(of: "SendFeedbackButton(", in: views) == 1, "ONE test-send button")
+        #expect(details.contains("Button(\"ntfy settings…\") { model.editLidGuardSettings() }\n"
+                                 + "                    .controlSize(.small)\n"
+                                 + "                SendFeedbackButton(model: model)\n"),
+                "the wrapper sits beside \"ntfy settings…\" in Details")
+        #expect(!views.contains("Button(\"Send test message\")"), "no bare test-send button")
+        #expect(Self.occurrences(of: "model.sendLidGuardTestMessage()", in: views) == 1)
+
+        let button = try #require(Self.structChunk("SendFeedbackButton", in: source))
+        for token in [
+            "ForEach(TestSendPhase.allCases, id: \\.self)",
+            "if candidate == phase {",
+            "label.hidden()",
+            "phase = MenuStateModel.testSendPhase(phase, on: .tapped)\n            model.sendLidGuardTestMessage()",
+            ".controlSize(.small)",
+            ".disabled(!presentation.enabled)",
+            ".onChange(of: model.lidGuardLastOutcomeAt)",
+            "on: .outcome(model.lidGuardLastOutcome)",
+            ".task(id: phase)",
+            "Task.sleep(for: .seconds(PanelMotion.sentRevert))",
+            "on: .revertElapsed",
+        ] {
+            #expect(button.contains(token), "'\(token)' not found — the test-send wrapper was rewired")
+        }
+        let assignments = button.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("phase = ") }
+        #expect(assignments.count == 3, "tap, outcome, hold — got \(assignments)")
+        for line in assignments {
+            #expect(line.hasPrefix("phase = MenuStateModel.testSendPhase(phase, on: "), "phase moved outside the mapping: \(line)")
+        }
+        for token in [".animation(", "fixedSize", "cancelTracking", "setDetailsExpanded", "request"] {
+            #expect(!button.contains(token), "'\(token)' in the test-send wrapper")
+        }
+    }
+
     @Test func systemColorsOnly() throws {
         let views = try Self.allViewCode()
         for token in ["Color(red", "Color(hue", "Color(white", "Color(\"", "Color(#", "hex", "#colorLiteral",
