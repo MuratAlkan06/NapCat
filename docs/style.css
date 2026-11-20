@@ -14,6 +14,7 @@
      (8.1:1 on the page, 8.5:1 under white text). */
   --color-accent: #2c4896;
   --color-accent-hover: #243b7b;
+  --color-accent-active: var(--color-night);
   --color-on-accent: #ffffff;
   --color-focus: #2c4896;
   /* Hero surface: a pale wash of the same navy. */
@@ -62,6 +63,7 @@
     --color-border: #3a3631;
     --color-accent: #93aaec;
     --color-accent-hover: #afc1f4;
+    --color-accent-active: #7d95dc;
     --color-on-accent: var(--color-night-deep);
     --color-focus: #afc1f4;
     /* The icon's own deepest navy: one step below the icon tile. */
@@ -146,11 +148,17 @@ a:focus-visible {
   margin: var(--space-2) 0 var(--space-3);
 }
 
-/* Sized to the title's line box, so the hero keeps its height. */
+/* Optical margin: the squircle fills 824 of the PNG's 1024 px (Apple's
+   macOS icon grid), with transparent margin around it. The image is drawn
+   1024/824 of the title's line box and pulled in by that margin on every
+   side, so the visible tile is exactly the line-box height (the hero keeps
+   its height) and its left edge sits on the text column. */
 .app-icon {
+  --icon-tile: calc(var(--text-hero) * var(--leading-tight));
   flex: none;
-  width: calc(var(--text-hero) * var(--leading-tight));
+  width: calc(var(--icon-tile) * 1024 / 824);
   height: auto;
+  margin: calc(var(--icon-tile) * -100 / 824);
 }
 
 /* Dark mode: the icon's navy tile sits one step above the hero's deeper
@@ -191,6 +199,9 @@ h1 {
   font-size: var(--text-sm);
 }
 
+/* Feedback: a 150 ms ease-out colour change on hover and press (a CSS
+   transition, so a new state simply retargets it mid-way), and a 1 px press
+   when motion is welcome. Focus keeps the shared a:focus-visible ring. */
 .button {
   display: inline-block;
   padding: var(--space-3) var(--space-5);
@@ -199,11 +210,27 @@ h1 {
   color: var(--color-on-accent);
   font-weight: 600;
   text-decoration: none;
+  transition: background-color 150ms ease-out;
 }
 
 .button:hover {
   background: var(--color-accent-hover);
   color: var(--color-on-accent);
+}
+
+.button:active {
+  background: var(--color-accent-active);
+  color: var(--color-on-accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .button {
+    transition: background-color 150ms ease-out, transform 150ms ease-out;
+  }
+
+  .button:active {
+    transform: translateY(1px);
+  }
 }
 
 /* Showcase: a slice of a desktop with the menu bar, the cat's item open,
@@ -373,6 +400,11 @@ pre {
 
 pre code {
   overflow-wrap: normal;
+}
+
+/* Inline commands never break across lines (paths still may). */
+code.cmd {
+  white-space: nowrap;
 }
 
 /* Footer */
