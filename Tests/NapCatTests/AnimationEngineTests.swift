@@ -34,8 +34,8 @@ struct AnimationMappingTests {
             expectedSet: .sit, expectedFPS: 1,
             rationale: "charge paused at limit → sit @1fps"),
         Row(stayAwakeOn: false, chargePaused: false, screenAwake: true,
-            expectedSet: .sleep, expectedFPS: 0.5,
-            rationale: "idle → static grooming cat @0.5fps (frames identical; slow tick, 2026-07-11)"),
+            expectedSet: .idle, expectedFPS: 2,
+            rationale: "idle → hand-drawn 17-frame groom→sit cycle @2fps (initial cadence, 2026-11-19)"),
         Row(stayAwakeOn: true, chargePaused: true, screenAwake: false,
             expectedSet: nil, expectedFPS: nil,
             rationale: "screens asleep → timer stopped regardless of app state"),
@@ -74,7 +74,18 @@ struct AnimationMappingTests {
     @Test func frameSetNamesMatchAssetNaming() {
         #expect(FrameSet.run.frameNames == ["run0", "run1", "run2", "run3", "run4"])
         #expect(FrameSet.sleep.frameNames == ["sleep0", "sleep1", "sleep2"])
+        #expect(FrameSet.idle.frameNames == (0...16).map { "idle\($0)" })
+        #expect(FrameSet.idle.frameNames.first == "idle0")
+        #expect(FrameSet.idle.frameNames.last == "idle16")
         #expect(FrameSet.sit.frameNames == ["sit0", "sit1"])
+    }
+
+    /// The idle cadence is the one named tunable, and the mapping uses it.
+    @Test func idleCadenceIsTheNamedTunable() {
+        let idle = AnimationEngine.frameSet(stayAwakeOn: false, chargePaused: false, screenAwake: true)
+        #expect(idle?.set == .idle)
+        #expect(idle?.fps == AnimationEngine.idleFPS)
+        #expect(AnimationEngine.idleFPS == 2.0, "initial cadence; change only by user pick from previews")
     }
 
     // MARK: - Pure restart decision
@@ -109,15 +120,30 @@ struct AnimationEngineBehaviorTests {
         return (engine, recorder)
     }
 
-    @Test func idleStateAnimatesSleepFromFrameZero() {
+    @Test func idleStateAnimatesTheIdleCycleFromFrameZero() {
         let (engine, recorder) = makeEngine()
         engine.setAppState(stayAwakeOn: false, chargePaused: false)
-        #expect(engine.currentSet == .sleep)
-        #expect(engine.currentFPS == 0.5)
+        #expect(engine.currentSet == .idle)
+        #expect(engine.currentFPS == AnimationEngine.idleFPS)
         #expect(engine.frameIndex == 0)
         #expect(engine.isAnimating)
-        #expect(recorder.events.first?.set == .sleep)
+        #expect(recorder.events.first?.set == .idle)
         #expect(recorder.events.first?.index == 0)
+    }
+
+    /// The idle cycle is a STRAIGHT loop: every tick shows the next of the 17
+    /// frames in export order, and frame 16 (upright sit) wraps straight back
+    /// to frame 0 (paw-lick) — no hold, no periodic play.
+    @Test func idleCycleLoopsThroughAllSeventeenFramesInOrder() {
+        let (engine, recorder) = makeEngine()
+        engine.setAppState(stayAwakeOn: false, chargePaused: false)
+        #expect(FrameSet.idle.frameCount == 17)
+        for _ in 0..<(2 * 17) { engine.tick() }
+        let oneCycle = Array(0..<17)
+        #expect(recorder.events.map(\.index) == oneCycle + oneCycle + [0])
+        #expect(recorder.events.allSatisfy { $0.set == .idle })
+        #expect(engine.tickCount == 34)
+        #expect(engine.frameIndex == 0)
     }
 
     @Test func tickAdvancesAndWrapsTheFrameIndex() {

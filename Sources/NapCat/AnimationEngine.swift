@@ -43,17 +43,15 @@ enum FrameSet: String, CaseIterable, Sendable {
 /// mapping plus a main-runloop timer that advances the frame index and
 /// reports each frame through `onFrame` (PLAN.md ADR §10).
 ///
-/// Locked mapping (user decision 2026-07-09):
-///   stay-awake ON            → run   @ 10 fps
-///   else charging paused     → sit   @  1 fps
-///   else                     → sleep @ 0.5 fps
-///   screens asleep           → nil   (timer stopped)
+/// Locked mapping (user decision 2026-07-09; idle amended 2026-11-19):
+///   stay-awake ON            → run  @ 10 fps
+///   else charging paused     → sit  @  1 fps
+///   else                     → idle @ `idleFPS` (2 fps)
+///   screens asleep           → nil  (timer stopped)
 ///
-/// Sleep runs at 0.5 fps: the three sleep frames are byte-identical copies of
-/// one static processed grooming cat (the user rejected the synthetic head-bob,
-/// decision log 2026-07-11), so the cadence is moot — 0.5 fps just minimizes
-/// timer wakeups. The upcoming hand-drawn 17-frame set will animate the SIT
-/// state instead.
+/// Idle is the user's hand-drawn 17-frame groom→sit cycle (it replaced the
+/// static grooming-cat "sleep" still, user ruling 2026-11-19), played as a
+/// straight loop at `idleFPS`.
 ///
 /// PRIORITY: stay-awake beats charge-paused — while both are true the cat
 /// runs, because running signals "an awake purpose is active"; the sit pose
@@ -102,6 +100,11 @@ final class AnimationEngine: NSObject {
 
     // MARK: - Pure mapping (unit-tested; the locked table above)
 
+    /// Cadence of the idle groom→sit cycle — the ONE tunable for how fast the
+    /// idle cat moves (17 frames at 2 fps = an 8.5 s loop). Initial value; the
+    /// user picks the final cadence from real-size previews (2026-11-19).
+    nonisolated static let idleFPS: Double = 2.0
+
     nonisolated static func frameSet(
         stayAwakeOn: Bool,
         chargePaused: Bool,
@@ -110,7 +113,7 @@ final class AnimationEngine: NSObject {
         guard screenAwake else { return nil }
         if stayAwakeOn { return (.run, 10) }
         if chargePaused { return (.sit, 1) }
-        return (.sleep, 0.5)
+        return (.idle, idleFPS)
     }
 
     /// Pure restart decision: any change of set or fps (including to/from
