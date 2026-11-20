@@ -24,7 +24,7 @@ struct ThemedSurface: View {
     }
 }
 
-/// A row as a card on the theme's ground (cards chrome).
+/// A row as a card on the theme's ground.
 struct ThemedCard: ViewModifier {
     @Environment(\.theme) private var theme
 

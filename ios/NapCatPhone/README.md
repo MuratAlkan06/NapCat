@@ -47,34 +47,36 @@ xcrun simctl install booted /tmp/NapCatPhone-DerivedData/Build/Products/Debug-ip
 xcrun simctl launch booted com.muratalkan.napcat.phone
 ```
 
-## Style variants and fixture states (part 1)
+## Style and fixture states (part 1)
+
+The style is **Pixel Nap**: cream grounds (warm charcoal in dark mode), ink
+borders with a hard shadow, square corners, monospaced labels and an 8 pt
+spacing rhythm. Its empty state shows the smooth grooming cat as a large,
+faint watermark behind the message.
 
 Launch arguments choose what the screen shows. They are read from the
 `UserDefaults` argument domain, and unknown values fall back to the default.
 
 | Argument | Values | Default |
 |---|---|---|
-| `-NapCatTheme` | `nightGroom`, `systemPaper`, `pixelNap` | `systemPaper` |
 | `-NapCatFixture` | `populated`, `empty` | `populated` |
 | `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff` | `connected` |
 
 ```sh
 xcrun simctl launch booted com.muratalkan.napcat.phone \
-  -NapCatTheme pixelNap -NapCatFixture empty -NapCatConnection notificationsOff
+  -NapCatFixture empty -NapCatConnection notificationsOff
 xcrun simctl ui booted appearance dark      # or light; relaunch to compare
 xcrun simctl io booted screenshot shot.png  # wait ~3 s after launch first
 ```
 
-The 3 s wait lets the row entrance (under 0.6 s) and the Pixel Nap cat's
-single groom-to-sit flip (about 2 s) settle.
+The 3 s wait covers the launch and lets the row entrance (under 0.6 s)
+settle.
 
 Every style decision lives in `NapCatPhone/Theme/`. `Theme.swift` defines
 the token set: colors, type, surfaces and spacing, the icon variant, the
-empty-state art treatment and the entrance curve. Each variant is one
-`Theme` value in its own file. The views read only the `theme` environment
-value. To apply the chosen variant, set `ThemeID.fallback` to it, then
-delete the other two variant files, their `ThemeID` cases and the
-`-NapCatTheme` argument.
+empty-state art treatment and the entrance curve. `PixelNapTheme.swift`
+holds the one `Theme` value. The views read only the `theme` environment
+value, so a color change is an edit to that one file.
 
 The fixtures are synthetic. Each alert carries exactly the wire record's
 three fields (body, lane, firedAt), and each body is written word for word as
@@ -95,6 +97,5 @@ the Mac generates it. No topic, server, host or user name appears anywhere.
   only its `NapCatWire` product, the shared wire contract (record type, field
   keys, lanes). Nothing else from the Mac package is built for iOS. There is
   no second `Package.swift`.
-- The art comes from the repository's own committed files, referenced in
-  place rather than copied: `Resources/frames/idle*@2x.png` (the menu-bar
-  idle cycle) and `art/groom-source.png` (the grooming cat).
+- The art comes from the repository's own committed file, referenced in
+  place rather than copied: `art/groom-source.png` (the grooming cat).

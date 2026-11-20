@@ -33,12 +33,7 @@ targets:
       - path: NapCatPhone
         type: syncedFolder
       # The repository's own committed art, referenced in place (never
-      # copied): the menu-bar idle cycle and the grooming-cat source drawing.
-      - path: ../../Resources/frames
-        group: RepoArt
-        includes:
-          - "idle*@2x.png"
-        buildPhase: resources
+      # copied): the grooming-cat source drawing.
       - path: ../../art/groom-source.png
         group: RepoArt
         buildPhase: resources

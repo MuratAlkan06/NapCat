@@ -1,24 +1,17 @@
 import CoreGraphics
 @testable import NapCatPhone
+import SwiftUI
 import Testing
 
-/// The theme seam: three variants, each a complete `Theme` value.
+/// The theme seam: the owner's pick, Pixel Nap, as one complete `Theme` value.
 @Suite struct ThemeTests {
-    /// The raw values are the `-NapCatTheme` launch-argument spellings.
-    @Test func theVariantsAreTheThreeOnOffer() {
-        #expect(ThemeID.allCases.map(\.rawValue) == ["nightGroom", "systemPaper", "pixelNap"])
+    @Test func pixelNapIsTheOnlyStyle() {
+        #expect(ThemeID.allCases == [.pixelNap])
+        #expect(ThemeID.fallback == .pixelNap)
+        #expect(ThemeID.pixelNap.theme.id == .pixelNap)
     }
 
-    @Test(arguments: ThemeID.allCases)
-    func eachVariantResolvesToItsOwnTheme(_ id: ThemeID) {
-        #expect(id.theme.id == id)
-    }
-
-    @Test func theFallbackIsSystemPaper() {
-        #expect(ThemeID.fallback == .systemPaper)
-    }
-
-    /// Charter: the entrance spring stays at or under 0.3 s in every variant.
+    /// Charter: the entrance spring stays at or under 0.3 s.
     @Test(arguments: ThemeID.allCases)
     func theEntranceSpringIsAtMostThreeTenths(_ id: ThemeID) {
         let theme = id.theme
@@ -27,25 +20,22 @@ import Testing
         #expect(theme.entranceOffset > 0)
     }
 
-    @Test func eachVariantFramesTheScreenItsOwnWay() {
-        #expect(Theme.nightGroom.chrome == .cards)
-        #expect(Theme.systemPaper.chrome == .insetGrouped)
-        #expect(Theme.pixelNap.chrome == .cards)
+    /// The owner's hybrid pick: the empty state is Night Groom's large
+    /// grooming-cat watermark behind the message, not the pixel sprite.
+    @Test func theEmptyStateWatermarksTheGroomingCat() {
+        switch Theme.pixelNap.emptyArt {
+        case .groomWatermark(let height):
+            #expect(height >= 256, "the watermark is large, behind the message")
+        }
     }
 
-    @Test func eachVariantDrawsTheEmptyStateCatItsOwnWay() {
-        guard case .groomWatermark = Theme.nightGroom.emptyArt else {
-            Issue.record("Night Groom must watermark the grooming cat"); return
-        }
-        guard case .groomGlyph = Theme.systemPaper.emptyArt else {
-            Issue.record("System Paper must draw the grooming cat as a glyph"); return
-        }
-        guard case .pixelFlip(let pointsPerPixel, let frameMilliseconds) = Theme.pixelNap.emptyArt else {
-            Issue.record("Pixel Nap must flip the idle frames"); return
-        }
-        // The @2x frames at 2x, nearest-neighbour; one pass well under 5 s.
-        #expect(pointsPerPixel == 2)
-        #expect(frameMilliseconds * RepoArt.idleFrames.count < 5_000)
+    /// A watermark stays faint in both schemes, so the message over it reads.
+    @Test(arguments: [ColorScheme.light, .dark])
+    func theWatermarkIsFaintInEachScheme(_ scheme: ColorScheme) {
+        var environment = EnvironmentValues()
+        environment.colorScheme = scheme
+        let opacity = Theme.pixelNap.artTint.resolve(in: environment).opacity
+        #expect(opacity > 0 && opacity <= 0.2, "\(scheme) watermark opacity \(opacity)")
     }
 
     /// Pixel Nap keeps an 8 pt rhythm: every spacing token is a multiple of 8.

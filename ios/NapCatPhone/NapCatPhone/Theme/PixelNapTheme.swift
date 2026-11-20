@@ -3,9 +3,10 @@ import SwiftUI
 extension Theme {
     /// Pixel Nap uses the menu-bar cat's pixel identity: cream grounds, ink
     /// borders with a hard, blur-free shadow, square corners, monospaced
-    /// labels and an 8 pt spacing rhythm. The empty state flips once through
-    /// the repository's own idle frames at 2x. Dark mode is derived: warm
-    /// charcoal grounds with cream ink.
+    /// labels and an 8 pt spacing rhythm. Dark mode is derived: warm
+    /// charcoal grounds with cream ink. The empty state is Night Groom's (the
+    /// owner's hybrid pick): the smooth grooming cat as a large, faint
+    /// watermark behind the message, in the accent's navy.
     static var pixelNap: Theme {
         Theme(
             id: .pixelNap,
@@ -17,7 +18,7 @@ extension Theme {
             accent: Color(light: 0x2C4896, dark: 0x7EA6EC),
             hairline: Color(light: 0x23211D, dark: 0x8C867B),
             pillFill: Color(light: 0xF1EFE9, dark: 0x272521),
-            artTint: Color(light: 0x23211D, dark: 0xECE9E3),
+            artTint: Color(light: 0x2C4896, dark: 0x7EA6EC, lightAlpha: 0.08, darkAlpha: 0.10),
             warning: Color(light: 0x8F5300, dark: 0xF2B35D),
             error: Color(light: 0xB3261E, dark: 0xF2877C),
             titleFont: .system(.title, design: .monospaced, weight: .bold),
@@ -28,7 +29,6 @@ extension Theme {
             timestampFont: .system(.footnote, design: .monospaced),
             pillFont: .system(.footnote, design: .monospaced, weight: .bold),
             emptyFont: .system(.body, design: .monospaced, weight: .bold),
-            chrome: .cards,
             margin: 16,
             rowPadding: 16,
             rowGap: 16,
@@ -40,7 +40,7 @@ extension Theme {
             hardShadow: 4,
             symbolVariant: .fill,
             symbolWeight: .bold,
-            emptyArt: .pixelFlip(pointsPerPixel: 2, frameMilliseconds: 120),
+            emptyArt: .groomWatermark(height: 340),
             entranceDuration: 0.25,
             entranceBounce: 0,
             entranceOffset: 8

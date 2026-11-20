@@ -13,19 +13,8 @@ struct EmptyStateView: View {
             switch theme.emptyArt {
             case .groomWatermark(let height):
                 ZStack {
-                    GroomArt(rendering: .drawing)
+                    GroomArt()
                         .frame(height: height)
-                    messageText
-                }
-            case .groomGlyph(let height):
-                VStack(spacing: theme.innerGap * 4) {
-                    GroomArt(rendering: .line)
-                        .frame(height: height)
-                    messageText
-                }
-            case .pixelFlip(let pointsPerPixel, let frameMilliseconds):
-                VStack(spacing: theme.innerGap * 4) {
-                    PixelCatFlip(pointsPerPixel: pointsPerPixel, frameMilliseconds: frameMilliseconds)
                     messageText
                 }
             }
@@ -53,28 +42,20 @@ extension Image {
     }
 }
 
-/// The grooming cat (art/groom-source.png) in the theme's art tint: its line
-/// work alone, or the whole drawing (the filled shape with the line work
-/// drawn over it in the same tint, so the lines read darker).
+/// The grooming cat (art/groom-source.png) in the theme's art tint, the whole
+/// drawing: the filled shape with the line work drawn over it in the same
+/// tint, so the lines read darker.
 struct GroomArt: View {
-    enum Rendering { case line, drawing }
-    let rendering: Rendering
-
     @Environment(\.theme) private var theme
 
     var body: some View {
-        switch rendering {
-        case .line:
+        ZStack {
+            Image(repoArt: RepoArt.groom)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(theme.artTint)
             lineWork
-        case .drawing:
-            ZStack {
-                Image(repoArt: RepoArt.groom)
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(theme.artTint)
-                lineWork
-            }
         }
     }
 
@@ -95,39 +76,5 @@ struct GroomArt: View {
                 .luminanceToAlpha()
             }
             .aspectRatio(1, contentMode: .fit)
-    }
-}
-
-/// The menu-bar idle cycle, nearest-neighbour scaled: it flips through once,
-/// grooming to settled, on each appearance, then rests on the settled frame.
-/// Under Reduce Motion it shows the settled frame only.
-struct PixelCatFlip: View {
-    let pointsPerPixel: CGFloat
-    let frameMilliseconds: Int
-
-    @Environment(\.theme) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var frame = RepoArt.idleFrames.lowerBound
-
-    var body: some View {
-        let side = RepoArt.idleFramePixels * pointsPerPixel
-        Image(repoArt: RepoArt.idleFrameName(reduceMotion ? RepoArt.idleSettledFrame : frame))
-            .renderingMode(.template)
-            .interpolation(.none)
-            .resizable()
-            .frame(width: side, height: side)
-            .foregroundStyle(theme.artTint)
-            .task {
-                guard !reduceMotion else { return }
-                for index in RepoArt.idleFrames {
-                    frame = index
-                    do {
-                        try await Task.sleep(for: .milliseconds(frameMilliseconds))
-                    } catch {
-                        frame = RepoArt.idleSettledFrame
-                        return
-                    }
-                }
-            }
     }
 }

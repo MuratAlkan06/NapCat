@@ -82,19 +82,18 @@ import UIKit
     @Test func missingLaunchArgumentsGiveTheDefaults() {
         let options = LaunchOptions { _ in nil }
         #expect(options == LaunchOptions())
-        #expect(options.theme == .systemPaper && options.fixture == .populated && options.connection == .connected)
+        #expect(options.fixture == .populated && options.connection == .connected)
     }
 
-    @Test func launchArgumentsPickTheVariantFixtureAndConnection() {
-        let values = ["NapCatTheme": "pixelNap", "NapCatFixture": "empty", "NapCatConnection": "notificationsOff"]
+    @Test func launchArgumentsPickTheFixtureAndConnection() {
+        let values = ["NapCatFixture": "empty", "NapCatConnection": "notificationsOff"]
         let options = LaunchOptions { values[$0] }
-        #expect(options.theme == .pixelNap)
         #expect(options.fixture == .empty)
         #expect(options.connection == .notificationsOff)
     }
 
     @Test func unknownLaunchArgumentsFallBack() {
-        let values = ["NapCatTheme": "neon", "NapCatFixture": "lots", "NapCatConnection": "maybe"]
+        let values = ["NapCatFixture": "lots", "NapCatConnection": "maybe"]
         #expect(LaunchOptions { values[$0] } == LaunchOptions())
     }
 }

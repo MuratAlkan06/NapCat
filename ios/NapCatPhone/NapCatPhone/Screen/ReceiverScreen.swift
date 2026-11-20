@@ -15,58 +15,9 @@ struct ReceiverScreen: View {
     @Environment(\.theme) private var theme
     @State private var revealed = false
 
+    /// Themed cards on the theme's own ground, in a plain vertical scroll
+    /// (system scroll physics), with an in-content title.
     var body: some View {
-        Group {
-            switch theme.chrome {
-            case .insetGrouped: groupedList
-            case .cards: cardScroll
-            }
-        }
-        .tint(theme.accent)
-        .onAppear { revealed = true }
-        .onDisappear { revealed = false }
-    }
-
-    // MARK: Inset-grouped chrome
-
-    private var groupedList: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ConnectionPill(state: connection)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets())
-                }
-                if connection.showsPermissionRow {
-                    Section { PermissionRow() }
-                }
-                if !alerts.isEmpty {
-                    Section {
-                        ForEach(Array(alerts.enumerated()), id: \.element.id) { index, alert in
-                            AlertRow(alert: alert)
-                                .staggeredEntrance(index: index, revealed: revealed)
-                        }
-                    } header: {
-                        Text(Self.recentHeader)
-                            .font(theme.sectionFont)
-                    }
-                }
-            }
-            .listStyle(.insetGrouped)
-            // The HIG empty-list pattern (where ContentUnavailableView goes):
-            // centered over the list rather than inside a row.
-            .overlay {
-                if alerts.isEmpty {
-                    EmptyStateView()
-                }
-            }
-            .navigationTitle(Self.title)
-        }
-    }
-
-    // MARK: Cards chrome
-
-    private var cardScroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: theme.rowGap) {
                 HStack(alignment: .center, spacing: theme.innerGap) {
@@ -103,20 +54,16 @@ struct ReceiverScreen: View {
             .padding(.bottom, theme.rowGap * 2)
         }
         .background(theme.ground.ignoresSafeArea())
+        .tint(theme.accent)
+        .onAppear { revealed = true }
+        .onDisappear { revealed = false }
     }
 }
 
-#Preview("Night Groom") {
-    ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .connected)
-        .environment(\.theme, .nightGroom)
-}
-
-#Preview("System Paper") {
+#Preview("Populated, notifications off") {
     ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .notificationsOff)
-        .environment(\.theme, .systemPaper)
 }
 
-#Preview("Pixel Nap, empty") {
+#Preview("Empty") {
     ReceiverScreen(alerts: [], connection: .connected)
-        .environment(\.theme, .pixelNap)
 }

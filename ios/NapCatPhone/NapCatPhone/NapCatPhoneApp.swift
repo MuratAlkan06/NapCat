@@ -10,7 +10,6 @@ struct NapCatPhoneApp: App {
     var body: some Scene {
         WindowGroup {
             ReceiverScreen(alerts: options.fixture.alerts(now: launchedAt), connection: options.connection)
-                .environment(\.theme, options.theme.theme)
         }
     }
 }

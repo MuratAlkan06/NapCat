@@ -1,50 +1,29 @@
 import SwiftUI
 import UIKit
 
-/// The style variants offered for the owner's pick (#71). The screen is
-/// written once against `Theme`; a variant is nothing but a `Theme` value.
-/// Applying the pick is a small change: point `fallback` at the chosen case,
-/// then delete the other two `Theme` statics, their cases and the
-/// `-NapCatTheme` launch argument.
+/// The receiver's style. The owner picked Pixel Nap (#71), with Night
+/// Groom's grooming-cat watermark as its empty state; the other variants
+/// were removed. The screen is written once against `Theme`, so a style is
+/// nothing but a `Theme` value.
 enum ThemeID: String, CaseIterable, Sendable {
-    case nightGroom
-    case systemPaper
     case pixelNap
 
-    /// The variant used when none (or an unknown one) is requested.
-    static let fallback: ThemeID = .systemPaper
+    /// The style the screen uses.
+    static let fallback: ThemeID = .pixelNap
 
     var theme: Theme {
         switch self {
-        case .nightGroom: return .nightGroom
-        case .systemPaper: return .systemPaper
         case .pixelNap: return .pixelNap
         }
     }
 }
 
-/// How the screen is framed.
-enum ListChrome: Sendable, Equatable {
-    /// The system inset-grouped `List` under a large navigation title: system
-    /// backgrounds, separators and row chrome.
-    case insetGrouped
-    /// Themed cards on the theme's own ground, in a plain vertical scroll
-    /// (system scroll physics), with an in-content title.
-    case cards
-}
-
-/// How the empty state's cat is drawn. Every treatment uses the
-/// repository's own art only (see `RepoArt`).
+/// How the empty state's cat is drawn. It uses the repository's own art
+/// only (see `RepoArt`).
 enum EmptyArtTreatment: Sendable, Equatable {
     /// The grooming cat (art/groom-source.png), the whole drawing, large and
     /// faint, behind the message.
     case groomWatermark(height: CGFloat)
-    /// The grooming cat as a monochrome line drawing above the message.
-    case groomGlyph(height: CGFloat)
-    /// The menu-bar idle cycle (Resources/frames/idle*@2x.png), nearest-
-    /// neighbour at `pointsPerPixel`, flipped through once from groom to sit
-    /// at `frameMilliseconds` per frame (one pass, then it rests).
-    case pixelFlip(pointsPerPixel: CGFloat, frameMilliseconds: Int)
 }
 
 /// Every styling decision on the receiver screen. Views read ONLY these
@@ -57,7 +36,7 @@ struct Theme: Sendable {
 
     // MARK: Color (each adapts to light and dark)
 
-    /// The screen background (cards chrome).
+    /// The screen background.
     let ground: Color
     /// Card and pill fill.
     let surface: Color
@@ -71,7 +50,8 @@ struct Theme: Sendable {
     let hairline: Color
     /// The connection pill's fill.
     let pillFill: Color
-    /// The empty-state cat.
+    /// The empty-state cat. A watermark, so it stays faint in both schemes
+    /// (its alpha is part of the token).
     let artTint: Color
     /// Severity tints. Always paired with a glyph and text, never alone.
     let warning: Color
@@ -92,8 +72,7 @@ struct Theme: Sendable {
 
     // MARK: Surfaces and rhythm
 
-    let chrome: ListChrome
-    /// Horizontal screen margin (cards chrome).
+    /// Horizontal screen margin.
     let margin: CGFloat
     /// Padding inside a card.
     let rowPadding: CGFloat
