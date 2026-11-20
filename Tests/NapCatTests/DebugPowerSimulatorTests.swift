@@ -125,9 +125,94 @@ struct DebugPowerSimulatorTests {
 
         let lowered = source.lowercased()
         for forbidden in ["process", "nstask", "posix_spawn", "system(", "popen",
-                          "sudo", "smc", "/usr/", "exec"] {
+                          "sudo", "smc", "/usr/", "exec",
+                          // #58: the probe chain and its real host.
+                          "probekeyfamily", "iokitpowersource"] {
             #expect(!lowered.contains(forbidden),
                     "forbidden token '\(forbidden)' in DebugPowerSimulator.swift")
+        }
+    }
+
+    // MARK: Probe / write path isolation (#58)
+
+    /// The ADR §2 probe chain (`probeKeyFamily`, incl. the #58
+    /// controlUnavailable outcome), the helper reads (`SMCKeyReader.`) and
+    /// the privileged charge-write cases are reachable ONLY through
+    /// IOKitPowerSource — and IOKitPowerSource is built exactly once, in
+    /// NapCatApp's NON-debug branch, while the debug branch builds the
+    /// simulator. So debugBattery mode can never reach a probe or a write;
+    /// the simulator expresses every readiness (incl. .controlUnavailable) as
+    /// a plain settable value. Scans comment-stripped code.
+    static func probeAndWritePathFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        func files(containing token: String) -> Set<String> {
+            Set(sources.filter { $0.text.contains(token) }.map(\.name))
+        }
+        let confined: [(token: String, allowed: Set<String>)] = [
+            ("probeKeyFamily(", ["IOKitPowerSource.swift"]),
+            ("SMCKeyReader.", ["IOKitPowerSource.swift", "SMCKeyReader.swift"]),
+            ("chargingDisable", ["IOKitPowerSource.swift", "PrivilegedCommand.swift"]),
+            ("chargingEnable", ["IOKitPowerSource.swift", "PrivilegedCommand.swift"]),
+        ]
+        for (token, allowed) in confined where !files(containing: token).isSubset(of: allowed) {
+            failures.append("'\(token)' appears in \(files(containing: token).sorted()) — allowed only in \(allowed.sorted())")
+        }
+        if !files(containing: "probeKeyFamily(").contains("IOKitPowerSource.swift") {
+            failures.append("vacuity: IOKitPowerSource no longer runs the probe chain")
+        }
+        let constructions = sources.flatMap { source in
+            Array(repeating: source.name,
+                  count: source.text.components(separatedBy: "IOKitPowerSource(").count - 1)
+        }
+        if constructions != ["NapCatApp.swift"] {
+            failures.append("IOKitPowerSource( is constructed at \(constructions) — expected once, in NapCatApp.swift")
+        }
+        let app = sources.first { $0.name == "NapCatApp.swift" }?.text ?? ""
+        guard let debugOpen = app.range(of: "if isDebugBattery {"),
+              let elseOpen = app.range(of: "} else {", range: debugOpen.upperBound..<app.endIndex),
+              let elseClose = app.range(of: "\n        }", range: elseOpen.upperBound..<app.endIndex)
+        else {
+            failures.append("NapCatApp's debugBattery power swap (if isDebugBattery { … } else { … }) not found")
+            return failures
+        }
+        let debugBranch = app[debugOpen.upperBound..<elseOpen.lowerBound]
+        let realBranch = app[elseOpen.upperBound..<elseClose.lowerBound]
+        if !debugBranch.contains("DebugPowerSimulator(") || debugBranch.contains("IOKitPowerSource(") {
+            failures.append("the debugBattery branch must build the simulator and never IOKitPowerSource")
+        }
+        if !realBranch.contains("IOKitPowerSource(") || realBranch.contains("DebugPowerSimulator(") {
+            failures.append("only the non-debug branch may build IOKitPowerSource")
+        }
+        return failures
+    }
+
+    @Test func theSimulatorPathNeverReachesTheProbeOrWritePaths() throws {
+        let sources = try LidGuardStructureTests.swiftSources()
+        try #require(sources.contains { $0.name == "DebugPowerSimulator.swift" }, "vacuity: path drift")
+        let failures = Self.probeAndWritePathFailures(sources)
+        #expect(failures.isEmpty, "\(failures)")
+
+        func mutate(_ name: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
+            sources.map { $0.name == name ? ($0.name, transform($0.text)) : $0 }
+        }
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("simulator runs the probe", mutate("DebugPowerSimulator.swift") {
+                $0 + "\nlet p = Prober.probeKeyFamily(helperInstalled: true, readKey: { _ in .noData })" }),
+            ("simulator reads a key", mutate("DebugPowerSimulator.swift") {
+                $0 + "\nlet r = SMCKeyReader.readKey(\"CHTE\")" }),
+            ("simulator writes", mutate("DebugPowerSimulator.swift") {
+                $0 + "\nlet w = PrivilegedCommand.chargingDisableCHTE.run()" }),
+            ("menu re-probes on its own", mutate("MenuContentView.swift") {
+                $0 + "\nlet m = SMCKeyReader.helperInstalled()" }),
+            ("debug branch builds the real source", mutate("NapCatApp.swift") {
+                $0.replacingOccurrences(of: "power = debugSimulator", with: "power = IOKitPowerSource()") }),
+            ("second real source", mutate("MenuContentView.swift") {
+                $0 + "\nlet s = IOKitPowerSource()" }),
+            ("swap removed", mutate("NapCatApp.swift") {
+                $0.replacingOccurrences(of: "if isDebugBattery {", with: "if true {") }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.probeAndWritePathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 }

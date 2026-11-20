@@ -684,6 +684,9 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.chargeLimitCaption(for: .paused)?.severity == .nominal)
         #expect(MenuStateModel.chargeLimitCaption(for: .notSupported)?.severity == .info)
         #expect(MenuStateModel.chargeLimitCaption(for: .setupRequired)?.severity == .warning)
+        // #58: a calm info line (like Intel's), never the red error treatment.
+        #expect(MenuStateModel.chargeLimitCaption(for: .controlUnavailable)
+                == PanelLine(text: "Charge limiting isn't available on this version of macOS.", severity: .info))
         #expect(MenuStateModel.chargeLimitCaption(for: .error("smc exploded"))
                 == PanelLine(text: "smc exploded", severity: .error))
 

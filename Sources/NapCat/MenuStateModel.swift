@@ -471,6 +471,11 @@ final class MenuStateModel: ObservableObject {
         }
     }
 
+    /// Issue #58: this macOS exposes no charge-control key. A plain statement
+    /// of the limitation — no error wording, no instruction to act.
+    nonisolated static let chargeControlUnavailableText =
+        "Charge limiting isn't available on this version of macOS."
+
     /// Feature-state messaging line under the charge-limit controls.
     nonisolated static func featureMessage(for state: ChargeLimitFeatureState) -> String? {
         switch state {
@@ -480,6 +485,8 @@ final class MenuStateModel: ObservableObject {
             return "Charge limiting needs an Apple Silicon Mac. Stay Awake still works here."
         case .setupRequired:
             return "One-time setup needed: run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu."
+        case .controlUnavailable:
+            return chargeControlUnavailableText
         case .active:
             return "Charging normally — will pause at the limit."
         case .paused:
@@ -1071,15 +1078,16 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Charge-limit message with severity: a write/verify error is an error,
-    /// missing setup is a warning, Intel (permanently unsupported) is info;
-    /// "charging normally" / "paused at the limit" are nominal status.
+    /// missing setup is a warning, Intel (permanently unsupported) and an OS
+    /// without charge-control keys (#58) are info — calm, never the error
+    /// treatment; "charging normally" / "paused at the limit" are nominal.
     nonisolated static func chargeLimitCaption(for state: ChargeLimitFeatureState) -> PanelLine? {
         guard let text = featureMessage(for: state) else { return nil }
         let severity: PanelSeverity
         switch state {
         case .error: severity = .error
         case .setupRequired: severity = .warning
-        case .notSupported: severity = .info
+        case .notSupported, .controlUnavailable: severity = .info
         case .hidden, .off, .active, .paused: severity = .nominal
         }
         return PanelLine(text: text, severity: severity)

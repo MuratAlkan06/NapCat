@@ -30,8 +30,8 @@ final class DebugPowerSimulator: PowerInterface {
     /// write error. Failed writes are still recorded but change nothing.
     var writeResult: PrivilegedCommandResult = .success
     /// Simulated charge-control availability; tests set `.setupRequired` /
-    /// `.probeFailed` to exercise those feature states. Defaults to ready —
-    /// the simulator needs no privileged helper.
+    /// `.probeFailed` / `.controlUnavailable` to exercise those feature
+    /// states. Defaults to ready — the simulator needs no privileged helper.
     var chargeControlReadiness: ChargeControlReadiness = .ready {
         didSet { if chargeControlReadiness != oldValue { notifyChange() } }
     }

@@ -44,11 +44,14 @@ final class IOKitPowerSource: PowerInterface {
 
     // MARK: - Key-family probe (ADR §2)
 
-    /// Pure probe-chain decision (fixture-tested):
+    /// Pure probe-chain decision (fixture-tested). A family is usable ONLY
+    /// when its probe read returns DATA (issue #58 — "no data" is never
+    /// taken as evidence for the other family):
     /// - helper absent → setupRequired (battery reads still work — IOKit)
     /// - `smc -k CHTE -r` returns data → CHTE family
-    /// - output containing "no data" → CH0B/CH0C fallback
-    /// - anything else → visible probe failure, feature never silently on.
+    /// - CHTE "no data" → probe `smc -k CH0B -r`: data → CH0B/CH0C family;
+    ///   "no data" as well → controlUnavailable (no writes, calm caption)
+    /// - any read failure → visible probe failure, feature never silently on.
     nonisolated static func probeKeyFamily(
         helperInstalled: Bool,
         readKey: (String) -> SMCKeyReader.ReadOutcome
@@ -56,15 +59,28 @@ final class IOKitPowerSource: PowerInterface {
         guard helperInstalled else { return (nil, .setupRequired) }
         switch readKey("CHTE") {
         case .value: return (.chte, .ready)
-        case .noData: return (.ch0bc, .ready)
+        case .failed(let message): return (nil, .probeFailed(message))
+        case .noData: break
+        }
+        switch readKey("CH0B") {
+        case .value: return (.ch0bc, .ready)
+        case .noData: return (nil, .controlUnavailable)
         case .failed(let message): return (nil, .probeFailed(message))
         }
+    }
+
+    /// Every non-ready readiness is re-probed on menu open (pure, tested):
+    /// setup may have been run since, and a later macOS may expose the
+    /// charge keys again (controlUnavailable) — either way the feature
+    /// resumes without an app restart or any user action.
+    nonisolated static func shouldReprobe(_ readiness: ChargeControlReadiness) -> Bool {
+        readiness != .ready
     }
 
     /// Menu-open hook: once the user has run setup.sh, the next menu open
     /// picks the helper up without an app restart.
     func reprobeChargeControlIfNeeded() {
-        guard chargeControlReadiness != .ready else { return }
+        guard Self.shouldReprobe(chargeControlReadiness) else { return }
         let (family, readiness) = Self.probeKeyFamily(
             helperInstalled: SMCKeyReader.helperInstalled(),
             readKey: SMCKeyReader.readKey

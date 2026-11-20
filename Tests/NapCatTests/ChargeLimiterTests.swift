@@ -149,6 +149,78 @@ struct ChargeLimiterTests {
         }
     }
 
+    // MARK: - Control unavailable (#58): calm, inert, resumable
+
+    /// macOS exposes no charge-control key: every path that could write —
+    /// launch (incl. reconciliation), power pushes, the 60 s re-assert,
+    /// pre-sleep, wake, limit/toggle changes, shutdown — stays silent, the
+    /// re-assert timer never runs, and the state is its own calm case (not
+    /// .error, not .setupRequired). The saved limit and toggle are untouched.
+    @Test func controlUnavailableKeepsEveryWritePathInert() {
+        let sim = DebugPowerSimulator(batteryPercent: 95, adapterConnected: true)
+        sim.chargeControlReadiness = .controlUnavailable
+        withLimiter(sim: sim, limit: 80) { limiter in
+            #expect(limiter.featureState == .controlUnavailable)
+            #expect(!limiter.reassertTimerActive, "no re-assert ticks while unavailable")
+
+            sim.batteryPercent = 96
+            sim.adapterConnected = false
+            sim.adapterConnected = true
+            limiter.reassertTick()
+            limiter.handleWillSleep()
+            limiter.handleDidWake()
+            limiter.evaluate(reason: "test: menu open")
+            limiter.setLimit(70)
+            limiter.setEnabled(false)
+            limiter.setEnabled(true)
+            limiter.releasePauseForShutdown()
+
+            #expect(sim.writeCalls.isEmpty, "no write may even be attempted")
+            #expect(limiter.controlState == .normal)
+            #expect(!limiter.reassertTimerActive)
+            #expect(limiter.featureState == .controlUnavailable,
+                    "calm limitation — never an error, never setup required")
+            #expect(limiter.limit == 70 && limiter.enabled, "the user's intent persists")
+        }
+    }
+
+    @Test func controlUnavailableNeverAdoptsAnObservedPauseAtLaunch() {
+        // Even a readable inhibit flag is not acted on: launch reconciliation
+        // is a write path (it can lead to a release write) and stays gated.
+        let sim = DebugPowerSimulator(batteryPercent: 88, adapterConnected: true)
+        sim.disableCharging()
+        sim.chargeControlReadiness = .controlUnavailable
+        withLimiter(sim: sim, enabled: false) { limiter in
+            #expect(sim.writeCalls == [.disableCharging], "only the test's own setup write")
+            #expect(limiter.controlState == .normal)
+        }
+    }
+
+    @Test func controlUnavailableShowsEvenWhenTheToggleIsOff() {
+        let sim = DebugPowerSimulator(batteryPercent: 95, adapterConnected: true)
+        sim.chargeControlReadiness = .controlUnavailable
+        withLimiter(sim: sim, enabled: false) { limiter in
+            #expect(sim.writeCalls.isEmpty)
+            #expect(limiter.featureState == .controlUnavailable)
+        }
+    }
+
+    /// The menu-open re-probe finds the keys again (a later macOS): the
+    /// readiness push re-evaluates and the saved limit applies at once — no
+    /// toggle, no restart.
+    @Test func keysReturningResumesTheFeatureWithoutUserAction() {
+        let sim = DebugPowerSimulator(batteryPercent: 92, adapterConnected: true)
+        sim.chargeControlReadiness = .controlUnavailable
+        withLimiter(sim: sim) { limiter in
+            #expect(sim.writeCalls.isEmpty)
+            sim.chargeControlReadiness = .ready
+            #expect(sim.writeCalls == [.disableCharging], "92 ≥ 90 pauses as soon as control returns")
+            #expect(limiter.controlState == .paused)
+            #expect(limiter.featureState == .paused)
+            #expect(limiter.reassertTimerActive)
+        }
+    }
+
     @Test func intelShowsNotSupportedAndNeverWrites() {
         let sim = DebugPowerSimulator(batteryPercent: 95, adapterConnected: true)
         withLimiter(sim: sim, appleSilicon: false) { limiter in
@@ -359,6 +431,25 @@ struct ChargeLimiterTests {
         #expect(Map.featureState(hasBattery: true, isAppleSilicon: true,
                                  readiness: .ready, enabled: true,
                                  controlState: .normal, failure: .sudoDenied) == .setupRequired)
+        // #58: Intel and setupRequired outrank controlUnavailable…
+        #expect(Map.featureState(hasBattery: true, isAppleSilicon: false,
+                                 readiness: .controlUnavailable, enabled: true,
+                                 controlState: .normal, failure: nil) == .notSupported)
+        #expect(Map.featureState(hasBattery: true, isAppleSilicon: true,
+                                 readiness: .controlUnavailable, enabled: true,
+                                 controlState: .normal, failure: .sudoDenied) == .setupRequired)
+        // …it shows whether the toggle is on or off, and outranks every
+        // stale failure and control state — it is never .error or paused.
+        for enabled in [false, true] {
+            for controlState in [ChargingControlState.normal, .paused] {
+                for failure: ChargeLimiter.Failure? in [nil, .writeFailed("boom"), .chargingDidNotStop] {
+                    #expect(Map.featureState(hasBattery: true, isAppleSilicon: true,
+                                             readiness: .controlUnavailable, enabled: enabled,
+                                             controlState: controlState, failure: failure)
+                        == .controlUnavailable)
+                }
+            }
+        }
         // probe failure is an error even when the toggle is off.
         #expect(Map.featureState(hasBattery: true, isAppleSilicon: true,
                                  readiness: .probeFailed("x"), enabled: false,

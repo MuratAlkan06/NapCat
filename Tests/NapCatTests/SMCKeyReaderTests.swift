@@ -32,10 +32,14 @@ struct SMCKeyReaderTests {
             == .value(bytesHex: "02"))
     }
 
-    @Test func noDataTriggersKeyFamilyFallback() {
-        // Vendored smc printVal with dataSize == 0 (key absent on machine).
+    @Test func noDataOutputClassifiesAsNoData() {
+        // Vendored smc printVal with dataSize == 0: the key is absent on the
+        // machine, or (macOS 27.2.x, #58) no longer exposed. `.noData` marks
+        // the family unusable — it is never a value and never a failure; the
+        // probe table below decides what follows.
         let output = "  CHTE  [    ]  no data\n"
         #expect(SMCKeyReader.classify(exitStatus: 0, output: output) == .noData)
+        #expect(SMCKeyReader.classify(exitStatus: 0, output: "  CH0B  [    ]  no data\n") == .noData)
     }
 
     @Test func errorOutputIsFailure() {
@@ -106,13 +110,51 @@ struct SMCKeyReaderTests {
         #expect(readiness == .ready)
     }
 
-    @Test func noDataFallsBackToCh0bc() {
+    /// Issue #58 (supersedes the old `noDataFallsBackToCh0bc` lock): a family
+    /// is chosen ONLY when its own probe read returns data. CHTE "no data" is
+    /// never evidence for CH0B/CH0C — on a CHTE machine whose keys went dark
+    /// that fallback wrote the WRONG family. Each row: the CHTE outcome, the
+    /// CH0B outcome (nil = must not be read at all), and the expected result.
+    @Test func probeTableChoosesAFamilyOnlyOnData() {
+        let failure = "smc read exited 1: Error: no SMC found"
+        let rows: [(chte: SMCKeyReader.ReadOutcome, ch0b: SMCKeyReader.ReadOutcome?,
+                     family: SMCKeyFamily?, readiness: ChargeControlReadiness)] = [
+            (.value(bytesHex: "00000000"), nil, .chte, .ready),
+            (.value(bytesHex: "01000000"), nil, .chte, .ready),
+            (.noData, .value(bytesHex: "00"), .ch0bc, .ready),
+            (.noData, .value(bytesHex: "02"), .ch0bc, .ready),
+            (.noData, .noData, nil, .controlUnavailable),
+            (.noData, .failed(failure), nil, .probeFailed(failure)),
+            (.failed(failure), nil, nil, .probeFailed(failure)),
+        ]
+        for row in rows {
+            var reads: [String] = []
+            let (family, readiness) = IOKitPowerSource.probeKeyFamily(
+                helperInstalled: true,
+                readKey: { key in
+                    reads.append(key)
+                    if key == "CHTE" { return row.chte }
+                    if key == "CH0B", let ch0b = row.ch0b { return ch0b }
+                    Issue.record("unexpected probe read of \(key) for row \(row)")
+                    return .failed("unexpected read")
+                }
+            )
+            #expect(family == row.family, "row \(row)")
+            #expect(readiness == row.readiness, "row \(row)")
+            #expect(reads == (row.ch0b == nil ? ["CHTE"] : ["CHTE", "CH0B"]),
+                    "CHTE first; CH0B only after CHTE 'no data' — row \(row)")
+        }
+    }
+
+    /// The #58 machine: both families read "no data" → unavailable, with no
+    /// family at all (so no write can ever be planned against either).
+    @Test func bothFamiliesWithoutDataIsControlUnavailable() {
         let (family, readiness) = IOKitPowerSource.probeKeyFamily(
             helperInstalled: true,
             readKey: { _ in .noData }
         )
-        #expect(family == .ch0bc)
-        #expect(readiness == .ready)
+        #expect(family == nil)
+        #expect(readiness == .controlUnavailable)
     }
 
     @Test func probeReadFailureIsVisibleNotSilent() {
@@ -122,6 +164,16 @@ struct SMCKeyReaderTests {
         )
         #expect(family == nil)
         #expect(readiness == .probeFailed("smc read exited 1: Error: no SMC found"))
+    }
+
+    /// Menu-open re-probe: every non-ready readiness re-probes, so running
+    /// setup.sh — or a macOS that exposes the keys again — resumes the
+    /// feature without a restart or user action; ready never re-probes.
+    @Test func everyNonReadyReadinessIsReprobedOnMenuOpen() {
+        #expect(!IOKitPowerSource.shouldReprobe(.ready))
+        #expect(IOKitPowerSource.shouldReprobe(.setupRequired))
+        #expect(IOKitPowerSource.shouldReprobe(.probeFailed("x")))
+        #expect(IOKitPowerSource.shouldReprobe(.controlUnavailable))
     }
 
     // MARK: - Write plumbing stays locked to PrivilegedCommand

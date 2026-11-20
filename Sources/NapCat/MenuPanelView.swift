@@ -267,7 +267,8 @@ struct LockScreenButton: View {
 }
 
 /// Intel (notSupported): controls disabled with the explanation. Setup
-/// required: still usable (intent persists; the caption explains).
+/// required and control unavailable (#58): still usable (intent persists;
+/// the caption explains, and it takes effect once the feature can act).
 struct ChargeLimitToggle: View {
     @ObservedObject var model: MenuStateModel
 
