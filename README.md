@@ -734,10 +734,13 @@ Notes:
   AutoFill comment and the Lock Screen button wording, `v1.5.0` the first
   Developer ID signed and notarized release (app and disk image signed and
   notarized by Apple, the disk image stapled, so it opens with no
-  Gatekeeper warnings) plus the stabilized ntfy settings dialog, and
+  Gatekeeper warnings) plus the stabilized ntfy settings dialog,
   `v1.5.1` the "Night Groom" app icon and the hand-drawn 17-frame idle
   grooming animation in the menu bar, plus VoiceOver and first-run
-  polish). Each
+  polish, and `v1.5.2` thicker, readable detail lines on the idle cat,
+  the honest charge-limit unavailable state on systems whose firmware
+  gates the control keys, and privileged-helper error output treated as
+  failure). Each
   annotated tag carries its release notes (`git tag -n99`); the detailed
   build plan and verification matrix are maintained privately.
 - **v1.4.4 ships busy hook version 6 — refresh it.** On newer macOS (seen on
