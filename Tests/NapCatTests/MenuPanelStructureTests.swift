@@ -500,20 +500,23 @@ struct MenuPanelStructureTests {
     /// ICON-ONLY button (tooltip + VoiceOver label carry its name) with the
     /// same action and the same disabled rule, forwarding to the model only —
     /// MenuContentView keeps the one dismissal gateway (locked in
-    /// ScreenLockControllerTests / ScaffoldTests). Its placement — the battery
-    /// header's top-right corner since 2026-10-22 — is locked in
-    /// `theLockScreenButtonSitsInTheHeaderTopRightCorner`.
+    /// ScreenLockControllerTests / ScaffoldTests). Since slice P it IS the
+    /// panel's `PanelIconButton` (15pt glyph, 28pt target, 36pt hit area —
+    /// #47: the bordered small button hit-tested at its 35×19pt bezel only).
+    /// Its placement — the battery header's top-right corner since
+    /// 2026-10-22 — is locked in `theLockScreenButtonSitsInTheHeaderTopRightCorner`.
     @Test func lockScreenIsAnIconOnlyButtonForwardingToTheModel() throws {
         let button = try #require(Self.structChunk("LockScreenButton", in: try Self.code("MenuPanelView.swift")))
-        #expect(button.contains("Button { model.lockScreen() } label: {"))
-        #expect(button.contains("Image(systemName: PanelSymbol.lockScreen)"))
-        #expect(!button.contains("Text(") && !button.contains("Button(\""), "icon-only — no visible title")
-        #expect(button.contains(".help(\"Lock Screen\")"))
-        #expect(button.contains(".accessibilityLabel(\"Lock Screen\")"))
-        #expect(button.contains(".accessibilityHint("))
-        #expect(button.contains(
-            ".disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)"))
-        for token in ["cancelTracking", "setDetailsExpanded", "request"] {
+        let shape: String = [
+            "PanelIconButton(symbol: PanelSymbol.lockScreen, label: \"Lock Screen\") { model.lockScreen() }",
+            ".disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)",
+            ".accessibilityHint(",
+        ].joined(separator: " ")
+        #expect(Self.flat(button).contains(shape), "the shared icon button, its disabled rule, then its hint")
+        #expect(!button.contains("Text("), "icon-only — no visible title")
+        #expect(Self.occurrences(of: "Button(", in: button) == 1 && !button.contains("Button {"),
+                "no button of its own — only the shared PanelIconButton")
+        for token in [".controlSize(", ".bordered", "cancelTracking", "request"] {
             #expect(!button.contains(token), "'\(token)' — the button only forwards to model.lockScreen()")
         }
         #expect(Self.occurrences(of: "model.lockScreen()", in: try Self.allViewCode()) == 1)
@@ -521,28 +524,34 @@ struct MenuPanelStructureTests {
 
     /// Slice W (issue #78): `PanelIconButton` is the panel's shared icon-only
     /// button — a 28pt circular target, the 15pt medium glyph alone in the
-    /// primary color, the plain look with the shared press fade, and its name
-    /// as tooltip and VoiceOver label. The Settings gear is its one user in
-    /// this slice (the Lock Screen button adopts it in slice P).
+    /// primary color (tertiary while disabled: the plain look has no bezel to
+    /// grey out), the plain look with the shared press fade, and its name as
+    /// tooltip and VoiceOver label. Slice P (issue #47): its label is the
+    /// 36pt hit circle, and a negative padding of (36 − 28) / 2 hands the
+    /// layout back the 28pt footprint — measured by synthetic clicks at 0.5pt
+    /// steps: ≈36pt across and down for the lock and the gear, in the panel.
+    /// Its two users: the Settings gear and the Lock Screen button.
     @Test func panelIconButtonIsTheSharedCircularIconButton() throws {
         let button = try #require(Self.structChunk("PanelIconButton", in: try Self.code("MenuPanelView.swift")))
-        for token in [
-            "Button(action: action) {",
-            "Image(systemName: symbol)",
+        let shape: String = [
+            "Button(action: action) { Image(systemName: symbol)",
             ".font(.system(size: PanelMetrics.iconButtonGlyph, weight: .medium))",
-            ".foregroundStyle(.primary)",
-            ".frame(width: PanelMetrics.iconButtonSize, height: PanelMetrics.iconButtonSize)",
-            ".contentShape(Circle())",
-            ".buttonStyle(PanelPressFadeButtonStyle())",
-            ".help(label)",
-            ".accessibilityLabel(label)",
-        ] {
-            #expect(button.contains(token), "'\(token)' not found — the shared icon button was rewired")
-        }
+            ".foregroundStyle(isEnabled ? HierarchicalShapeStyle.primary : .tertiary)",
+            ".frame(width: PanelMetrics.iconButtonHitArea, height: PanelMetrics.iconButtonHitArea)",
+            ".contentShape(Circle()) } .buttonStyle(PanelPressFadeButtonStyle())",
+            ".padding(-(PanelMetrics.iconButtonHitArea - PanelMetrics.iconButtonSize) / 2)",
+            ".help(label) .accessibilityLabel(label)",
+        ].joined(separator: " ")
+        #expect(Self.flat(button).contains(shape), "the shared icon button was rewired")
+        #expect(button.contains("@Environment(\\.isEnabled) private var isEnabled"))
         #expect(!button.contains("Text("), "icon-only — no visible title")
         #expect(PanelMetrics.iconButtonSize == 28 && PanelMetrics.iconButtonGlyph == 15)
+        #expect(PanelMetrics.iconButtonHitArea == 36, "the 36pt hit area (C10, #47)")
         #expect(PanelMetrics.iconButtonBadge < PanelMetrics.iconButtonGlyph, "the badge stays smaller than the glyph")
-        #expect(Self.occurrences(of: "PanelIconButton(", in: try Self.allViewCode()) == 1, "the gear is its one user")
+        let views = try Self.allViewCode()
+        #expect(Self.occurrences(of: "PanelIconButton(", in: views) == 2, "the gear and the lock are its users")
+        #expect(Self.occurrences(of: "PanelIconButton(symbol: PanelSymbol.settings", in: views) == 1)
+        #expect(Self.occurrences(of: "PanelIconButton(symbol: PanelSymbol.lockScreen", in: views) == 1)
     }
 
     /// Slice W, the iron rule extended to the gear: it renders the Settings

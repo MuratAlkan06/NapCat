@@ -63,9 +63,14 @@ enum PanelMetrics {
     static let cardBoostLight: Double = 0.045
     static let cardBoostDark: Double = 0.032
     /// `PanelIconButton` (slice W): the 28pt circular target and its 15pt
-    /// glyph (Panel 2.0 spec — the Lock Screen button adopts both in slice P).
+    /// glyph (Panel 2.0 spec — the Settings gear and, since slice P, the
+    /// Lock Screen button).
     static let iconButtonSize: CGFloat = 28
     static let iconButtonGlyph: CGFloat = 15
+    /// Its hit area (slice P, issue #47): a 36pt circle around the same
+    /// centre, overflowing the 28pt footprint by 4pt on every side — so a
+    /// near-miss still lands, and the layout around the button never moves.
+    static let iconButtonHitArea: CGFloat = 36
     /// The severity badge on an icon button's top-trailing corner.
     static let iconButtonBadge: CGFloat = 9
 }
@@ -361,21 +366,20 @@ struct StayAwakeCaptionSlot: View {
 /// running. The menu closes first (the user is walking away) — handled by
 /// MenuContentView through the single dismissal gateway. Since the
 /// 2026-10-21 declutter it is an ICON-ONLY button; since 2026-10-22 it sits
-/// in the battery header's top-right corner (`BatteryHeader`). Its
-/// availability line lives in Settings › General (and surfaces in the panel
-/// when the lock API is unavailable).
+/// in the battery header's top-right corner (`BatteryHeader`). Since slice P
+/// it is the panel's `PanelIconButton` — the owner found the bordered
+/// small button's glyph "too small", and a bordered button only ever
+/// hit-tested at its 35×19pt bezel (#47) — so it has the 15pt glyph, the
+/// 28pt target and the 36pt hit area. Its availability line lives in
+/// Settings › General (and surfaces in the panel when the lock API is
+/// unavailable).
 struct LockScreenButton: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
-        Button { model.lockScreen() } label: {
-            Image(systemName: PanelSymbol.lockScreen)
-        }
-        .controlSize(.small)
-        .disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)
-        .help("Lock Screen")
-        .accessibilityLabel("Lock Screen")
-        .accessibilityHint("Locks now and turns the display off — the Mac keeps running")
+        PanelIconButton(symbol: PanelSymbol.lockScreen, label: "Lock Screen") { model.lockScreen() }
+            .disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)
+            .accessibilityHint("Locks now and turns the display off — the Mac keeps running")
     }
 }
 
@@ -537,23 +541,33 @@ struct PanelFooterStatus: View {
 }
 
 /// The panel's icon-only button (Panel 2.0, slice W): a 28pt circular target
-/// holding the glyph alone — 15pt medium, primary — with the plain look and
-/// the shared press fade (`PanelPressFadeButtonStyle`). Tooltip and VoiceOver
-/// carry its name. The footer's Settings gear uses it.
+/// holding the glyph alone — 15pt medium, primary (tertiary while disabled:
+/// the plain look has no bezel to grey out) — with the plain look and the
+/// shared press fade (`PanelPressFadeButtonStyle`). Tooltip and VoiceOver
+/// carry its name. The footer's Settings gear and the header's Lock Screen
+/// button use it.
+///
+/// Hit area (slice P, issue #47): the label is a 36pt circle, and a negative
+/// padding hands the layout back its 28pt footprint, so the hit circle
+/// overflows the target by 4pt on every side without moving anything. (A
+/// bordered button cannot do this: it hit-tests at its bezel whatever its
+/// content shape says.)
 struct PanelIconButton: View {
     let symbol: String
     let label: String
     let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: PanelMetrics.iconButtonGlyph, weight: .medium))
-                .foregroundStyle(.primary)
-                .frame(width: PanelMetrics.iconButtonSize, height: PanelMetrics.iconButtonSize)
+                .foregroundStyle(isEnabled ? HierarchicalShapeStyle.primary : .tertiary)
+                .frame(width: PanelMetrics.iconButtonHitArea, height: PanelMetrics.iconButtonHitArea)
                 .contentShape(Circle())
         }
         .buttonStyle(PanelPressFadeButtonStyle())
+        .padding(-(PanelMetrics.iconButtonHitArea - PanelMetrics.iconButtonSize) / 2)
         .help(label)
         .accessibilityLabel(label)
     }
