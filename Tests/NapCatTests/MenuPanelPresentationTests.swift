@@ -895,6 +895,83 @@ struct MenuPanelPresentationTests {
         #expect(PanelMetrics.titleIndent == PanelMetrics.symbolColumn + PanelMetrics.regular)
     }
 
+    // MARK: - The test-send button (#67)
+
+    /// What the button renders: phase × whether the destination is usable.
+    /// "Sending…" is disabled whatever the destination; idle and "Sent"
+    /// follow it. Only "Sent" carries a symbol (the checkmark, after it).
+    @Test(arguments: [
+        (TestSendPhase.idle, true, "Send test message", String?.none, true),
+        (.idle, false, "Send test message", nil, false),
+        (.sending, true, "Sending…", nil, false),
+        (.sending, false, "Sending…", nil, false),
+        (.sent, true, "Sent", PanelSymbol.sent, true),
+        (.sent, false, "Sent", PanelSymbol.sent, false),
+    ])
+    func testSendButtonTable(phase: TestSendPhase, available: Bool, title: String, symbol: String?, enabled: Bool) {
+        #expect(MenuStateModel.testSendButton(phase: phase, available: available)
+                == TestSendButtonPresentation(title: title, symbol: symbol, enabled: enabled))
+    }
+
+    /// How the button moves: every phase × every event. A tap always means
+    /// "Sending…"; only an ACCEPTED outcome while sending earns "Sent" — a
+    /// refused, rate-limited, failed or unconfirmed one goes straight back to
+    /// idle (the surfaced last-send line is the error signal); the hold's end
+    /// reverts only "Sent"; and an outcome outside "Sending…" (a priming send
+    /// from a toggle) never moves the button.
+    @Test(arguments: [
+        ("idle, tapped", TestSendPhase.idle, TestSendEvent.tapped, TestSendPhase.sending),
+        ("sending, tapped", .sending, .tapped, .sending),
+        ("sent, tapped", .sent, .tapped, .sending),
+        ("sending, accepted", .sending, .outcome(.accepted), .sent),
+        ("sending, refused", .sending, .outcome(.rejected(403)), .idle),
+        ("sending, rate-limited", .sending, .outcome(.rejected(429)), .idle),
+        ("sending, failed", .sending, .outcome(.sendFailed("the ntfy server could not be reached")), .idle),
+        ("sending, unconfirmed", .sending, .outcome(.timedOutUnconfirmed), .idle),
+        ("sending, no outcome", .sending, .outcome(nil), .idle),
+        ("idle, accepted elsewhere", .idle, .outcome(.accepted), .idle),
+        ("idle, refused elsewhere", .idle, .outcome(.rejected(403)), .idle),
+        ("sent, refused elsewhere", .sent, .outcome(.rejected(403)), .sent),
+        ("sent, hold elapsed", .sent, .revertElapsed, .idle),
+        ("sending, hold elapsed", .sending, .revertElapsed, .sending),
+        ("idle, hold elapsed", .idle, .revertElapsed, .idle),
+    ])
+    func testSendPhaseTable(id: String, from: TestSendPhase, event: TestSendEvent, to: TestSendPhase) {
+        #expect(MenuStateModel.testSendPhase(from, on: event) == to, "\(id)")
+    }
+
+    /// The fixed vocabulary, exactly: the ellipsis is the one character
+    /// U+2026 (as in "ntfy settings…"), and the success mark is an SF Symbol
+    /// in `PanelSymbol` (so it is resolve-checked), never a text glyph.
+    @Test func theTestSendVocabularyIsFixed() {
+        let labels = TestSendPhase.allCases.map { MenuStateModel.testSendButton(phase: $0, available: true) }
+        #expect(labels.map(\.title) == ["Send test message", "Sending\u{2026}", "Sent"])
+        #expect(labels.map(\.symbol) == [nil, nil, "checkmark"])
+        #expect(PanelSymbol.all.contains(PanelSymbol.sent))
+        for title in labels.map(\.title) {
+            #expect(!title.contains("✓") && !title.contains("✔") && !title.contains("..."), "'\(title)'")
+        }
+    }
+
+    /// Reserved width, headless: the button lays out every phase's label
+    /// (`SendFeedbackButton`), so it is as wide as the widest. At the small
+    /// control font the widest is the idle title — so every phase keeps the
+    /// width the plain "Send test message" button had — and the inline
+    /// checkmark is no taller than the text line, so "Sent" adds no height.
+    @Test @MainActor func theIdleTitleIsTheWidestTestSendLabel() throws {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        func width(_ text: String) -> CGFloat { (text as NSString).size(withAttributes: [.font: font]).width }
+        let checkmark = try #require(NSImage(systemSymbolName: PanelSymbol.sent, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)))
+        let idle = width(MenuStateModel.testSendButton(phase: .idle, available: true).title)
+        let sending = width(MenuStateModel.testSendButton(phase: .sending, available: true).title)
+        let sent = width(MenuStateModel.testSendButton(phase: .sent, available: true).title + " ") + checkmark.size.width
+        #expect(idle > sending, "\"Sending…\" (\(sending)pt) outgrows the idle title (\(idle)pt)")
+        #expect(idle > sent, "\"Sent\" + checkmark (\(sent)pt) outgrows the idle title (\(idle)pt)")
+        #expect(checkmark.size.height <= NSLayoutManager().defaultLineHeight(for: font),
+                "the inline checkmark is taller than the text line")
+    }
+
     // MARK: - Model panel state
 
     /// `lockAvailable` wires the REAL ScreenLockController (resolution only —

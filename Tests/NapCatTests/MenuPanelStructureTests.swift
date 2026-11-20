@@ -609,6 +609,117 @@ struct MenuPanelStructureTests {
         }
     }
 
+    /// #67: the panel's motion, codified in `PanelMotion`. Every animated line
+    /// is the chevron's pattern — nil under Reduce Motion, an ease-out — and
+    /// spells one of `PanelMotion`'s animation durations, within
+    /// `PanelMotion.maxDuration`; the chevron turns at `PanelMotion.chevron`.
+    /// Zero motion on open / close: no view animates its insertion or removal
+    /// (`.transition(`), nothing animates through a transaction or
+    /// imperatively, and the hosting view's re-fit snaps to the new size.
+    static func motionFailures(views: String, owner: String) -> [String] {
+        var failures: [String] = []
+        let durations = [PanelMotion.chevron, PanelMotion.pressFade]
+        let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
+        if animated.isEmpty { failures.append("vacuity: the chevron animates") }
+        for line in animated {
+            guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
+                failures.append("not the chevron's Reduce-Motion-nil ease-out pattern: \(line)")
+                continue
+            }
+            let duration = line.components(separatedBy: "duration: ").dropFirst().first
+                .flatMap { Double($0.prefix { "0123456789.".contains($0) }) }
+            guard let duration, durations.contains(duration) else {
+                failures.append("the duration is not a PanelMotion constant: \(line)")
+                continue
+            }
+            if duration > PanelMotion.maxDuration {
+                failures.append("longer than PanelMotion.maxDuration: \(line)")
+            }
+        }
+        let disclosure = Self.structChunk("PanelDetailsDisclosure", in: views) ?? ""
+        if !disclosure.contains(".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.chevron)), value: expanded)") {
+            failures.append("the chevron must turn at PanelMotion.chevron")
+        }
+        for token in [".transition(", "withAnimation", "withTransaction", ".transaction", "matchedGeometryEffect",
+                      "NSAnimationContext", "animator()"] where (views + "\n" + owner).contains(token) {
+            failures.append("'\(token)' — nothing animates the panel's open, close or height change")
+        }
+        if !owner.contains("        setFrameSize(fitting)\n") {
+            failures.append("MenuPanelHostingView's re-fit must snap (a plain setFrameSize)")
+        }
+        return failures
+    }
+
+    @Test func panelMotionCodifiesEveryAnimation() throws {
+        let views = try Self.allViewCode()
+        let owner = try Self.code("MenuContentView.swift")
+        #expect(Self.motionFailures(views: views, owner: owner).isEmpty, "\(Self.motionFailures(views: views, owner: owner))")
+        #expect(PanelMotion.chevron <= PanelMotion.maxDuration && PanelMotion.pressFade <= PanelMotion.maxDuration)
+        let canaries: [(name: String, views: String, owner: String)] = [
+            ("an insertion transition", views + "\nlet canary = Text(\"x\").transition(.opacity)", owner),
+            ("the chevron off its PanelMotion duration",
+             views.replacingOccurrences(of: "duration: 0.15)", with: "duration: 0.25)"), owner),
+            ("an animation not gated on Reduce Motion",
+             views + "\nlet canary = Text(\"x\").animation(.easeOut(duration: 0.1), value: 1)", owner),
+            ("a transaction", views + "\nlet canary = Text(\"x\").transaction { $0.animation = .default }", owner),
+            ("an imperative AppKit animation", views, owner + "\nlet canary = NSAnimationContext.current"),
+            ("an animated re-fit", views, owner.replacingOccurrences(
+                of: "        setFrameSize(fitting)\n", with: "        animator().setFrameSize(fitting)\n")),
+        ]
+        for canary in canaries {
+            #expect(canary.views != views || canary.owner != owner, "canary setup '\(canary.name)'")
+            #expect(!Self.motionFailures(views: canary.views, owner: canary.owner).isEmpty,
+                    "canary '\(canary.name)' was NOT caught")
+        }
+    }
+
+    /// #67: Details renders the test send through `SendFeedbackButton` — once,
+    /// beside "ntfy settings…" — and the wrapper keeps its promises: every
+    /// phase's label is laid out (the current one shown, the rest hidden), so
+    /// the widest reserves the width; the phase moves only through the pure
+    /// mapping; the existing outcome pipeline ends "Sending…"; the "Sent" hold
+    /// is `PanelMotion.sentRevert`; nothing animates; and the only action is
+    /// `model.sendLidGuardTestMessage()`.
+    @Test func theTestSendAcknowledgesThroughOneWrapper() throws {
+        let source = try Self.code("MenuPanelView.swift")
+        let views = try Self.allViewCode()
+        let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
+        #expect(Self.occurrences(of: "SendFeedbackButton(", in: views) == 1, "ONE test-send button")
+        #expect(details.contains("Button(\"ntfy settings…\") { model.editLidGuardSettings() }\n"
+                                 + "                    .controlSize(.small)\n"
+                                 + "                SendFeedbackButton(model: model)\n"),
+                "the wrapper sits beside \"ntfy settings…\" in Details")
+        #expect(!views.contains("Button(\"Send test message\")"), "no bare test-send button")
+        #expect(Self.occurrences(of: "model.sendLidGuardTestMessage()", in: views) == 1)
+
+        let button = try #require(Self.structChunk("SendFeedbackButton", in: source))
+        for token in [
+            "ForEach(TestSendPhase.allCases, id: \\.self)",
+            "if candidate == phase {",
+            "label.hidden()",
+            "phase = MenuStateModel.testSendPhase(phase, on: .tapped)\n            model.sendLidGuardTestMessage()",
+            ".controlSize(.small)",
+            ".disabled(!presentation.enabled)",
+            ".onChange(of: model.lidGuardLastOutcomeAt)",
+            "on: .outcome(model.lidGuardLastOutcome)",
+            ".task(id: phase)",
+            "Task.sleep(for: .seconds(PanelMotion.sentRevert))",
+            "on: .revertElapsed",
+        ] {
+            #expect(button.contains(token), "'\(token)' not found — the test-send wrapper was rewired")
+        }
+        let assignments = button.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("phase = ") }
+        #expect(assignments.count == 3, "tap, outcome, hold — got \(assignments)")
+        for line in assignments {
+            #expect(line.hasPrefix("phase = MenuStateModel.testSendPhase(phase, on: "), "phase moved outside the mapping: \(line)")
+        }
+        for token in [".animation(", "fixedSize", "cancelTracking", "setDetailsExpanded", "request"] {
+            #expect(!button.contains(token), "'\(token)' in the test-send wrapper")
+        }
+    }
+
     @Test func systemColorsOnly() throws {
         let views = try Self.allViewCode()
         for token in ["Color(red", "Color(hue", "Color(white", "Color(\"", "Color(#", "hex", "#colorLiteral",
