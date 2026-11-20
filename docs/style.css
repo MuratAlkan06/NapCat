@@ -334,6 +334,22 @@ li + li {
   border-radius: var(--radius);
 }
 
+/* Marks the features that need the optional setup; links to that section. */
+.setup-tag {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.setup-tag:hover {
+  border-color: currentColor;
+}
+
 .note {
   color: var(--color-text-muted);
   font-size: var(--text-sm);

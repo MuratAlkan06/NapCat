@@ -52,9 +52,10 @@
   <main id="main" class="wrap">
     <section aria-labelledby="features-title">
       <h2 id="features-title">What it does</h2>
+      <p>Stay Awake and the charge limit need a one-time setup, which is optional; they are marked below. Without it, NapCat still shows the battery percentage and charging state.</p>
       <ul class="features">
-        <li><strong>Stays awake with the lid closed</strong>, on demand. The cat runs while it is on, and sleep comes back on its own if NapCat quits or crashes.</li>
-        <li><strong>Limits battery charging</strong> on Apple Silicon: charging pauses at the limit you pick (50 to 100%) and resumes 5 points below it.</li>
+        <li><strong>Stays awake with the lid closed</strong>, on demand. The cat runs while it is on, and sleep comes back on its own if NapCat quits or crashes. <a class="setup-tag" href="#setup-title">Needs one-time setup</a></li>
+        <li><strong>Limits battery charging</strong> on Apple Silicon: charging pauses at the limit you pick (50 to 100%) and resumes 5 points below it. <a class="setup-tag" href="#setup-title">Needs one-time setup</a></li>
         <li><strong>Pings your phone</strong> (optional, through ntfy) if the Mac starts to sleep while a Claude Code task is running, and when a long session finishes or stops to wait for you.</li>
       </ul>
     </section>
@@ -71,8 +72,8 @@
     </section>
 
     <section aria-labelledby="setup-title">
-      <h2 id="setup-title">One-time setup for the power switches</h2>
-      <p>Charge limiting and lid-closed stay-awake need a one-time terminal setup (<code>sudo ./scripts/setup.sh</code>). Here is what it does and why.</p>
+      <h2 id="setup-title">One-time setup for the power switches (optional)</h2>
+      <p>Charge limiting and lid-closed stay-awake need a one-time terminal setup (<code>sudo ./scripts/setup.sh</code>). It is optional: without it, NapCat still shows the battery percentage and charging state. Here is what it does and why.</p>
 
       <h3>Why it is needed</h3>
       <p>Both switches change system settings that only root can change: <code>pmset disablesleep</code>, and two battery-charging keys in the SMC. NapCat itself always runs as you and never asks for, stores, or uses your password. Instead, a short script that you read and run yourself allows exactly the commands NapCat needs, and nothing else.</p>
