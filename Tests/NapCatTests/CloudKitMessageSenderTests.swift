@@ -165,6 +165,20 @@ struct CloudKitMessageSenderTests {
                 expected: .sendFailed(CloudKitMessageSender.rateLimitedText)),
         SaveRow(name: "serviceUnavailable", error: ck(.serviceUnavailable),
                 expected: .sendFailed(CloudKitMessageSender.serviceUnavailableText)),
+        // Owner ruling (g), 2026-11-20: iCloud refusing the request outright is
+        // definitive too — nothing was stored (live evidence: the spike's
+        // quotaExceeded(25) burst).
+        SaveRow(name: "quotaExceeded", error: ck(.quotaExceeded),
+                expected: .sendFailed(CloudKitMessageSender.quotaExceededText)),
+        SaveRow(name: "serverRejectedRequest", error: ck(.serverRejectedRequest),
+                expected: .sendFailed(CloudKitMessageSender.serverRejectedText)),
+        SaveRow(name: "permissionFailure", error: ck(.permissionFailure),
+                expected: .sendFailed(CloudKitMessageSender.permissionText)),
+        SaveRow(name: "partialFailure(quotaExceeded)", error: partial([ck(.quotaExceeded)]),
+                expected: .sendFailed(CloudKitMessageSender.quotaExceededText)),
+        // …but a timeout underneath still wins (double-buzz rule).
+        SaveRow(name: "quotaExceeded over timedOut", error: ck(.quotaExceeded, underlying: url(.timedOut)),
+                expected: .timedOutUnconfirmed),
         // A pre-connect transport error underneath keeps the code's verdict.
         SaveRow(name: "networkFailure over notConnectedToInternet",
                 error: ck(.networkFailure, underlying: url(.notConnectedToInternet)),
@@ -182,10 +196,10 @@ struct CloudKitMessageSenderTests {
         SaveRow(name: "serverResponseLost", error: ck(.serverResponseLost), expected: .timedOutUnconfirmed),
         SaveRow(name: "internalError", error: ck(.internalError), expected: .timedOutUnconfirmed),
         SaveRow(name: "zoneBusy (not in the ADR list)", error: ck(.zoneBusy), expected: .timedOutUnconfirmed),
-        SaveRow(name: "serverRejectedRequest", error: ck(.serverRejectedRequest), expected: .timedOutUnconfirmed),
-        SaveRow(name: "permissionFailure", error: ck(.permissionFailure), expected: .timedOutUnconfirmed),
         SaveRow(name: "serverRecordChanged", error: ck(.serverRecordChanged), expected: .timedOutUnconfirmed),
-        SaveRow(name: "quotaExceeded", error: ck(.quotaExceeded), expected: .timedOutUnconfirmed),
+        SaveRow(name: "limitExceeded (not in the ADR list)", error: ck(.limitExceeded), expected: .timedOutUnconfirmed),
+        SaveRow(name: "a CloudKit code this SDK does not know",
+                error: NSError(domain: CKErrorDomain, code: 9_999), expected: .timedOutUnconfirmed),
         SaveRow(name: "a bare URL timeout", error: url(.timedOut), expected: .timedOutUnconfirmed),
         SaveRow(name: "a bare URL no-internet (not a CloudKit verdict)", error: url(.notConnectedToInternet),
                 expected: .timedOutUnconfirmed),
@@ -204,13 +218,17 @@ struct CloudKitMessageSenderTests {
         #expect(CloudKitMessageSender.classifySave(row.error) == row.expected)
     }
 
-    /// The definitive list is CLOSED: exactly these eight codes are
-    /// `sendFailed`; every other code CloudKit can report is not.
+    /// The definitive list is CLOSED: exactly these eleven codes are
+    /// `sendFailed` — the ADR's eight plus owner ruling (g)'s three refusals
+    /// (2026-11-20) — and every other code CloudKit can report is not.
     @Test func exactlyTheAdrCodesAreDefinitive() {
         let definitive: Set<Int> = Set([
             CKError.Code.networkUnavailable, .networkFailure, .notAuthenticated, .accountTemporarilyUnavailable,
             .badContainer, .missingEntitlement, .requestRateLimited, .serviceUnavailable,
+            .quotaExceeded, .serverRejectedRequest, .permissionFailure,
         ].map(\.rawValue))
+        #expect(definitive.count == 11)
+        #expect(definitive.contains(25), "quotaExceeded is code 25 — the spike's live evidence")
         var checked = 0
         for raw in 0...64 {
             guard let code = CKError.Code(rawValue: raw) else { continue }
@@ -221,6 +239,28 @@ struct CloudKitMessageSenderTests {
         #expect(checked >= 36, "vacuity: the CloudKit code space was enumerated")
     }
 
+    /// Ruling (g) widened the list by name, not by default: a code OUTSIDE
+    /// it — one this SDK lists but the ADR does not, or one a future SDK adds
+    /// — still classifies as unconfirmed (no ntfy fallback, so no double
+    /// buzz), including inside a one-record batch and at the account check.
+    @Test func anUnlistedCodeStaysUnconfirmed() {
+        for code in [CKError.Code.zoneBusy, .limitExceeded, .serverRecordChanged, .changeTokenExpired] {
+            #expect(CloudKitMessageSender.definitiveFailureText(code) == nil, "code \(code.rawValue)")
+            #expect(CloudKitMessageSender.classifySave(Self.ck(code)) == .timedOutUnconfirmed, "code \(code.rawValue)")
+        }
+        // Far past every code CloudKit defines. An imported NS_ENUM accepts any
+        // raw value, so the code reaches `definitiveFailureText` as an unknown case.
+        let unknownRaw = 9_999
+        #expect(CKError.Code(rawValue: unknownRaw).flatMap(CloudKitMessageSender.definitiveFailureText) == nil)
+        let unknown = NSError(domain: CKErrorDomain, code: unknownRaw)
+        #expect(CloudKitMessageSender.classifySave(unknown) == .timedOutUnconfirmed)
+        #expect(CloudKitMessageSender.classifySave(Self.partial([unknown])) == .timedOutUnconfirmed)
+        // Before anything is saved even an unknown error refuses, with the
+        // generic account sentence — never a new code's own text.
+        #expect(CloudKitMessageSender.accountRefusal(status: .available, error: unknown)
+                == .sendFailed(CloudKitMessageSender.accountUncheckedText))
+    }
+
     /// Every failure text is fixed, distinct where it should be, and free of
     /// anything resembling an address or a secret.
     @Test func theFailureVocabularyIsFixedText() {
@@ -229,7 +269,9 @@ struct CloudKitMessageSenderTests {
                      CloudKitMessageSender.notSignedInText, CloudKitMessageSender.restrictedText,
                      CloudKitMessageSender.accountUnavailableText, CloudKitMessageSender.accountUncheckedText,
                      CloudKitMessageSender.containerText, CloudKitMessageSender.rateLimitedText,
-                     CloudKitMessageSender.serviceUnavailableText, CloudKitMessageSender.busyLaneText]
+                     CloudKitMessageSender.serviceUnavailableText, CloudKitMessageSender.quotaExceededText,
+                     CloudKitMessageSender.serverRejectedText, CloudKitMessageSender.permissionText,
+                     CloudKitMessageSender.busyLaneText]
         #expect(Set(texts).count == texts.count)
         for text in texts {
             #expect(!text.isEmpty)
