@@ -66,10 +66,9 @@ clean:
 	rm -rf .build $(DIST)
 
 # Regenerates Resources/frames/*.png: run/sit from the in-code pixel grids,
-# sleep from art/groom-source.png (the hand-drawn grooming cat), idle from
-# art/idle/idle00…idle16.png (the hand-drawn groom→sit cycle). Output is
-# byte-deterministic (self-contained PNG encoder + pure processing, no
-# timestamps), so rerunning leaves `git status` clean. Frames are committed AND
+# idle from art/idle/idle00…idle16.png (the hand-drawn groom→sit cycle).
+# Output is byte-deterministic (self-contained PNG encoder + pure processing,
+# no timestamps), so rerunning leaves `git status` clean. Frames are committed AND
 # regenerable; `make all` copies the committed PNGs into the app bundle without
 # re-rendering.
 frames:

@@ -10,28 +10,21 @@
 //       in-code 18×18 "X"/"." grids below.  <name>.png = 18×18 @1x,
 //       <name>@2x.png = 36×36 (nearest-neighbor 2× doubling of the grid).
 //
-//   sleep0…sleep2         — the user's hand-drawn grooming cat
-//       (art/groom-source.png, committed), processed into ONE static template
-//       and scaled for iconPointHeight=21: <name>.png = 21×21 @1x,
-//       <name>@2x.png = 42×42 @2x (a true higher-resolution render, not pixel
-//       doubling). All three sleepN frames are byte-identical copies — the
-//       sleep state is a STILL image, not an animation (the user rejected the
-//       synthetic head-bob, decision log 2026-07-11). See the pipeline below.
-//
 //   idle0…idle16          — the user's hand-drawn 17-frame groom→sit cycle
 //       (art/idle/idle00…idle16.png, committed), processed into template
-//       frames at the same scale family as the groom cat: <name>.png = 21×21
-//       @1x, <name>@2x.png = 42×42 @2x (true higher-resolution render). ONE
-//       union crop for all 17 frames, so the cat never jitters. See the
-//       idle-cycle pipeline below.
+//       frames scaled for iconPointHeight=21: <name>.png = 21×21 @1x,
+//       <name>@2x.png = 42×42 @2x (a true higher-resolution render, not pixel
+//       doubling). ONE union crop for all 17 frames, so the cat never
+//       jitters. See the idle-cycle pipeline below. (It replaced the static
+//       grooming-cat "sleep" still from art/groom-source.png, 2026-11-19; that
+//       source now feeds only scripts/render_appicon.swift.)
 //
 // DETERMINISM: output must be byte-identical across runs so regeneration
 // keeps `git status` clean. The PNG encoder is self-contained and writes only
 // IHDR/IDAT/IEND with a stored (uncompressed) zlib stream — no timestamps, no
-// metadata chunks, no library whose compression may vary. The groom and idle
-// pipelines are pure integer/float math over fixed committed sources, so they
-// too are reproducible (`make frames` twice → identical bytes, verified by
-// shasum).
+// metadata chunks, no library whose compression may vary. The idle pipeline
+// is pure integer/float math over fixed committed sources, so it too is
+// reproducible (`make frames` twice → identical bytes, verified by shasum).
 //
 // ── run/sit design intent (ORIGINAL artwork — do not copy RunCat) ──────────
 // Drawn by hand on the 18×18 grid: chunky 2px limbs/tail, boxy square head
@@ -40,7 +33,7 @@
 // every edge (outer ring transparent — validated below).
 //   run — long low 5-phase gallop, side profile facing right, 1px body bob
 //   sit — tall upright cat, tail wrapped along the ground; sit1 lifts the tip
-// (sleep is now the processed grooming cat — see the pipeline section.)
+// (the idle cat is the user's hand-drawn art — see the idle-cycle pipeline.)
 
 import AppKit  // re-exports Foundation; CoreGraphics decodes the hand-drawn sources
 
@@ -316,30 +309,30 @@ func rasterize(grid: [String], scale: Int) -> [UInt8] {
     return rgba
 }
 
-// MARK: - Groom-art pipeline (sleep frames from art/groom-source.png)
+// MARK: - Idle-cycle pipeline (idle frames from art/idle/idle00…idle16.png)
 //
-// Turns the user's 640×640 hand-drawn grooming cat into ONE static template
-// frame (the rest pose). Steps (all deterministic; user-validated chain,
-// PLAN.md decision log 2026-07-11):
-//   1. Interior-line cutout: flood-fill the transparent exterior from the
-//      corners; dark outline pixels (luma < 90) within 3px of the exterior are
-//      kept (outer outline), interior dark lines (eyes, paw stroke) are cut to
-//      alpha 0 → negative-space detail.
-//   2. Blacken: every surviving opaque pixel is pure black (RGB 0), alpha kept
-//      — so the result is a solid black cat with cutout gaps (template icons
-//      render gray as dim, so gray must become black).
-//   3. Trim to the silhouette's bounding box, pad to a centred square with
-//      ~4% breathing room.
+// The user's 17 hand-drawn 640×640 exports (frame order = export order:
+// 00–04 paw-lick with eyes closed, 05–11 paw lowers / eyes open, 12–16
+// upright sit) are WHITE art on transparency whose interior details — eyes,
+// mouth, paw and leg lines — are drawn as transparent HOLES. The alpha
+// channel alone therefore carries the whole drawing, and no outline/interior
+// classification is needed (unlike the retired dark-stroke groom pipeline).
+// Steps (all deterministic; standing art rulings — no hard threshold, no
+// dilation):
+//   1. Decode + validate: exactly idle00…idle16 present, each 640×640, every
+//      visible pixel LIGHT. A dark opaque stroke would be blackened into the
+//      body and silently lose its detail, so it fails the render loudly.
+//   2. Template: alpha kept exactly as drawn, RGB → 0 (pure black + alpha);
+//      the interior holes stay transparent → negative-space detail.
+//   3. ONE union bounding box across all 17 frames → centred square +4% pad
+//      per side. Every frame uses that single crop, so the cat never jitters
+//      frame to frame (only the drawn motion moves).
 //   4. Area-average downscale to 21px (@1x) and 42px (@2x) — a true 2× render.
-//   5. Gentle γ0.45 alpha boost (no hard threshold, no dilation).
-//
-// The single result is written to sleep0/1/2 as three byte-identical copies:
-// the sleep icon is a STILL grooming cat. The earlier synthetic head-bob was
-// rejected by the user; the upcoming 17-frame hand-drawn set will animate the
-// SIT state instead (decision log 2026-07-11).
+//   5. Gentle γ0.45 alpha boost.
 
-/// Every hand-drawn source (art/groom-source.png, art/idle/*.png) is a
-/// 640×640 export.
+let idleFrameCount = 17
+
+/// Every idle source (art/idle/*.png) is a 640×640 export.
 let sourceSize = 640
 
 /// Decode a committed hand-drawn source into straight (un-premultiplied)
@@ -349,7 +342,8 @@ let sourceSize = 640
 /// (memory offset 0 = the visual TOP of the drawn image); `ctx.draw` maps the
 /// source image's top to that first row. So the buffer is already top-down and
 /// must NOT be flipped — an earlier flip here (mistaking the bottom-left user-
-/// space origin for the memory layout) rendered the sleep cat upside down.
+/// space origin for the memory layout) rendered the former grooming-cat icon
+/// upside down (2026-07-11).
 func decodeSource(path: String) -> [UInt8] {
     guard let image = NSImage(contentsOfFile: path),
           let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
@@ -365,8 +359,8 @@ func decodeSource(path: String) -> [UInt8] {
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     ) else { fail("could not create decode context") }
     ctx.draw(cg, in: CGRect(x: 0, y: 0, width: sourceSize, height: sourceSize))
-    // Un-premultiply so edge-pixel luma is straight (only affects luma
-    // classification/validation; blackening discards RGB afterward).
+    // Un-premultiply so edge-pixel luma is straight (only affects the
+    // light-art validation; blackening discards RGB afterward).
     for i in 0..<(sourceSize * sourceSize) {
         let a = buf[i * 4 + 3]
         if a > 0 && a < 255 {
@@ -375,55 +369,6 @@ func decodeSource(path: String) -> [UInt8] {
     }
     // Buffer is already top-row-first (see ORIENTATION note above) — no flip.
     return buf
-}
-
-/// Steps 1+2 → a black-cat alpha mask (RGB implicitly 0).
-func buildGroomSilhouette(_ px: [UInt8]) -> [UInt8] {
-    let n = sourceSize
-    func idx(_ x: Int, _ y: Int) -> Int { y * n + x }
-    func blocked(_ x: Int, _ y: Int) -> Bool { px[idx(x, y) * 4 + 3] > 40 }
-    // Exterior = flood fill of {alpha ≤ 40} from the four corners (4-conn).
-    var outside = [Bool](repeating: false, count: n * n)
-    var work: [(Int, Int)] = []
-    for (sx, sy) in [(0, 0), (n - 1, 0), (0, n - 1), (n - 1, n - 1)] where !blocked(sx, sy) {
-        outside[idx(sx, sy)] = true
-        work.append((sx, sy))
-    }
-    while let (x, y) = work.popLast() {
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let nx = x + dx, ny = y + dy
-            if nx < 0 || ny < 0 || nx >= n || ny >= n { continue }
-            let ni = idx(nx, ny)
-            if outside[ni] || blocked(nx, ny) { continue }
-            outside[ni] = true
-            work.append((nx, ny))
-        }
-    }
-    // "within 3px of exterior" = dilate the exterior by a radius-3 disk.
-    var kernel: [(Int, Int)] = []
-    for dy in -3...3 { for dx in -3...3 where dx * dx + dy * dy <= 9 { kernel.append((dx, dy)) } }
-    var nearOutside = [Bool](repeating: false, count: n * n)
-    for y in 0..<n { for x in 0..<n where outside[idx(x, y)] {
-        for (dx, dy) in kernel {
-            let nx = x + dx, ny = y + dy
-            if nx < 0 || ny < 0 || nx >= n || ny >= n { continue }
-            nearOutside[idx(nx, ny)] = true
-        }
-    }}
-    var alpha = [UInt8](repeating: 0, count: n * n)
-    for y in 0..<n { for x in 0..<n {
-        let i = idx(x, y)
-        let a = px[i * 4 + 3]
-        if a <= 40 { continue } // transparent
-        let luma = 0.299 * Double(px[i * 4]) + 0.587 * Double(px[i * 4 + 1]) + 0.114 * Double(px[i * 4 + 2])
-        if luma < 90 {
-            if nearOutside[i] { alpha[i] = a } // outer outline → keep
-            // else interior line (eyes, paw stroke) → cut (alpha stays 0)
-        } else {
-            alpha[i] = a // body fill → keep
-        }
-    }}
-    return alpha
 }
 
 typealias BBox = (minX: Int, minY: Int, maxX: Int, maxY: Int)
@@ -496,37 +441,6 @@ func gammaBoostToRGBA(_ alpha: [UInt8], _ gamma: Double) -> [UInt8] {
     return rgba
 }
 
-/// The centred crop square for the static sleep cat: the silhouette's own
-/// bounding box, padded with ~4% breathing room per side. There is no motion,
-/// so the crop is simply this one rest-pose silhouette's extent (identical to
-/// the former union bbox — the removed head-bob only ever shrank the head, so
-/// the rest pose was always the widest frame).
-func groomCropSquare(_ silhouette: [UInt8]) -> (ox: Double, oy: Double, side: Double) {
-    paddedCropSquare(alphaBBox(silhouette))
-}
-
-// MARK: - Idle-cycle pipeline (idle frames from art/idle/idle00…idle16.png)
-//
-// The user's 17 hand-drawn 640×640 exports (frame order = export order:
-// 00–04 paw-lick with eyes closed, 05–11 paw lowers / eyes open, 12–16
-// upright sit) are WHITE art on transparency whose interior details — eyes,
-// mouth, paw and leg lines — are drawn as transparent HOLES. The alpha
-// channel alone therefore carries the whole drawing, and no outline/interior
-// classification is needed (unlike the dark-stroke groom source). Steps (all
-// deterministic; standing art rulings — no hard threshold, no dilation):
-//   1. Decode + validate: exactly idle00…idle16 present, each 640×640, every
-//      visible pixel LIGHT. A dark opaque stroke would be blackened into the
-//      body and silently lose its detail, so it fails the render loudly.
-//   2. Template: alpha kept exactly as drawn, RGB → 0 (pure black + alpha);
-//      the interior holes stay transparent → negative-space detail.
-//   3. ONE union bounding box across all 17 frames → centred square +4% pad
-//      per side. Every frame uses that single crop, so the cat never jitters
-//      frame to frame (only the drawn motion moves).
-//   4. Area-average downscale to 21px (@1x) and 42px (@2x) — a true 2× render.
-//   5. Gentle γ0.45 alpha boost.
-
-let idleFrameCount = 17
-
 /// Step 1+2 for one idle source → its alpha mask (RGB implicitly 0).
 func idleTemplateAlpha(_ px: [UInt8], name: String) -> [UInt8] {
     var alpha = [UInt8](repeating: 0, count: sourceSize * sourceSize)
@@ -579,20 +493,6 @@ for frame in gridFrames {
     }
 }
 
-// sleep — processed grooming cat at 21/42, rendered ONCE and written to all
-// three sleep frames (the sleep icon is static; the head-bob was removed).
-let sleepFrameCount = 3
-let groomSourcePath = repoRoot.appendingPathComponent("art/groom-source.png").path
-let silhouette = buildGroomSilhouette(decodeSource(path: groomSourcePath))
-let square = groomCropSquare(silhouette)
-for (suffix, size) in [("", 21), ("@2x", 42)] {
-    let alpha = downscaleAlpha(silhouette, ox: square.ox, oy: square.oy, side: square.side, out: size)
-    let data = encodePNG(width: size, height: size, rgba: gammaBoostToRGBA(alpha, 0.45))
-    for index in 0..<sleepFrameCount {
-        write("sleep\(index)\(suffix).png", data, "\(size)x\(size)")
-    }
-}
-
 // idle — the hand-drawn 17-frame groom→sit cycle at 21/42, one union crop.
 let idleSourceDirectory = repoRoot.appendingPathComponent("art/idle", isDirectory: true)
 let idleSourceNames = (0..<idleFrameCount).map { String(format: "idle%02d.png", $0) }
@@ -620,4 +520,4 @@ for (index, mask) in idleMasks.enumerated() {
     }
 }
 
-print("render_frames: \(gridFrames.count) grid + \(sleepFrameCount) sleep (static) + \(idleFrameCount) idle frames -> \(outputDirectory.path)")
+print("render_frames: \(gridFrames.count) grid + \(idleFrameCount) idle frames -> \(outputDirectory.path)")

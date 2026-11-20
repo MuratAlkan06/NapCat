@@ -12,8 +12,8 @@ final class StatusItemController {
 
     /// Menu bar icon render height in points (18 → 21 per user request,
     /// 2026-07-10). Applies to loaded frame images and the placeholder. The
-    /// sleep frames are now rendered 1:1 at 21px (the grooming cat, art v2,
-    /// 2026-07-11); run/sit remain 18px on-grid art upscaled to 21pt until
+    /// idle frames are rendered 1:1 at 21px (the hand-drawn groom→sit cycle,
+    /// 2026-11-19); run/sit remain 18px on-grid art upscaled to 21pt until
     /// their replacements are drawn.
     static let iconPointHeight: CGFloat = 21
 
@@ -99,7 +99,7 @@ final class StatusItemController {
                 // Height renders at iconPointHeight; width follows the
                 // frame's pixel aspect ratio so non-square frames scale
                 // proportionally (all current frames are square — run/sit 18px,
-                // sleep 21px → 21×21pt). Both backings cover the same point
+                // idle 21px → 21×21pt). Both backings cover the same point
                 // rect → 1x+2x.
                 let pointSize = NSSize(
                     width: Self.iconPointHeight * CGFloat(rep1x.pixelsWide) / CGFloat(rep1x.pixelsHigh),
