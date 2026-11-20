@@ -6,6 +6,12 @@ dist/
 Test.PNG
 .claude/
 
+# NapCat Phone (ios/): Xcode per-user state and build products
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+DerivedData/
+*.xcresult
+
 # Private planning docs — kept locally, excluded from the public history
 PLAN.md
 CLAUDE.md
