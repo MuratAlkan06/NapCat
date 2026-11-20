@@ -627,20 +627,99 @@ struct MenuPanelStructureTests {
 
     // MARK: - Motion, color, Dynamic Type, VoiceOver
 
-    /// Motion ≤200ms ease-out or none, always behind Reduce Motion, and never
-    /// on an observed-state change (no `withAnimation` anywhere — the only
-    /// animated value is the disclosure chevron).
-    @Test func motionIsGatedAndShort() throws {
-        let views = try Self.allViewCode()
-        #expect(!views.contains("withAnimation"), "observed-state snaps must never animate")
+    /// The values a panel animation may be keyed on, each one moved only by
+    /// the user. Observed state (pmset, battery, the limiter's work, Claude,
+    /// send outcomes) never animates: it snaps.
+    static let userDrivenAnimationKeys: [String: String] = [
+        "expanded": "the Details chevron, turned by the user's click",
+        "configuration.isPressed": "a button's press state",
+        // Owner ruling (f), 2026-11-20: the charge-limit readout is EXEMPT
+        // from "observed state never animates". The limit is the slider's own
+        // value, so the user drives it.
+        "model.limit": "the charge-limit readout",
+    ]
+    static let gatedMotionCap = 0.2
+
+    /// Every animated line, one by one: the chevron's Reduce-Motion-nil
+    /// ease-out pattern, at most `gatedMotionCap`, keyed on a value from
+    /// `userDrivenAnimationKeys`, and each key animated in ONE place. No
+    /// `withAnimation` anywhere.
+    static func motionGateFailures(views: String) -> [String] {
+        var failures: [String] = []
+        if views.contains("withAnimation") {
+            failures.append("'withAnimation' — observed-state snaps must never animate")
+        }
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
-        #expect(animated.count == 1, "only the chevron animates")
+        if animated.isEmpty { failures.append("vacuity: the chevron animates") }
+        var keyed: [String: Int] = [:]
         for line in animated {
-            #expect(line.contains("reduceMotion ? nil"), "animation not gated on Reduce Motion: \(line)")
-            #expect(line.contains("easeOut"))
+            guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
+                failures.append("not gated on Reduce Motion, or not an ease-out: \(line)")
+                continue
+            }
             let duration = line.components(separatedBy: "duration: ").dropFirst().first
                 .flatMap { Double($0.prefix { "0123456789.".contains($0) }) }
-            #expect((duration ?? 1) <= 0.2, "animation longer than 200ms: \(line)")
+            if (duration ?? 1) > Self.gatedMotionCap {
+                failures.append("animation longer than 200ms: \(line)")
+            }
+            let key = line.components(separatedBy: ", value: ").dropFirst().last
+                .map { String($0.trimmingCharacters(in: .whitespaces).dropLast()) } ?? ""
+            guard Self.userDrivenAnimationKeys[key] != nil else {
+                failures.append("keyed on '\(key)', which the user does not drive — observed state never animates: \(line)")
+                continue
+            }
+            keyed[key, default: 0] += 1
+        }
+        for (key, count) in keyed where count > 1 {
+            failures.append("'\(key)' animates in \(count) places — one animation per user-driven value")
+        }
+        return failures
+    }
+
+    /// Motion ≤200ms ease-out or none, always behind Reduce Motion, and never
+    /// on an observed-state change. AMENDED 2026-11-20 by owner ruling (f):
+    /// the frozen one-animation COUNT ("only the chevron animates") is
+    /// superseded by the PanelMotion shape. Any number of animations may
+    /// pass, but each one has the chevron's gated ease-out shape and is keyed
+    /// on a value the user drives (`userDrivenAnimationKeys`). The charge-limit
+    /// readout is the owner's one explicit exemption from "observed state
+    /// never animates". Everything else stays observed state and must snap.
+    @Test func motionIsGatedAndShort() throws {
+        let views = try Self.allViewCode()
+        #expect(Self.motionGateFailures(views: views).isEmpty, "\(Self.motionGateFailures(views: views))")
+        #expect(Self.userDrivenAnimationKeys.keys.sorted() == ["configuration.isPressed", "expanded", "model.limit"],
+                "the user-driven keys are a closed list")
+
+        // The exemption, tested on a fixed panel (independent of which
+        // animations the source ships): a readout keyed on the user-driven
+        // limit passes, and so does a press-state fade, beside the chevron.
+        let chevron = "\nlet chevron = Image(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)"
+        let readout = "\nlet readout = Text(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limit)"
+        let press = "\nlet press = Text(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)"
+        #expect(Self.motionGateFailures(views: chevron + readout).isEmpty, "the charge-limit readout is exempt")
+        #expect(Self.motionGateFailures(views: chevron + press).isEmpty, "a press fade is user-driven")
+        #expect(Self.motionGateFailures(views: chevron + readout + press).isEmpty, "all three user-driven keys together")
+
+        let line = { (tail: String) in "\nlet canary = Text(\"x\")" + tail }
+        let canaries: [(name: String, views: String)] = [
+            ("withAnimation", views + line(".onTapGesture { withAnimation { } }")),
+            ("an animation keyed on the observed pmset state",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.stayAwakeObserved)")),
+            ("an animation keyed on the battery",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.batteryPercent)")),
+            ("the exemption stretched to the limiter's state",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.featureState)")),
+            ("the exemption stretched to the limit toggle",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limitEnabled)")),
+            ("an animation not gated on Reduce Motion", views + line(".animation(.easeOut(duration: 0.1), value: expanded)")),
+            ("a linear animation", views + line(".animation(reduceMotion ? nil : .linear(duration: 0.1), value: model.limit)")),
+            ("a 250 ms animation", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.limit)")),
+            ("a second animation on the same key",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)")),
+            ("an animation with no value key", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15))")),
+        ]
+        for canary in canaries {
+            #expect(!Self.motionGateFailures(views: canary.views).isEmpty, "canary '\(canary.name)' was NOT caught")
         }
     }
 
