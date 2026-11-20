@@ -609,6 +609,70 @@ struct MenuPanelStructureTests {
         }
     }
 
+    /// #67: the panel's motion, codified in `PanelMotion`. Every animated line
+    /// is the chevron's pattern — nil under Reduce Motion, an ease-out — and
+    /// spells one of `PanelMotion`'s animation durations, within
+    /// `PanelMotion.maxDuration`; the chevron turns at `PanelMotion.chevron`.
+    /// Zero motion on open / close: no view animates its insertion or removal
+    /// (`.transition(`), nothing animates through a transaction or
+    /// imperatively, and the hosting view's re-fit snaps to the new size.
+    static func motionFailures(views: String, owner: String) -> [String] {
+        var failures: [String] = []
+        let durations = [PanelMotion.chevron, PanelMotion.pressFade]
+        let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
+        if animated.isEmpty { failures.append("vacuity: the chevron animates") }
+        for line in animated {
+            guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
+                failures.append("not the chevron's Reduce-Motion-nil ease-out pattern: \(line)")
+                continue
+            }
+            let duration = line.components(separatedBy: "duration: ").dropFirst().first
+                .flatMap { Double($0.prefix { "0123456789.".contains($0) }) }
+            guard let duration, durations.contains(duration) else {
+                failures.append("the duration is not a PanelMotion constant: \(line)")
+                continue
+            }
+            if duration > PanelMotion.maxDuration {
+                failures.append("longer than PanelMotion.maxDuration: \(line)")
+            }
+        }
+        let disclosure = Self.structChunk("PanelDetailsDisclosure", in: views) ?? ""
+        if !disclosure.contains(".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.chevron)), value: expanded)") {
+            failures.append("the chevron must turn at PanelMotion.chevron")
+        }
+        for token in [".transition(", "withAnimation", "withTransaction", ".transaction", "matchedGeometryEffect",
+                      "NSAnimationContext", "animator()"] where (views + "\n" + owner).contains(token) {
+            failures.append("'\(token)' — nothing animates the panel's open, close or height change")
+        }
+        if !owner.contains("        setFrameSize(fitting)\n") {
+            failures.append("MenuPanelHostingView's re-fit must snap (a plain setFrameSize)")
+        }
+        return failures
+    }
+
+    @Test func panelMotionCodifiesEveryAnimation() throws {
+        let views = try Self.allViewCode()
+        let owner = try Self.code("MenuContentView.swift")
+        #expect(Self.motionFailures(views: views, owner: owner).isEmpty, "\(Self.motionFailures(views: views, owner: owner))")
+        #expect(PanelMotion.chevron <= PanelMotion.maxDuration && PanelMotion.pressFade <= PanelMotion.maxDuration)
+        let canaries: [(name: String, views: String, owner: String)] = [
+            ("an insertion transition", views + "\nlet canary = Text(\"x\").transition(.opacity)", owner),
+            ("the chevron off its PanelMotion duration",
+             views.replacingOccurrences(of: "duration: 0.15)", with: "duration: 0.25)"), owner),
+            ("an animation not gated on Reduce Motion",
+             views + "\nlet canary = Text(\"x\").animation(.easeOut(duration: 0.1), value: 1)", owner),
+            ("a transaction", views + "\nlet canary = Text(\"x\").transaction { $0.animation = .default }", owner),
+            ("an imperative AppKit animation", views, owner + "\nlet canary = NSAnimationContext.current"),
+            ("an animated re-fit", views, owner.replacingOccurrences(
+                of: "        setFrameSize(fitting)\n", with: "        animator().setFrameSize(fitting)\n")),
+        ]
+        for canary in canaries {
+            #expect(canary.views != views || canary.owner != owner, "canary setup '\(canary.name)'")
+            #expect(!Self.motionFailures(views: canary.views, owner: canary.owner).isEmpty,
+                    "canary '\(canary.name)' was NOT caught")
+        }
+    }
+
     @Test func systemColorsOnly() throws {
         let views = try Self.allViewCode()
         for token in ["Color(red", "Color(hue", "Color(white", "Color(\"", "Color(#", "hex", "#colorLiteral",

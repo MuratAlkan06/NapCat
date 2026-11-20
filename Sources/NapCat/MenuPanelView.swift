@@ -58,6 +58,36 @@ enum PanelMetrics {
     static let headerLockInset: CGFloat = 9
 }
 
+/// Motion rules for the panel (motion-and-polish charter, issue #67), next to
+/// the geometry they move. Motion only ever acknowledges what the user just
+/// did; the panel's signature is the snap.
+///
+/// - Zero motion on open / close: the menu window appears and disappears in
+///   one step, its height changes snap (`MenuPanelHostingView`), and no view
+///   animates its own insertion or removal.
+/// - Every animation is an ease-out of at most `maxDuration`. The frozen
+///   motion lint (`MenuPanelStructureTests.motionIsGatedAndShort`) holds the
+///   panel to a tighter 200 ms, inside this ceiling.
+/// - Every animation is nil under Reduce Motion — the chevron's pattern,
+///   `.animation(reduceMotion ? nil : .easeOut(duration: …), value: …)`.
+/// - Observed-state changes never animate.
+///
+/// The animated lines spell their duration as a literal (the frozen lint
+/// reads it); `panelMotionCodifiesEveryAnimation` holds each literal to one
+/// of the durations below.
+enum PanelMotion {
+    /// The Details chevron's turn — the panel's one animation since the
+    /// 2026-10-18 freeze.
+    static let chevron: Double = 0.15
+    /// The pressed-state fade of a plain-style panel button.
+    static let pressFade: Double = 0.10
+    /// How long the test send's "Sent" acknowledgment holds before the
+    /// button reverts. A hold, not an animation: the label swap snaps.
+    static let sentRevert: Double = 1.5
+    /// The ceiling for any panel animation.
+    static let maxDuration: Double = 0.3
+}
+
 /// One feature block: a control row plus whatever hangs under it (caption,
 /// slider, surfaced problem lines), held `tight` together so the larger
 /// `rowSpacing` reads as the gap BETWEEN features. Only wrap content whose
