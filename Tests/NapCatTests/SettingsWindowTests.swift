@@ -123,12 +123,12 @@ struct SettingsWindowTests {
     static let lockAvailableLine = PanelLine(
         text: "Lock Screen: available — locks and turns the display off; the Mac keeps running", severity: .nominal)
     static let lockUnavailableLine = PanelLine(
-        text: "Locking is unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q).",
+        text: "Lock Screen: unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q)",
         severity: .warning)
     static let approvalCaption = PanelLine(
-        text: "Waiting for approval in System Settings › General › Login Items.", severity: .warning)
+        text: "Waiting for approval — System Settings › General › Login Items", severity: .warning)
     static let notFoundCaption = PanelLine(
-        text: "Login item not found — toggle again to re-register this copy of NapCat.", severity: .warning)
+        text: "Not found — toggle again to re-register this copy of NapCat", severity: .warning)
 
     static func startup(_ isOn: Bool, _ caption: PanelLine? = nil, shortcut: Bool = false) -> SettingsSection {
         SettingsSection(title: "Startup",
@@ -165,7 +165,7 @@ struct SettingsWindowTests {
                    sections: [
                        startup(true),
                        chargeLimit("Pause charging at 90%", on: true, limit: 90, sliderEnabled: true,
-                                   PanelLine(text: "Charging normally — will pause at the limit.", severity: .nominal)),
+                                   PanelLine(text: "Charging — pauses at the limit", severity: .nominal)),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "everything off", login: .notRegistered, feature: .off, limit: 90, limitOn: false,
@@ -178,14 +178,14 @@ struct SettingsWindowTests {
                    limit: 80, limitOn: true, lock: true, sections: [
                        startup(false, approvalCaption, shortcut: true),
                        chargeLimit("Pause charging at 80%", on: true, limit: 80, sliderEnabled: true,
-                                   PanelLine(text: "Charging is paused at the limit.", severity: .nominal)),
+                                   PanelLine(text: "Paused at the limit", severity: .nominal)),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "login not found, setup required", login: .notFound, feature: .setupRequired, limit: 90,
                    limitOn: true, lock: true, sections: [
                        startup(false, notFoundCaption),
                        chargeLimit("Pause charging at 90%", on: true, limit: 90, sliderEnabled: true, PanelLine(
-                           text: "One-time setup needed: run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu.",
+                           text: "Setup needed — run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu",
                            severity: .warning)),
                        lockScreen(lockAvailableLine),
                    ]),
@@ -194,7 +194,7 @@ struct SettingsWindowTests {
                        startup(true),
                        chargeLimit("Pause charging at 90%", on: true, switchEnabled: false, limit: 90,
                                    sliderEnabled: false, PanelLine(
-                                       text: "Charge limiting needs an Apple Silicon Mac. Stay Awake still works here.",
+                                       text: "Unavailable — needs an Apple Silicon Mac; Stay Awake still works here",
                                        severity: .info)),
                        lockScreen(lockAvailableLine),
                    ]),
@@ -202,7 +202,7 @@ struct SettingsWindowTests {
                    limitOn: false, lock: true, sections: [
                        startup(true),
                        chargeLimit("Pause charging at 75%", on: false, limit: 75, sliderEnabled: false, PanelLine(
-                           text: "Charge limiting isn't available on this version of macOS.", severity: .info)),
+                           text: "Unavailable on this version of macOS", severity: .info)),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "a write failed, no limit", login: .enabled, feature: .error("The charge-limit write failed."),
@@ -308,9 +308,9 @@ struct SettingsWindowTests {
     static let alertsRows: [AlertsRow] = {
         let server = PanelLine(text: "Server: https://ntfy.sh", severity: .nominal)
         let unusableServer = PanelLine(
-            text: "Server is not usable — it must be an https address like https://ntfy.sh", severity: .warning)
+            text: "Server: not usable — it must be an https address like https://ntfy.sh", severity: .warning)
         let unusableTopic = PanelLine(
-            text: "Topic is not usable — letters, digits, “_” and “-” only, max 64 characters", severity: .warning)
+            text: "Topic: not usable — letters, digits, “_” and “-” only, max 64 characters", severity: .warning)
         let refused = PanelLine(
             text: "Last message: refused by the server 2m ago (HTTP 403) — check the topic and server", severity: .error)
         let accepted = PanelLine(text: "Last message: accepted by ntfy 2m ago", severity: .nominal)
@@ -850,7 +850,7 @@ struct SettingsWindowTests {
     func theGeneralGearBadge(login: SMAppService.Status, lock: Bool, badge: PanelSeverity) {
         let severities = MenuStateModel.generalResidentSeverities(loginStatus: login, lockAvailable: lock)
         #expect(severities.count == 2)
-        #expect(MenuStateModel.detailsBadge(severities) == badge)
+        #expect(MenuStateModel.worstSeverity(severities) == badge)
     }
 
     /// Through the model: nominal at rest; an unavailable lock raises it; a
@@ -913,19 +913,46 @@ struct SettingsWindowTests {
         withLidGuardHarness { lid in
             lid.arm()
             withModel(detection: detection, lidGuard: lid.controller) { model, _ in
-                #expect(model.lidStatus.severity == .warning && model.lidStatus.text.contains("cannot fire"),
+                #expect(model.lidStatus.severity == .warning && model.lidStatus.text.hasPrefix("Cannot fire"),
                         "vacuity: the pause's echo")
                 #expect(model.settingsResidentSeverities(.alerts).allSatisfy { $0 == .nominal })
             }
         }
     }
 
-    /// THE BADGE AGREEMENT (slice W): with every pane in place the gear's
-    /// Settings-resident set is exactly the Details badge's set — the same
-    /// lines, the pause's echoes excluded the same way — so while Details
-    /// still exists (until slice P) the two badges never disagree. Every
-    /// subsystem state that can raise either one, through the model.
-    @Test @MainActor func theGearBadgeAgreesWithTheDetailsBadge() throws {
+    /// The gear badge's INDEPENDENT oracle — the retired Details badge's own
+    /// derivation, kept here when the disclosure left the panel (slice P):
+    /// the worst severity over every Settings-resident line read through the
+    /// model's public line accessors (the problems the panel surfaces below
+    /// its cards), plus the lid and session status lines with the pause's
+    /// echo removed — never through `settingsResidentSeverities`.
+    @MainActor static func badgeOracle(_ model: MenuStateModel, now: Double) -> PanelSeverity {
+        let lines: [PanelLine?] = [model.launchAtLoginCaption, model.lockScreenStatus]
+            + (model.claudeDetectionVisible ? [model.hookStatus, model.claudeAwakeLine, model.hookVersionStatus] : [])
+        var severities = lines.compactMap { $0?.severity }
+        if model.lidGuardVisible {
+            severities.append(MenuStateModel.lidAlertStatus(for: model.lidGuardArming, lastOutcome: model.lidGuardLastOutcome,
+                                                            detectionPaused: false).severity)
+            severities += [model.lidTopicStatus.severity, model.lidServerStatus.severity, model.lidLastSend(now: now).severity]
+        }
+        if model.finishAlertVisible {
+            let session = MenuStateModel.finishAlertStatus(
+                for: model.finishAlertDisplayState, lastOutcome: model.finishAlertLastOutcome,
+                lastOutcomeAt: model.finishAlertLastOutcomeAt, lidLastOutcome: model.lidGuardLastOutcome,
+                lidLastOutcomeAt: model.lidGuardLastOutcomeAt)
+            severities.append(model.finishAlertDisplayState == .paused ? .nominal : session.severity)
+            severities.append(model.finishAlertLastSend(now: now).severity)
+        }
+        if let phone = model.phoneAlertStatus(now: now) { severities.append(phone.severity) }
+        return severities.max() ?? .nominal
+    }
+
+    /// THE BADGE AGREEMENT (slice W, re-anchored in slice P): with every pane
+    /// in place the gear's Settings-resident set is exactly the oracle's set
+    /// — the same lines, the pause's echoes excluded the same way — so the
+    /// badge never disagrees with the problems the panel surfaces. Every
+    /// subsystem state that can raise it, through the model.
+    @Test @MainActor func theGearBadgeAgreesWithItsOracle() throws {
         func detection(hook: Bool = true, version: Int?? = nil, holding: Bool = false, paused: Bool = false,
                        _ body: (ClaudeActivityController, URL) throws -> Void) throws {
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
@@ -941,7 +968,7 @@ struct SettingsWindowTests {
         }
         func check(_ model: MenuStateModel, _ expected: PanelSeverity, _ name: String) {
             #expect(model.settingsPanes.count == 1 + (model.lidGuardVisible ? 1 : 0) + (model.claudeDetectionVisible ? 1 : 0))
-            #expect(model.settingsBadge == model.detailsBadge, "\(name): the badges disagree")
+            #expect(model.settingsBadge == Self.badgeOracle(model, now: 1_000_000), "\(name): the badge disagrees")
             #expect(model.settingsBadge == expected, "\(name)")
         }
 
@@ -979,7 +1006,7 @@ struct SettingsWindowTests {
                 // dir is the detection's), so the session line is `.paused`.
                 let finish = Self.makeFinishAlert(lid, markerDir: markerDir)
                 withModel(detection: claude, lidGuard: lid.controller, finishAlert: finish) { model, _ in
-                    #expect(model.detailsLabel.severity == .warning, "vacuity: paused")
+                    #expect(model.footerLabel?.severity == .warning, "vacuity: paused")
                     #expect(model.finishAlertDisplayState == .paused && model.lidStatus.severity == .warning,
                             "vacuity: both echoes warn at top level")
                     check(model, .nominal, "paused — its echoes never count")
@@ -994,6 +1021,21 @@ struct SettingsWindowTests {
                     check(model, .error, "a refused lid send")
                 }
             }
+            // An UNCONFIRMED lid send while armed: the lid status line does
+            // not downgrade (it still reads armed), so the History line is
+            // the badge's SOLE warning raiser. (A refused send cannot show
+            // this: its status line raises the badge to the same error.)
+            withLidGuardHarness(sender: RecordingMessageSender(outcome: .timedOutUnconfirmed)) { lid in
+                lid.arm()
+                lid.controller.sendTestMessage()
+                withModel(detection: claude, lidGuard: lid.controller) { model, _ in
+                    #expect(model.lidGuardArming == .armed && model.lidStatus.severity == .nominal,
+                            "vacuity: armed, and the status line is not downgraded")
+                    #expect(model.lidLastSend(now: lid.clock.now).severity == .warning,
+                            "vacuity: the History line warns")
+                    check(model, .warning, "an unconfirmed lid send")
+                }
+            }
             withLidGuardHarness { lid in
                 lid.arm()
                 let composite = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
@@ -1006,16 +1048,24 @@ struct SettingsWindowTests {
         }
     }
 
-    /// The session lane's own problem — a refused session alert — raises
-    /// both badges alike (an error), the lid half healthy.
-    @Test @MainActor func aRefusedSessionAlertRaisesBothBadgesAlike() async throws {
+    /// The session lane's own problems raise the gear badge, the lid half
+    /// healthy: a refused session alert (an error — the status line and the
+    /// History line both raise it), and an UNCONFIRMED one (a warning), whose
+    /// status line stays armed, so the History line is the SOLE raiser.
+    @Test(arguments: [
+        (MessageSendOutcome.rejected(403), PanelSeverity.error, PanelSeverity.error),
+        (.timedOutUnconfirmed, .nominal, .warning),
+    ])
+    @MainActor func aSessionSendProblemRaisesTheGearBadge(outcome: MessageSendOutcome, status: PanelSeverity,
+                                                          badge: PanelSeverity) async throws {
         typealias H = FinishAlertHarness
-        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { h in
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: outcome)) { h in
             h.store.put(H.s1, ts: H.t0 - 600)
             h.controller.reconcile()
             h.store.remove(H.s1)
             await h.settle()
-            #expect(h.controller.lastSendOutcome == .rejected(403))
+            #expect(h.controller.lastSendOutcome == outcome)
+            #expect(h.pendingRetries.isEmpty, "neither outcome is retried")
             let suite = "com.muratalkan.napcat.tests.settings.session.\(UUID().uuidString)"
             let lidDefaults = UserDefaults(suiteName: suite)!
             defer { lidDefaults.removePersistentDomain(forName: suite) }
@@ -1024,8 +1074,11 @@ struct SettingsWindowTests {
             lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
             withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _ in
                 #expect(model.lidStatus.severity == .nominal, "vacuity: the lid half is healthy")
-                #expect(model.settingsBadge == .error)
-                #expect(model.settingsBadge == model.detailsBadge)
+                #expect(model.finishAlertStatus.severity == status, "vacuity: the session status line")
+                #expect(model.finishAlertLastSend(now: Double(H.t0) + 120).severity == badge,
+                        "vacuity: the History line")
+                #expect(model.settingsBadge == badge)
+                #expect(model.settingsBadge == Self.badgeOracle(model, now: Double(H.t0) + 120))
             }
         }
     }
@@ -1073,7 +1126,7 @@ struct SettingsWindowTests {
     @Test func thePanesRenderTheCompositionAndNeverClassify() throws {
         let views = try Self.code(Self.settingsViewFile)
         #expect(views.contains("model.settingsContent(for: selection.pane,"))
-        for token in ["severity ==", "severity !=", ".severity", "placement(ofDetailsLine:", "SurfacedLine(",
+        for token in ["severity ==", "severity !=", ".severity", "placement(ofSettingsLine:", "SurfacedLine(",
                       "TuckedLine(", "featureState", "loginItemStatus"] {
             #expect(!views.contains(token), "'\(token)' in a Settings view — the composition decides")
         }
@@ -1127,8 +1180,8 @@ struct SettingsWindowTests {
         "lidLastSend": "SurfacedLine(line: model.lidLastSend(",
         "finishAlertLastSend": "SurfacedLine(line: model.finishAlertLastSend(",
         "phoneAlertStatus": "SurfacedLine(line: model.phoneAlertStatus(",
-        // The Claude status is the footer disclosure's own text, always shown.
-        "claudeFooterLabel": "let label = model.detailsLabel",
+        // The Claude status is the footer's own caption, always shown.
+        "claudeFooterLabel": "if let label = model.footerLabel {",
         "hookStatus": "SurfacedLine(line: model.hookStatus)",
         "hookVersionStatus": "SurfacedLine(line: model.hookVersionStatus)",
         "claudeAwakeLine": "SurfacedLine(line: model.claudeAwakeLine)",

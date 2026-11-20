@@ -19,10 +19,12 @@ struct PanelLine: Equatable, Sendable {
     let severity: PanelSeverity
 }
 
-/// Where a line renders. See `MenuStateModel.placement(ofDetailsLine:)`.
+/// Where a line renders. See `MenuStateModel.placement(ofSettingsLine:)`.
 enum PanelTier: Equatable, Sendable {
+    /// In the panel (and in its Settings pane).
     case topLevel
-    case details
+    /// In its Settings pane only.
+    case settings
 }
 
 /// Every SF Symbol name the panel uses, in one place so a unit test can prove
@@ -38,7 +40,6 @@ enum PanelSymbol {
     /// Track C (finish + waiting pushes): a finish flag, distinct from the
     /// lid alert's bell.
     static let sessionAlerts = "flag.checkered"
-    static let disclosure = "chevron.right"
     static let desktop = "desktopcomputer"
     static let charging = "bolt.fill"
     static let battery = "battery.100"
@@ -50,7 +51,7 @@ enum PanelSymbol {
     /// The footer's Settings gear (slice W, issue #78).
     static let settings = "gearshape"
 
-    static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts, disclosure,
+    static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts,
                       desktop, charging, battery, info, warning, error, sent, settings]
 }
 
@@ -223,8 +224,8 @@ final class MenuStateModel: ObservableObject {
     /// OFFLINE (holding). False whenever healing is disarmed — no line then.
     @Published private(set) var sessionAlertsOffline = false
     /// Issue #34: the run floor the controller applies (clamped, live). It
-    /// feeds the "Session alerts" group of the ntfy settings editor only —
-    /// the panel never renders it (nothing in the Details tier).
+    /// feeds the "Session alerts" group of the ntfy settings editor and
+    /// Settings › Alerts only — the panel never renders it.
     @Published private(set) var finishAlertMinimumRunSeconds = FinishAlertTuning.minimumRunSeconds
 
     // F3 stage 1 (phone transport) mirrors — the composite sender's toggle,
@@ -235,13 +236,6 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var phoneLastOutcome: MessageSendOutcome?
     @Published private(set) var phoneLastOutcomeAt: Double?
 
-    // Panel redesign (2026-10-18).
-    /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
-    /// persisted to defaults: it survives menu close/reopen for the app's
-    /// lifetime (so the height is measured with the right content before the
-    /// menu opens) and starts collapsed at launch. Collapsing is always safe —
-    /// problems never live only in Details (the iron rule).
-    @Published private(set) var detailsExpanded = false
     /// Owner ruling (e): the Stay Awake turn-on feedback. In-memory UI state,
     /// held OUTSIDE the published mirrors on purpose (see
     /// `StayAwakeTurnOnFeedback`).
@@ -264,7 +258,7 @@ final class MenuStateModel: ObservableObject {
     /// (Track C). Read only; arming is MenuContentView's job.
     private let finishAlert: FinishAlertController?
     /// Non-nil outside debugBattery mode — the composite sender, for the
-    /// phone transport toggle and its Details line (F3 stage 1).
+    /// phone transport toggle and its line (F3 stage 1).
     private let phoneTransport: CompositeMessageSender?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
@@ -299,7 +293,7 @@ final class MenuStateModel: ObservableObject {
     /// key + the shared destination/priming, the controller owns the state.
     var finishAlertVisible: Bool { lidGuard != nil && finishAlert != nil }
     /// The phone toggle lives with the alerts' delivery settings, so it needs
-    /// the lid guard's Details group as well as the composite.
+    /// the lid guard (Settings › Alerts) as well as the composite.
     var phoneTransportVisible: Bool { lidGuard != nil && phoneTransport != nil }
 
     init(
@@ -439,13 +433,6 @@ final class MenuStateModel: ObservableObject {
         refresh()
     }
 
-    // MARK: Panel-only actions (pure UI state — never dismiss the menu)
-
-    /// The Details chevron. Purely local state: no controller, no AppKit flow,
-    /// so it can never dismiss the menu. The open menu follows the new height
-    /// through `MenuPanelHostingView`.
-    func setDetailsExpanded(_ expanded: Bool) { detailsExpanded = expanded }
-
     // MARK: Panel presentation — what the panel renders (thin wrappers over
     // the pure mappings; the views compose these and never classify).
 
@@ -453,20 +440,20 @@ final class MenuStateModel: ObservableObject {
     var chargeLimitCaption: PanelLine? { Self.chargeLimitCaption(for: featureState) }
     var launchAtLoginCaption: PanelLine? { Self.launchAtLoginCaption(for: loginItemStatus) }
 
-    /// The footer disclosure's text (2026-10-21 "status-as-disclosure"): the
-    /// Claude status. Without the detection stack (debugBattery mode) there is
-    /// no Claude state to report, so it keeps its plain "Details" name rather
-    /// than claim an "idle" nobody observed.
-    var detailsLabel: PanelLine {
-        guard claudeDetectionVisible else { return Self.plainDetailsLabel }
+    /// The footer's status caption (Panel 2.0 slice P): the Claude status.
+    /// Without the detection stack (debugBattery mode) there is no Claude
+    /// state to report, so there is no caption at all rather than an "idle"
+    /// nobody observed.
+    var footerLabel: PanelLine? {
+        guard claudeDetectionVisible else { return nil }
         return Self.claudeFooterLabel(inFlight: claudeTaskInFlight, paused: claudeDetectionPaused)
     }
 
-    /// Tucked under Details › Claude detection; present only while true.
+    /// Settings › Claude; present only while true.
     var claudeAwakeLine: PanelLine? { Self.claudeHoldingAwakeLine(holdingAwake: claudeHoldingAwake) }
 
     /// A warning only while the lid alert or session alerts are switched on
-    /// (H1); otherwise it tucks into Details › Claude detection.
+    /// (H1); otherwise it stays in Settings › Claude.
     var hookStatus: PanelLine {
         Self.claudeHookStatus(
             installed: claudeHookInstalled,
@@ -477,7 +464,7 @@ final class MenuStateModel: ObservableObject {
         )
     }
 
-    /// Tucked under Details › Claude detection (S7); absent when there is
+    /// Settings › Claude (S7); absent when there is
     /// nothing to add to `hookStatus`.
     var hookVersionStatus: PanelLine? {
         Self.claudeHookVersionStatus(installedVersion: claudeInstalledHookVersion,
@@ -513,7 +500,7 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// The session status line itself, before the offline precedence. The
-    /// Details badge reads this one: the offline warning has no Details home.
+    /// gear badge reads this one: the offline warning has no Settings home.
     private var finishAlertStatusWithoutOffline: PanelLine {
         Self.finishAlertStatus(for: finishAlertDisplayState, lastOutcome: finishAlertLastOutcome,
                                lastOutcomeAt: finishAlertLastOutcomeAt,
@@ -525,7 +512,7 @@ final class MenuStateModel: ObservableObject {
                                  at: finishAlertLastOutcomeAt, now: now)
     }
 
-    /// F3 stage 1: the phone transport's Details line (nil while the toggle
+    /// F3 stage 1: the phone transport's line (nil while the toggle
     /// is off — nothing to report — or without the composite).
     func phoneAlertStatus(now: Double) -> PanelLine? {
         guard phoneTransportVisible else { return nil }
@@ -533,54 +520,22 @@ final class MenuStateModel: ObservableObject {
                                    outcome: phoneLastOutcome, at: phoneLastOutcomeAt, now: now)
     }
 
-    /// Badge on the collapsed "Details" row: the worst severity among the
-    /// items whose home or fix lives in Details (the problems themselves are
-    /// already shown at top level — the badge says where the setting is).
-    /// The Claude status is NOT aggregated (2026-10-21): it is the
-    /// disclosure's own text and carries its own warning there, so the badge
-    /// summarises only the OTHER items — and a paused Claude never raises it,
-    /// not even through its echoes: the lid line counts with the severity it
-    /// would have WITHOUT the pause, and the session line's `.paused` (only
-    /// ever armed-but-paused) counts as nominal. Every non-pause problem still
-    /// counts (a failed send, a missing topic, a missing hook an alert
-    /// needs, …).
-    var detailsBadge: PanelSeverity {
-        var severities = [launchAtLoginCaption?.severity ?? .nominal, lockScreenStatus.severity]
-        if claudeDetectionVisible {
-            severities += [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal,
-                           hookVersionStatus?.severity ?? .nominal]
-        }
-        if lidGuardVisible {
-            let lidWithoutThePause = Self.lidAlertStatus(
-                for: lidGuardArming, lastOutcome: lidGuardLastOutcome, detectionPaused: false)
-            severities += [lidWithoutThePause.severity, lidTopicStatus.severity, lidServerStatus.severity,
-                           Self.lidAlertLastSendSeverity(lidGuardLastOutcome, at: lidGuardLastOutcomeAt)]
-        }
-        // Session alerts share the ntfy settings + test send in Details.
-        if finishAlertVisible {
-            let sessionWithoutThePause = finishAlertDisplayState == .paused
-                ? .nominal : finishAlertStatusWithoutOffline.severity
-            severities += [sessionWithoutThePause,
-                           Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
-        }
-        // F3 stage 1: the phone toggle and its line live in the same group.
-        if phoneTransportVisible {
-            severities.append(Self.phoneAlertSeverity(enabled: phoneTransportEnabled,
-                                                      available: phoneTransportAvailable,
-                                                      outcome: phoneLastOutcome, at: phoneLastOutcomeAt))
-        }
-        return Self.detailsBadge(severities)
-    }
-
     /// Badge on the footer's Settings gear (slice W, issue #78): the worst
     /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
     /// is a pane of the Settings window — over the panes this wiring shows.
-    /// Same rule as the Details badge: the problems themselves are already
-    /// surfaced at top level; the badge says where their setting lives. Lines
-    /// whose home is a panel row (the charge-limit caption) are not counted:
-    /// the panel row is where they surface and where they are acted on.
+    /// The problems themselves are already surfaced at top level; the badge
+    /// says where their setting lives. Lines whose home is a panel row (the
+    /// charge-limit caption) are not counted: the panel row is where they
+    /// surface and where they are acted on. The Claude status is NOT counted
+    /// (2026-10-21): it is the footer's own caption and carries its own
+    /// warning there — and a paused Claude never raises the badge, not even
+    /// through its echoes: the lid line counts with the severity it would
+    /// have WITHOUT the pause, and the session line's `.paused` (only ever
+    /// armed-but-paused) counts as nominal. Every non-pause problem still
+    /// counts (a failed send, a missing topic, a missing hook an alert
+    /// needs, …).
     var settingsBadge: PanelSeverity {
-        Self.detailsBadge(settingsPanes.flatMap(settingsResidentSeverities))
+        Self.worstSeverity(settingsPanes.flatMap(settingsResidentSeverities))
     }
 
     /// One pane's Settings-resident severities.
@@ -593,7 +548,7 @@ final class MenuStateModel: ObservableObject {
         case .claude:
             // The hook liveness / version lines and the awake fact. The
             // Claude status itself is the footer label, which carries its own
-            // (paused) warning — never counted, as in the Details badge.
+            // (paused) warning — never counted.
             guard claudeDetectionVisible else { return [] }
             return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal]
         }
@@ -601,8 +556,8 @@ final class MenuStateModel: ObservableObject {
 
     /// Alerts: everything whose fix is the pane's Destination (the ntfy
     /// editor, the test send) — the lid and session status lines, counted
-    /// WITHOUT the detection pause exactly as the Details badge counts them
-    /// (the footer label carries the pause), the topic and server lines —
+    /// WITHOUT the detection pause (the footer caption carries the pause),
+    /// the topic and server lines —
     /// plus the History lines and the phone transport line.
     private var alertsResidentSeverities: [PanelSeverity] {
         guard lidGuardVisible else { return [] }
@@ -666,7 +621,7 @@ final class MenuStateModel: ObservableObject {
         switch observed {
         case .some(true): return (true, nil)
         case .some(false): return (false, nil)
-        case .none: return (false, "Sleep state could not be read")
+        case .none: return (false, "Unknown — the sleep state could not be read")
         }
     }
 
@@ -680,7 +635,7 @@ final class MenuStateModel: ObservableObject {
     ) -> (enabled: Bool, caption: String?) {
         available
             ? (true, nil)
-            : (false, "Locking is unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q).")
+            : (false, "Lock Screen: unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q)")
     }
 
     nonisolated static func limitLabel(limit: Int) -> String {
@@ -700,9 +655,9 @@ final class MenuStateModel: ObservableObject {
         case .notRegistered:
             return (false, nil, false)
         case .requiresApproval:
-            return (false, "Waiting for approval in System Settings › General › Login Items.", true)
+            return (false, "Waiting for approval — System Settings › General › Login Items", true)
         case .notFound:
-            return (false, "Login item not found — toggle again to re-register this copy of NapCat.", false)
+            return (false, "Not found — toggle again to re-register this copy of NapCat", false)
         @unknown default:
             return (false, nil, false)
         }
@@ -710,24 +665,26 @@ final class MenuStateModel: ObservableObject {
 
     /// Issue #58: this macOS exposes no charge-control key. A plain statement
     /// of the limitation — no error wording, no instruction to act.
-    nonisolated static let chargeControlUnavailableText =
-        "Charge limiting isn't available on this version of macOS."
+    nonisolated static let chargeControlUnavailableText = "Unavailable on this version of macOS"
 
-    /// Feature-state messaging line under the charge-limit controls.
+    /// Feature-state messaging line under the charge-limit controls — the
+    /// Charge Limit row's caption (canon C2: a fragment, its state word
+    /// first, never repeating the row title). The `.error` message is the
+    /// limiter's own.
     nonisolated static func featureMessage(for state: ChargeLimitFeatureState) -> String? {
         switch state {
         case .hidden, .off:
             return nil
         case .notSupported:
-            return "Charge limiting needs an Apple Silicon Mac. Stay Awake still works here."
+            return "Unavailable — needs an Apple Silicon Mac; Stay Awake still works here"
         case .setupRequired:
-            return "One-time setup needed: run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu."
+            return "Setup needed — run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu"
         case .controlUnavailable:
             return chargeControlUnavailableText
         case .active:
-            return "Charging normally — will pause at the limit."
+            return "Charging — pauses at the limit"
         case .paused:
-            return "Charging is paused at the limit."
+            return "Paused at the limit"
         case .error(let message):
             return message
         }
@@ -735,33 +692,30 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - Track B (Claude detection) presentation (READ-ONLY display)
 
-    /// The Claude status as the TEXT of the footer's Details disclosure
-    /// (2026-10-21 declutter, "status-as-disclosure" — it replaced the tier-1
-    /// Claude row). A short FIXED vocabulary: these three strings are the only
-    /// ones ever rendered there, so the footer can never be pushed out of
-    /// shape by free-form text. Paused (the kill switch) wins over everything:
-    /// it is a non-nominal state the user must see without opening Details,
-    /// because while paused no busy marker exists and the lid alert can never
-    /// fire (the 2026-10-18 root cause). Clicking the label opens Details,
-    /// where the Pause toggle lives (F3).
+    /// The Claude status: the footer's caption (2026-10-21 declutter — it
+    /// replaced the tier-1 Claude row; since Panel 2.0 slice P a caption
+    /// beside the Settings gear rather than a disclosure's text). A short
+    /// FIXED vocabulary: these three strings are the only ones ever rendered
+    /// there, so the footer can never be pushed out of shape by free-form
+    /// text. Paused (the kill switch) wins over everything: it is a
+    /// non-nominal state the user must see at a glance, because while paused
+    /// no busy marker exists and the lid alert can never fire (the 2026-10-18
+    /// root cause). The Pause toggle lives in Settings › Claude (F3), behind
+    /// the gear beside it.
     nonisolated static func claudeFooterLabel(inFlight: Bool, paused: Bool) -> PanelLine {
         if paused { return PanelLine(text: "Claude: paused", severity: .warning) }
         return PanelLine(text: inFlight ? "Claude: running" : "Claude: idle", severity: .nominal)
     }
 
-    /// The disclosure's text when there is no Claude detection to report
-    /// (debugBattery mode, where the detection stack is structurally absent).
-    nonisolated static let plainDetailsLabel = PanelLine(text: "Details", severity: .nominal)
-
     /// "Claude is holding the Mac awake" left the glance tier on 2026-10-21:
-    /// a nominal Details line, present ONLY while the sleep-assertion reader
+    /// a nominal Settings › Claude line, present ONLY while the sleep-assertion reader
     /// says so. That reader is NOT the busy signal, so this can be true while
     /// the task is idle — the line is independent of the footer label.
     nonisolated static func claudeHoldingAwakeLine(holdingAwake: Bool) -> PanelLine? {
         holdingAwake ? PanelLine(text: "Claude is holding the Mac awake", severity: .nominal) : nil
     }
 
-    /// Explanation under the Pause toggle inside Details: pausing is legitimate
+    /// Explanation under the Pause toggle (Settings › Claude): pausing is legitimate
     /// but has a non-obvious consequence for the lid and session alerts.
     nonisolated static let pauseDetectionCaption =
         "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
@@ -779,12 +733,12 @@ final class MenuStateModel: ObservableObject {
     /// Hook liveness with its severity: "last seen …" is nominal. A long gap
     /// is NOT flagged — it may simply mean Claude has not been used.
     ///
-    /// Not installed / never seen are problems (they escape Details) ONLY
+    /// Not installed / never seen are problems (they surface in the panel) ONLY
     /// while an alert that needs the hook is switched on — the lid alert or
     /// session alerts (UI audit H1, owner ruling 2026-11-19). With both off,
     /// nothing depends on the hook, so a fresh install that only wants Stay
     /// Awake must not open on a warning: the SAME text is nominal and tucks
-    /// into Details › Claude detection. Neither toggle has a default, so a
+    /// stays in Settings › Claude. Neither toggle has a default, so a
     /// caller cannot silently get the quiet line.
     nonisolated static func claudeHookStatus(
         installed: Bool,
@@ -852,7 +806,9 @@ final class MenuStateModel: ObservableObject {
     // MARK: - Track B / B2 (lid-close alert) presentation
 
     /// Primary line: what the feature will do right now, and if it is not
-    /// armed, the NEXT step. Modeled on `featureMessage(for:)`.
+    /// armed, the NEXT step. Modeled on `featureMessage(for:)` — the Lid
+    /// alert row's caption, so (canon C2) a fragment with its state word
+    /// first and no "Lid alert:" prefix repeating the row title.
     ///
     /// Honesty downgrade: `primedAt` (hence `.armed`) survives in UserDefaults
     /// even after the feed stops working — a deleted topic, a self-hosted
@@ -867,7 +823,7 @@ final class MenuStateModel: ObservableObject {
     /// "armed" there is what hid the five-week outage. Paused takes precedence
     /// over a failed last send because it is the stronger claim (cannot fire at
     /// all); the failed send still shows on its own line (`lidAlertLastSend`),
-    /// which escapes Details as an error. `detectionPaused` has no default on
+    /// which surfaces in the panel as an error. `detectionPaused` has no default on
     /// purpose — a caller that forgets it must not get the dishonest line.
     nonisolated static func lidAlertStatusLine(
         for state: LidGuardArmingState,
@@ -876,20 +832,20 @@ final class MenuStateModel: ObservableObject {
     ) -> String {
         switch state {
         case .off:
-            return "Lid alert: off"
+            return "Off"
         case .needsTopic:
-            return "Lid alert: set an ntfy topic to arm it"
+            return "Not armed — set an ntfy topic in Settings"
         case .needsTestSend:
-            return "Lid alert: send the test message to check your phone gets it"
+            return "Not armed — send the test message in Settings to check your phone gets it"
         case .armed:
             if detectionPaused {
-                return "Lid alert: armed — but Claude detection is paused; alerts cannot fire"
+                return "Cannot fire — Claude detection is paused"
             }
             switch lastOutcome {
             case .rejected?, .sendFailed?:
-                return "Lid alert: the last message did not go out — re-run Send test message"
+                return "Failed — the last message did not go out; re-run Send test message in Settings"
             default:
-                return "Lid alert: armed — best-effort push if this Mac sleeps mid-task"
+                return "Armed — a best-effort push if this Mac sleeps mid-task"
             }
         }
     }
@@ -963,7 +919,7 @@ final class MenuStateModel: ObservableObject {
         case .empty:
             return "Topic: none set"
         case .invalid:
-            return "Topic is not usable — letters, digits, “_” and “-” only, "
+            return "Topic: not usable — letters, digits, “_” and “-” only, "
                 + "max \(LidGuardTuning.maxTopicLength) characters"
         }
     }
@@ -977,7 +933,7 @@ final class MenuStateModel: ObservableObject {
         case .empty:
             return "Server: \(LidGuardTuning.defaultNtfyServer)"
         case .invalid:
-            return "Server is not usable — it must be an https address like \(LidGuardTuning.defaultNtfyServer)"
+            return "Server: not usable — it must be an https address like \(LidGuardTuning.defaultNtfyServer)"
         }
     }
 
@@ -1035,9 +991,9 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Standing security note: on ntfy there is no account, so the topic name
-    /// is the whole access-control story. Lives in the Details tier next to
-    /// "ntfy settings…" since the 2026-10-18 redesign (kept, not removed —
-    /// the user has not signed off on dropping it).
+    /// is the whole access-control story. Settings › Alerts' footnote, under
+    /// "ntfy settings…" (kept, not removed — the user has not signed off on
+    /// dropping it).
     nonisolated static let lidAlertTopicSecrecyNote =
         "Anyone who knows your topic name can read — and post to — your alerts. "
         + "Pick a long, unguessable name and keep it private."
@@ -1082,7 +1038,8 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - Track C (session alerts: finish + waiting pushes) presentation
 
-    /// Primary line under the "Session alerts" toggle — the lid grammar
+    /// Primary line under the "Session alerts" toggle (canon C2: a fragment,
+    /// state word first, no "Session alerts:" prefix) — the lid grammar
     /// (off / set a topic / send the test message / armed / failed-send
     /// downgrade) plus the two states only the finish alert has. `.armed` here
     /// already means the marker-dir watcher is RUNNING (the controller reports
@@ -1092,7 +1049,7 @@ final class MenuStateModel: ObservableObject {
     /// (re-run the test send; for a 429 it says alerts are being held, B-1),
     /// and a STRICTLY LATER accepted lid-lane send (that test send, or a lid
     /// alert) clears the downgrade: see
-    /// `finishAlertSendDowngraded`. The Details "Last session alert" line is
+    /// `finishAlertSendDowngraded`. The "Last session alert" History line is
     /// unaffected — it stays the truthful history.
     nonisolated static func finishAlertStatusLine(
         for state: FinishAlertDisplayState,
@@ -1103,24 +1060,24 @@ final class MenuStateModel: ObservableObject {
     ) -> String {
         switch state {
         case .off:
-            return "Session alerts: off"
+            return "Off"
         case .needsTopic:
-            return "Session alerts: set an ntfy topic to arm them"
+            return "Not armed — set an ntfy topic in Settings"
         case .needsTestSend:
-            return "Session alerts: send the test message to check your phone gets it"
+            return "Not armed — send the test message in Settings to check your phone gets it"
         case .paused:
-            return "Session alerts: on — but Claude detection is paused; alerts cannot fire"
+            return "Cannot fire — Claude detection is paused"
         case .hookNotInstalled:
-            return "Session alerts: on — install the Claude busy hook first (see below)"
+            return "Not armed — install the Claude busy hook first (see below)"
         case .armed:
             if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                                          lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {
                 if finishAlertRateLimited(lastOutcome) {
-                    return "Session alerts: ntfy is rate-limiting this Mac — alerts are held and folded for a while"
+                    return "Held — ntfy is rate-limiting this Mac; alerts are folded for a while"
                 }
-                return "Session alerts: the last message did not go out — re-run Send test message"
+                return "Failed — the last message did not go out; re-run Send test message in Settings"
             }
-            return "Session alerts: armed — a push when a Claude session finishes or waits for you"
+            return "Armed — a push when a Claude session finishes or waits for you"
         }
     }
 
@@ -1261,7 +1218,7 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - F3 stage 1 (phone transport) presentation
 
-    /// The Details checkbox's title.
+    /// The Settings › Alerts checkbox's title.
     nonisolated static let phoneTransportToggleTitle = "Phone alerts (beta)"
 
     /// Its tooltip / VoiceOver hint: what switching it on changes.
@@ -1274,7 +1231,7 @@ final class MenuStateModel: ObservableObject {
     /// detail is one of `CloudKitMessageSender`'s fixed sentences.
     /// - off → nil (no line at all);
     /// - on in a build without the iCloud entitlement → info: it is on but
-    ///   cannot work, so it escapes Details;
+    ///   cannot work, so it surfaces in the panel;
     /// - none yet / accepted → nominal ("accepted by iCloud" is the honest
     ///   ceiling, like "accepted by ntfy": the push to the phone is async);
     /// - unconfirmed → warning (it may have landed; ntfy was NOT used — the
@@ -1312,7 +1269,7 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// The line's severity alone (it does not depend on the clock), for the
-    /// Details badge.
+    /// gear badge.
     nonisolated static func phoneAlertSeverity(
         enabled: Bool,
         available: Bool,
@@ -1373,17 +1330,17 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - Panel tiers + severity (UI redesign 2026-10-18)
 
-    /// THE IRON RULE, in one place: a line whose home is the Details
-    /// disclosure stays there ONLY while it is nominal. Anything else — error,
-    /// setup required, send failed, hook missing, detection paused, an armed
-    /// downgrade — renders at top level. Collapsed sections may hide settings,
-    /// never problems.
-    nonisolated static func placement(ofDetailsLine severity: PanelSeverity) -> PanelTier {
-        severity == .nominal ? .details : .topLevel
+    /// THE IRON RULE, in one place: a line whose home is a Settings pane
+    /// stays ONLY there while it is nominal. Anything else — error, setup
+    /// required, send failed, hook missing, an armed downgrade — renders at
+    /// top level in the panel too, exactly once (Panel 2.0 slice P: below the
+    /// cards). Settings may hold settings, never a problem's only home.
+    nonisolated static func placement(ofSettingsLine severity: PanelSeverity) -> PanelTier {
+        severity == .nominal ? .settings : .topLevel
     }
 
-    /// The collapsed Details row's badge: the worst of the given severities.
-    nonisolated static func detailsBadge(_ severities: [PanelSeverity]) -> PanelSeverity {
+    /// A badge's severity: the worst of the given severities.
+    nonisolated static func worstSeverity(_ severities: [PanelSeverity]) -> PanelSeverity {
         severities.max() ?? .nominal
     }
 
@@ -1444,11 +1401,10 @@ final class MenuStateModel: ObservableObject {
         return PanelLine(text: stayAwakeTurningOnText, severity: .nominal)
     }
 
-    /// Lock Screen availability as a Details-home line (Details › General)
-    /// since the 2026-10-21 declutter made the button an icon in the footer:
-    /// nominal while the lock entry point resolved; the disabled-lock
-    /// explanation is a warning (the button cannot work), so it escapes
-    /// Details to top level.
+    /// Lock Screen availability as a Settings-home line (Settings › General)
+    /// since the button became an icon: nominal while the lock entry point
+    /// resolved; the disabled-lock explanation is a warning (the button
+    /// cannot work), so it surfaces in the panel too.
     nonisolated static func lockScreenStatus(available: Bool) -> PanelLine {
         if let caption = lockScreenPresentation(available: available).caption {
             return PanelLine(text: caption, severity: .warning)
@@ -1479,7 +1435,7 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Waiting-for-approval and not-found both need the user — warnings, so
-    /// the Launch at Login row escapes Details while either is showing.
+    /// the Launch at Login row surfaces in the panel while either is showing.
     nonisolated static func launchAtLoginCaption(for status: SMAppService.Status) -> PanelLine? {
         launchAtLoginPresentation(for: status).caption.map { PanelLine(text: $0, severity: .warning) }
     }

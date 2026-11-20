@@ -20,11 +20,10 @@ import SwiftUI
 /// heat warning, setup required, failure, the "ntfy settings…" editor —
 /// plus Lock Screen (the user is deliberately leaving the machine), and they
 /// all go through `closeMenuThenPresent` (dismiss cleanly first, then
-/// present). The Details disclosure is pure model state and never reaches
-/// this class at all.
+/// present).
 ///
 /// Height (2026-10-18 redesign): the panel's height changes while the menu
-/// is OPEN (Details disclosure, a caption appearing after an async outcome). `MenuPanelHostingView` re-fits its own frame in the first
+/// is OPEN (a caption appearing after an async outcome). `MenuPanelHostingView` re-fits its own frame in the first
 /// layout pass that sees new content, and NSMenu follows a view-based item's
 /// frame live — see that class.
 @MainActor
@@ -206,7 +205,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // a failed attempt was already reported by its own alert.
         model.stayAwakeTurnOn.panelOpened()
         model.refresh()
-        // Section visibility (charge limit, debug) and the Details state can
+        // Section visibility (charge limit, debug) and the surfaced lines can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's
         // own first layout pass corrects it before anything is displayed.
         hostingView.refitToContent()
@@ -517,7 +516,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         let errorCaption = NSTextField(wrappingLabelWithString:
             MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid) ?? "")
         errorCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        errorCaption.textColor = .systemRed
+        // Contrast program (canon C11, issue #48): the error's words are in
+        // the label color. systemRed text measured 3.57:1 on the light alert
+        // (target 4.5:1); the meaning rides on the words ("Nothing was
+        // saved. …"), never on color alone.
+        errorCaption.textColor = .labelColor
         let worstCaseBounds = NSRect(x: 0, y: 0, width: stackWidth, height: .greatestFiniteMagnitude)
         let errorBandHeight = ceil(errorCaption.cell?.cellSize(forBounds: worstCaseBounds).height
                                    ?? errorCaption.fittingSize.height)
@@ -717,7 +720,7 @@ private final class MaskedTopicRow: NSObject {
 /// Its own view, laid out bottom-up (AppKit's default coordinates) and at
 /// least the editor's field width: the caption, then the control row (the
 /// label, then the popup, on one baseline), then the group title — small,
-/// semibold, secondary, like the panel's Details group headers. The row
+/// semibold, secondary, like the panel's group headers. The row
 /// widens the group rather than truncate either half. System fonts, semantic
 /// colors and the panel's `PanelMetrics` spacing only.
 @MainActor

@@ -37,16 +37,17 @@ are 18×18 pixel art.
   public `CGSessionCopyCurrentDictionary()`. If a future macOS drops that
   entry point, the button simply shows as disabled with an explanation instead
   of misbehaving.
-- **Battery charge limit** (Apple Silicon only), slider 50–100% in steps
-  of 5, default 90%. Charging pauses at the limit and resumes when the
-  battery drifts 5 points below it.
+- **Battery charge limit** (Apple Silicon only): switch it on from the
+  menu, set it in Settings (50–100% in steps of 5, default 90%). Charging
+  pauses at the limit and resumes when the battery drifts 5 points below it.
 - **Crash failsafe, three layers deep** — if NapCat dies, crashes, or the
   machine reboots mid-session, sleep is re-enabled automatically (details
   below).
-- **Live battery panel**: percentage gauge, charging state, and all controls
-  in one SwiftUI menu.
-- **Launch at Login** via `SMAppService` — one toggle, one entry in
-  System Settings › General › Login Items.
+- **A glance panel, plus a Settings window**: the menu shows the battery
+  gauge and every switch in two cards, and everything you set once lives in
+  Settings (⌘,) — see [The menu and the Settings window](#the-menu-and-the-settings-window).
+- **Launch at Login** via `SMAppService` — one checkbox in Settings, one entry
+  in System Settings › General › Login Items.
 - **Claude Code awareness** (optional, opt-in): the menu shows whether a Claude
   turn is running, and NapCat can push a notification to your phone (via ntfy)
   if the Mac starts sleeping while one still is — see
@@ -58,7 +59,40 @@ are 18×18 pixel art.
   [Session alerts](#session-alerts--finish-and-waiting-pushes).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
-- No Dock icon, no windows. Quit from the menu (⌘Q while it is open works).
+- No Dock icon. The one window is Settings. Quit from the menu (⌘Q while it
+  is open works).
+
+## The menu and the Settings window
+
+Click the cat and the menu opens on two cards and a footer:
+
+- **The Power card** — the battery ring with **Battery N%** and the charging
+  state, the lock icon in its top-right corner (Lock Screen), **Stay Awake**,
+  and **Charge Limit** with the current limit next to its switch.
+- **The Alerts card** — **Lid alert** and **Session alerts**, one switch each.
+- **The footer** — the Settings gear, the Claude status (**Claude: running**,
+  **idle** or **paused**), and **Quit NapCat**.
+
+When all is well the rows say nothing more. When something needs you, a short
+caption appears under its row — for example "Not armed — send the test
+message in Settings to check your phone gets it". A problem whose fix lives in
+Settings (a message that did not go out, an out-of-date busy hook, a login item
+waiting for approval) appears below the cards, right above the gear, and the
+gear carries a warning badge until it is fixed. A problem never hides in
+Settings alone.
+
+**Settings** opens from the gear, or with ⌘, while the menu is open or NapCat
+is active. It reopens on the pane you used last:
+
+| Pane | What lives there |
+|---|---|
+| **General** | Launch at Login · the charge limit (its switch, the 50–100% slider and its status) · whether Lock Screen is available on this macOS |
+| **Alerts** | the ntfy server and topic (the topic itself is never shown), **ntfy settings…** and **Send test message** · how long a Claude run must last before a session alert · History: the last lid alert, session alert and phone alert · Phone alerts (beta) |
+| **Claude** | the Claude status, when the busy hook last ran and whether its installed copy is current, whether Claude is holding the Mac awake · **Pause detection** · the command that installs the busy hook |
+
+The Alerts and Claude panes are absent in the
+[debug battery simulator](#debug-battery-simulator) mode, like the Alerts card
+and the Claude status in the menu.
 
 ## Requirements
 
@@ -287,8 +321,8 @@ machine awake, as designed.
   write shows an error in the menu, never a false "paused".
 - **Unavailable where macOS hides the keys.** On the newest macOS (seen on
   27.2) the charge-control keys read back empty, `CHTE` and `CH0B` alike and
-  even as root, so no write can take effect. NapCat detects this and the menu
-  says "Charge limiting isn't available on this version of macOS." instead
+  even as root, so no write can take effect. NapCat detects this and the
+  Charge Limit row says "Unavailable on this version of macOS" instead
   of attempting writes; your limit is kept and re-checked each time the menu
   opens. Systems that still expose the keys are unaffected.
 - **Hysteresis.** Charging pauses at ≥ limit and resumes at ≤ limit − 5, so
@@ -331,8 +365,8 @@ NapCat's saved settings (including the ntfy topic), and prints a summary of
 everything it reverted. Then delete the app (`/Applications/NapCat.app` if
 you installed the disk image) and the repo / `dist/NapCat.app` and, if you
 enabled Launch at Login, remove the NapCat
-entry in System Settings › General › Login Items (or toggle it off in the
-menu before uninstalling).
+entry in System Settings › General › Login Items (or untick it in NapCat's
+Settings › General before uninstalling).
 
 If you installed the optional Claude busy hook, remove it as well — as
 yourself, no `sudo`:
@@ -387,8 +421,8 @@ defaults delete com.muratalkan.napcat debugBattery   # and restart again
 
 NapCat can show whether a Claude Code turn is in flight, whether Claude is
 holding your Mac awake, and how recently the companion hook last fired — the
-menu's bottom row reads **Claude: running**, **idle** or **paused**, and clicking
-it opens **Details** with the rest. It can also **push a notification to your phone**
+menu's footer reads **Claude: running**, **idle** or **paused**, and
+**Settings › Claude** has the rest. It can also **push a notification to your phone**
 if the Mac starts sleeping while a Claude task is still running (see "Notify me
 if the Mac sleeps mid-task" below). Everything here is unprivileged: no `sudo`,
 no new privileged commands, no elevated helper.
@@ -437,8 +471,8 @@ registered an earlier version of this hook**, add the `SubagentStop` entry,
 remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
 `./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
 start a new Claude Code session so it loads. The installer prints the hook
-version it installed, and the menu (**Details → Claude detection**) warns when
-the installed copy is older than the one this NapCat build expects.
+version it installed, and NapCat warns — in the menu and in **Settings ›
+Claude** — when the installed copy is older than the one this build expects.
 
 **The exec form (`/usr/bin/env -i HOME=… /bin/bash …`) is a security requirement,
 not cosmetic.** `env -i` strips `$BASH_ENV` and every exported `BASH_FUNC_*`
@@ -452,10 +486,10 @@ and does nothing at all if a kill-switch flag is present.
 
 ### Kill switch
 
-Pause detection at any time from the menu (**Details → Pause detection** — kept
-behind the Details disclosure so it cannot be flipped by accident), or by hand.
-While it is paused the menu's bottom row reads **Claude: paused** with a warning sign, and an armed
-lid alert reads "armed — but Claude detection is paused; alerts cannot fire":
+Pause detection at any time from **Settings › Claude** (**Pause detection** —
+kept out of the menu so it cannot be flipped by accident), or by hand.
+While it is paused the menu's footer reads **Claude: paused** with a warning
+sign, and an armed lid alert reads "Cannot fire — Claude detection is paused":
 with no busy markers, the alert can never fire. Pausing detection silences
 **Session alerts** too — no finish or waiting push goes out until you resume.
 
@@ -506,7 +540,8 @@ state, never arms itself, and never sends anything but its own fixed sentence.
    **do not copy any example from this README or from the app**: an example
    everybody can read is a feed everybody can read. Allowed: letters, digits,
    `_` and `-`, up to 64 characters.
-3. In the NapCat menu open **Details** and click **ntfy settings…**, paste the topic,
+3. Open **Settings › Alerts** (the gear in the menu, or ⌘,) and click
+   **ntfy settings…**, paste the topic,
    and leave the server as `https://ntfy.sh` unless you run your own instance.
    The topic field is masked like a password; tick **Show** to proofread it.
    If a password suggestion ever appears over the topic field, press **Esc**
@@ -516,16 +551,16 @@ state, never arms itself, and never sends anything but its own fixed sentence.
    (`https://ntfy.example.com:8443`). Anything else is refused with an
    explanation in the dialog rather than half-saved.
 4. Turn the **Lid alert** toggle on.
-5. **Send test message** (under **Details**; switching the toggle on with an
+5. **Send test message** (in **Settings › Alerts**; switching the toggle on with an
    untested topic sends one automatically) — your phone should show a banner
    within a couple of seconds. **The feature does not arm until a test message
    is accepted**, so the lid-close alert is never the first thing your topic is
    trusted with.
 
-The menu then shows a status line under the toggle (whether it is armed) and,
-under **Details**, the outcome and time of the last message — which moves up next
-to the toggle whenever it is a failure. It deliberately never displays the topic
-itself.
+The menu then shows a caption under the toggle whenever it is not armed, and
+**Settings › Alerts** keeps the outcome and time of the last message under
+History — which also shows in the menu, below the cards, whenever it is a
+failure. It deliberately never displays the topic itself.
 
 You can check a topic from the terminal without NapCat:
 
@@ -585,19 +620,20 @@ and NapCat pushes once for that wait.
 
 While armed, NapCat watches the marker folder with a file-system notification on
 that one folder — nothing polls, and with the toggle off the watcher does not
-exist. Detection being paused (**Details → Pause detection**) silences both
-pushes, and the row says so.
+exist. Detection being paused (**Settings › Claude → Pause detection**)
+silences both pushes, and the row says so.
 
 - **Same topic, server and test message as the lid alert** (set under
-  **Details → ntfy settings…**). Switching Session alerts on with a topic that
+  **Settings › Alerts → ntfy settings…**). Switching Session alerts on with a topic that
   has never been tested sends the test message first, and nothing arms until it
   is accepted — a session alert is never the first thing your topic is trusted
   with. The two toggles are otherwise independent.
 - **A minimum run before either push fires** — configurable, default 60 s
   (measured from when the session became busy): a quick answer, or a permission
   prompt seconds after you hit Enter, stays quiet — you are still looking.
-  Choose it under **Details → ntfy settings… → Session alerts** ("Only alert
-  for runs longer than"): 30 seconds, or 1, 2, 5 or 10 minutes. One value
+  Choose it in **Settings › Alerts** ("Only alert for runs longer than"), or
+  under **ntfy settings… → Session alerts**: 30 seconds, or 1, 2, 5 or 10
+  minutes. One value
   covers both pushes, and a change takes effect at once, without restarting
   NapCat. Any other whole number of seconds from 30 to 600 can be set with
   `defaults write com.muratalkan.napcat finishAlertMinimumRunSeconds -int <seconds>`
@@ -611,8 +647,9 @@ pushes, and the row says so.
   after 42 min — 1 still working", "Claude is waiting for you — 12 min in".
   Both publish at ntfy priority `high`, tagged `white_check_mark`
   (finished) or `raised_hand` (waiting).
-- **The menu shows the outcome of the last session alert** under **Details**; a
-  refused or failed one moves up next to the toggle. A send that provably never
+- **Settings › Alerts shows the outcome of the last session alert** under
+  History; a refused, failed or unconfirmed one also shows in the menu, below
+  the cards. A send that provably never
   left the Mac (no connection, DNS, TLS) is held and delivered once the
   connection is back (next bullet); anything that may have reached ntfy — one
   the server refused (for example, rate-limited), or one whose answer never came
@@ -749,8 +786,8 @@ Notes:
   such payloads whole, which could leave a stale busy marker behind — NapCat
   then kept showing a finished session as running. The hook now maps those
   escapes before validation. Re-run `./scripts/install-claude-busy-hook.sh`
-  and start a new Claude Code session; until then **Details → Claude
-  detection** reports the installed copy as out of date.
+  and start a new Claude Code session; until then NapCat (the menu and
+  **Settings › Claude**) reports the installed copy as out of date.
 
 ## Security
 

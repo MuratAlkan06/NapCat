@@ -1,120 +1,117 @@
 import SwiftUI
 
-// The menu panel's ONE layout (PLAN.md "UI Redesign — Menu Panel").
-// Design freeze 2026-10-18: of the curation variants the user kept A "Quiet
-// Rows" ("the version that has the icon"); B "Grouped Cards" (round 1) and
-// C "Status Hero" (freeze) were deleted. The file name is kept from that
-// exploration so the scanned-file lints stay stable.
+// The menu panel's ONE layout. Panel 2.0 (owner pick "c cards", 2026-11-20)
+// superseded the 2026-10-18 Quiet Rows freeze. The file name is kept from the
+// 2026-10-18 curation round so the scanned-file lints stay stable.
 // The layout arranges the shared components (MenuPanelView.swift) and never
 // decides what is a warning. It MUST include the five surfaced-line
 // components (`ClaudeSurfacedLines`, `LidAlertSurfacedLines`,
 // `SessionAlertsSurfacedLines`, `GeneralSurfacedLines`,
-// `SurfacedLaunchAtLogin`) so that a non-nominal Details line always has a
-// top-level home, and must END with `PanelFooterRow` (the one Details
-// disclosure — whose text is the Claude status — then Quit), with expanded
-// Details content above it (lint-locked in MenuPanelStructureTests). Lock
-// Screen is not a footer control: since the 2026-10-22 amendment its icon
-// button sits in `BatteryHeader`'s top-right corner.
+// `SurfacedLaunchAtLogin`) OUTSIDE the cards, so that a non-nominal Settings
+// line always has a top-level home, and must END with `PanelFooterRow` (the
+// Settings gear, the Claude status caption, then Quit), also outside the
+// cards (lint-locked in MenuPanelStructureTests).
 
-// MARK: - Quiet Rows
+// MARK: - Grouped Cards
 
-/// Single column: symbol + title + trailing control per row; captions ONLY
-/// for non-nominal states; at most two Dividers; 4/8/12 rhythm.
-struct QuietRowsPanel: View {
+/// Two cards and a footer. The Power card: the battery header (the Lock
+/// Screen icon in its top-right corner), Stay Awake, Charge Limit. The
+/// Alerts card, under its group header: Lid alert, Session alerts. Captions
+/// ONLY for non-nominal states, inside the card under their row; the
+/// surfaced Settings lines below the cards; the footer last. 4/8/12 rhythm.
+///
+/// No "Power" header (a judgment call the owner left open): the card's first
+/// line is the panel's one headline, "Battery N%", which already names the
+/// group — a caption-sized "Power" above it would title the same card twice
+/// and put a second label above the panel's anchor. "Alerts" stays: nothing
+/// inside that card names the group, and it marks where the opt-in
+/// notifications begin.
+struct GroupedCardsPanel: View {
     @ObservedObject var model: MenuStateModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: PanelMetrics.rowSpacing) {
-            // The hero-size gauge (curation round 2) with the "Battery N%"
-            // headline + charging line, and the charge-state glyph inside
-            // the ring.
-            BatteryHeader(model: model)
-            Divider()
+            PanelCard {
+                // The hero-size gauge (curation round 2) with the "Battery
+                // N%" headline + charging line, and the charge-state glyph
+                // inside the ring.
+                BatteryHeader(model: model)
 
-            PanelFeature {
-                PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
-                    StayAwakeToggle(model: model)
-                }
-                // The Stay Awake slot: unreadable > "Turning on…" (ruling e,
-                // the one nominal caption here) — MenuStateModel.stayAwakeSlot.
-                StayAwakeCaptionSlot(model: model, turnOn: model.stayAwakeTurnOn)
-                    .padding(.leading, PanelMetrics.titleIndent)
-            }
-
-            // ADR §12: no battery → the charge-limit section is hidden
-            // entirely, not disabled.
-            if model.featureState != .hidden {
                 PanelFeature {
-                    PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
-                        ChargeLimitReadout(model: model)
-                        ChargeLimitToggle(model: model)
+                    PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
+                        StayAwakeToggle(model: model)
                     }
-                    ChargeLimitSlider(model: model)
+                    // The Stay Awake slot: unreadable > "Turning on…" (ruling
+                    // e, the one nominal caption here) —
+                    // MenuStateModel.stayAwakeSlot.
+                    StayAwakeCaptionSlot(model: model, turnOn: model.stayAwakeTurnOn)
                         .padding(.leading, PanelMetrics.titleIndent)
-                    indentedCaption(model.chargeLimitCaption)
+                }
+
+                // ADR §12: no battery → the charge-limit row is hidden
+                // entirely, not disabled. The slider lives in Settings.
+                if model.featureState != .hidden {
+                    PanelFeature {
+                        PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
+                            ChargeLimitValue(model: model)
+                            ChargeLimitToggle(model: model)
+                        }
+                        indentedCaption(model.chargeLimitCaption)
+                    }
                 }
             }
 
-            // Track B (absent in debugBattery mode). The Claude status itself
-            // is the footer disclosure's text (2026-10-21), not a row here.
-            if model.claudeDetectionVisible {
-                if model.lidGuardVisible {
+            // Track B + C (absent in debugBattery mode). The Claude status
+            // itself is the footer's caption, not a row here.
+            if model.claudeDetectionVisible && model.lidGuardVisible {
+                PanelGroup(title: "Alerts") {
                     PanelFeature {
                         PanelRow(symbol: PanelSymbol.lidAlert, title: "Lid alert") {
                             LidAlertToggle(model: model)
                         }
                         indentedCaption(model.lidStatus)
-                        LidAlertSurfacedLines(model: model)
-                            .padding(.leading, PanelMetrics.titleIndent)
                     }
-                }
-                // Track C: directly under the Lid alert row — same shape.
-                if model.finishAlertVisible {
-                    PanelFeature {
-                        PanelRow(symbol: PanelSymbol.sessionAlerts, title: "Session alerts") {
-                            SessionAlertsToggle(model: model)
+                    // Track C: directly under the Lid alert row — same shape.
+                    if model.finishAlertVisible {
+                        PanelFeature {
+                            PanelRow(symbol: PanelSymbol.sessionAlerts, title: "Session alerts") {
+                                SessionAlertsToggle(model: model)
+                            }
+                            // The session-alerts slot: the alert-healing
+                            // offline warning takes it while offline (offline
+                            // > 429 hold > nominal —
+                            // MenuStateModel.sessionAlertsSlot).
+                            indentedCaption(model.finishAlertStatus)
                         }
-                        // The session-alerts slot: the alert-healing offline
-                        // warning takes it while offline (offline > 429 hold
-                        // > nominal — MenuStateModel.sessionAlertsSlot).
-                        indentedCaption(model.finishAlertStatus)
-                        SessionAlertsSurfacedLines(model: model)
-                            .padding(.leading, PanelMetrics.titleIndent)
                     }
                 }
             }
 
             if model.debugControlsVisible {
                 DebugBatterySection(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
             }
 
-            Divider()
-            // Details opens ABOVE the footer row, which always closes the panel.
-            if model.detailsExpanded {
-                PanelDetailsContent(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
-            }
-            // Top-level twins of the Details lines whose own control sits
-            // outside the rows above — the Claude status label in the footer,
-            // the Lock Screen icon in the header's top-right corner (since
-            // 2026-10-22) — aligned with the footer label's text.
+            // The top-level home of every Settings line that can be a
+            // problem, OUTSIDE the cards and right above the gear that opens
+            // their Settings pane. Each renders only while non-nominal.
             if model.claudeDetectionVisible {
                 ClaudeSurfacedLines(model: model)
-                    .padding(.leading, PanelMetrics.titleIndent)
+                if model.lidGuardVisible {
+                    LidAlertSurfacedLines(model: model)
+                }
+                if model.finishAlertVisible {
+                    SessionAlertsSurfacedLines(model: model)
+                }
             }
             GeneralSurfacedLines(model: model)
-                .padding(.leading, PanelMetrics.titleIndent)
             SurfacedLaunchAtLogin(model: model)
-                .padding(.leading, PanelMetrics.titleIndent)
             PanelFooterRow(model: model)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, PanelMetrics.loose)
     }
 
-    /// Non-nominal captions only (Quiet Rows' rule), aligned with the row
-    /// titles.
+    /// Non-nominal captions only, aligned with the row titles.
     @ViewBuilder private func indentedCaption(_ line: PanelLine?) -> some View {
         if let line {
             PanelCaptionLine(line: line, showsNominal: false)

@@ -5,26 +5,26 @@ import AppKit
 import Testing
 @testable import NapCat
 
-/// Lint-style locks for the 2026-10-18 menu-panel redesign (SwiftUI layout
-/// cannot be driven headlessly, so the pure mappings are unit-tested in
-/// MenuPanelPresentationTests and their USE is locked here):
-/// the panel is ONE fixed layout (design freeze), the topic never reaches a
-/// view, the layout gives problem lines a top-level home, the ONE disclosure
-/// shares the last row with Quit (curation round 1), the header is the
-/// hero-size gauge with the charge-state glyph (curation round 2 + its fix)
-/// and carries the Lock Screen button in its top-right corner (2026-10-22),
-/// Details only ever tucks NOMINAL lines, Pause detection lives in Details
-/// (F3), motion is gated on Reduce Motion, and colors are system/semantic
-/// only.
+/// Lint-style locks for the menu panel (SwiftUI layout cannot be driven
+/// headlessly, so the pure mappings are unit-tested in
+/// MenuPanelPresentationTests and their USE is locked here). Re-locked
+/// around Panel 2.0 slice P (owner pick "c cards", 2026-11-20 — it
+/// superseded the 2026-10-18 Quiet Rows freeze): the panel is ONE fixed
+/// layout of two cards and a footer, the topic never reaches a view, every
+/// Settings line that can be a problem has ONE top-level home below the
+/// cards, the footer (gear · Claude status · Quit) comes last outside the
+/// cards, the header is the hero-size gauge with the charge-state glyph and
+/// carries the Lock Screen button in its top-right corner, nothing of the
+/// retired Details disclosure survives, motion is gated on Reduce Motion,
+/// and colors are system/semantic only (plus the cards' one measured boost).
 struct MenuPanelStructureTests {
     /// Every SwiftUI view file of the panel. A new view file must be added
     /// here AND to the LidGuard / ClaudeDetection scanned-file sets. (The
     /// Settings window's files are a separate surface with their own locks:
     /// `SettingsWindowTests.settingsFiles`.)
     static let viewFiles = ["MenuPanelView.swift", "MenuPanelVariants.swift"]
-    /// The panel's one layout since the 2026-10-18 design freeze (the user
-    /// kept A "Quiet Rows"; B and C were deleted).
-    static let layout = "QuietRowsPanel"
+    /// The panel's one layout since Panel 2.0 slice P.
+    static let layout = "GroupedCardsPanel"
     static let layoutFile = "MenuPanelVariants.swift"
 
     static func layoutBody() throws -> String {
@@ -65,13 +65,51 @@ struct MenuPanelStructureTests {
         text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
-    // MARK: - Design freeze: one fixed layout
+    /// Every card in `text`, in order: each `PanelCard {` or `PanelGroup(`
+    /// call up to its matching closing brace.
+    static func cardBlocks(in text: String) -> [Range<String.Index>] {
+        var blocks: [Range<String.Index>] = []
+        var from = text.startIndex
+        while let opener = ["PanelCard {", "PanelGroup("]
+            .compactMap({ text.range(of: $0, range: from..<text.endIndex) })
+            .min(by: { $0.lowerBound < $1.lowerBound }),
+            let brace = text.range(of: "{", range: opener.lowerBound..<text.endIndex) {
+            var depth = 0
+            var index = brace.lowerBound
+            var end: String.Index?
+            while index < text.endIndex {
+                if text[index] == "{" { depth += 1 }
+                if text[index] == "}" {
+                    depth -= 1
+                    if depth == 0 { end = text.index(after: index); break }
+                }
+                index = text.index(after: index)
+            }
+            guard let end else { break }
+            blocks.append(opener.lowerBound..<end)
+            from = end
+        }
+        return blocks
+    }
 
-    /// Design freeze (2026-10-18): MenuPanelView renders the Quiet Rows layout
-    /// unconditionally; the variant picker, the losing layout, its hero-only
-    /// mapping and its plumbing are gone from the code (comments may still
-    /// name them as history); and the retired `menuPanelStyle` key survives
-    /// ONLY in `RetiredDefaultsKey`, where the startup migration deletes it.
+    /// The row titles a chunk of layout renders, in order.
+    static func rowTitles(_ text: some StringProtocol) -> [String] {
+        String(text).components(separatedBy: "PanelRow(symbol: ").dropFirst().map { chunk in
+            chunk.components(separatedBy: "title: \"").dropFirst().first?.prefix { $0 != "\"" }.description ?? "?"
+        }
+    }
+
+    // MARK: - One fixed layout
+
+    /// Panel 2.0 slice P: MenuPanelView renders the grouped-cards layout
+    /// unconditionally. The 2026-10-18 variant picker and its plumbing stay
+    /// gone, and so does everything the Details disclosure took with it —
+    /// the disclosure, its content, its badge, its in-memory state, its
+    /// chevron, the placement tier named after it, the panel's slider and
+    /// readout roll, the Details-only phone checkbox, the 76pt header and its
+    /// lock inset — from the code, not merely unused (comments may still name
+    /// them as history). The retired `menuPanelStyle` key survives ONLY in
+    /// `RetiredDefaultsKey`, where the startup migration deletes it.
     @Test func thePanelIsOneFixedLayout() throws {
         let root = try #require(Self.structChunk("MenuPanelView", in: try Self.code("MenuPanelView.swift")))
         #expect(Self.occurrences(of: "\(Self.layout)(model: model)", in: root) == 1, "the root renders the one layout")
@@ -91,6 +129,12 @@ struct MenuPanelStructureTests {
         for token in ["ClaudeStatusRow", "claudeStatus", "PanelSymbol.claude",
                       "PanelRow(symbol: PanelSymbol.lockScreen", "Button(\"Lock\")", "lockScreenCaption"] {
             #expect(!panelCode.contains(token), "'\(token)' — scrapped at the 2026-10-21 declutter")
+        }
+        for token in ["QuietRowsPanel", "PanelDetailsDisclosure", "PanelDetailsContent", "TuckedLine", "detailsExpanded",
+                      "setDetailsExpanded", "detailsBadge", "detailsLabel", "plainDetailsLabel", "DetailsGroupHeader",
+                      "PanelSymbol.disclosure", "ofDetailsLine", ".details", "PanelMotion.chevron", "ChargeLimitSlider",
+                      "ChargeLimitReadout", "limitReadout", "PhoneTransportToggle", "headerLockInset", "minHeight: 76"] {
+            #expect(!panelCode.contains(token), "'\(token)' — retired with the Details disclosure (slice P)")
         }
 
         for (name, text) in try LidGuardStructureTests.swiftSources() where text.contains("menuPanelStyle") {
@@ -122,76 +166,77 @@ struct MenuPanelStructureTests {
 
     // MARK: - The iron rule, structurally
 
-    /// The layout must render the five surfaced-line components (the
-    /// top-level home of every Details line that can be a problem — Track C
-    /// added the session-alerts one, the 2026-10-21 declutter the General one
-    /// for the Lock Screen line) plus the Details content and the ONE footer
-    /// row that carries the disclosure and the always-visible Quit.
-    @Test func thePanelGivesProblemLinesATopLevelHome() throws {
+    /// The layout renders the five surfaced-line components — the top-level
+    /// home of every Settings line that can be a problem (Track C added the
+    /// session-alerts one, the 2026-10-21 declutter the General one for the
+    /// Lock Screen line) — each exactly once, OUTSIDE the cards: below the
+    /// last card and above the ONE footer row, right over the gear that
+    /// opens their Settings pane.
+    @Test func thePanelGivesProblemLinesATopLevelHomeBelowTheCards() throws {
         let body = try Self.layoutBody()
-        for component in ["ClaudeSurfacedLines(", "LidAlertSurfacedLines(", "SessionAlertsSurfacedLines(",
-                          "GeneralSurfacedLines(", "SurfacedLaunchAtLogin(", "PanelDetailsContent(",
-                          "PanelFooterRow("] {
-            #expect(body.contains(component), "\(Self.layout) is missing \(component)")
-            #expect(Self.occurrences(of: component, in: body) == 1, "\(component) rendered more than once")
-        }
+        let cards = Self.cardBlocks(in: body)
+        #expect(cards.count == 2, "the Power card and the Alerts card")
+        let footer = try #require(body.range(of: "PanelFooterRow(model: model)"), "no footer row")
         #expect(Self.occurrences(of: "PanelFooterRow(", in: body) == 1, "ONE footer row")
-        #expect(Self.occurrences(of: "PanelDetailsContent(", in: body) == 1, "ONE Details content")
-        // The layout renders no disclosure of its own — the footer row is the
-        // only home, so the panel has exactly ONE disclosure.
-        #expect(!(try Self.code(Self.layoutFile)).contains("PanelDetailsDisclosure("),
-                "the layout renders a second disclosure")
+        let lastCardEnd = try #require(cards.last).upperBound
+        for component in ["ClaudeSurfacedLines(", "LidAlertSurfacedLines(", "SessionAlertsSurfacedLines(",
+                          "GeneralSurfacedLines(", "SurfacedLaunchAtLogin("] {
+            #expect(Self.occurrences(of: component, in: body) == 1, "\(component) must render exactly once")
+            let at = try #require(body.range(of: component), "\(Self.layout) is missing \(component)")
+            #expect(lastCardEnd <= at.lowerBound, "\(component) must render below the cards")
+            #expect(at.upperBound <= footer.lowerBound, "\(component) must render above the footer")
+            for card in cards {
+                #expect(!body[card].contains(component), "\(component) renders inside a card")
+            }
+        }
     }
 
-    /// Curation round 1 (2026-10-18): Details sits on the LEFT of the panel's
-    /// last row with Quit on the RIGHT, and Quit stays the last control. Lock
-    /// Screen amendment (2026-10-22): the icon-only Lock Screen button left
-    /// the footer for the header's top-right corner (locked in
-    /// `theLockScreenButtonSitsInTheHeaderTopRightCorner`), so the footer is
-    /// the disclosure, the Spacer and Quit. Slice W (issue #78, 2026-11-20)
-    /// puts the Settings gear FIRST, before the disclosure — far from Quit,
-    /// where an icon button reads as part of the Quit control (the
-    /// 2026-10-22 lesson) — so the footer is the gear, the disclosure, the
-    /// Spacer and Quit — nothing else. It holds the ONLY disclosure, the ONLY
-    /// gear and the ONLY Quit button in the panel, and it is the LAST thing —
-    /// expanded Details content and the surfaced twins (Claude, General,
-    /// Launch at Login) render above it, so Quit can never be pushed out of
-    /// view.
-    @Test func theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast() throws {
+    /// Panel 2.0 slice P: the panel's LAST row sits OUTSIDE the cards — the
+    /// Settings gear first, then the Claude status caption, the Spacer, then
+    /// Quit on the right, and nothing else (no icon button beside Quit, where
+    /// it reads as part of the Quit control — the 2026-10-22 lesson; Lock
+    /// Screen lives in the header: `theLockScreenButtonSitsInTheHeaderTopRightCorner`).
+    /// It holds the ONLY gear, status caption and Quit button in the panel.
+    /// It must not read as a third card in light mode: neither the row nor
+    /// Quit draws a fill — Quit is the panel's plain press-fade look, its hit
+    /// area the footer row's full height. And it comes LAST, so Quit can never
+    /// be pushed out of view.
+    @Test func theFooterRowHoldsTheGearTheStatusAndQuitAndComesLast() throws {
         let views = try Self.allViewCode()
-        #expect(Self.occurrences(of: "PanelDetailsDisclosure(", in: views) == 1, "exactly ONE disclosure in the panel")
-        #expect(Self.occurrences(of: "Button(\"Quit NapCat\")", in: views) == 1, "exactly ONE Quit button")
+        #expect(Self.occurrences(of: "Text(\"Quit NapCat\")", in: views) == 1, "exactly ONE Quit button")
+        #expect(Self.occurrences(of: "model.quit()", in: views) == 1)
         #expect(Self.occurrences(of: "SettingsGearButton(", in: views) == 1, "exactly ONE Settings gear")
+        #expect(Self.occurrences(of: "PanelFooterStatus(", in: views) == 1, "exactly ONE status caption")
         let footer = try #require(Self.structChunk("PanelFooterRow", in: try Self.code("MenuPanelView.swift")))
         #expect(!footer.contains("LockScreenButton("), "Lock Screen lives in the header, not the footer")
-        let row = try #require(footer.range(of: "HStack(alignment: .center, spacing: 0) {"))
+        let row = try #require(footer.range(of: "HStack(alignment: .center, spacing: PanelMetrics.regular) {"))
         let gear = try #require(footer.range(of: "SettingsGearButton(model: model)"), "the gear lives in the footer")
-        let disclosure = try #require(footer.range(of: "PanelDetailsDisclosure(model: model)"),
-                                      "the disclosure lives in the footer")
+        let status = try #require(footer.range(of: "PanelFooterStatus(model: model)"), "the status lives in the footer")
         let spacer = try #require(footer.range(of: "Spacer(minLength: PanelMetrics.regular)"))
-        let quit = try #require(footer.range(of: "Button(\"Quit NapCat\")"), "Quit lives in the footer")
+        let quit = try #require(footer.range(of: "Button { model.quit() } label: {"), "Quit lives in the footer")
         #expect(Self.occurrences(of: "HStack(", in: footer) == 1, "one row — no nested button group")
-        #expect(gear.lowerBound < disclosure.lowerBound && disclosure.lowerBound < spacer.lowerBound
+        #expect(gear.lowerBound < status.lowerBound && status.lowerBound < spacer.lowerBound
                 && spacer.lowerBound < quit.lowerBound,
-                "the gear, then Details on the left, Spacer, then Quit on the right")
-        #expect(footer[row.upperBound..<gear.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && footer[gear.upperBound..<disclosure.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && footer[disclosure.upperBound..<spacer.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && footer[spacer.upperBound..<quit.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "nothing else sits in the footer — the gear, the disclosure, the Spacer, Quit")
-        #expect(Self.occurrences(of: "Button(\"", in: footer) == 1, "Quit is the footer's only titled button")
-        #expect(Self.occurrences(of: "SettingsGearButton(", in: footer) == 1, "…and the gear its one icon button")
-        let afterQuit = footer[quit.upperBound...]
-        #expect(!afterQuit.contains("Button") && !afterQuit.contains("(model: model)"),
-                "Quit stays the last (rightmost) control")
-        #expect(footer.contains(".keyboardShortcut(\"q\", modifiers: .command)"))
+                "the gear, the status, the Spacer, then Quit on the right")
+        for gap in [footer[row.upperBound..<gear.lowerBound], footer[gear.upperBound..<status.lowerBound],
+                    footer[status.upperBound..<spacer.lowerBound], footer[spacer.upperBound..<quit.lowerBound]] {
+            #expect(gap.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    "nothing else sits in the footer — the gear, the status, the Spacer, Quit")
+        }
+        #expect(Self.flat(footer[quit.lowerBound...]).hasPrefix(
+            "Button { model.quit() } label: { Text(\"Quit NapCat\") .font(.caption)"
+            + " .frame(minHeight: PanelMetrics.iconButtonSize) .contentShape(Rectangle()) }"
+            + " .buttonStyle(PanelPressFadeButtonStyle()) .keyboardShortcut(\"q\", modifiers: .command) }"),
+                "Quit: plain press-fade text, its hit area the footer row's height, ⌘Q — and the last control")
+        for token in [".background", ".overlay", "PanelCard", "PanelGroup", ".controlSize(", ".bordered", "Divider()",
+                      "Color("] {
+            #expect(!footer.contains(token), "'\(token)' — the footer and Quit draw no fill (never a third card)")
+        }
 
         let body = try Self.layoutBody()
         let footerCall = try #require(body.range(of: "PanelFooterRow(model: model)"), "no footer row")
-        for above in ["PanelDetailsContent(", "ClaudeSurfacedLines(", "GeneralSurfacedLines(",
-                      "SurfacedLaunchAtLogin("] {
-            let position = try #require(body.range(of: above), "missing \(above)")
-            #expect(position.lowerBound < footerCall.lowerBound, "\(above) must render ABOVE the footer")
+        for card in Self.cardBlocks(in: body) {
+            #expect(card.upperBound <= footerCall.lowerBound, "the footer sits below — outside — the cards")
         }
         // Nothing follows the footer inside the main column: only the closing
         // brace before the column's own modifiers.
@@ -199,6 +244,43 @@ struct MenuPanelStructureTests {
         let beforeModifiers = tail.range(of: ".padding(").map { tail[..<$0.lowerBound] } ?? tail
         #expect(beforeModifiers.trimmingCharacters(in: .whitespacesAndNewlines) == "}",
                 "the footer row must be the panel's last row")
+    }
+
+    /// Slice P (owner pick "c cards"): `PanelCard` is the panel's ONE
+    /// container — radius 8 with continuous corners, 10pt padding, its
+    /// features `rowSpacing` apart, the full-opacity `quaternarySystemFill`
+    /// PLUS the one measured boost layer (4.5% black light / 3.2% white
+    /// dark — 1.166:1 / 1.188:1 in the pick render; the system fill alone was
+    /// the 1.06:1 invisible card), a 0.5pt separator hairline. `PanelGroup`
+    /// is a `.caption` semibold secondary header `tight` above a card.
+    @Test func theCardIsThePanelsOneContainer() throws {
+        #expect(PanelMetrics.cardRadius == 8 && PanelMetrics.cardPadding == 10 && PanelMetrics.cardStroke == 0.5)
+        #expect(PanelMetrics.cardBoostLight == 0.045 && PanelMetrics.cardBoostDark == 0.032)
+        let source = try Self.code("MenuPanelView.swift")
+        let card = try #require(Self.structChunk("PanelCard", in: source))
+        for token in [
+            "let shape = RoundedRectangle(cornerRadius: PanelMetrics.cardRadius, style: .continuous)",
+            "VStack(alignment: .leading, spacing: PanelMetrics.rowSpacing) {",
+            ".padding(PanelMetrics.cardPadding)",
+            ".frame(maxWidth: .infinity, alignment: .leading)",
+            "shape.fill(Color(nsColor: .quaternarySystemFill))",
+            "shape.fill(Self.boost(colorScheme))",
+            ".overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: PanelMetrics.cardStroke))",
+            "? Color.white.opacity(PanelMetrics.cardBoostDark)",
+            ": Color.black.opacity(PanelMetrics.cardBoostLight)",
+        ] {
+            #expect(card.contains(token), "'\(token)' not found — the card treatment was rewired")
+        }
+        let group = try #require(Self.structChunk("PanelGroup", in: source))
+        #expect(Self.flat(group).contains("VStack(alignment: .leading, spacing: PanelMetrics.tight) {"
+                                          + " PanelGroupHeader(title: title) PanelCard(content: content) }"))
+        let header = try #require(Self.structChunk("PanelGroupHeader", in: source))
+        #expect(Self.flat(header).contains("Text(title) .font(.caption) .fontWeight(.semibold) .foregroundStyle(.secondary)"
+                                           + " .accessibilityAddTraits(.isHeader)"))
+        // The one container family: no other rounded fill in the panel.
+        let views = try Self.allViewCode()
+        #expect(Self.occurrences(of: "RoundedRectangle(", in: views) == 1, "only the card draws a rounded shape")
+        #expect(Self.occurrences(of: ".quaternarySystemFill", in: views) == 1)
     }
 
     /// `BatteryHeader` split into its three parts: the text column (before
@@ -214,23 +296,29 @@ struct MenuPanelStructureTests {
                 String(header[interiorStart.lowerBound...]))
     }
 
-    /// The frozen header (curation round 2, kept at the design freeze): ONE
-    /// battery header in the layout, the full-size ring (no 0.8 scale, no
-    /// 44pt frame) in a 76pt-min header, the desktop symbol at the same
-    /// footprint, and the "Battery N%" headline + charging line beside it.
-    /// The compact size and Status Hero's activity text are gone, so there is
-    /// no geometry or text knob left to flip back.
+    /// The header (curation round 2, kept through Panel 2.0): ONE battery
+    /// header, the FIRST thing in the first card (the Power card), the
+    /// full-size ring (no 0.8 scale, no 44pt frame), the desktop symbol at
+    /// the same footprint, and the "Battery N%" headline + charging line
+    /// beside it. Slice P dropped the 76pt minimum height — centred in it,
+    /// the 58pt ring sat 9pt down, which inside the card's 10pt padding was
+    /// 19pt of dead space above it — so the header hugs the ring. The compact
+    /// size and Status Hero's activity text are gone, so there is no geometry
+    /// or text knob left to flip back.
     @Test func theHeaderIsTheHeroGaugeWithTheHeadline() throws {
         let body = try Self.layoutBody()
         #expect(Self.occurrences(of: "BatteryHeader(", in: body) == 1, "ONE battery header")
         #expect(body.contains("BatteryHeader(model: model)"), "no size / content knob to pass")
+        let power = try #require(Self.cardBlocks(in: body).first)
+        #expect(Self.flat(body[power]).hasPrefix("PanelCard { BatteryHeader(model: model)"),
+                "the header opens the Power card")
 
         let header = try #require(Self.structChunk("BatteryHeader", in: try Self.code("MenuPanelView.swift")))
         for token in ["enum Size", "enum Content", "var size", "var content", ".compact", ".activity",
                       "heroActivity", "switch "] {
             #expect(!header.contains(token), "'\(token)' — the header has one geometry and one text column")
         }
-        #expect(header.contains(".frame(minHeight: 76)"), "the ~76pt hero header")
+        #expect(!header.contains("minHeight"), "no minimum height: the dead space above the ring stays gone")
 
         let (textColumn, ring, _) = try Self.batteryHeaderParts()
         #expect(Self.occurrences(of: "MenuStateModel.batteryHeadline(", in: textColumn) == 1, "the headline")
@@ -260,6 +348,10 @@ struct MenuPanelStructureTests {
         #expect(interior.contains("Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)"),
                 "the ring holds the charge-state glyph")
         #expect(interior.contains(".font(.system(size: 12))"), "at the pre-round-2 glyph-to-ring proportion")
+        // C11 (#48): primary — the secondary glyph measured 3.78:1 on the
+        // light card.
+        #expect(interior.contains(".foregroundStyle(.primary)") && !interior.contains(".secondary"),
+                "the ring glyph is primary")
         #expect(!interior.contains("percent") && !interior.contains("Text("),
                 "the ring must not repeat the percent the headline states")
         #expect(textColumn.contains("MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent)"),
@@ -268,11 +360,11 @@ struct MenuPanelStructureTests {
 
     /// Lock Screen amendment (2026-10-22, user ruling "battery header stays
     /// same, lock goes to top right"): the panel's ONE Lock Screen button is
-    /// an OVERLAY in the battery header's top-trailing corner, its top inset
-    /// by `PanelMetrics.headerLockInset` onto the ring's top line. An overlay
-    /// takes no room in the header row, so the frozen header — its HStack
-    /// (default centre alignment, `loose` spacing) and 76pt minimum height —
-    /// stays exactly as it was. (The button's own shape:
+    /// an OVERLAY in the battery header's top-trailing corner. An overlay
+    /// takes no room in the header row, so the header — its HStack (default
+    /// centre alignment, `loose` spacing) — keeps its layout. Since slice P
+    /// the header hugs the ring, so the button's top shares the ring's top
+    /// line with no inset. (The button's own shape:
     /// `lockScreenIsAnIconOnlyButtonForwardingToTheModel`.)
     @Test func theLockScreenButtonSitsInTheHeaderTopRightCorner() throws {
         #expect(Self.occurrences(of: "LockScreenButton(", in: try Self.allViewCode()) == 1,
@@ -281,28 +373,28 @@ struct MenuPanelStructureTests {
         let (body, _, _) = try Self.batteryHeaderParts()
         #expect(Self.occurrences(of: "LockScreenButton(", in: body) == 1, "Lock Screen lives in the battery header")
 
-        // The frozen header row, unchanged: ONE HStack with the exact literal
-        // (an `alignment:` argument would break it), then the 76pt frame.
+        // ONE HStack with the exact literal (an `alignment:` argument would
+        // break it), and no frame on it: the header hugs the ring.
         #expect(Self.occurrences(of: "HStack(", in: body) == 1, "ONE header row")
         let row = try #require(body.range(of: "HStack(spacing: PanelMetrics.loose) {"),
                                "the header HStack keeps its default centre alignment and loose spacing")
-        let frame = try #require(body.range(of: ".frame(minHeight: 76)"), "the ~76pt hero header")
-        #expect(row.upperBound < frame.lowerBound)
+        #expect(!body.contains(".frame("), "no frame on the header row")
 
-        // The button is an overlay hung directly off that frame — never a
-        // child of the row, which would shift the ring and the text.
+        // The button is an overlay hung directly off the row's VoiceOver
+        // element — never a child of the row, which would shift the ring and
+        // the text.
         #expect(Self.occurrences(of: ".overlay(", in: body) == 1)
+        let sort = try #require(body.range(of: ".accessibilitySortPriority(1)"))
         let overlay = try #require(body.range(of: ".overlay(alignment: .topTrailing) {"),
                                    "the button sits in the header's top-right corner")
-        #expect(body[frame.upperBound..<overlay.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "the overlay is attached to the header row's frame")
+        #expect(row.upperBound < sort.lowerBound)
+        #expect(body[sort.upperBound..<overlay.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "the overlay is attached to the header row itself")
         let close = try #require(body[overlay.upperBound...].range(of: "}"))
         let content = body[overlay.upperBound..<close.lowerBound]
             .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        #expect(content == "LockScreenButton(model: model) .padding(.top, PanelMetrics.headerLockInset)",
-                "the overlay holds exactly the button, inset onto the ring's top line — got '\(content)'")
-        #expect(PanelMetrics.headerLockInset > 0 && PanelMetrics.headerLockInset < 76 / 2,
-                "the button sits below the panel edge, in the header's top half")
+        #expect(content == "LockScreenButton(model: model)",
+                "the overlay holds exactly the button, its top on the ring's top line — got '\(content)'")
     }
 
     /// UI audit M1a (2026-11-19): VoiceOver used to meet the header as the
@@ -311,8 +403,8 @@ struct MenuPanelStructureTests {
     /// ONE element: children ignored, labelled "Battery", valued by
     /// `BatteryHeader.spokenValue` — the percent once, then the charging
     /// line, from the same mappings the text column shows. The modifiers sit
-    /// on the row, before the 76pt frame and its overlay, so the Lock Screen
-    /// button stays outside the element: its own button. The row outranks it
+    /// on the row, before its overlay, so the Lock Screen button stays
+    /// outside the element: its own button. The row outranks it
     /// in the reading order (sort priority 1 — measured on the accessibility
     /// tree: without it the button, which shares the row's top edge, is read
     /// first), so VoiceOver meets "Battery" and then "Lock Screen". Neither
@@ -324,7 +416,7 @@ struct MenuPanelStructureTests {
                               + " .accessibilityLabel(\"Battery\") .accessibilityValue(Self.spokenValue("),
                 "the header row itself is the element — not the ring, not the text column")
         #expect(flat.contains("adapterConnected: model.adapterConnected )) .accessibilitySortPriority(1)"
-                              + " .frame(minHeight: 76) .overlay(alignment: .topTrailing) {"),
+                              + " .overlay(alignment: .topTrailing) {"),
                 "the element is closed before the frame, so the overlaid Lock Screen button stays its own, read after it")
         for token in [".accessibilityElement(", ".accessibilityLabel(", ".accessibilityValue(", ".accessibilitySortPriority("] {
             #expect(Self.occurrences(of: token, in: body) == 1, "'\(token)' — the header has ONE element")
@@ -356,13 +448,12 @@ struct MenuPanelStructureTests {
         }
     }
 
-    /// Inside Details, every line that can be a problem goes through
-    /// `TuckedLine` (absent while non-nominal) — never rendered raw — and its
-    /// top-level twin goes through `SurfacedLine`. Same accessor, opposite
-    /// filter, so each line renders exactly once.
-    @Test func detailsOnlyTucksAndTheSurfacedTwinsExist() throws {
+    /// Every Settings line that can be a problem reaches the panel through
+    /// ONE `SurfacedLine` twin (rendered only while non-nominal) and nowhere
+    /// else — no view renders it raw — so each problem shows exactly once.
+    @Test func everySettingsLineSurfacesThroughOneTwin() throws {
         let source = try Self.code("MenuPanelView.swift")
-        let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
+        let views = try Self.allViewCode()
         let claudeTwins = try #require(Self.structChunk("ClaudeSurfacedLines", in: source))
         let lidTwins = try #require(Self.structChunk("LidAlertSurfacedLines", in: source))
         let sessionTwins = try #require(Self.structChunk("SessionAlertsSurfacedLines", in: source))
@@ -382,67 +473,54 @@ struct MenuPanelStructureTests {
             // F3 stage 1: the phone transport line sits with the shared
             // delivery settings, so its twin joins theirs.
             ("model.phoneAlertStatus(", lidTwins),
-            // 2026-10-21: Lock Screen availability moved to Details › General.
             ("model.lockScreenStatus", generalTwins),
         ]
         for (accessor, twinHome) in pairs {
-            let uses = Self.occurrences(of: accessor, in: details)
-            #expect(uses == 1, "\(accessor) should appear once in Details, found \(uses)")
-            #expect(details.contains("TuckedLine(line: \(accessor)"), "\(accessor) is rendered raw inside Details")
+            #expect(Self.occurrences(of: accessor, in: views) == 1, "\(accessor) must render exactly once in the panel")
             #expect(twinHome.contains("SurfacedLine(line: \(accessor)"), "\(accessor) has no top-level twin")
         }
-        // The Claude status is never a Details line (only the deleted Status
-        // Hero tucked it). Since 2026-10-21 it is the disclosure's own text:
-        // rendered ONCE, by the footer's disclosure, unconditionally — no
-        // placement filter and no expanded-only branch that could ever hide
-        // it — and a paused label carries the severity icon + tint itself.
-        let views = try Self.allViewCode()
-        #expect(Self.occurrences(of: "model.detailsLabel", in: views) == 1, "the label renders exactly once")
-        let disclosure = try #require(Self.structChunk("PanelDetailsDisclosure", in: source))
-        #expect(disclosure.contains("let label = model.detailsLabel"), "the footer disclosure renders the status")
-        #expect(disclosure.contains("Text(label.text)"))
-        #expect(disclosure.contains("MenuStateModel.severitySymbol(label.severity)"), "paused shows the ⚠︎ icon")
-        #expect(disclosure.contains("PanelSeverityTint.color(label.severity)"), "…in the warning tint")
-        for hiding in ["placement(ofDetailsLine:", "if expanded", "if model.detailsExpanded"] {
-            #expect(!disclosure.contains(hiding), "'\(hiding)' could hide the Claude status")
-        }
-        // Footer width (measured at the 300pt panel): when label + badge do
-        // not fit beside Quit, the BADGE yields before the label would
-        // truncate — the status text is never the part that truncates.
-        #expect(disclosure.contains("ViewThatFits(in: .horizontal)"))
-        let withBadge = try #require(disclosure.range(of: "statusLine(label, badge: badge)"))
-        let withoutBadge = try #require(disclosure.range(of: "statusLine(label, badge: .nominal)"))
-        #expect(withBadge.lowerBound < withoutBadge.lowerBound, "prefer label + badge, then the label alone")
-        // Launch at Login moves as a whole row on the same placement rule.
-        #expect(details.contains("placement(ofDetailsLine: model.launchAtLoginCaption"))
+        // The Claude status is not a Settings-resident line: it is the
+        // footer's own caption, rendered ONCE, unconditionally — no placement
+        // filter that could ever hide it — and a paused label carries the
+        // severity icon + tint itself.
+        #expect(Self.occurrences(of: "model.footerLabel", in: views) == 1, "the label renders exactly once")
+        let status = try #require(Self.structChunk("PanelFooterStatus", in: source))
+        #expect(status.contains("if let label = model.footerLabel {"), "the footer renders the status")
+        #expect(status.contains("Text(label.text)"))
+        #expect(status.contains("MenuStateModel.severitySymbol(label.severity)"), "paused shows the ⚠︎ icon")
+        #expect(status.contains("PanelSeverityTint.color(label.severity)"), "…in the warning tint")
+        #expect(status.contains(".lineLimit(1)"), "one line beside Quit")
+        #expect(!status.contains("placement("), "a placement filter could hide the Claude status")
+        // Launch at Login moves as a whole row on the same placement rule; the
+        // twin and it are the panel's only placement filters.
         let surfacedLogin = try #require(Self.structChunk("SurfacedLaunchAtLogin", in: source))
-        #expect(surfacedLogin.contains("placement(ofDetailsLine: caption.severity) == .topLevel"))
-        // The two filters are complementary by construction (an absent line
-        // renders in neither).
-        let tucked = try #require(Self.structChunk("TuckedLine", in: source))
+        #expect(surfacedLogin.contains("placement(ofSettingsLine: caption.severity) == .topLevel"))
         let surfaced = try #require(Self.structChunk("SurfacedLine", in: source))
-        #expect(tucked.contains("if let line, MenuStateModel.placement(ofDetailsLine: line.severity) == .details"))
-        #expect(surfaced.contains("if let line, MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel"))
+        #expect(surfaced.contains("if let line, MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel"))
+        #expect(Self.occurrences(of: "placement(ofSettingsLine:", in: views) == 2)
     }
 
     /// Declutter (2026-10-21): Lock Screen left the controls tier. It is an
     /// ICON-ONLY button (tooltip + VoiceOver label carry its name) with the
     /// same action and the same disabled rule, forwarding to the model only —
     /// MenuContentView keeps the one dismissal gateway (locked in
-    /// ScreenLockControllerTests / ScaffoldTests). Its placement — the battery
-    /// header's top-right corner since 2026-10-22 — is locked in
-    /// `theLockScreenButtonSitsInTheHeaderTopRightCorner`.
+    /// ScreenLockControllerTests / ScaffoldTests). Since slice P it IS the
+    /// panel's `PanelIconButton` (15pt glyph, 28pt target, 36pt hit area —
+    /// #47: the bordered small button hit-tested at its 35×19pt bezel only).
+    /// Its placement — the battery header's top-right corner since
+    /// 2026-10-22 — is locked in `theLockScreenButtonSitsInTheHeaderTopRightCorner`.
     @Test func lockScreenIsAnIconOnlyButtonForwardingToTheModel() throws {
         let button = try #require(Self.structChunk("LockScreenButton", in: try Self.code("MenuPanelView.swift")))
-        #expect(button.contains("Button { model.lockScreen() } label: {"))
-        #expect(button.contains("Image(systemName: PanelSymbol.lockScreen)"))
-        #expect(!button.contains("Text(") && !button.contains("Button(\""), "icon-only — no visible title")
-        #expect(button.contains(".help(\"Lock Screen\")"))
-        #expect(button.contains(".accessibilityLabel(\"Lock Screen\")"))
-        #expect(button.contains(".accessibilityHint("))
-        #expect(button.contains(
-            ".disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)"))
-        for token in ["cancelTracking", "setDetailsExpanded", "request"] {
+        let shape: String = [
+            "PanelIconButton(symbol: PanelSymbol.lockScreen, label: \"Lock Screen\") { model.lockScreen() }",
+            ".disabled(!MenuStateModel.lockScreenPresentation(available: model.lockScreenAvailable).enabled)",
+            ".accessibilityHint(",
+        ].joined(separator: " ")
+        #expect(Self.flat(button).contains(shape), "the shared icon button, its disabled rule, then its hint")
+        #expect(!button.contains("Text("), "icon-only — no visible title")
+        #expect(Self.occurrences(of: "Button(", in: button) == 1 && !button.contains("Button {"),
+                "no button of its own — only the shared PanelIconButton")
+        for token in [".controlSize(", ".bordered", "cancelTracking", "request"] {
             #expect(!button.contains(token), "'\(token)' — the button only forwards to model.lockScreen()")
         }
         #expect(Self.occurrences(of: "model.lockScreen()", in: try Self.allViewCode()) == 1)
@@ -450,28 +528,34 @@ struct MenuPanelStructureTests {
 
     /// Slice W (issue #78): `PanelIconButton` is the panel's shared icon-only
     /// button — a 28pt circular target, the 15pt medium glyph alone in the
-    /// primary color, the plain look with the shared press fade, and its name
-    /// as tooltip and VoiceOver label. The Settings gear is its one user in
-    /// this slice (the Lock Screen button adopts it in slice P).
+    /// primary color (tertiary while disabled: the plain look has no bezel to
+    /// grey out), the plain look with the shared press fade, and its name as
+    /// tooltip and VoiceOver label. Slice P (issue #47): its label is the
+    /// 36pt hit circle, and a negative padding of (36 − 28) / 2 hands the
+    /// layout back the 28pt footprint — measured by synthetic clicks at 0.5pt
+    /// steps: ≈36pt across and down for the lock and the gear, in the panel.
+    /// Its two users: the Settings gear and the Lock Screen button.
     @Test func panelIconButtonIsTheSharedCircularIconButton() throws {
         let button = try #require(Self.structChunk("PanelIconButton", in: try Self.code("MenuPanelView.swift")))
-        for token in [
-            "Button(action: action) {",
-            "Image(systemName: symbol)",
+        let shape: String = [
+            "Button(action: action) { Image(systemName: symbol)",
             ".font(.system(size: PanelMetrics.iconButtonGlyph, weight: .medium))",
-            ".foregroundStyle(.primary)",
-            ".frame(width: PanelMetrics.iconButtonSize, height: PanelMetrics.iconButtonSize)",
-            ".contentShape(Circle())",
-            ".buttonStyle(PanelPressFadeButtonStyle())",
-            ".help(label)",
-            ".accessibilityLabel(label)",
-        ] {
-            #expect(button.contains(token), "'\(token)' not found — the shared icon button was rewired")
-        }
+            ".foregroundStyle(isEnabled ? HierarchicalShapeStyle.primary : .tertiary)",
+            ".frame(width: PanelMetrics.iconButtonHitArea, height: PanelMetrics.iconButtonHitArea)",
+            ".contentShape(Circle()) } .buttonStyle(PanelPressFadeButtonStyle())",
+            ".padding(-(PanelMetrics.iconButtonHitArea - PanelMetrics.iconButtonSize) / 2)",
+            ".help(label) .accessibilityLabel(label)",
+        ].joined(separator: " ")
+        #expect(Self.flat(button).contains(shape), "the shared icon button was rewired")
+        #expect(button.contains("@Environment(\\.isEnabled) private var isEnabled"))
         #expect(!button.contains("Text("), "icon-only — no visible title")
         #expect(PanelMetrics.iconButtonSize == 28 && PanelMetrics.iconButtonGlyph == 15)
+        #expect(PanelMetrics.iconButtonHitArea == 36, "the 36pt hit area (C10, #47)")
         #expect(PanelMetrics.iconButtonBadge < PanelMetrics.iconButtonGlyph, "the badge stays smaller than the glyph")
-        #expect(Self.occurrences(of: "PanelIconButton(", in: try Self.allViewCode()) == 1, "the gear is its one user")
+        let views = try Self.allViewCode()
+        #expect(Self.occurrences(of: "PanelIconButton(", in: views) == 2, "the gear and the lock are its users")
+        #expect(Self.occurrences(of: "PanelIconButton(symbol: PanelSymbol.settings", in: views) == 1)
+        #expect(Self.occurrences(of: "PanelIconButton(symbol: PanelSymbol.lockScreen", in: views) == 1)
     }
 
     /// Slice W, the iron rule extended to the gear: it renders the Settings
@@ -503,69 +587,71 @@ struct MenuPanelStructureTests {
                 "the gear takes the ⌘, route — the one dismissal gateway")
     }
 
-    /// Declutter (2026-10-21): the controls tier is exactly Stay Awake ·
-    /// Charge Limit · Lid alert · Session alerts, in that order, between the
-    /// panel's (at most) two Dividers.
-    @Test func theControlsTierIsStayAwakeChargeLimitLidAndSession() throws {
+    /// Slice P (owner pick "c cards"): TWO cards and no dividers. The Power
+    /// card — no group header: its first line, the "Battery N%" headline,
+    /// names it (the "Power" label was judged redundant) — holds Stay Awake
+    /// then Charge Limit; the Alerts card, under its "Alerts" header, holds
+    /// Lid alert then Session alerts. No row sits outside a card.
+    @Test func theCardsHoldStayAwakeChargeLimitThenLidAndSession() throws {
         let body = try Self.layoutBody()
-        let titles = body.components(separatedBy: "PanelRow(symbol: ").dropFirst().map { chunk in
-            chunk.components(separatedBy: "title: \"").dropFirst().first?.prefix { $0 != "\"" }.description ?? "?"
-        }
-        #expect(titles == ["Stay Awake", "Charge Limit", "Lid alert", "Session alerts"], "got \(titles)")
-        #expect(Self.occurrences(of: "Divider()", in: body) == 2, "at most two Dividers")
+        let cards = Self.cardBlocks(in: body)
+        try #require(cards.count == 2, "the Power card and the Alerts card")
+        #expect(Self.rowTitles(body[cards[0]]) == ["Stay Awake", "Charge Limit"], "got \(Self.rowTitles(body[cards[0]]))")
+        #expect(Self.rowTitles(body[cards[1]]) == ["Lid alert", "Session alerts"], "got \(Self.rowTitles(body[cards[1]]))")
+        #expect(Self.rowTitles(body) == ["Stay Awake", "Charge Limit", "Lid alert", "Session alerts"],
+                "no row outside the cards")
+        #expect(body[cards[0]].hasPrefix("PanelCard {"), "the Power card has no group header")
+        #expect(body[cards[1]].hasPrefix("PanelGroup(title: \"Alerts\") {"), "the Alerts card has its header")
+        #expect(Self.occurrences(of: "PanelGroup(", in: body) == 1 && Self.occurrences(of: "PanelCard {", in: body) == 1)
+        #expect(!body.contains("Divider()"), "the cards are the grouping — no dividers")
     }
 
-    /// Track C (C4): the "Session alerts" row is a controls-tier row DIRECTLY
-    /// under the Lid alert row — same PanelRow shape (symbol, title, toggle),
-    /// its status as a non-nominal-only caption, and its surfaced twin under
-    /// it. It sits above the Divider that opens the Details tier, and it is
-    /// the ONLY place the session toggle is rendered.
+    /// Track C (C4): the "Session alerts" row sits in the Alerts card
+    /// DIRECTLY under the Lid alert row — same PanelRow shape (symbol, title,
+    /// toggle), its status as a non-nominal-only caption under it. Its
+    /// surfaced History twin lives below the cards with the others. It is the
+    /// ONLY place the session toggle is rendered.
     @Test func theSessionAlertsRowSitsDirectlyUnderTheLidRow() throws {
         let body = try Self.layoutBody()
-        let lidRow = try #require(body.range(of: "PanelRow(symbol: PanelSymbol.lidAlert, title: \"Lid alert\")"))
+        let alerts = try #require(Self.cardBlocks(in: body).last)
+        let card = body[alerts]
+        let lidRow = try #require(card.range(of: "PanelRow(symbol: PanelSymbol.lidAlert, title: \"Lid alert\")"))
         let sessionRow = try #require(
-            body.range(of: "PanelRow(symbol: PanelSymbol.sessionAlerts, title: \"Session alerts\")"),
-            "the Session alerts row is missing from the layout")
+            card.range(of: "PanelRow(symbol: PanelSymbol.sessionAlerts, title: \"Session alerts\")"),
+            "the Session alerts row is missing from the Alerts card")
         #expect(lidRow.upperBound < sessionRow.lowerBound, "Session alerts renders below Lid alert")
-        // Nothing renders between the two rows except the lid row's own
-        // caption + surfaced lines: the next PanelRow after the lid row is the
-        // session row.
-        let between = body[lidRow.upperBound..<sessionRow.lowerBound]
-        #expect(!between.contains("PanelRow("), "another row sits between Lid alert and Session alerts")
-        #expect(!between.contains("Divider()"))
-        // The session feature: toggle, status caption, surfaced twin — in that order.
-        let tail = body[sessionRow.upperBound...]
+        // Nothing renders between the two rows except the lid row's caption.
+        let between = card[lidRow.upperBound..<sessionRow.lowerBound]
+        #expect(!between.contains("PanelRow(") && !between.contains("Surfaced"),
+                "only the lid row's own caption sits between Lid alert and Session alerts")
+        // The session feature: toggle, then its status caption.
+        let tail = card[sessionRow.upperBound...]
         let toggle = try #require(tail.range(of: "SessionAlertsToggle(model: model)"))
         let caption = try #require(tail.range(of: "indentedCaption(model.finishAlertStatus)"))
-        let twin = try #require(tail.range(of: "SessionAlertsSurfacedLines(model: model)"))
-        #expect(toggle.lowerBound < caption.lowerBound && caption.lowerBound < twin.lowerBound)
-        // Still in the controls tier: above the Details tier's Divider, the
-        // Details content and the footer.
-        let detailsDivider = try #require(body.range(of: "Divider()", options: .backwards))
-        #expect(twin.upperBound <= detailsDivider.lowerBound, "the row must stay above the Details tier")
+        #expect(toggle.lowerBound < caption.lowerBound)
+        #expect(!tail.contains("SessionAlertsSurfacedLines("), "the History twin lives below the cards")
         #expect(Self.occurrences(of: "SessionAlertsToggle(", in: try Self.allViewCode()) == 1,
                 "the session toggle is rendered exactly once, in the layout")
-        #expect(Self.occurrences(of: "SessionAlertsToggle(model: model)", in: body) == 1)
         // The toggle forwards to the model (and MenuContentView), never to a
         // panel-local or dismissing path.
         let toggleView = try #require(Self.structChunk("SessionAlertsToggle", in: try Self.code("MenuPanelView.swift")))
         #expect(toggleView.contains("set: { model.setFinishAlertEnabled($0) }"))
-        #expect(!toggleView.contains("cancelTracking") && !toggleView.contains("setDetailsExpanded"))
+        #expect(!toggleView.contains("cancelTracking"))
     }
 
     /// Issue #34 non-goal: the session alerts' run floor is never set in the
     /// panel — only in the "ntfy settings…" editor (MenuContentView) and,
     /// since slice W, in Settings › Alerts (SettingsWindowTests). No panel
-    /// view — the controls tier, the Details tier, the footer — renders or
-    /// edits it, and the panel keeps exactly one route to the editor.
+    /// view renders or edits it. Since slice P the panel has no
+    /// "ntfy settings…" button either: Settings › Alerts is the editor's
+    /// button home (the alert toggles' priming flow still reaches it).
     @Test func theRunFloorNeverReachesThePanel() throws {
         let views = try Self.allViewCode()
         for token in ["finishAlertMinimumRunSeconds", "minimumRunSeconds", "sessionAlertsFloor",
                       "SessionAlertsFloorGroup"] {
             #expect(!views.contains(token), "'\(token)' in a panel view — the floor lives in the ntfy settings editor")
         }
-        #expect(Self.occurrences(of: "model.editLidGuardSettings()", in: views) == 1,
-                "one \"ntfy settings…\" button opens the editor")
+        #expect(!views.contains("model.editLidGuardSettings()"), "the editor's button lives in Settings › Alerts")
         // Vacuity: the editor really carries the group.
         #expect(try Self.code("MenuContentView.swift").contains("SessionAlertsFloorGroup(seconds:"))
     }
@@ -600,7 +686,8 @@ struct MenuPanelStructureTests {
             "let errorCaption = NSTextField(wrappingLabelWithString:\n"
                 + "            MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid) ?? \"\")",
             "errorCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)",
-            "errorCaption.textColor = .systemRed",
+            // C11 (#48): the label color — systemRed text was 3.57:1 in light.
+            "errorCaption.textColor = .labelColor",
             "let worstCaseBounds = NSRect(x: 0, y: 0, width: stackWidth, height: .greatestFiniteMagnitude)",
             "errorCaption.cell?.cellSize(forBounds: worstCaseBounds).height",
             "let errorBandY = fieldsY + 54 + PanelMetrics.regular",
@@ -612,6 +699,7 @@ struct MenuPanelStructureTests {
         ] {
             #expect(editor.contains(token), "'\(token)' not found — the reserved error band was rewired")
         }
+        #expect(!editor.contains(".systemRed"), "C11: no red text in the editor")
         // Measured BEFORE the pass's own text replaces the worst case, and
         // added on every pass (at the method's top level, not under an `if`).
         let measured = try #require(editor.range(of: "cellSize(forBounds: worstCaseBounds)"))
@@ -654,51 +742,28 @@ struct MenuPanelStructureTests {
         }
     }
 
-    /// F3 (2026-10-18): the Pause detection kill switch exists ONCE in the
-    /// panel, inside the Details content — out of casual reach. (The
-    /// top-level "Claude: paused" footer label is the mapping's job, tested
-    /// in MenuPanelPresentationTests. Settings › Claude carries its own
-    /// switch on the same model action — SettingsWindowTests.)
-    @Test func pauseDetectionToggleLivesOnlyInDetails() throws {
+    /// F3 (2026-10-18): the Pause detection kill switch stays out of casual
+    /// reach. Since slice P it is not in the panel at all — Settings › Claude
+    /// carries it, on the same model action (SettingsWindowTests). (The
+    /// top-level "Claude: paused" footer caption is the mapping's job, tested
+    /// in MenuPanelPresentationTests.)
+    @Test func pauseDetectionLivesOnlyInSettings() throws {
         let views = try Self.allViewCode()
-        #expect(Self.occurrences(of: "setDetectionPaused(", in: views) == 1)
-        #expect(Self.occurrences(of: "Toggle(\"Pause detection\"", in: views) == 1)
-        let details = try #require(Self.structChunk("PanelDetailsContent", in: try Self.code("MenuPanelView.swift")))
-        #expect(details.contains("setDetectionPaused("))
-        #expect(details.contains("Toggle(\"Pause detection\""))
-        // The layout never reaches for it directly.
-        #expect(!(try Self.code(Self.layoutFile)).contains("setDetectionPaused"))
+        for token in ["setDetectionPaused(", "Toggle(\"Pause detection\"", "pauseDetectionCaption"] {
+            #expect(!views.contains(token), "'\(token)' in a panel view — Pause detection lives in Settings › Claude")
+        }
+        #expect(try Self.code("SettingsPanes.swift").contains("set: { model.setDetectionPaused($0) }"), "vacuity")
     }
 
-    /// F3 stage 1: the "Phone alerts (beta)" checkbox exists ONCE, inside the
-    /// Details content's ntfy-alerts group (never in the frozen controls
-    /// tier or the layout), only while the composite is wired, with its line
-    /// tucked right under it; it forwards to the model and nothing else.
-    @Test func thePhoneToggleLivesOnlyInDetails() throws {
+    /// F3 stage 1: the "Phone alerts (beta)" checkbox lives in Settings ›
+    /// Alerts only since slice P (its Details home is gone) — no panel view
+    /// renders or flips it.
+    @Test func thePhoneToggleLivesOnlyInSettings() throws {
         let views = try Self.allViewCode()
-        #expect(Self.occurrences(of: "PhoneTransportToggle(", in: views) == 1, "exactly ONE phone toggle")
-        #expect(Self.occurrences(of: "model.setPhoneTransportEnabled(", in: views) == 1)
-        #expect(!(try Self.code(Self.layoutFile)).contains("PhoneTransport"), "the frozen layout is unchanged")
-
-        let source = try Self.code("MenuPanelView.swift")
-        let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
-        let gate = try #require(details.range(of: "if model.phoneTransportVisible {"))
-        let toggle = try #require(details.range(of: "PhoneTransportToggle(model: model)"))
-        let line = try #require(details.range(of: "TuckedLine(line: model.phoneAlertStatus("))
-        #expect(gate.upperBound <= toggle.lowerBound && toggle.upperBound <= line.lowerBound,
-                "gated, the checkbox, then its line")
-        let group = try #require(details.range(of: "private var ntfyAlertsGroup"))
-        let nextGroup = try #require(details.range(of: "private var claudeGroup"))
-        #expect(group.upperBound < toggle.lowerBound && toggle.upperBound < nextGroup.lowerBound,
-                "the toggle sits in the alerts' delivery group")
-
-        let view = try #require(Self.structChunk("PhoneTransportToggle", in: source))
-        #expect(view.contains("Toggle(MenuStateModel.phoneTransportToggleTitle, isOn: Binding("))
-        #expect(view.contains("set: { model.setPhoneTransportEnabled($0) }"))
-        #expect(view.contains(".toggleStyle(.checkbox)"))
-        for token in ["cancelTracking", "setDetailsExpanded", "request", "Button"] {
-            #expect(!view.contains(token), "'\(token)' — the checkbox only forwards to the model")
+        for token in ["setPhoneTransportEnabled(", "phoneTransportToggleTitle", "phoneTransportToggleHint"] {
+            #expect(!views.contains(token), "'\(token)' in a panel view — the phone toggle lives in Settings › Alerts")
         }
+        #expect(try Self.code("SettingsPanes.swift").contains("set: { model.setPhoneTransportEnabled($0) }"), "vacuity")
         #expect(MenuStateModel.phoneTransportToggleTitle == "Phone alerts (beta)")
     }
 
@@ -706,19 +771,19 @@ struct MenuPanelStructureTests {
 
     /// The values a panel animation may be keyed on, each one moved only by
     /// the user. Observed state (pmset, battery, the limiter's work, Claude,
-    /// send outcomes) never animates: it snaps.
+    /// send outcomes) never animates: it snaps. Slice P closed the list down
+    /// to the press: the Details chevron left with the disclosure, and the
+    /// charge-limit readout's exemption (owner ruling f — "the limit is the
+    /// slider's own value") left with the panel slider. The limit is set in
+    /// Settings now, so in the panel it is observed state, and a roll would
+    /// only ever play as the menu opened.
     static let userDrivenAnimationKeys: [String: String] = [
-        "expanded": "the Details chevron, turned by the user's click",
         "configuration.isPressed": "a button's press state",
-        // Owner ruling (f), 2026-11-20: the charge-limit readout is EXEMPT
-        // from "observed state never animates". The limit is the slider's own
-        // value, so the user drives it.
-        "model.limit": "the charge-limit readout",
     ]
     static let gatedMotionCap = 0.2
 
-    /// Every animated line, one by one: the chevron's Reduce-Motion-nil
-    /// ease-out pattern, at most `gatedMotionCap`, keyed on a value from
+    /// Every animated line, one by one: the Reduce-Motion-nil ease-out
+    /// pattern, at most `gatedMotionCap`, keyed on a value from
     /// `userDrivenAnimationKeys`, and each key animated in ONE place. No
     /// `withAnimation` anywhere.
     static func motionGateFailures(views: String) -> [String] {
@@ -727,7 +792,7 @@ struct MenuPanelStructureTests {
             failures.append("'withAnimation' — observed-state snaps must never animate")
         }
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
-        if animated.isEmpty { failures.append("vacuity: the chevron animates") }
+        if animated.isEmpty { failures.append("vacuity: the press fade animates") }
         var keyed: [String: Int] = [:]
         for line in animated {
             guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
@@ -754,28 +819,20 @@ struct MenuPanelStructureTests {
     }
 
     /// Motion ≤200ms ease-out or none, always behind Reduce Motion, and never
-    /// on an observed-state change. AMENDED 2026-11-20 by owner ruling (f):
-    /// the frozen one-animation COUNT ("only the chevron animates") is
-    /// superseded by the PanelMotion shape. Any number of animations may
-    /// pass, but each one has the chevron's gated ease-out shape and is keyed
-    /// on a value the user drives (`userDrivenAnimationKeys`). The charge-limit
-    /// readout is the owner's one explicit exemption from "observed state
-    /// never animates". Everything else stays observed state and must snap.
+    /// on an observed-state change. Owner ruling (f)'s PanelMotion shape still
+    /// governs: any number of animations may pass, but each one has the gated
+    /// ease-out shape and is keyed on a value the user drives
+    /// (`userDrivenAnimationKeys` — since slice P, only the press).
     @Test func motionIsGatedAndShort() throws {
         let views = try Self.allViewCode()
         #expect(Self.motionGateFailures(views: views).isEmpty, "\(Self.motionGateFailures(views: views))")
-        #expect(Self.userDrivenAnimationKeys.keys.sorted() == ["configuration.isPressed", "expanded", "model.limit"],
+        #expect(Self.userDrivenAnimationKeys.keys.sorted() == ["configuration.isPressed"],
                 "the user-driven keys are a closed list")
 
-        // The exemption, tested on a fixed panel (independent of which
-        // animations the source ships): a readout keyed on the user-driven
-        // limit passes, and so does a press-state fade, beside the chevron.
-        let chevron = "\nlet chevron = Image(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)"
-        let readout = "\nlet readout = Text(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limit)"
+        // Tested on a fixed panel (independent of which animations the
+        // source ships): a press fade passes.
         let press = "\nlet press = Text(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)"
-        #expect(Self.motionGateFailures(views: chevron + readout).isEmpty, "the charge-limit readout is exempt")
-        #expect(Self.motionGateFailures(views: chevron + press).isEmpty, "a press fade is user-driven")
-        #expect(Self.motionGateFailures(views: chevron + readout + press).isEmpty, "all three user-driven keys together")
+        #expect(Self.motionGateFailures(views: press).isEmpty, "a press fade is user-driven")
 
         let line = { (tail: String) in "\nlet canary = Text(\"x\")" + tail }
         let canaries: [(name: String, views: String)] = [
@@ -784,16 +841,20 @@ struct MenuPanelStructureTests {
              views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.stayAwakeObserved)")),
             ("an animation keyed on the battery",
              views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.batteryPercent)")),
-            ("the exemption stretched to the limiter's state",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.featureState)")),
-            ("the exemption stretched to the limit toggle",
+            ("the retired readout roll, keyed on the limit set in Settings",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limit)")),
+            ("the retired chevron", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)")),
+            ("an animation keyed on the limit toggle",
              views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limitEnabled)")),
-            ("an animation not gated on Reduce Motion", views + line(".animation(.easeOut(duration: 0.1), value: expanded)")),
-            ("a linear animation", views + line(".animation(reduceMotion ? nil : .linear(duration: 0.1), value: model.limit)")),
-            ("a 250 ms animation", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: model.limit)")),
+            ("an animation not gated on Reduce Motion",
+             views + line(".animation(.easeOut(duration: 0.1), value: configuration.isPressed)")),
+            ("a linear animation",
+             views + line(".animation(reduceMotion ? nil : .linear(duration: 0.1), value: configuration.isPressed)")),
+            ("a 250 ms animation",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: configuration.isPressed)")),
             ("a second animation on the same key",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)")),
-            ("an animation with no value key", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15))")),
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)")),
+            ("an animation with no value key", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.1))")),
         ]
         for canary in canaries {
             #expect(!Self.motionGateFailures(views: canary.views).isEmpty, "canary '\(canary.name)' was NOT caught")
@@ -801,20 +862,21 @@ struct MenuPanelStructureTests {
     }
 
     /// #67: the panel's motion, codified in `PanelMotion`. Every animated line
-    /// is the chevron's pattern — nil under Reduce Motion, an ease-out — and
-    /// spells one of `PanelMotion`'s animation durations, within
-    /// `PanelMotion.maxDuration`; the chevron turns at `PanelMotion.chevron`.
-    /// Zero motion on open / close: no view animates its insertion or removal
-    /// (`.transition(`), nothing animates through a transaction or
+    /// is the Reduce-Motion-nil ease-out pattern and spells one of
+    /// `PanelMotion`'s animation durations, within `PanelMotion.maxDuration`.
+    /// The press fade lives in one style, which the icon buttons and Quit
+    /// use; the Charge Limit value SNAPS (slice P: no roll without the panel
+    /// slider). Zero motion on open / close: no view animates its insertion
+    /// or removal (`.transition(`), nothing animates through a transaction or
     /// imperatively, and the hosting view's re-fit snaps to the new size.
     static func motionFailures(views: String, owner: String) -> [String] {
         var failures: [String] = []
-        let durations = [PanelMotion.chevron, PanelMotion.pressFade, PanelMotion.limitReadout]
+        let durations = [PanelMotion.pressFade]
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
-        if animated.isEmpty { failures.append("vacuity: the chevron animates") }
+        if animated.isEmpty { failures.append("vacuity: the press fade animates") }
         for line in animated {
             guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
-                failures.append("not the chevron's Reduce-Motion-nil ease-out pattern: \(line)")
+                failures.append("not the Reduce-Motion-nil ease-out pattern: \(line)")
                 continue
             }
             let duration = line.components(separatedBy: "duration: ").dropFirst().first
@@ -827,26 +889,22 @@ struct MenuPanelStructureTests {
                 failures.append("longer than PanelMotion.maxDuration: \(line)")
             }
         }
-        let disclosure = Self.structChunk("PanelDetailsDisclosure", in: views) ?? ""
-        if !disclosure.contains(".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.chevron)), value: expanded)") {
-            failures.append("the chevron must turn at PanelMotion.chevron")
-        }
-        // #67 items 3 and 4 (owner ruling f): the Details press fade and the
-        // charge-limit readout, each in its one home at its own constant.
         let pressStyle = Self.structChunk("PanelPressFadeButtonStyle", in: views) ?? ""
         if !pressStyle.contains(".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)")
             || !pressStyle.contains(
                 ".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.pressFade)), value: configuration.isPressed)") {
             failures.append("the press fade must dim to PanelMotion.pressedOpacity over PanelMotion.pressFade")
         }
-        if !disclosure.contains(".buttonStyle(PanelPressFadeButtonStyle())") {
-            failures.append("the Details disclosure must use the press-fade style")
+        let iconButton = Self.structChunk("PanelIconButton", in: views) ?? ""
+        let footer = Self.structChunk("PanelFooterRow", in: views) ?? ""
+        if !iconButton.contains(".buttonStyle(PanelPressFadeButtonStyle())")
+            || !footer.contains(".buttonStyle(PanelPressFadeButtonStyle())") {
+            failures.append("the icon buttons and Quit must use the press-fade style")
         }
-        let readout = Self.structChunk("ChargeLimitReadout", in: views) ?? ""
-        for token in [".monospacedDigit()", ".contentTransition(.numericText(value: Double(model.limit)))",
-                      ".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.limitReadout)), value: model.limit)"]
-        where !readout.contains(token) {
-            failures.append("the charge-limit readout lost '\(token)'")
+        let value = Self.structChunk("ChargeLimitValue", in: views) ?? ""
+        if value.isEmpty || !value.contains(".monospacedDigit()") || value.contains(".contentTransition(")
+            || value.contains(".animation(") {
+            failures.append("the Charge Limit value must be monospaced and snap")
         }
         for token in [".transition(", "withAnimation", "withTransaction", ".transaction", "matchedGeometryEffect",
                       "NSAnimationContext", "animator()"] where (views + "\n" + owner).contains(token) {
@@ -862,23 +920,19 @@ struct MenuPanelStructureTests {
         let views = try Self.allViewCode()
         let owner = try Self.code("MenuContentView.swift")
         #expect(Self.motionFailures(views: views, owner: owner).isEmpty, "\(Self.motionFailures(views: views, owner: owner))")
-        #expect(PanelMotion.chevron <= PanelMotion.maxDuration && PanelMotion.pressFade <= PanelMotion.maxDuration)
-        #expect(PanelMotion.limitReadout <= PanelMotion.maxDuration && PanelMotion.limitReadout <= Self.gatedMotionCap,
-                "the readout's ~200 ms roll sits inside both ceilings")
+        #expect(PanelMotion.pressFade <= PanelMotion.maxDuration && PanelMotion.pressFade <= Self.gatedMotionCap)
         #expect(PanelMotion.pressedOpacity == 0.7)
         let canaries: [(name: String, views: String, owner: String)] = [
             ("an insertion transition", views + "\nlet canary = Text(\"x\").transition(.opacity)", owner),
-            ("the chevron off its PanelMotion duration",
-             views.replacingOccurrences(of: "duration: 0.15)", with: "duration: 0.25)"), owner),
             ("the press fade off its PanelMotion duration",
              views.replacingOccurrences(of: "duration: 0.1), value: configuration.isPressed",
                                         with: "duration: 0.12), value: configuration.isPressed"), owner),
-            ("the disclosure back on the plain style",
+            ("the icon buttons and Quit back on the plain style",
              views.replacingOccurrences(of: ".buttonStyle(PanelPressFadeButtonStyle())", with: ".buttonStyle(.plain)"), owner),
-            ("the readout without its digit roll",
-             views.replacingOccurrences(of: ".contentTransition(.numericText(value: Double(model.limit)))", with: ""), owner),
-            ("the readout keyed on the limiter's state",
-             views.replacingOccurrences(of: "value: model.limit)", with: "value: model.featureState)"), owner),
+            ("the Charge Limit value rolling again",
+             views.replacingOccurrences(of: "Text(MenuStateModel.chargeLimitValueText(limit: model.limit))",
+                                        with: "Text(MenuStateModel.chargeLimitValueText(limit: model.limit))"
+                                            + ".contentTransition(.numericText(value: Double(model.limit)))"), owner),
             ("an animation not gated on Reduce Motion",
              views + "\nlet canary = Text(\"x\").animation(.easeOut(duration: 0.1), value: 1)", owner),
             ("a transaction", views + "\nlet canary = Text(\"x\").transaction { $0.animation = .default }", owner),
@@ -893,24 +947,22 @@ struct MenuPanelStructureTests {
         }
     }
 
-    /// #67: Details renders the test send through `SendFeedbackButton` — once,
-    /// beside "ntfy settings…" — and the wrapper keeps its promises: every
-    /// phase's label is laid out (the current one shown, the rest hidden), so
-    /// the widest reserves the width; the phase moves only through the pure
-    /// mapping; the existing outcome pipeline ends "Sending…"; the "Sent" hold
-    /// is `PanelMotion.sentRevert`; nothing animates; and the only action is
-    /// `model.sendLidGuardTestMessage()`.
+    /// #67: the test send acknowledges through ONE wrapper,
+    /// `SendFeedbackButton` — since slice P rendered only by Settings ›
+    /// Alerts (SettingsWindowTests), never by the panel. The wrapper keeps its
+    /// promises: every phase's label is laid out (the current one shown, the
+    /// rest hidden), so the widest reserves the width; the phase moves only
+    /// through the pure mapping; the existing outcome pipeline ends
+    /// "Sending…"; the "Sent" hold is `PanelMotion.sentRevert`; nothing
+    /// animates; and the only action is `model.sendLidGuardTestMessage()`.
     @Test func theTestSendAcknowledgesThroughOneWrapper() throws {
         let source = try Self.code("MenuPanelView.swift")
         let views = try Self.allViewCode()
-        let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
-        #expect(Self.occurrences(of: "SendFeedbackButton(", in: views) == 1, "ONE test-send button")
-        #expect(details.contains("Button(\"ntfy settings…\") { model.editLidGuardSettings() }\n"
-                                 + "                    .controlSize(.small)\n"
-                                 + "                SendFeedbackButton(model: model)\n"),
-                "the wrapper sits beside \"ntfy settings…\" in Details")
+        #expect(Self.occurrences(of: "SendFeedbackButton(", in: views) == 0, "the panel renders no test-send button")
         #expect(!views.contains("Button(\"Send test message\")"), "no bare test-send button")
-        #expect(Self.occurrences(of: "model.sendLidGuardTestMessage()", in: views) == 1)
+        #expect(Self.occurrences(of: "model.sendLidGuardTestMessage()", in: views) == 1, "only the wrapper's own action")
+        #expect(Self.occurrences(of: "SendFeedbackButton(", in: try Self.code("SettingsPanes.swift")) == 1,
+                "Settings › Alerts renders the one test-send button")
 
         let button = try #require(Self.structChunk("SendFeedbackButton", in: source))
         for token in [
@@ -918,8 +970,6 @@ struct MenuPanelStructureTests {
             "if candidate == phase {",
             "label.hidden()",
             "phase = MenuStateModel.testSendPhase(phase, on: .tapped)\n            model.sendLidGuardTestMessage()",
-            // Small in the panel by default; Settings › Alerts (slice W)
-            // passes the regular size.
             "var controlSize: ControlSize = .small",
             ".controlSize(controlSize)",
             ".disabled(!presentation.enabled)",
@@ -938,27 +988,31 @@ struct MenuPanelStructureTests {
         for line in assignments {
             #expect(line.hasPrefix("phase = MenuStateModel.testSendPhase(phase, on: "), "phase moved outside the mapping: \(line)")
         }
-        for token in [".animation(", "fixedSize", "cancelTracking", "setDetailsExpanded", "request"] {
+        for token in [".animation(", "fixedSize", "cancelTracking", "request"] {
             #expect(!button.contains(token), "'\(token)' in the test-send wrapper")
         }
     }
 
-    /// #67 item 3: the Charge Limit row's trailing readout is `ChargeLimitReadout`
-    /// — rendered once, in the row, before the toggle — so the digit roll
-    /// lives in exactly one place and the row's shape is unchanged.
-    @Test func theChargeLimitRowShowsTheLiveReadout() throws {
+    /// Slice P: the Charge Limit row shows the limit as a monospaced VALUE
+    /// before its switch — `ChargeLimitValue`, rendered once — and no slider:
+    /// the limit is set in Settings › General (whose own slider forwards to
+    /// the same model action, SettingsWindowTests).
+    @Test func theChargeLimitRowShowsTheValueAndNoSlider() throws {
         let views = try Self.allViewCode()
         let body = try Self.layoutBody()
-        #expect(Self.occurrences(of: "ChargeLimitReadout(", in: views) == 1, "ONE readout")
+        #expect(Self.occurrences(of: "ChargeLimitValue(", in: views) == 1, "ONE value")
         #expect(Self.flat(body).contains("PanelRow(symbol: PanelSymbol.chargeLimit, title: \"Charge Limit\") {"
-                                         + " ChargeLimitReadout(model: model) ChargeLimitToggle(model: model) }"),
-                "the readout sits in the Charge Limit row, before its toggle")
+                                         + " ChargeLimitValue(model: model) ChargeLimitToggle(model: model) }"),
+                "the value sits in the Charge Limit row, before its switch")
         #expect(Self.occurrences(of: "MenuStateModel.chargeLimitValueText(", in: views) == 1,
-                "the value text renders only through the readout")
-        let readout = try #require(Self.structChunk("ChargeLimitReadout", in: try Self.code("MenuPanelView.swift")))
-        for token in ["Text(MenuStateModel.chargeLimitValueText(limit: model.limit))", ".font(.callout)",
+                "the value text renders only through ChargeLimitValue")
+        let value = try #require(Self.structChunk("ChargeLimitValue", in: try Self.code("MenuPanelView.swift")))
+        for token in ["Text(MenuStateModel.chargeLimitValueText(limit: model.limit))", ".monospacedDigit()",
                       ".foregroundStyle(.secondary)"] {
-            #expect(readout.contains(token), "'\(token)' — the readout keeps the row's frozen look")
+            #expect(value.contains(token), "'\(token)' — the value's look")
+        }
+        for token in ["model.setLimit(", "MenuStateModel.limitLabel(", "in: 50...100"] {
+            #expect(!views.contains(token), "'\(token)' — the charge-limit slider lives in Settings, not the panel")
         }
     }
 
@@ -1030,12 +1084,81 @@ struct MenuPanelStructureTests {
                 "menu open resets the feedback before it refreshes")
     }
 
+    /// System materials and semantic colors only — the ONE exception being
+    /// the card's measured boost layer, a black or white opacity inside
+    /// `PanelCard` (`theCardIsThePanelsOneContainer`).
     @Test func systemColorsOnly() throws {
         let views = try Self.allViewCode()
         for token in ["Color(red", "Color(hue", "Color(white", "Color(\"", "Color(#", "hex", "#colorLiteral",
                       "NSColor(", "UIColor", ".rgb"] {
             #expect(!views.contains(token), "'\(token)' — use system materials / semantic colors only")
         }
+        let card = try #require(Self.structChunk("PanelCard", in: try Self.code("MenuPanelView.swift")))
+        for absolute in ["Color.black", "Color.white", ".black", ".white", ".gray"] {
+            #expect(Self.occurrences(of: absolute, in: views) == Self.occurrences(of: absolute, in: card),
+                    "'\(absolute)' outside the card's boost layer")
+        }
+        #expect(Self.occurrences(of: "Color.black", in: card) == 1 && Self.occurrences(of: "Color.white", in: card) == 1)
+    }
+
+    /// Contrast program (canon C11, issue #48): the severity tint lands on
+    /// ICONS only. Every `PanelSeverityTint.color(` in the panel styles the
+    /// `Image(systemName:)` right above it — the caption line's icon, the
+    /// footer status's icon, the gear's badge — and the words of a warning
+    /// or error are `.primary` (a tinted glyph measured 1.57:1 on the light
+    /// menu; fine as a redundant cue, never for the words).
+    @Test func severityTintsOnlyTheIcon() throws {
+        let views = try Self.allViewCode()
+        let lines = views.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var tinted = 0
+        for (index, line) in lines.enumerated() where line.contains("PanelSeverityTint.color(") {
+            tinted += 1
+            // Walk up the modifier chain to the view it styles.
+            let head = lines[..<index].last {
+                let trimmed = $0.trimmingCharacters(in: .whitespaces)
+                return !trimmed.isEmpty && !trimmed.hasPrefix(".")
+            } ?? ""
+            #expect(head.contains("Image(systemName:"), "a severity tint on something other than an icon: \(line)")
+        }
+        #expect(tinted == 3, "the caption icon, the footer status icon, the gear badge — got \(tinted)")
+        let source = try Self.code("MenuPanelView.swift")
+        for name in ["PanelCaptionLine", "PanelFooterStatus"] {
+            let chunk = try #require(Self.structChunk(name, in: source))
+            let flat = Self.flat(chunk)
+            #expect(flat.contains(".foregroundStyle(PanelSeverityTint.color(") && flat.contains(") Text(")
+                    && flat.contains(".text) .foregroundStyle(.primary)"),
+                    "\(name): the icon is tinted, the words stay primary")
+        }
+        #expect(!views.contains(".foregroundStyle(.orange)") && !views.contains(".foregroundStyle(.red)"),
+                "tints come from PanelSeverityTint only")
+    }
+
+    /// Canon C8 (slice P): exactly four text roles in the panel. `.headline`
+    /// is the battery headline alone; `.body` (the default) the row titles;
+    /// `.caption` every status; `.caption2` at most once. No `.callout` (the
+    /// Charge Limit value moved to `.caption`) and no other text style. Glyph
+    /// sizes are not roles: the four `.system(size:)` glyphs (row symbols,
+    /// the icon buttons' glyph, the gear badge, the ring interior) and the
+    /// desktop symbol's `.largeTitle`.
+    @Test func thePanelUsesFourTypeRoles() throws {
+        let views = try Self.allViewCode()
+        let styles = views.components(separatedBy: ".font(.").dropFirst()
+            .map { String($0.prefix { $0.isLetter || $0.isNumber }) }
+        let roles = Set(styles).subtracting(["system", "largeTitle"])
+        #expect(roles.isSubset(of: ["headline", "body", "caption", "caption2"]), "text styles in use: \(roles.sorted())")
+        #expect(roles.contains("headline") && roles.contains("caption"), "vacuity")
+        #expect(Self.occurrences(of: ".font(.headline)", in: views) == 1, "the headline role is the battery's alone")
+        let (header, _, _) = try Self.batteryHeaderParts()
+        #expect(header.contains("MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))\n"
+                                + "                    .font(.headline)"))
+        #expect(Self.occurrences(of: ".caption2", in: views) <= 1, "caption2 at most once")
+        #expect(!views.contains("callout"), "no .callout")
+        #expect(Self.occurrences(of: ".font(.system(size:", in: views) == 4, "glyph sizes only")
+        #expect(Self.occurrences(of: ".font(.largeTitle)", in: views) == 1, "the desktop symbol only")
+        let value = try #require(Self.structChunk("ChargeLimitValue", in: try Self.code("MenuPanelView.swift")))
+        #expect(value.contains(".font(.caption)"), "the Charge Limit value is a caption")
+        let row = try #require(Self.structChunk("PanelRow", in: try Self.code("MenuPanelView.swift")))
+        #expect(Self.flat(row).contains("Text(title) .layoutPriority(1)"), "row titles keep the default body role")
     }
 
     /// Growable text may wrap vertically but is never frozen horizontally:
@@ -1055,37 +1178,16 @@ struct MenuPanelStructureTests {
         #expect(row.contains("HStack(spacing: PanelMetrics.regular) { trailing() }\n                .fixedSize()"))
     }
 
-    /// Status-as-disclosure (2026-10-21): the control is still NAMED "Details"
-    /// for VoiceOver; its value speaks the Claude status (with the severity
-    /// prefix, e.g. "Warning: Claude: paused") plus the expanded state.
-    @Test func theDisclosureIsLabelledForVoiceOver() throws {
-        let source = try Self.code("MenuPanelView.swift")
-        let disclosure = try #require(Self.structChunk("PanelDetailsDisclosure", in: source))
-        #expect(disclosure.contains(".accessibilityLabel(\"Details\")"))
-        #expect(disclosure.contains(
-            #".accessibilityValue("\(PanelSeverityTint.spoken(label)), \(expanded ? "expanded" : "collapsed")")"#))
-        #expect(disclosure.contains(".accessibilityHint("))
-        #expect(disclosure.contains("\"Shows detection, alert and app settings\""))
-        #expect(disclosure.contains(".accessibilityElement(children: .ignore)"), "one element, not its parts")
-    }
-
-    // MARK: - Menu-stays-open
-
-    /// The disclosure is pure model state: it never calls a request hook and
-    /// never routes through MenuContentView, so it cannot reach the one
-    /// dismissal gateway.
-    @Test func panelOnlyActionsNeverReachTheDismissalGateway() throws {
-        let model = try Self.code("MenuStateModel.swift")
-        for function in ["setDetailsExpanded"] {
-            let start = try #require(model.range(of: "func \(function)("), "\(function) not found")
-            let tail = model[start.upperBound...]
-            let end = ["\n    func ", "\n    var ", "\n    nonisolated static func "]
-                .compactMap { tail.range(of: $0)?.lowerBound }
-                .min() ?? tail.endIndex
-            let body = String(tail[..<end])
-            #expect(!body.contains("request"), "\(function) must not forward to an AppKit flow")
-        }
-        let owner = try Self.code("MenuContentView.swift")
-        #expect(!owner.contains("setDetailsExpanded"))
+    /// The footer's Claude status is ONE VoiceOver element whose label is
+    /// the status itself, with the severity spoken first when it is not
+    /// nominal ("Warning: Claude: paused") — never color alone.
+    @Test func theFooterStatusSpeaksTheClaudeStatus() throws {
+        let status = try #require(Self.structChunk("PanelFooterStatus", in: try Self.code("MenuPanelView.swift")))
+        #expect(status.contains(".accessibilityElement(children: .ignore)"), "one element, not its parts")
+        #expect(status.contains(".accessibilityLabel(PanelSeverityTint.spoken(label))"))
+        #expect(PanelSeverityTint.spoken(MenuStateModel.claudeFooterLabel(inFlight: false, paused: true))
+                == "Warning: Claude: paused")
+        #expect(PanelSeverityTint.spoken(MenuStateModel.claudeFooterLabel(inFlight: true, paused: false))
+                == "Claude: running")
     }
 }

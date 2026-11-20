@@ -208,7 +208,7 @@ struct MenuStateModelTests {
         #expect(model.featureState == .controlUnavailable)
         #expect(model.limitEnabled && model.limit == 85, "saved intent shown as-is")
         #expect(model.chargeLimitCaption
-                == PanelLine(text: "Charge limiting isn't available on this version of macOS.", severity: .info))
+                == PanelLine(text: "Unavailable on this version of macOS", severity: .info))
         #expect(simulator.writeCalls.isEmpty)
     }
     // MARK: Stay-awake toggle = P2 checkmark semantics on a SwiftUI Toggle
@@ -281,9 +281,9 @@ struct MenuStateModelTests {
         // #58: the exact, calm limitation sentence — no setup instruction
         // (setup cannot help) and no error wording.
         #expect(MenuStateModel.featureMessage(for: .controlUnavailable)
-                == "Charge limiting isn't available on this version of macOS.")
+                == "Unavailable on this version of macOS")
         #expect(MenuStateModel.featureMessage(for: .active)?.contains("pause") == true)
-        #expect(MenuStateModel.featureMessage(for: .paused)?.contains("paused") == true)
+        #expect(MenuStateModel.featureMessage(for: .paused)?.hasPrefix("Paused") == true)
         #expect(MenuStateModel.featureMessage(for: .error("smc exploded")) == "smc exploded",
                 "error text passes through verbatim")
     }
@@ -295,15 +295,15 @@ struct MenuStateModelTests {
         let everyOutcome: [MessageSendOutcome?] =
             [nil, .accepted, .rejected(404), .timedOutUnconfirmed, .sendFailed("boom")]
         for outcome in everyOutcome {
-            #expect(MenuStateModel.lidAlertStatusLine(for: .off, lastOutcome: outcome, detectionPaused: false) == "Lid alert: off")
+            #expect(MenuStateModel.lidAlertStatusLine(for: .off, lastOutcome: outcome, detectionPaused: false) == "Off")
             #expect(MenuStateModel.lidAlertStatusLine(for: .needsTopic, lastOutcome: outcome, detectionPaused: false).contains("ntfy topic"))
             #expect(MenuStateModel.lidAlertStatusLine(for: .needsTestSend, lastOutcome: outcome, detectionPaused: false).contains("test message"))
         }
-        // Armed reads "armed" when the last publish worked, is unconfirmed, or
+        // Armed reads "Armed" when the last publish worked, is unconfirmed, or
         // has not happened yet.
         for outcome: MessageSendOutcome? in [nil, .accepted, .timedOutUnconfirmed] {
             let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome, detectionPaused: false)
-            #expect(line.contains("armed"))
+            #expect(line.hasPrefix("Armed"))
             // The armed line must stay honest about what is promised.
             #expect(line.contains("best-effort"))
         }
@@ -323,7 +323,7 @@ struct MenuStateModelTests {
     @Test func lidAlertStatusLineDowngradesAfterAFailedSend() {
         for outcome: MessageSendOutcome in [.rejected(403), .rejected(404), .sendFailed("boom")] {
             let line = MenuStateModel.lidAlertStatusLine(for: .armed, lastOutcome: outcome, detectionPaused: false)
-            #expect(!line.contains("armed"), "must not claim armed after a message failed to go out")
+            #expect(!line.lowercased().contains("armed"), "must not claim armed after a message failed to go out")
             #expect(line.contains("did not go out"))
             #expect(line.contains("test message"))
         }
@@ -692,7 +692,7 @@ struct MenuStateModelTests {
             #expect(sender.sends.isEmpty)
             #expect(!finish.isWatching)
             #expect(menu.model.finishAlertDisplayState == .needsTopic)
-            #expect(menu.model.finishAlertStatus == PanelLine(text: "Session alerts: set an ntfy topic to arm them",
+            #expect(menu.model.finishAlertStatus == PanelLine(text: "Not armed — set an ntfy topic in Settings",
                                                               severity: .warning))
         }
     }
