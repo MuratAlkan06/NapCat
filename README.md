@@ -719,13 +719,19 @@ Notes:
   frozen menu redesign, `v1.4.0` session alerts — finish and waiting
   pushes, `v1.4.1` the quieter menu panel, `v1.4.2` hardened alert delivery,
   hook and build, `v1.4.3` the masked ntfy topic field in the settings
-  dialog and the Lock Screen button moved into the panel header, and
+  dialog and the Lock Screen button moved into the panel header,
   `v1.4.4` session alerts only after at least 60 seconds of work, no
   false "finished" push while a background subagent or background shell
   is still running, run minutes measured from the start of the episode
   (when the session first became busy), the busy-hook fix for newer macOS
   described below, plus docs and code-comment parity — the topic field's
-  AutoFill comment and the Lock Screen button wording). Each
+  AutoFill comment and the Lock Screen button wording, `v1.5.0` the first
+  Developer ID signed and notarized release (app and disk image signed and
+  notarized by Apple, the disk image stapled, so it opens with no
+  Gatekeeper warnings) plus the stabilized ntfy settings dialog, and
+  `v1.5.1` the "Night Groom" app icon and the hand-drawn 17-frame idle
+  grooming animation in the menu bar, plus VoiceOver and first-run
+  polish). Each
   annotated tag carries its release notes (`git tag -n99`); the detailed
   build plan and verification matrix are maintained privately.
 - **v1.4.4 ships busy hook version 6 — refresh it.** On newer macOS (seen on
