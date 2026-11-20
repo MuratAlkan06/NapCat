@@ -45,13 +45,16 @@ struct LidGuardStructureTests {
         return try names.map { ($0, codeOnly(try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8))) }
     }
 
-    /// The files that make up the B2 subsystem.
+    /// The files that make up the B2 subsystem. F3 stage 1 added the
+    /// CloudKit sender: it is a delivery file like the ntfy one, so the same
+    /// no-spawn / no-privilege / no-error-description / log rules apply to it.
     static let b2Files = [
         "LidGuardPolicy.swift",
         "LidGuardController.swift",
         "MessageSender.swift",
         "NtfyMessageSender.swift",
         "SystemSleepSource.swift",
+        "CloudKitMessageSender.swift",
     ]
 
     /// Files scanned by the no-topic-in-logs lint: the B2 subsystem PLUS the
@@ -251,6 +254,12 @@ struct LidGuardStructureTests {
     /// accessor hands out a live URLSession, so no other Sources file may call
     /// it — that would reach `downloadTask` / `data(from:)` without ever naming
     /// `URLSession`. (Tests are not scanned; they may invalidate the sessions.)
+    ///
+    /// F3 stage 1 AMENDMENT (deliberate, issue #64): CloudKitMessageSender.swift
+    /// is the SECOND sanctioned networking file — for CloudKit symbols and the
+    /// entitlement probe ONLY. HTTP is unchanged: every URLSession-family
+    /// token above still has NtfyMessageSender.swift as its one owner, so the
+    /// CloudKit file cannot reach HTTP either.
     @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
         let allowed: [String: String] = [
             "URLSession": "NtfyMessageSender.swift",
@@ -263,6 +272,15 @@ struct LidGuardStructureTests {
             "IODeregisterForSystemPower": "SystemSleepSource.swift",
             "IOAllowPowerChange": "SystemSleepSource.swift",
             "IONotificationPortSetDispatchQueue": "SystemSleepSource.swift",
+            "import CloudKit": "CloudKitMessageSender.swift",
+            "CKContainer": "CloudKitMessageSender.swift",
+            "CKDatabase": "CloudKitMessageSender.swift",
+            "CKRecord": "CloudKitMessageSender.swift",
+            "CKModifyRecordsOperation": "CloudKitMessageSender.swift",
+            "CKAccountStatus": "CloudKitMessageSender.swift",
+            "CKError": "CloudKitMessageSender.swift",
+            "SecTaskCreateFromSelf": "CloudKitMessageSender.swift",
+            "SecTaskCopyValueForEntitlement": "CloudKitMessageSender.swift",
         ]
         let sources = try Self.swiftSources()
         for (token, owner) in allowed {
