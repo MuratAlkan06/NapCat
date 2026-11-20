@@ -985,6 +985,66 @@ struct MenuPanelPresentationTests {
                 "the inline checkmark is taller than the text line")
     }
 
+    // MARK: - Stay Awake "Turning on…" (owner ruling e)
+
+    /// How the turn-on phase moves: every phase × every event. A flip starts
+    /// the hold from idle only; only a hold elapsing while waiting shows the
+    /// caption; an observed ON (the confirm) or the menu opening clears it from
+    /// anywhere; an observed OFF or unreadable state changes nothing (the
+    /// command may still be running).
+    @Test(arguments: [
+        ("idle, flipped on", StayAwakeTurnOnPhase.idle, StayAwakeTurnOnEvent.flippedOn, StayAwakeTurnOnPhase.waiting),
+        ("waiting, flipped on", .waiting, .flippedOn, .waiting),
+        ("showing, flipped on", .showing, .flippedOn, .showing),
+        ("idle, hold elapsed", .idle, .holdElapsed, .idle),
+        ("waiting, hold elapsed", .waiting, .holdElapsed, .showing),
+        ("showing, hold elapsed", .showing, .holdElapsed, .showing),
+        ("idle, observed on", .idle, .observed(true), .idle),
+        ("waiting, observed on (fast confirm)", .waiting, .observed(true), .idle),
+        ("showing, observed on (slow confirm)", .showing, .observed(true), .idle),
+        ("waiting, observed off", .waiting, .observed(false), .waiting),
+        ("showing, observed off", .showing, .observed(false), .showing),
+        ("waiting, unreadable", .waiting, .observed(nil), .waiting),
+        ("showing, unreadable", .showing, .observed(nil), .showing),
+        ("idle, panel opened", .idle, .panelOpened, .idle),
+        ("waiting, panel opened", .waiting, .panelOpened, .idle),
+        ("showing, panel opened", .showing, .panelOpened, .idle),
+    ])
+    func stayAwakeTurnOnPhaseTable(id: String, from: StayAwakeTurnOnPhase, event: StayAwakeTurnOnEvent,
+                                   to: StayAwakeTurnOnPhase) {
+        #expect(MenuStateModel.stayAwakeTurnOnPhase(from, on: event) == to, "\(id)")
+    }
+
+    /// The Stay Awake slot's precedence: the unreadable warning first (it is
+    /// the problem), then "Turning on…" — nominal, the quiet caption style —
+    /// only once the hold ran out unconfirmed, then nothing. A confirmed ON
+    /// never shows "Turning on…", whatever the phase says.
+    @Test(arguments: [
+        (Bool?.none, StayAwakeTurnOnPhase.idle, "Sleep state could not be read", PanelSeverity?.some(.warning)),
+        (nil, .waiting, "Sleep state could not be read", .warning),
+        (nil, .showing, "Sleep state could not be read", .warning),
+        (false, .idle, nil, nil),
+        (false, .waiting, nil, nil),
+        (false, .showing, "Turning on…", .nominal),
+        (true, .idle, nil, nil),
+        (true, .waiting, nil, nil),
+        (true, .showing, nil, nil),
+    ] as [(Bool?, StayAwakeTurnOnPhase, String?, PanelSeverity?)])
+    func stayAwakeSlotTable(observed: Bool?, phase: StayAwakeTurnOnPhase, text: String?, severity: PanelSeverity?) {
+        let line = MenuStateModel.stayAwakeSlot(observed: observed, turnOn: phase)
+        #expect(line?.text == text)
+        #expect(line?.severity == severity)
+    }
+
+    /// The fixed wording (owner ruling e): the real U+2026 ellipsis, as in
+    /// "Sending…" and "ntfy settings…"; nominal, so it never escalates the
+    /// badge or reaches VoiceOver as a warning.
+    @Test func theTurningOnWordingIsFixed() {
+        #expect(MenuStateModel.stayAwakeTurningOnText == "Turning on\u{2026}")
+        #expect(!MenuStateModel.stayAwakeTurningOnText.contains("..."))
+        #expect(PanelMotion.turnOnCaptionDelay == 0.4, "the ~400 ms hold")
+    }
+
     // MARK: - Model panel state
 
     /// `lockAvailable` wires the REAL ScreenLockController (resolution only —

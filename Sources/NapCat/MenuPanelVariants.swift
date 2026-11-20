@@ -35,7 +35,10 @@ struct QuietRowsPanel: View {
                 PanelRow(symbol: PanelSymbol.stayAwake, title: "Stay Awake") {
                     StayAwakeToggle(model: model)
                 }
-                indentedCaption(model.stayAwakeCaption)
+                // The Stay Awake slot: unreadable > "Turning on…" (ruling e,
+                // the one nominal caption here) — MenuStateModel.stayAwakeSlot.
+                StayAwakeCaptionSlot(model: model, turnOn: model.stayAwakeTurnOn)
+                    .padding(.leading, PanelMetrics.titleIndent)
             }
 
             // ADR §12: no battery → the charge-limit section is hidden
@@ -43,10 +46,7 @@ struct QuietRowsPanel: View {
             if model.featureState != .hidden {
                 PanelFeature {
                     PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
-                        Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
-                            .font(.callout)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                        ChargeLimitReadout(model: model)
                         ChargeLimitToggle(model: model)
                     }
                     ChargeLimitSlider(model: model)

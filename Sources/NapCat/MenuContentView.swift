@@ -178,6 +178,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // Alert healing: the menu-open reconcile is a flush trigger — an
         // OFFLINE session lane attempts its held alerts once (coalesced).
         finishAlert?.menuOpened()
+        // Ruling (e): every panel session starts without a "Turning on…" —
+        // a failed attempt was already reported by its own alert.
+        model.stayAwakeTurnOn.panelOpened()
         model.refresh()
         // Section visibility (charge limit, debug) and the Details state can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's

@@ -38,8 +38,10 @@ import Security
 /// - a DEFINITIVE failure — nothing was committed and the composite may fall
 ///   back to ntfy without risking a double buzz → `sendFailed(<fixed text>)`:
 ///   no network, iCloud unreachable, not signed in / account unavailable,
-///   container or entitlement problems, and — for this attempt — iCloud
-///   rate-limiting or temporarily unavailable;
+///   container or entitlement problems, iCloud refusing the request outright
+///   (quota exceeded, request rejected, permission denied — widened by owner
+///   ruling g, 2026-11-20), and — for this attempt — iCloud rate-limiting or
+///   temporarily unavailable;
 /// - a timeout, a lost response, or anything not listed → `timedOutUnconfirmed`
 ///   (the record may have landed; never retried, never fallen back).
 ///
@@ -63,6 +65,9 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
     static let containerText = "the NapCat iCloud container is not set up"
     static let rateLimitedText = "iCloud is rate-limiting this Mac"
     static let serviceUnavailableText = "iCloud is temporarily unavailable"
+    static let quotaExceededText = "the iCloud quota was exceeded"
+    static let serverRejectedText = "iCloud rejected the request"
+    static let permissionText = "iCloud denied permission to save the alert"
     static let busyLaneText = "another message is still being sent"
 
     private let isEntitled: @Sendable () -> Bool
@@ -244,7 +249,16 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
     }
 
     /// The DEFINITIVE codes (nothing was committed), each with a fixed,
-    /// secret-free sentence; nil for every other code.
+    /// secret-free sentence; nil for every other code — a new or unknown code
+    /// stays unconfirmed (the safe direction: no fallback, no double buzz).
+    ///
+    /// Owner ruling (g), 2026-11-20, added three refusals: `quotaExceeded`,
+    /// `serverRejectedRequest` and `permissionFailure`. In each, iCloud turns
+    /// the save down before committing anything, so the ntfy fallback cannot
+    /// double-buzz. The live evidence was the F3 spike's burst: 21 saves in
+    /// about 3 s, of which saves 3–20 came back `quotaExceeded` (25) and were
+    /// never stored. Before the ruling those would have been unconfirmed, and
+    /// the alert would have gone out nowhere.
     static func definitiveFailureText(_ code: CKError.Code) -> String? {
         switch code {
         case .networkUnavailable: return noInternetText
@@ -255,6 +269,9 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
         case .missingEntitlement: return notEntitledText
         case .requestRateLimited: return rateLimitedText
         case .serviceUnavailable: return serviceUnavailableText
+        case .quotaExceeded: return quotaExceededText
+        case .serverRejectedRequest: return serverRejectedText
+        case .permissionFailure: return permissionText
         default: return nil
         }
     }
