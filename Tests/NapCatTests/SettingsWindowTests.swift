@@ -994,6 +994,21 @@ struct SettingsWindowTests {
                     check(model, .error, "a refused lid send")
                 }
             }
+            // An UNCONFIRMED lid send while armed: the lid status line does
+            // not downgrade (it still reads armed), so the History line is
+            // the badge's SOLE warning raiser. (A refused send cannot show
+            // this: its status line raises the badge to the same error.)
+            withLidGuardHarness(sender: RecordingMessageSender(outcome: .timedOutUnconfirmed)) { lid in
+                lid.arm()
+                lid.controller.sendTestMessage()
+                withModel(detection: claude, lidGuard: lid.controller) { model, _ in
+                    #expect(model.lidGuardArming == .armed && model.lidStatus.severity == .nominal,
+                            "vacuity: armed, and the status line is not downgraded")
+                    #expect(model.lidLastSend(now: lid.clock.now).severity == .warning,
+                            "vacuity: the History line warns")
+                    check(model, .warning, "an unconfirmed lid send")
+                }
+            }
             withLidGuardHarness { lid in
                 lid.arm()
                 let composite = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
@@ -1006,16 +1021,24 @@ struct SettingsWindowTests {
         }
     }
 
-    /// The session lane's own problem — a refused session alert — raises
-    /// both badges alike (an error), the lid half healthy.
-    @Test @MainActor func aRefusedSessionAlertRaisesBothBadgesAlike() async throws {
+    /// The session lane's own problems raise both badges alike, the lid half
+    /// healthy: a refused session alert (an error — the status line and the
+    /// History line both raise it), and an UNCONFIRMED one (a warning), whose
+    /// status line stays armed, so the History line is the SOLE raiser.
+    @Test(arguments: [
+        (MessageSendOutcome.rejected(403), PanelSeverity.error, PanelSeverity.error),
+        (.timedOutUnconfirmed, .nominal, .warning),
+    ])
+    @MainActor func aSessionSendProblemRaisesBothBadgesAlike(outcome: MessageSendOutcome, status: PanelSeverity,
+                                                             badge: PanelSeverity) async throws {
         typealias H = FinishAlertHarness
-        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { h in
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: outcome)) { h in
             h.store.put(H.s1, ts: H.t0 - 600)
             h.controller.reconcile()
             h.store.remove(H.s1)
             await h.settle()
-            #expect(h.controller.lastSendOutcome == .rejected(403))
+            #expect(h.controller.lastSendOutcome == outcome)
+            #expect(h.pendingRetries.isEmpty, "neither outcome is retried")
             let suite = "com.muratalkan.napcat.tests.settings.session.\(UUID().uuidString)"
             let lidDefaults = UserDefaults(suiteName: suite)!
             defer { lidDefaults.removePersistentDomain(forName: suite) }
@@ -1024,7 +1047,10 @@ struct SettingsWindowTests {
             lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
             withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _ in
                 #expect(model.lidStatus.severity == .nominal, "vacuity: the lid half is healthy")
-                #expect(model.settingsBadge == .error)
+                #expect(model.finishAlertStatus.severity == status, "vacuity: the session status line")
+                #expect(model.finishAlertLastSend(now: Double(H.t0) + 120).severity == badge,
+                        "vacuity: the History line")
+                #expect(model.settingsBadge == badge)
                 #expect(model.settingsBadge == model.detailsBadge)
             }
         }
