@@ -56,6 +56,12 @@ enum PanelMetrics {
     /// in the 76pt header, so its top edge sits (76 − 58) / 2 = 9pt down. The
     /// button shares that top line instead of hugging the panel edge.
     static let headerLockInset: CGFloat = 9
+    /// `PanelIconButton` (slice W): the 28pt circular target and its 15pt
+    /// glyph (Panel 2.0 spec — the Lock Screen button adopts both in slice P).
+    static let iconButtonSize: CGFloat = 28
+    static let iconButtonGlyph: CGFloat = 15
+    /// The severity badge on an icon button's top-trailing corner.
+    static let iconButtonBadge: CGFloat = 9
 }
 
 /// Motion rules for the panel (motion-and-polish charter, issue #67), next to
@@ -468,11 +474,13 @@ struct LaunchAtLoginRow: View {
 }
 
 /// The panel's LAST row (curation round 1, 2026-10-18): the ONE Details
-/// disclosure on the left, Quit on the right — nothing else. (The Lock Screen
-/// button sat beside Quit from the 2026-10-21 declutter until 2026-10-22,
-/// when it moved to the battery header's top-right corner.) Expanded Details
-/// content renders ABOVE this row, so the footer — and Quit — always close
-/// the panel.
+/// disclosure on the left, Quit on the right. (The Lock Screen button sat
+/// beside Quit from the 2026-10-21 declutter until 2026-10-22, when it moved
+/// to the battery header's top-right corner.) Slice W (issue #78) puts the
+/// Settings gear FIRST, before the disclosure — never beside Quit, where an
+/// icon button reads as part of the Quit control (the 2026-10-22 lesson).
+/// Expanded Details content renders ABOVE this row, so the footer — and
+/// Quit — always close the panel.
 struct PanelFooterRow: View {
     @ObservedObject var model: MenuStateModel
 
@@ -481,12 +489,64 @@ struct PanelFooterRow: View {
     /// label would truncate.
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
+            SettingsGearButton(model: model)
             PanelDetailsDisclosure(model: model)
             Spacer(minLength: PanelMetrics.regular)
             Button("Quit NapCat") { model.quit() }
                 .controlSize(.small)
                 .keyboardShortcut("q", modifiers: .command)
         }
+    }
+}
+
+/// The panel's icon-only button (Panel 2.0, slice W): a 28pt circular target
+/// holding the glyph alone — 15pt medium, primary — with the plain look and
+/// the shared press fade (`PanelPressFadeButtonStyle`). Tooltip and VoiceOver
+/// carry its name. The footer's Settings gear uses it; the Lock Screen button
+/// adopts it in slice P.
+struct PanelIconButton: View {
+    let symbol: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: PanelMetrics.iconButtonGlyph, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: PanelMetrics.iconButtonSize, height: PanelMetrics.iconButtonSize)
+                .contentShape(Circle())
+        }
+        .buttonStyle(PanelPressFadeButtonStyle())
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
+/// The footer's Settings gear (slice W, issue #78): opens the Settings
+/// window — forwarding to the model, which hands it to MenuContentView's
+/// dismissal gateway — and carries the worst Settings-resident severity as a
+/// corner badge (`MenuStateModel.settingsBadge`). Only a badge: the problem
+/// lines themselves surface above it, exactly once, through the panel's own
+/// surfaced twins — the gear only says where their setting lives.
+struct SettingsGearButton: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        let badge = model.settingsBadge
+        PanelIconButton(symbol: PanelSymbol.settings, label: "Settings") { model.openSettings() }
+            .overlay(alignment: .topTrailing) {
+                if let symbol = MenuStateModel.severitySymbol(badge) {
+                    Image(systemName: symbol)
+                        .font(.system(size: PanelMetrics.iconButtonBadge, weight: .semibold))
+                        .foregroundStyle(PanelSeverityTint.color(badge))
+                        .accessibilityHidden(true)
+                }
+            }
+            .accessibilityValue(MenuStateModel.severityAccessibilityPrefix(badge) ?? "")
+            .accessibilityHint(badge == .nominal
+                ? "Opens the Settings window"
+                : "Opens the Settings window, which holds the setting for an item that needs attention, shown above")
     }
 }
 

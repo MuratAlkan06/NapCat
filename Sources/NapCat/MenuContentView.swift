@@ -149,6 +149,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         model.requestLidGuardSettingsPrompt = { [weak self] in self?.promptForLidAlertSettings() }
         model.requestLidGuardTestSend = { [weak self] in self?.sendLidAlertTestMessage() }
         model.requestFinishAlertToggle = { [weak self] enabled in self?.toggleSessionAlerts(enabled) }
+        model.requestOpenSettings = { [weak self] in self?.showSettings(nil) }
 
         // The lid guard's own async events (send outcome, wake) republish
         // through the same refresh path as every other controller.

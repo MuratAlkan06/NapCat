@@ -47,9 +47,11 @@ enum PanelSymbol {
     static let error = "xmark.octagon.fill"
     /// After "Sent" on the test-send button once ntfy accepted it (#67).
     static let sent = "checkmark"
+    /// The footer's Settings gear (slice W, issue #78).
+    static let settings = "gearshape"
 
     static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts, disclosure,
-                      desktop, charging, battery, info, warning, error, sent]
+                      desktop, charging, battery, info, warning, error, sent, settings]
 }
 
 /// The test-send button's phase (#67): transient view state owned by
@@ -283,6 +285,9 @@ final class MenuStateModel: ObservableObject {
     /// Track C: told after the detection pause flag flips, so the owner can
     /// re-gate the finish alert (MenuContentView).
     var onDetectionPausedChange: (() -> Void)?
+    /// Slice W: the footer gear opens the Settings window — a window, so it
+    /// goes through MenuContentView's dismissal gateway like ⌘, does.
+    var requestOpenSettings: (() -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
@@ -381,6 +386,7 @@ final class MenuStateModel: ObservableObject {
         requestStayAwakeToggle?(desired)
     }
     func lockScreen() { requestLockScreen?() }
+    func openSettings() { requestOpenSettings?() }
     func setLimitEnabled(_ enabled: Bool) { limiter.setEnabled(enabled) }
     func setLimit(_ newLimit: Int) { limiter.setLimit(newLimit) }
     func quit() { requestQuit?() }
@@ -558,6 +564,32 @@ final class MenuStateModel: ObservableObject {
                                                       outcome: phoneLastOutcome, at: phoneLastOutcomeAt))
         }
         return Self.detailsBadge(severities)
+    }
+
+    /// Badge on the footer's Settings gear (slice W, issue #78): the worst
+    /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
+    /// is a pane of the Settings window — over the panes this wiring shows.
+    /// Same rule as the Details badge: the problems themselves are already
+    /// surfaced at top level; the badge says where their setting lives. Lines
+    /// whose home is a panel row (the charge-limit caption) are not counted:
+    /// the panel row is where they surface and where they are acted on.
+    var settingsBadge: PanelSeverity {
+        Self.detailsBadge(settingsPanes.flatMap(settingsResidentSeverities))
+    }
+
+    /// One pane's Settings-resident severities.
+    func settingsResidentSeverities(_ pane: SettingsPane) -> [PanelSeverity] {
+        switch pane {
+        case .general:
+            return Self.generalResidentSeverities(loginStatus: loginItemStatus, lockAvailable: lockScreenAvailable)
+        }
+    }
+
+    /// General: the Launch at Login caption (approval / not found) and the
+    /// Lock Screen availability line.
+    nonisolated static func generalResidentSeverities(loginStatus: SMAppService.Status,
+                                                      lockAvailable: Bool) -> [PanelSeverity] {
+        [launchAtLoginCaption(for: loginStatus)?.severity ?? .nominal, lockScreenStatus(available: lockAvailable).severity]
     }
 
     // MARK: - Pure display mappings (unit-tested)

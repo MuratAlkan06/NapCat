@@ -148,28 +148,39 @@ struct MenuPanelStructureTests {
     /// Screen amendment (2026-10-22): the icon-only Lock Screen button left
     /// the footer for the header's top-right corner (locked in
     /// `theLockScreenButtonSitsInTheHeaderTopRightCorner`), so the footer is
-    /// the disclosure, the Spacer and Quit — nothing else. It holds the ONLY
-    /// disclosure and the ONLY Quit button in the panel, and it is the LAST
-    /// thing — expanded Details content and the surfaced twins (Claude,
-    /// General, Launch at Login) render above it, so Quit can never be pushed
-    /// out of view.
+    /// the disclosure, the Spacer and Quit. Slice W (issue #78, 2026-11-20)
+    /// puts the Settings gear FIRST, before the disclosure — far from Quit,
+    /// where an icon button reads as part of the Quit control (the
+    /// 2026-10-22 lesson) — so the footer is the gear, the disclosure, the
+    /// Spacer and Quit — nothing else. It holds the ONLY disclosure, the ONLY
+    /// gear and the ONLY Quit button in the panel, and it is the LAST thing —
+    /// expanded Details content and the surfaced twins (Claude, General,
+    /// Launch at Login) render above it, so Quit can never be pushed out of
+    /// view.
     @Test func theFooterRowHoldsTheOneDisclosureAndQuitAndComesLast() throws {
         let views = try Self.allViewCode()
         #expect(Self.occurrences(of: "PanelDetailsDisclosure(", in: views) == 1, "exactly ONE disclosure in the panel")
         #expect(Self.occurrences(of: "Button(\"Quit NapCat\")", in: views) == 1, "exactly ONE Quit button")
+        #expect(Self.occurrences(of: "SettingsGearButton(", in: views) == 1, "exactly ONE Settings gear")
         let footer = try #require(Self.structChunk("PanelFooterRow", in: try Self.code("MenuPanelView.swift")))
         #expect(!footer.contains("LockScreenButton("), "Lock Screen lives in the header, not the footer")
+        let row = try #require(footer.range(of: "HStack(alignment: .center, spacing: 0) {"))
+        let gear = try #require(footer.range(of: "SettingsGearButton(model: model)"), "the gear lives in the footer")
         let disclosure = try #require(footer.range(of: "PanelDetailsDisclosure(model: model)"),
                                       "the disclosure lives in the footer")
         let spacer = try #require(footer.range(of: "Spacer(minLength: PanelMetrics.regular)"))
         let quit = try #require(footer.range(of: "Button(\"Quit NapCat\")"), "Quit lives in the footer")
         #expect(Self.occurrences(of: "HStack(", in: footer) == 1, "one row — no nested button group")
-        #expect(disclosure.lowerBound < spacer.lowerBound && spacer.lowerBound < quit.lowerBound,
-                "Details on the left, Spacer, then Quit on the right")
-        #expect(footer[disclosure.upperBound..<spacer.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        #expect(gear.lowerBound < disclosure.lowerBound && disclosure.lowerBound < spacer.lowerBound
+                && spacer.lowerBound < quit.lowerBound,
+                "the gear, then Details on the left, Spacer, then Quit on the right")
+        #expect(footer[row.upperBound..<gear.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && footer[gear.upperBound..<disclosure.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && footer[disclosure.upperBound..<spacer.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && footer[spacer.upperBound..<quit.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "nothing else sits in the footer — the disclosure, the Spacer, Quit")
-        #expect(Self.occurrences(of: "Button", in: footer) == 1, "Quit is the footer's only button")
+                "nothing else sits in the footer — the gear, the disclosure, the Spacer, Quit")
+        #expect(Self.occurrences(of: "Button(\"", in: footer) == 1, "Quit is the footer's only titled button")
+        #expect(Self.occurrences(of: "SettingsGearButton(", in: footer) == 1, "…and the gear its one icon button")
         let afterQuit = footer[quit.upperBound...]
         #expect(!afterQuit.contains("Button") && !afterQuit.contains("(model: model)"),
                 "Quit stays the last (rightmost) control")
@@ -435,6 +446,61 @@ struct MenuPanelStructureTests {
             #expect(!button.contains(token), "'\(token)' — the button only forwards to model.lockScreen()")
         }
         #expect(Self.occurrences(of: "model.lockScreen()", in: try Self.allViewCode()) == 1)
+    }
+
+    /// Slice W (issue #78): `PanelIconButton` is the panel's shared icon-only
+    /// button — a 28pt circular target, the 15pt medium glyph alone in the
+    /// primary color, the plain look with the shared press fade, and its name
+    /// as tooltip and VoiceOver label. The Settings gear is its one user in
+    /// this slice (the Lock Screen button adopts it in slice P).
+    @Test func panelIconButtonIsTheSharedCircularIconButton() throws {
+        let button = try #require(Self.structChunk("PanelIconButton", in: try Self.code("MenuPanelView.swift")))
+        for token in [
+            "Button(action: action) {",
+            "Image(systemName: symbol)",
+            ".font(.system(size: PanelMetrics.iconButtonGlyph, weight: .medium))",
+            ".foregroundStyle(.primary)",
+            ".frame(width: PanelMetrics.iconButtonSize, height: PanelMetrics.iconButtonSize)",
+            ".contentShape(Circle())",
+            ".buttonStyle(PanelPressFadeButtonStyle())",
+            ".help(label)",
+            ".accessibilityLabel(label)",
+        ] {
+            #expect(button.contains(token), "'\(token)' not found — the shared icon button was rewired")
+        }
+        #expect(!button.contains("Text("), "icon-only — no visible title")
+        #expect(PanelMetrics.iconButtonSize == 28 && PanelMetrics.iconButtonGlyph == 15)
+        #expect(PanelMetrics.iconButtonBadge < PanelMetrics.iconButtonGlyph, "the badge stays smaller than the glyph")
+        #expect(Self.occurrences(of: "PanelIconButton(", in: try Self.allViewCode()) == 1, "the gear is its one user")
+    }
+
+    /// Slice W, the iron rule extended to the gear: it renders the Settings
+    /// badge — the worst Settings-resident severity, as a severity symbol in
+    /// its tint, exactly once in the panel — and NEVER a line, so a problem
+    /// still surfaces exactly once, through the surfaced twins above. It only
+    /// forwards to the model (MenuContentView keeps the one dismissal
+    /// gateway).
+    @Test func theSettingsGearOnlyBadgesAndForwards() throws {
+        let views = try Self.allViewCode()
+        let gear = try #require(Self.structChunk("SettingsGearButton", in: try Self.code("MenuPanelView.swift")))
+        #expect(gear.contains("PanelIconButton(symbol: PanelSymbol.settings, label: \"Settings\") { model.openSettings() }"))
+        #expect(gear.contains("let badge = model.settingsBadge"))
+        #expect(gear.contains(".overlay(alignment: .topTrailing) {"))
+        #expect(gear.contains("if let symbol = MenuStateModel.severitySymbol(badge) {"))
+        #expect(gear.contains(".foregroundStyle(PanelSeverityTint.color(badge))"))
+        #expect(gear.contains(".accessibilityValue(MenuStateModel.severityAccessibilityPrefix(badge) ?? \"\")"),
+                "the badge is spoken, never color alone")
+        for token in ["PanelCaptionLine(", "SurfacedLine(", "TuckedLine(", "Text(", ".text", "cancelTracking",
+                      "request", "setDetailsExpanded"] {
+            #expect(!gear.contains(token), "'\(token)' — the gear only badges and forwards")
+        }
+        #expect(Self.occurrences(of: "model.settingsBadge", in: views) == 1, "the Settings badge renders once")
+        #expect(Self.occurrences(of: "model.openSettings()", in: views) == 1, "one gear opens Settings")
+        let model = try Self.code("MenuStateModel.swift")
+        #expect(Self.flat(model).contains("func openSettings() { requestOpenSettings?() }"), "a pure forward")
+        let owner = try Self.code("MenuContentView.swift")
+        #expect(owner.contains("model.requestOpenSettings = { [weak self] in self?.showSettings(nil) }"),
+                "the gear takes the ⌘, route — the one dismissal gateway")
     }
 
     /// Declutter (2026-10-21): the controls tier is exactly Stay Awake ·

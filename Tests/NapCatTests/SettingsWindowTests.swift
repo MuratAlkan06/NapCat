@@ -463,6 +463,59 @@ struct SettingsWindowTests {
                 "…targeting the one menu owner the status item keeps alive")
     }
 
+    /// The footer gear takes the same route as ⌘,.
+    @Test @MainActor func theGearOpensTheWindowThroughTheGateway() async throws {
+        try await withMenuContent { menuContent, log in
+            menuContent.model.openSettings()
+            await drainMain()  // the gateway presents on a later main-actor turn
+            #expect(log.events == ["activate", "present"])
+        }
+    }
+
+    // MARK: - The gear badge
+
+    /// General's resident lines: the Launch at Login caption and the Lock
+    /// Screen line — every login status × both lock states.
+    @Test(arguments: [
+        (SMAppService.Status.enabled, true, PanelSeverity.nominal),
+        (.notRegistered, true, .nominal),
+        (.requiresApproval, true, .warning),
+        (.notFound, true, .warning),
+        (.enabled, false, .warning),
+        (.notRegistered, false, .warning),
+        (.requiresApproval, false, .warning),
+        (.notFound, false, .warning),
+    ])
+    func theGeneralGearBadge(login: SMAppService.Status, lock: Bool, badge: PanelSeverity) {
+        let severities = MenuStateModel.generalResidentSeverities(loginStatus: login, lockAvailable: lock)
+        #expect(severities.count == 2)
+        #expect(MenuStateModel.detailsBadge(severities) == badge)
+    }
+
+    /// Through the model: nominal at rest; an unavailable lock raises it; a
+    /// charge-limit caption does NOT — its home is the panel's Charge Limit
+    /// row, where it surfaces and where it is acted on.
+    @Test @MainActor func theGearBadgeThroughTheModel() {
+        withModel { model, _ in
+            #expect(model.settingsBadge == .nominal)
+        }
+        let suite = "com.muratalkan.napcat.tests.settings.badge.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        // Intel: the charge-limit caption is info — panel-resident.
+        let intel = ChargeLimiter(power: power, isAppleSilicon: false, defaults: defaults)
+        let intelModel = MenuStateModel(power: power, sleep: SleepStateController(), limiter: intel,
+                                        screenLock: ScreenLockController())
+        #expect(intelModel.chargeLimitCaption?.severity == .info, "vacuity: a non-nominal charge-limit caption")
+        #expect(intelModel.settingsBadge == .nominal, "the charge-limit caption is panel-resident")
+        // No lock API wired: the Lock Screen line warns, and so does the gear.
+        let noLock = MenuStateModel(power: power, sleep: SleepStateController(), limiter: intel)
+        #expect(noLock.lockScreenStatus.severity == .warning)
+        #expect(noLock.settingsBadge == .warning)
+        #expect(noLock.settingsBadge == noLock.settingsPanes.flatMap(noLock.settingsResidentSeverities).max())
+    }
+
     /// Both routes reach the window through the one dismissal gateway.
     @Test func showSettingsGoesThroughTheDismissalGateway() throws {
         let owner = try Self.code("MenuContentView.swift")
