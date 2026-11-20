@@ -28,6 +28,8 @@ struct PersistenceTests {
         #expect(DefaultsKey.claudeFinishAlertEnabled == "claudeFinishAlertEnabled")
         // Issue #34 — the session alerts' run floor (finish + waiting).
         #expect(DefaultsKey.finishAlertMinimumRunSeconds == "finishAlertMinimumRunSeconds")
+        // F3 stage 1 — the phone transport toggle (default off).
+        #expect(DefaultsKey.phoneTransportEnabled == "phoneTransportEnabled")
         // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
         // live key — retired at the design freeze (RetiredDefaultsKey).
     }
@@ -85,6 +87,33 @@ struct PersistenceTests {
             #expect(finish.minimumRunSeconds == 60, "so does a fraction")
             lid.defaults.removeObject(forKey: DefaultsKey.finishAlertMinimumRunSeconds)
             #expect(finish.minimumRunSeconds == 60, "missing again ⇒ the default")
+        }
+    }
+
+    /// F3 stage 1 toggle: unset reads as OFF (alerts keep the ntfy path), the
+    /// default is computed rather than eagerly written, and a stored value
+    /// survives a relaunch (a second composite on the same defaults). Its own
+    /// key: no ntfy setting is touched.
+    @Test func phoneTransportDefaultsFalseAndRoundTrips() {
+        withDefaults { defaults in
+            let first = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
+                                               defaults: defaults, isEntitled: { false })
+            #expect(!first.phoneTransportEnabled)
+            #expect(defaults.object(forKey: DefaultsKey.phoneTransportEnabled) == nil,
+                    "the default is computed, not eagerly written")
+
+            first.setPhoneTransportEnabled(true)
+            #expect(defaults.bool(forKey: DefaultsKey.phoneTransportEnabled))
+            let relaunched = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
+                                                    defaults: defaults, isEntitled: { false })
+            #expect(relaunched.phoneTransportEnabled, "survives a relaunch")
+            for key in [DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic, DefaultsKey.lidGuardNtfyServer,
+                        DefaultsKey.lidGuardPrimedAt, DefaultsKey.claudeFinishAlertEnabled] {
+                #expect(defaults.object(forKey: key) == nil, "'\(key)' was touched by the phone toggle")
+            }
+
+            first.setPhoneTransportEnabled(false)
+            #expect(!relaunched.phoneTransportEnabled, "read live, never cached")
         }
     }
 
@@ -287,7 +316,8 @@ struct PersistenceTests {
                     DefaultsKey.heatWarningAcknowledged, DefaultsKey.debugBattery,
                     DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
                     DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
-                    DefaultsKey.claudeFinishAlertEnabled, DefaultsKey.finishAlertMinimumRunSeconds]
+                    DefaultsKey.claudeFinishAlertEnabled, DefaultsKey.finishAlertMinimumRunSeconds,
+                    DefaultsKey.phoneTransportEnabled]
         for key in RetiredDefaultsKey.all {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }

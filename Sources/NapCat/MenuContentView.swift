@@ -48,6 +48,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Track C finish alert + waiting buzz; nil in debugBattery mode
     /// (structurally absent). Watches the marker dir only while armed.
     private let finishAlert: FinishAlertController?
+    /// F3 stage 1 composite sender (phone toggle + its last outcome); nil in
+    /// debugBattery mode.
+    private let phoneTransport: CompositeMessageSender?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
@@ -67,6 +70,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
+        phoneTransport: CompositeMessageSender? = nil,
         defaults: UserDefaults = .standard
     ) {
         self.sleep = sleep
@@ -79,6 +83,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.detection = detection
         self.lidGuard = lidGuard
         self.finishAlert = finishAlert
+        self.phoneTransport = phoneTransport
         self.model = MenuStateModel(
             power: power,
             sleep: sleep,
@@ -88,7 +93,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             simulator: simulator,
             detection: detection,
             lidGuard: lidGuard,
-            finishAlert: finishAlert
+            finishAlert: finishAlert,
+            phoneTransport: phoneTransport
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -132,6 +138,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         }
         // Track C: arm/disarm and send outcomes republish the same way.
         finishAlert?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
+        // F3 stage 1: a CloudKit attempt's outcome republishes the same way.
+        phoneTransport?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
         // A pause toggle (the DISABLED flag) re-gates the finish alert at

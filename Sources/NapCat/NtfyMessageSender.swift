@@ -3,8 +3,9 @@ import os
 
 /// SENDER FILE (structural-isolation boundary): the ONLY file in the B2
 /// subsystem — and the only file anywhere in NapCat — that may name
-/// `URLSession`/`URLRequest` or perform network I/O
-/// (`LidGuardStructureTests` enforces both).
+/// `URLSession`/`URLRequest` or perform HTTP I/O (`LidGuardStructureTests`
+/// enforces both). Since F3 stage 1 the one other networking file is
+/// CloudKitMessageSender.swift, and it is sanctioned for CloudKit only.
 ///
 /// It publishes one message to ntfy:
 ///

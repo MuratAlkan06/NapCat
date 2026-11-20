@@ -20,16 +20,29 @@ let testLinkerSettings: [LinkerSetting] = hasCLTFrameworks
 
 let package = Package(
     name: "NapCat",
+    // The iOS entry only states a floor for consumers of `NapCatWire` (the
+    // NapCat Phone receiver, F3); it has no effect on the macOS build.
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
+        .iOS(.v18),
+    ],
+    products: [
+        // The shared wire contract (CloudKit container, record type, field
+        // keys, subscription ID) — the one source of truth both apps import.
+        .library(name: "NapCatWire", targets: ["NapCatWire"]),
     ],
     targets: [
+        // Constants only: zero imports, no I/O — so it builds for iOS too.
+        .target(
+            name: "NapCatWire"
+        ),
         .executableTarget(
-            name: "NapCat"
+            name: "NapCat",
+            dependencies: ["NapCatWire"]
         ),
         .testTarget(
             name: "NapCatTests",
-            dependencies: ["NapCat"],
+            dependencies: ["NapCat", "NapCatWire"],
             swiftSettings: testSwiftSettings,
             linkerSettings: testLinkerSettings
         ),

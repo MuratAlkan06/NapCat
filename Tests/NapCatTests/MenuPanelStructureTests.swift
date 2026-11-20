@@ -360,6 +360,9 @@ struct MenuPanelStructureTests {
             ("model.lidServerStatus", lidTwins),
             ("model.lidLastSend(", lidTwins),
             ("model.finishAlertLastSend(", sessionTwins),
+            // F3 stage 1: the phone transport line sits with the shared
+            // delivery settings, so its twin joins theirs.
+            ("model.phoneAlertStatus(", lidTwins),
             // 2026-10-21: Lock Screen availability moved to Details › General.
             ("model.lockScreenStatus", generalTwins),
         ]
@@ -588,6 +591,38 @@ struct MenuPanelStructureTests {
         #expect(details.contains("Toggle(\"Pause detection\""))
         // The layout never reaches for it directly.
         #expect(!(try Self.code(Self.layoutFile)).contains("setDetectionPaused"))
+    }
+
+    /// F3 stage 1: the "Phone alerts (beta)" checkbox exists ONCE, inside the
+    /// Details content's ntfy-alerts group (never in the frozen controls
+    /// tier or the layout), only while the composite is wired, with its line
+    /// tucked right under it; it forwards to the model and nothing else.
+    @Test func thePhoneToggleLivesOnlyInDetails() throws {
+        let views = try Self.allViewCode()
+        #expect(Self.occurrences(of: "PhoneTransportToggle(", in: views) == 1, "exactly ONE phone toggle")
+        #expect(Self.occurrences(of: "model.setPhoneTransportEnabled(", in: views) == 1)
+        #expect(!(try Self.code(Self.layoutFile)).contains("PhoneTransport"), "the frozen layout is unchanged")
+
+        let source = try Self.code("MenuPanelView.swift")
+        let details = try #require(Self.structChunk("PanelDetailsContent", in: source))
+        let gate = try #require(details.range(of: "if model.phoneTransportVisible {"))
+        let toggle = try #require(details.range(of: "PhoneTransportToggle(model: model)"))
+        let line = try #require(details.range(of: "TuckedLine(line: model.phoneAlertStatus("))
+        #expect(gate.upperBound <= toggle.lowerBound && toggle.upperBound <= line.lowerBound,
+                "gated, the checkbox, then its line")
+        let group = try #require(details.range(of: "private var ntfyAlertsGroup"))
+        let nextGroup = try #require(details.range(of: "private var claudeGroup"))
+        #expect(group.upperBound < toggle.lowerBound && toggle.upperBound < nextGroup.lowerBound,
+                "the toggle sits in the alerts' delivery group")
+
+        let view = try #require(Self.structChunk("PhoneTransportToggle", in: source))
+        #expect(view.contains("Toggle(MenuStateModel.phoneTransportToggleTitle, isOn: Binding("))
+        #expect(view.contains("set: { model.setPhoneTransportEnabled($0) }"))
+        #expect(view.contains(".toggleStyle(.checkbox)"))
+        for token in ["cancelTracking", "setDetailsExpanded", "request", "Button"] {
+            #expect(!view.contains(token), "'\(token)' — the checkbox only forwards to the model")
+        }
+        #expect(MenuStateModel.phoneTransportToggleTitle == "Phone alerts (beta)")
     }
 
     // MARK: - Motion, color, Dynamic Type, VoiceOver

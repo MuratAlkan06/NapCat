@@ -54,6 +54,17 @@ enum DefaultsKey {
     /// (`FinishAlertPolicy.minimumRunSeconds(stored:)`). Read live at every
     /// marker diff, so a change applies without a restart.
     static let finishAlertMinimumRunSeconds = "finishAlertMinimumRunSeconds"
+
+    // MARK: F3 stage 1 — phone transport
+
+    /// Whether alerts go to the NapCat iPhone app FIRST — one record in the
+    /// owner's private CloudKit database — with ntfy as the fallback (Bool,
+    /// default false). It only takes effect in a build entitled for iCloud
+    /// (ad-hoc `make` builds are not) with an available iCloud account; OFF —
+    /// or unentitled — every alert takes exactly the ntfy path it took before
+    /// the key existed. It adds no destination of its own: the ntfy topic /
+    /// server / priming above still arm the alerts.
+    static let phoneTransportEnabled = "phoneTransportEnabled"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

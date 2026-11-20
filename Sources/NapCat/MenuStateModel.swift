@@ -140,6 +140,14 @@ final class MenuStateModel: ObservableObject {
     /// the panel never renders it (nothing in the Details tier).
     @Published private(set) var finishAlertMinimumRunSeconds = FinishAlertTuning.minimumRunSeconds
 
+    // F3 stage 1 (phone transport) mirrors — the composite sender's toggle,
+    // whether this build can use iCloud (probed only while the toggle is on),
+    // and the last CloudKit attempt. Outcome categories only, never content.
+    @Published private(set) var phoneTransportEnabled = false
+    @Published private(set) var phoneTransportAvailable = false
+    @Published private(set) var phoneLastOutcome: MessageSendOutcome?
+    @Published private(set) var phoneLastOutcomeAt: Double?
+
     // Panel redesign (2026-10-18).
     /// The ONE "Details" disclosure. In-memory UI state, deliberately NOT
     /// persisted to defaults: it survives menu close/reopen for the app's
@@ -164,6 +172,9 @@ final class MenuStateModel: ObservableObject {
     /// Non-nil outside debugBattery mode — drives the session-alerts row
     /// (Track C). Read only; arming is MenuContentView's job.
     private let finishAlert: FinishAlertController?
+    /// Non-nil outside debugBattery mode — the composite sender, for the
+    /// phone transport toggle and its Details line (F3 stage 1).
+    private let phoneTransport: CompositeMessageSender?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -190,6 +201,9 @@ final class MenuStateModel: ObservableObject {
     /// The session-alerts row needs both halves: the lid guard owns the toggle
     /// key + the shared destination/priming, the controller owns the state.
     var finishAlertVisible: Bool { lidGuard != nil && finishAlert != nil }
+    /// The phone toggle lives with the alerts' delivery settings, so it needs
+    /// the lid guard's Details group as well as the composite.
+    var phoneTransportVisible: Bool { lidGuard != nil && phoneTransport != nil }
 
     init(
         power: PowerInterface,
@@ -200,7 +214,8 @@ final class MenuStateModel: ObservableObject {
         simulator: DebugPowerSimulator? = nil,
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
-        finishAlert: FinishAlertController? = nil
+        finishAlert: FinishAlertController? = nil,
+        phoneTransport: CompositeMessageSender? = nil
     ) {
         self.power = power
         self.sleep = sleep
@@ -211,6 +226,7 @@ final class MenuStateModel: ObservableObject {
         self.detection = detection
         self.lidGuard = lidGuard
         self.finishAlert = finishAlert
+        self.phoneTransport = phoneTransport
         refresh()
     }
 
@@ -253,6 +269,13 @@ final class MenuStateModel: ObservableObject {
         finishAlertLastKind = finishAlert?.lastSendKind
         sessionAlertsOffline = finishAlert?.connectivityOffline ?? false
         finishAlertMinimumRunSeconds = finishAlert?.minimumRunSeconds ?? FinishAlertTuning.minimumRunSeconds
+        // F3 stage 1 mirrors. Stored state only — reading the snapshot never
+        // checks the iCloud account and never sends.
+        let phone = phoneTransport?.phoneSnapshot
+        phoneTransportEnabled = phone?.enabled ?? false
+        phoneTransportAvailable = phone?.available ?? false
+        phoneLastOutcome = phone?.lastOutcome
+        phoneLastOutcomeAt = phone?.lastOutcomeAt
     }
 
     // MARK: Actions (forwarded)
@@ -297,6 +320,13 @@ final class MenuStateModel: ObservableObject {
     // MARK: Track C action (forwarded — same rule as the lid toggle)
 
     func setFinishAlertEnabled(_ enabled: Bool) { requestFinishAlertToggle?(enabled) }
+
+    // MARK: F3 stage 1 action — a stored toggle; no AppKit flow, no send
+
+    func setPhoneTransportEnabled(_ enabled: Bool) {
+        phoneTransport?.setPhoneTransportEnabled(enabled)
+        refresh()
+    }
 
     // MARK: Panel-only actions (pure UI state — never dismiss the menu)
 
@@ -385,6 +415,14 @@ final class MenuStateModel: ObservableObject {
                                  at: finishAlertLastOutcomeAt, now: now)
     }
 
+    /// F3 stage 1: the phone transport's Details line (nil while the toggle
+    /// is off — nothing to report — or without the composite).
+    func phoneAlertStatus(now: Double) -> PanelLine? {
+        guard phoneTransportVisible else { return nil }
+        return Self.phoneAlertLine(enabled: phoneTransportEnabled, available: phoneTransportAvailable,
+                                   outcome: phoneLastOutcome, at: phoneLastOutcomeAt, now: now)
+    }
+
     /// Badge on the collapsed "Details" row: the worst severity among the
     /// items whose home or fix lives in Details (the problems themselves are
     /// already shown at top level — the badge says where the setting is).
@@ -414,6 +452,12 @@ final class MenuStateModel: ObservableObject {
                 ? .nominal : finishAlertStatusWithoutOffline.severity
             severities += [sessionWithoutThePause,
                            Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
+        }
+        // F3 stage 1: the phone toggle and its line live in the same group.
+        if phoneTransportVisible {
+            severities.append(Self.phoneAlertSeverity(enabled: phoneTransportEnabled,
+                                                      available: phoneTransportAvailable,
+                                                      outcome: phoneLastOutcome, at: phoneLastOutcomeAt))
         }
         return Self.detailsBadge(severities)
     }
@@ -1034,6 +1078,75 @@ final class MenuStateModel: ObservableObject {
         case .needsAttention?: return " (waiting)"
         case .connectionRestored?: return " (connection restored)"
         case .lidAlert?, .test?, nil: return ""
+        }
+    }
+
+    // MARK: - F3 stage 1 (phone transport) presentation
+
+    /// The Details checkbox's title.
+    nonisolated static let phoneTransportToggleTitle = "Phone alerts (beta)"
+
+    /// Its tooltip / VoiceOver hint: what switching it on changes.
+    nonisolated static let phoneTransportToggleHint =
+        "Sends alerts to the NapCat iPhone app through your iCloud first; ntfy stays the fallback."
+
+    /// The ONE phone-transport line, from a CLOSED vocabulary: the toggle,
+    /// this build's entitlement, and the last CloudKit attempt's outcome
+    /// category + age — never a record, a body or an address. The failure
+    /// detail is one of `CloudKitMessageSender`'s fixed sentences.
+    /// - off → nil (no line at all);
+    /// - on in a build without the iCloud entitlement → info: it is on but
+    ///   cannot work, so it escapes Details;
+    /// - none yet / accepted → nominal ("accepted by iCloud" is the honest
+    ///   ceiling, like "accepted by ntfy": the push to the phone is async);
+    /// - unconfirmed → warning (it may have landed; ntfy was NOT used — the
+    ///   double-buzz rule);
+    /// - failed → warning (nothing was saved; ntfy carried the alert instead).
+    nonisolated static func phoneAlertLine(
+        enabled: Bool,
+        available: Bool,
+        outcome: MessageSendOutcome?,
+        at: Double?,
+        now: Double
+    ) -> PanelLine? {
+        guard enabled else { return nil }
+        let severity = phoneAlertSeverity(enabled: enabled, available: available, outcome: outcome, at: at)
+        guard available else {
+            return PanelLine(text: "Phone alerts: unavailable in this build — it is not signed for iCloud, "
+                                + "so alerts go to ntfy", severity: severity)
+        }
+        guard let outcome, let at else {
+            return PanelLine(text: "Phone alert: none since NapCat started", severity: severity)
+        }
+        let when = ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - at)))
+        switch outcome {
+        case .accepted:
+            return PanelLine(text: "Phone alert: accepted by iCloud \(when)", severity: severity)
+        case .timedOutUnconfirmed:
+            return PanelLine(text: "Phone alert: unconfirmed \(when) — it may still reach your phone",
+                             severity: severity)
+        case .sendFailed(let detail):
+            return PanelLine(text: "Phone alert: failed \(when) — \(detail); ntfy was used instead",
+                             severity: severity)
+        case .rejected:
+            return PanelLine(text: "Phone alert: refused by iCloud \(when)", severity: severity)
+        }
+    }
+
+    /// The line's severity alone (it does not depend on the clock), for the
+    /// Details badge.
+    nonisolated static func phoneAlertSeverity(
+        enabled: Bool,
+        available: Bool,
+        outcome: MessageSendOutcome?,
+        at: Double?
+    ) -> PanelSeverity {
+        guard enabled else { return .nominal }
+        guard available else { return .info }
+        guard at != nil else { return .nominal }
+        switch outcome {
+        case nil, .accepted?: return .nominal
+        case .timedOutUnconfirmed?, .sendFailed?, .rejected?: return .warning
         }
     }
 

@@ -788,6 +788,18 @@ struct MenuPanelPresentationTests {
                 lines.append(line)
             }
         }
+        // F3 stage 1: the phone transport line (toggle on; off is no line),
+        // entitled or not × every outcome × with / without a timestamp.
+        for available in [false, true] {
+            for outcome in everyOutcome {
+                for at: Double? in [nil, 999_880] {
+                    if let line = MenuStateModel.phoneAlertLine(enabled: true, available: available,
+                                                                outcome: outcome, at: at, now: 1_000_000) {
+                        lines.append(line)
+                    }
+                }
+            }
+        }
         // The Claude status is NOT a Details line: it is the footer
         // disclosure's own text, always visible (`claudeFooterLabelTable`).
         return lines
@@ -798,8 +810,9 @@ struct MenuPanelPresentationTests {
         // 32 hook (H1: 8 liveness inputs × 4 alert-toggle states) + 5 topic
         // + 6 server + 10 last-send + 30 last-session-alert + 2 login captions
         // + 1 holding-awake + 2 lock-screen + 9 hook-version (S7: 10 rows, one
-        // of which — no stamp, no dir — is no line).
-        #expect(lines.count == 97, "vacuity guard — update when the input set changes")
+        // of which — no stamp, no dir — is no line) + 20 phone transport (F3:
+        // 2 entitlement states × 5 outcomes × 2 timestamps).
+        #expect(lines.count == 117, "vacuity guard — update when the input set changes")
         var surfaced = 0
         var quietHook = 0
         for line in lines {
