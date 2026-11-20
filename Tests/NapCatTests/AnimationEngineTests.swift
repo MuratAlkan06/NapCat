@@ -34,8 +34,8 @@ struct AnimationMappingTests {
             expectedSet: .sit, expectedFPS: 1,
             rationale: "charge paused at limit → sit @1fps"),
         Row(stayAwakeOn: false, chargePaused: false, screenAwake: true,
-            expectedSet: .idle, expectedFPS: 2,
-            rationale: "idle → hand-drawn 17-frame groom→sit cycle @2fps (initial cadence, 2026-11-19)"),
+            expectedSet: .idle, expectedFPS: 3,
+            rationale: "idle → hand-drawn 17-frame groom→sit cycle @3fps (user pick, 2026-11-19)"),
         Row(stayAwakeOn: true, chargePaused: true, screenAwake: false,
             expectedSet: nil, expectedFPS: nil,
             rationale: "screens asleep → timer stopped regardless of app state"),
@@ -84,7 +84,35 @@ struct AnimationMappingTests {
         let idle = AnimationEngine.frameSet(stayAwakeOn: false, chargePaused: false, screenAwake: true)
         #expect(idle?.set == .idle)
         #expect(idle?.fps == AnimationEngine.idleFPS)
-        #expect(AnimationEngine.idleFPS == 2.0, "initial cadence; change only by user pick from previews")
+        #expect(AnimationEngine.idleFPS == 3.0, "user pick from previews (2026-11-19): continuous 3 fps")
+    }
+
+    /// run/sit play their frames straight through; idle plays all 17 forward,
+    /// then the reversed every-second-frame paw raise (15 → 5) before it wraps
+    /// to the paw-lick at frame 0 — the seam fix (user ruling 2026-11-19).
+    @Test func playbackSequencesArePinned() {
+        #expect(FrameSet.run.playbackSequence == [0, 1, 2, 3, 4])
+        #expect(FrameSet.sit.playbackSequence == [0, 1])
+        #expect(FrameSet.idle.playbackSequence == Array(0...16) + [15, 13, 11, 9, 7, 5])
+    }
+
+    /// Every sequence is a valid, continuous loop: it starts at asset 0,
+    /// shows every asset of its set, references only existing assets, and
+    /// never shows the same asset twice in a row — including across the wrap
+    /// (a repeat would read as a stall in a continuous loop).
+    @Test(arguments: FrameSet.allCases)
+    func playbackSequenceIsAValidContinuousLoop(set: FrameSet) throws {
+        let sequence = set.playbackSequence
+        let first = try #require(sequence.first, "\(set): empty playback sequence")
+        #expect(first == 0, "\(set): every set starts at asset 0")
+        #expect(sequence.allSatisfy { (0..<set.frameCount).contains($0) }, "\(set): index out of range")
+        #expect(Set(sequence) == Set(0..<set.frameCount), "\(set): every asset must be shown")
+        if sequence.count > 1 {
+            for (index, asset) in sequence.enumerated() {
+                let next = sequence[(index + 1) % sequence.count]
+                #expect(asset != next, "\(set): asset \(asset) repeats at sequence position \(index)")
+            }
+        }
     }
 
     // MARK: - Pure restart decision
@@ -130,19 +158,25 @@ struct AnimationEngineBehaviorTests {
         #expect(recorder.events.first?.index == 0)
     }
 
-    /// The idle cycle is a STRAIGHT loop: every tick shows the next of the 17
-    /// frames in export order, and frame 16 (upright sit) wraps straight back
-    /// to frame 0 (paw-lick) — no hold, no periodic play.
-    @Test func idleCycleLoopsThroughAllSeventeenFramesInOrder() {
+    /// The idle cycle is a CONTINUOUS loop of its playback sequence: every
+    /// tick shows the next sequence entry (onFrame reports the ASSET index),
+    /// and the last entry wraps back to the sequence start — no hold, no
+    /// periodic play. The upright sit (asset 16) is never followed directly
+    /// by the paw-lick (asset 0): the reversed paw raise plays between them.
+    @Test func idleCycleWalksThePlaybackSequenceAndWraps() {
         let (engine, recorder) = makeEngine()
         engine.setAppState(stayAwakeOn: false, chargePaused: false)
-        #expect(FrameSet.idle.frameCount == 17)
-        for _ in 0..<(2 * 17) { engine.tick() }
-        let oneCycle = Array(0..<17)
-        #expect(recorder.events.map(\.index) == oneCycle + oneCycle + [0])
+        let oneCycle = FrameSet.idle.playbackSequence
+        #expect(oneCycle.count == 23)
+        for _ in 0..<(2 * oneCycle.count) { engine.tick() }
+        let shown = recorder.events.map(\.index)
+        #expect(shown == oneCycle + oneCycle + [oneCycle[0]])
         #expect(recorder.events.allSatisfy { $0.set == .idle })
-        #expect(engine.tickCount == 34)
+        #expect(engine.tickCount == 46)
+        #expect(engine.sequencePosition == 0)
         #expect(engine.frameIndex == 0)
+        #expect(!zip(shown, shown.dropFirst()).contains { $0 == 16 && $1 == 0 },
+            "the sit → paw-lick seam must go through the return transition")
     }
 
     @Test func tickAdvancesAndWrapsTheFrameIndex() {
@@ -316,6 +350,40 @@ struct FrameAssetTests {
         }
         #expect(bottom > top,
             "\(name): seated cat must be bottom-heavy (seated base below, ears above) — top=\(top) bottom=\(bottom). top-heavy means the pipeline flipped it vertically.")
+    }
+
+    /// SEAM GUARD (user ruling 2026-11-19: the loop "teleports back to the
+    /// starting position"). Walking the idle playback sequence — wrap
+    /// included — no step may change as much of the silhouette as the old
+    /// direct jump from the upright sit (last frame) to the paw-lick (frame 0)
+    /// did. Measured as the summed alpha difference of consecutive frames at
+    /// each resolution; relative to the art itself, so no tuned threshold.
+    @Test(arguments: ["", "@2x"])
+    func idleLoopHasNoStepAsLargeAsTheOldSeamJump(suffix: String) throws {
+        var masks: [[Int]] = []
+        for name in FrameSet.idle.frameNames {
+            let file = "\(name)\(suffix).png"
+            let url = Self.framesDirectory.appendingPathComponent(file)
+            let data = try #require(try? Data(contentsOf: url), "missing \(file)")
+            let rep = try #require(NSBitmapImageRep(data: data), "\(file): undecodable")
+            var mask: [Int] = []
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    mask.append(Int(((rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) * 255).rounded()))
+                }
+            }
+            masks.append(mask)
+        }
+        func distance(_ a: Int, _ b: Int) -> Int {
+            zip(masks[a], masks[b]).reduce(0) { $0 + abs($1.0 - $1.1) }
+        }
+        let oldSeam = distance(FrameSet.idle.frameCount - 1, 0)
+        let sequence = FrameSet.idle.playbackSequence
+        for (position, asset) in sequence.enumerated() {
+            let next = sequence[(position + 1) % sequence.count]
+            #expect(distance(asset, next) < oldSeam,
+                "idle\(suffix): step \(asset)→\(next) at sequence position \(position) is as large as the old sit→lick jump (\(oldSeam))")
+        }
     }
 
     /// The directory contains exactly the 48 expected PNGs — no stale

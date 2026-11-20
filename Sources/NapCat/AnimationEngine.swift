@@ -35,31 +35,48 @@ enum FrameSet: String, CaseIterable, Sendable {
     var frameNames: [String] {
         (0..<frameCount).map { "\(rawValue)\($0)" }
     }
+
+    /// The order the engine shows this set's frames in, as ASSET indices into
+    /// `frameNames` (an asset may appear more than once, never twice in a
+    /// row); the engine loops it. run/sit play their frames straight through.
+    /// idle plays the 17 frames forward (paw-lick 0–4, paw lowers 5–11,
+    /// settles into the sit 12–16), then a RETURN
+    /// TRANSITION of existing lowering frames in reverse, every second one —
+    /// the cat raises its paw quicker than it lowered it — so the wrap back to
+    /// the paw-lick no longer jumps straight from the upright sit (user ruling
+    /// 2026-11-19: no new art).
+    var playbackSequence: [Int] {
+        switch self {
+        case .run, .sit: return Array(0..<frameCount)
+        case .idle: return Array(0..<frameCount) + [15, 13, 11, 9, 7, 5]
+        }
+    }
 }
 
 /// Drives the animated status-item icon: a pure state → (frame set, fps)
-/// mapping plus a main-runloop timer that advances the frame index and
-/// reports each frame through `onFrame` (PLAN.md ADR §10).
+/// mapping plus a main-runloop timer that walks the set's `playbackSequence`
+/// and reports each frame's asset index through `onFrame` (PLAN.md ADR §10).
 ///
 /// Locked mapping (user decision 2026-07-09; idle amended 2026-11-19):
 ///   stay-awake ON            → run  @ 10 fps
 ///   else charging paused     → sit  @  1 fps
-///   else                     → idle @ `idleFPS` (2 fps)
+///   else                     → idle @ `idleFPS` (3 fps)
 ///   screens asleep           → nil  (timer stopped)
 ///
 /// Idle is the user's hand-drawn 17-frame groom→sit cycle (it replaced the
-/// static grooming-cat "sleep" still, user ruling 2026-11-19), played as a
-/// straight loop at `idleFPS`.
+/// static grooming-cat "sleep" still, user ruling 2026-11-19), looped
+/// continuously at `idleFPS`: forward through the 17 frames, then the
+/// reversed paw-raise return transition (`FrameSet.playbackSequence`).
 ///
 /// PRIORITY: stay-awake beats charge-paused — while both are true the cat
 /// runs, because running signals "an awake purpose is active"; the sit pose
 /// returns as soon as stay-awake turns off while the pause holds.
 ///
-/// The timer restarts cleanly on any state change (frame index reset to 0);
-/// a no-op state update never resets the phase. `tickCount` is cumulative
-/// and is logged when the screens sleep and when the animation resumes, so
-/// the morning `pmset displaysleepnow` check can prove the timer stopped
-/// (identical counts across the dark window).
+/// The timer restarts cleanly on any state change (sequence position and
+/// frame index reset to 0); a no-op state update never resets the phase.
+/// `tickCount` is cumulative and is logged when the screens sleep and when
+/// the animation resumes, so the morning `pmset displaysleepnow` check can
+/// prove the timer stopped (identical counts across the dark window).
 @MainActor
 final class AnimationEngine: NSObject {
     private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "animation")
@@ -76,12 +93,19 @@ final class AnimationEngine: NSObject {
     /// nil while the animation is stopped (screens asleep).
     private(set) var currentSet: FrameSet?
     private(set) var currentFPS: Double = 0
+    /// The ASSET index on screen (what `onFrame` last reported) — always
+    /// `sequence[sequencePosition]`.
     private(set) var frameIndex = 0
+    /// Cursor into the current set's `playbackSequence`.
+    private(set) var sequencePosition = 0
+    /// The current set's `playbackSequence`, captured when the set starts.
+    private var sequence: [Int] = []
     /// Cumulative timer fires — the hook for the display-sleep pause check.
     private(set) var tickCount = 0
 
-    /// Receives every frame to display (set + index). StatusItemController
-    /// maps this to statusItem.button?.image.
+    /// Receives every frame to display (set + ASSET index into
+    /// `frameNames`). StatusItemController maps this to
+    /// statusItem.button?.image.
     var onFrame: ((FrameSet, Int) -> Void)?
 
     var isAnimating: Bool { currentSet != nil }
@@ -99,9 +123,9 @@ final class AnimationEngine: NSObject {
     // MARK: - Pure mapping (unit-tested; the locked table above)
 
     /// Cadence of the idle groom→sit cycle — the ONE tunable for how fast the
-    /// idle cat moves (17 frames at 2 fps = an 8.5 s loop). Initial value; the
-    /// user picks the final cadence from real-size previews (2026-11-19).
-    nonisolated static let idleFPS: Double = 2.0
+    /// idle cat moves (its 23-step playback sequence at 3 fps ≈ a 7.7 s
+    /// loop). User pick from real-size previews, 2026-11-19: continuous 3 fps.
+    nonisolated static let idleFPS: Double = 3.0
 
     nonisolated static func frameSet(
         stayAwakeOn: Bool,
@@ -169,12 +193,14 @@ final class AnimationEngine: NSObject {
 
     // MARK: - Timer
 
-    /// One animation step. Called by the repeating timer; internal so tests
-    /// can advance frames without real time.
+    /// One animation step: advance the cursor through the playback sequence
+    /// (wrapping to its start) and show that asset. Called by the repeating
+    /// timer; internal so tests can advance frames without real time.
     func tick() {
         guard let set = currentSet else { return }
         tickCount += 1
-        frameIndex = (frameIndex + 1) % set.frameCount
+        sequencePosition = (sequencePosition + 1) % sequence.count
+        frameIndex = sequence[sequencePosition]
         onFrame?(set, frameIndex)
     }
 
@@ -203,8 +229,10 @@ final class AnimationEngine: NSObject {
 
         currentSet = target.set
         currentFPS = target.fps
-        frameIndex = 0
-        onFrame?(target.set, 0)
+        sequence = target.set.playbackSequence
+        sequencePosition = 0
+        frameIndex = sequence[0]
+        onFrame?(target.set, frameIndex)
 
         if schedulesTimers {
             let interval = 1.0 / target.fps
