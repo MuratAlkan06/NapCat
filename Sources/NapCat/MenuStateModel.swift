@@ -47,9 +47,11 @@ enum PanelSymbol {
     static let error = "xmark.octagon.fill"
     /// After "Sent" on the test-send button once ntfy accepted it (#67).
     static let sent = "checkmark"
+    /// The footer's Settings gear (slice W, issue #78).
+    static let settings = "gearshape"
 
     static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts, disclosure,
-                      desktop, charging, battery, info, warning, error, sent]
+                      desktop, charging, battery, info, warning, error, sent, settings]
 }
 
 /// The test-send button's phase (#67): transient view state owned by
@@ -283,6 +285,12 @@ final class MenuStateModel: ObservableObject {
     /// Track C: told after the detection pause flag flips, so the owner can
     /// re-gate the finish alert (MenuContentView).
     var onDetectionPausedChange: (() -> Void)?
+    /// Slice W: the footer gear opens the Settings window — a window, so it
+    /// goes through MenuContentView's dismissal gateway like ⌘, does.
+    var requestOpenSettings: (() -> Void)?
+    /// Slice W: Settings › Alerts' run-floor popup. MenuContentView saves it
+    /// through the ntfy editor's own save path (one clamp, only when changed).
+    var requestSessionAlertsFloorChange: ((Int) -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
@@ -381,6 +389,7 @@ final class MenuStateModel: ObservableObject {
         requestStayAwakeToggle?(desired)
     }
     func lockScreen() { requestLockScreen?() }
+    func openSettings() { requestOpenSettings?() }
     func setLimitEnabled(_ enabled: Bool) { limiter.setEnabled(enabled) }
     func setLimit(_ newLimit: Int) { limiter.setLimit(newLimit) }
     func quit() { requestQuit?() }
@@ -419,6 +428,9 @@ final class MenuStateModel: ObservableObject {
     // MARK: Track C action (forwarded — same rule as the lid toggle)
 
     func setFinishAlertEnabled(_ enabled: Bool) { requestFinishAlertToggle?(enabled) }
+
+    /// Slice W: the run floor picked in Settings › Alerts (issue #34's key).
+    func setFinishAlertMinimumRunSeconds(_ seconds: Int) { requestSessionAlertsFloorChange?(seconds) }
 
     // MARK: F3 stage 1 action — a stored toggle; no AppKit flow, no send
 
@@ -560,6 +572,64 @@ final class MenuStateModel: ObservableObject {
         return Self.detailsBadge(severities)
     }
 
+    /// Badge on the footer's Settings gear (slice W, issue #78): the worst
+    /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
+    /// is a pane of the Settings window — over the panes this wiring shows.
+    /// Same rule as the Details badge: the problems themselves are already
+    /// surfaced at top level; the badge says where their setting lives. Lines
+    /// whose home is a panel row (the charge-limit caption) are not counted:
+    /// the panel row is where they surface and where they are acted on.
+    var settingsBadge: PanelSeverity {
+        Self.detailsBadge(settingsPanes.flatMap(settingsResidentSeverities))
+    }
+
+    /// One pane's Settings-resident severities.
+    func settingsResidentSeverities(_ pane: SettingsPane) -> [PanelSeverity] {
+        switch pane {
+        case .general:
+            return Self.generalResidentSeverities(loginStatus: loginItemStatus, lockAvailable: lockScreenAvailable)
+        case .alerts:
+            return alertsResidentSeverities
+        case .claude:
+            // The hook liveness / version lines and the awake fact. The
+            // Claude status itself is the footer label, which carries its own
+            // (paused) warning — never counted, as in the Details badge.
+            guard claudeDetectionVisible else { return [] }
+            return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal]
+        }
+    }
+
+    /// Alerts: everything whose fix is the pane's Destination (the ntfy
+    /// editor, the test send) — the lid and session status lines, counted
+    /// WITHOUT the detection pause exactly as the Details badge counts them
+    /// (the footer label carries the pause), the topic and server lines —
+    /// plus the History lines and the phone transport line.
+    private var alertsResidentSeverities: [PanelSeverity] {
+        guard lidGuardVisible else { return [] }
+        let lidWithoutThePause = Self.lidAlertStatus(
+            for: lidGuardArming, lastOutcome: lidGuardLastOutcome, detectionPaused: false)
+        var severities = [lidWithoutThePause.severity, lidTopicStatus.severity, lidServerStatus.severity,
+                          Self.lidAlertLastSendSeverity(lidGuardLastOutcome, at: lidGuardLastOutcomeAt)]
+        if finishAlertVisible {
+            let sessionWithoutThePause = finishAlertDisplayState == .paused
+                ? .nominal : finishAlertStatusWithoutOffline.severity
+            severities += [sessionWithoutThePause,
+                           Self.finishAlertLastSendSeverity(finishAlertLastOutcome, at: finishAlertLastOutcomeAt)]
+        }
+        if phoneTransportVisible {
+            severities.append(Self.phoneAlertSeverity(enabled: phoneTransportEnabled, available: phoneTransportAvailable,
+                                                      outcome: phoneLastOutcome, at: phoneLastOutcomeAt))
+        }
+        return severities
+    }
+
+    /// General: the Launch at Login caption (approval / not found) and the
+    /// Lock Screen availability line.
+    nonisolated static func generalResidentSeverities(loginStatus: SMAppService.Status,
+                                                      lockAvailable: Bool) -> [PanelSeverity] {
+        [launchAtLoginCaption(for: loginStatus)?.severity ?? .nominal, lockScreenStatus(available: lockAvailable).severity]
+    }
+
     // MARK: - Pure display mappings (unit-tested)
 
     nonisolated static func percentText(_ percent: Int?) -> String {
@@ -695,6 +765,16 @@ final class MenuStateModel: ObservableObject {
     /// but has a non-obvious consequence for the lid and session alerts.
     nonisolated static let pauseDetectionCaption =
         "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
+
+    /// Settings › Claude's busy-hook pointer (slice W, issue #78): the full
+    /// installer command — exactly as the disk image's READ ME gives it — the
+    /// words around it, and the disk-image note the Setup Required alert
+    /// carries too. A fixed vocabulary: nothing here depends on state.
+    nonisolated static let claudeHookInstallIntro =
+        "Run this in Terminal from the NapCat repository, then open a new Claude session:"
+    nonisolated static let claudeHookInstallCommand = "./scripts/install-claude-busy-hook.sh"
+    nonisolated static let claudeHookInstallNote =
+        "Installed from the disk image? Clone github.com/MuratAlkan06/NapCat first."
 
     /// Hook liveness with its severity: "last seen …" is nominal. A long gap
     /// is NOT flagged — it may simply mean Claude has not been used.

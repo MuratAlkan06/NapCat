@@ -74,7 +74,7 @@ struct ClaudeDetectionStructureTests {
         let nonReaders = ["ClaudeActivityPolicy.swift", "ClaudeActivityController.swift",
                           "BusyMarkerStore.swift", "MenuStateModel.swift", "MenuPanelView.swift",
                           "MenuPanelVariants.swift", "FinishAlertPolicy.swift", "FinishAlertController.swift",
-                          "MarkerDirectoryWatcher.swift"]
+                          "MarkerDirectoryWatcher.swift"] + SettingsWindowTests.settingsFiles
         let dir = Self.sourcesDir()
         for file in nonReaders {
             let text = Self.codeOnly(try String(contentsOf: dir.appendingPathComponent(file), encoding: .utf8))

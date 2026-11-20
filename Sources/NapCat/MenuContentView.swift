@@ -52,6 +52,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// debugBattery mode.
     private let phoneTransport: CompositeMessageSender?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
+    /// The Settings window (slice W, issue #78) — built on first use, opened
+    /// by ⌘, (`showSettings(_:)`), refreshed every time it becomes key.
+    private let settingsWindow: SettingsWindowController
     /// Re-toggles are ignored while a privileged command is in flight; the
     /// completion refresh re-publishes the observed state either way.
     private var stayAwakeCommandInFlight = false
@@ -71,7 +74,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        settingsHooks: SettingsWindowHooks = .live
     ) {
         self.sleep = sleep
         self.watchdog = watchdog
@@ -98,6 +102,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
+        self.settingsWindow = SettingsWindowController(model: model, defaults: defaults, hooks: settingsHooks)
         super.init()
 
         menu.autoenablesItems = false
@@ -113,6 +118,20 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         panelItem.target = nil // responder chain → NSApplication
         panelItem.action = #selector(NSApplication.terminate(_:))
         menu.addItem(panelItem)
+
+        // ⌘, while the menu is open (slice W): a menu item can hold one key
+        // equivalent and the panel item holds ⌘Q, so ⌘, rides a HIDDEN item —
+        // never drawn, its key equivalent kept live
+        // (`allowsKeyEquivalentWhenHidden`; a plain hidden item takes no part
+        // in key matching). Outside the menu, ⌘, comes from the main menu
+        // (`AppMainMenu`); both reach `showSettings(_:)`.
+        let settingsKeyItem = NSMenuItem(title: "Settings…", action: #selector(showSettings(_:)), keyEquivalent: ",")
+        settingsKeyItem.keyEquivalentModifierMask = .command
+        settingsKeyItem.target = self
+        settingsKeyItem.isHidden = true
+        settingsKeyItem.allowsKeyEquivalentWhenHidden = true
+        menu.addItem(settingsKeyItem)
+        settingsWindow.onBecameKey = { [weak self] in self?.settingsWindowBecameKey() }
 
         // Observed-state pushes → published mirrors. A Stay Awake flip also
         // re-gates alert healing (Stay Awake ON is one of its arming inputs).
@@ -130,6 +149,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         model.requestLidGuardSettingsPrompt = { [weak self] in self?.promptForLidAlertSettings() }
         model.requestLidGuardTestSend = { [weak self] in self?.sendLidAlertTestMessage() }
         model.requestFinishAlertToggle = { [weak self] enabled in self?.toggleSessionAlerts(enabled) }
+        model.requestOpenSettings = { [weak self] in self?.showSettings(nil) }
+        model.requestSessionAlertsFloorChange = { [weak self] seconds in
+            self?.saveSessionAlertsFloor(seconds)
+            self?.model.refresh()
+        }
 
         // The lid guard's own async events (send outcome, wake) republish
         // through the same refresh path as every other controller.
@@ -449,7 +473,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Issue #34: persists the session alerts' run floor — through the
     /// policy's one clamp rule, and only when it changed, so an untouched
     /// default is never eagerly written. FinishAlertController reads the key
-    /// at every marker diff: nothing to re-arm, no restart.
+    /// at every marker diff: nothing to re-arm, no restart. Two callers: the
+    /// editor's Save, and (slice W) Settings › Alerts' popup.
     private func saveSessionAlertsFloor(_ seconds: Int) {
         let floor = FinishAlertPolicy.minimumRunSeconds(stored: seconds)
         guard floor != model.finishAlertMinimumRunSeconds else { return }
@@ -553,6 +578,34 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "OK")
         NSApp.activate()
         alert.runModal()
+    }
+
+    // MARK: - Settings window (slice W, issue #78)
+
+    /// ⌘, — from the open menu's hidden item or from the main menu. A window
+    /// is not a menu flow, so it goes through the one dismissal gateway like
+    /// the modal flows: the menu closes first (a no-op when it is not open),
+    /// then the window shows on the next runloop turn.
+    @objc func showSettings(_ sender: Any?) {
+        closeMenuThenPresent { [weak self] in self?.settingsWindow.show() }
+    }
+
+    /// The Settings window became key: the READ half of the menu-open
+    /// reconciliation (`menuWillOpen`), so every pane renders freshly
+    /// observed state — pmset, the smc helper, the limiter, the login item,
+    /// Claude detection, both alerts' arming. Panel-only steps stay with the
+    /// menu: the alert-healing flush trigger (a send attempt — focusing a
+    /// window must not touch the network), the Stay Awake turn-on reset and
+    /// the panel re-fit.
+    private func settingsWindowBecameKey() {
+        sleep.refreshObservedState()
+        power.reprobeChargeControlIfNeeded()
+        limiter.evaluate(reason: "settings window")
+        loginItem.refresh()
+        detection?.sample()
+        lidGuard?.refreshArming()
+        finishAlert?.reconcile()
+        model.refresh()
     }
 }
 
