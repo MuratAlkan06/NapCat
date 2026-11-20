@@ -10,6 +10,8 @@
   <meta name="description" content="NapCat is a tiny macOS menu bar cat that shows your Mac's power state and adds two switches macOS hides: stay awake with the lid closed, and a battery charge limit.">
   <title>NapCat: a menu bar cat for your Mac's power state</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/png" sizes="16x16" href="icon_16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icon_32x32.png">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -17,7 +19,10 @@
   <header class="hero">
     <div class="wrap">
       <p class="eyebrow">macOS 14 or later · menu bar app · MIT licensed</p>
-      <h1>NapCat</h1>
+      <div class="title">
+        <img class="app-icon" src="icon_128x128.png" width="128" height="128" alt="NapCat app icon: a cat grooming itself against a night sky">
+        <h1>NapCat</h1>
+      </div>
       <p class="lede">A tiny menu bar cat that shows your Mac's power state at a glance, and gives you two switches macOS hides.</p>
       <p class="actions">
         <a class="button" href="https://github.com/MuratAlkan06/NapCat/releases/latest">Download from GitHub Releases</a>
@@ -43,6 +48,7 @@
         <li><strong>Drag</strong> NapCat onto Applications in the window that opens.</li>
         <li><strong>Open</strong> NapCat from Applications. The cat appears in the menu bar; there is no Dock icon.</li>
       </ol>
+      <p>Releases are signed with a Developer ID and notarized by Apple, so they open with no Gatekeeper warnings.</p>
       <p class="note">No <code>.dmg</code> on the latest release yet? Build it from source instead (needs the Xcode Command Line Tools): clone the repository, run <code>make</code>, then <code>open dist/NapCat.app</code>. The <a href="https://github.com/MuratAlkan06/NapCat#install">README</a> has the details.</p>
     </section>
 
