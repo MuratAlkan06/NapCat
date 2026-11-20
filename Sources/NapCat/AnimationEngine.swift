@@ -1,30 +1,35 @@
 import AppKit
 import os
 
-/// The three pixel-art icon animations (PLAN.md ADR §10). Frame PNGs live in
-/// the app bundle under Resources/frames/ and are rendered from in-code
-/// grids by scripts/render_frames.swift (`make frames`).
+/// The icon animations (PLAN.md ADR §10). Frame PNGs live in the app bundle
+/// under Resources/frames/ and are rendered by scripts/render_frames.swift
+/// (`make frames`): run/sit from in-code grids, sleep/idle from the user's
+/// hand-drawn art.
 enum FrameSet: String, CaseIterable, Sendable {
     case run
     case sleep
+    /// The user's hand-drawn 17-frame groom→sit cycle (art/idle/).
+    case idle
     case sit
 
     var frameCount: Int {
         switch self {
         case .run: return 5
         case .sleep: return 3
+        case .idle: return 17
         case .sit: return 2
         }
     }
 
     /// Pixel height of the @1x frame PNG for this set (the @2x asset is exactly
-    /// twice this). run/sit are 18px on-grid pixel art; sleep is the processed
-    /// hand-drawn grooming cat rendered at iconPointHeight = 21px
-    /// (decision log 2026-07-11). All frames are square.
+    /// twice this). run/sit are 18px on-grid pixel art; sleep (the processed
+    /// hand-drawn grooming cat) and idle (the hand-drawn groom→sit cycle) are
+    /// rendered at iconPointHeight = 21px (decision log 2026-07-11). All
+    /// frames are square.
     var baseDimension: Int {
         switch self {
         case .run, .sit: return 18
-        case .sleep: return 21
+        case .sleep, .idle: return 21
         }
     }
 

@@ -208,9 +208,10 @@ struct FrameAssetTests {
             .appendingPathComponent("Resources/frames", isDirectory: true)
     }
 
-    /// run/sit are 18px on-grid pixel art (@2x = 36); sleep is the processed
-    /// grooming cat at iconPointHeight = 21px (@2x = 42) — see FrameSet
-    /// .baseDimension (decision log 2026-07-11).
+    /// run/sit are 18px on-grid pixel art (@2x = 36); sleep (the processed
+    /// grooming cat) and idle (the hand-drawn groom→sit cycle) are at
+    /// iconPointHeight = 21px (@2x = 42) — see FrameSet.baseDimension
+    /// (decision log 2026-07-11).
     @Test(arguments: FrameSet.allCases)
     func frameAssetsExistAsValidPNGsWithCorrectDimensions(set: FrameSet) throws {
         for name in set.frameNames {
@@ -260,18 +261,55 @@ struct FrameAssetTests {
         }
     }
 
+    /// The idle state is the user's hand-drawn 17-frame groom→sit cycle: 17
+    /// DISTINCT frames at each resolution (a duplicated or dropped export would
+    /// show as a stutter), each a real template cat — pure black + alpha
+    /// (template icons render gray as dim), non-blank, and not fully opaque
+    /// (the negative-space details and breathing margin survived the pipeline).
+    @Test(arguments: ["", "@2x"])
+    func idleFramesAreDistinctNonBlankTemplateCats(suffix: String) throws {
+        var alphaMasks: [[UInt8]] = []
+        for name in FrameSet.idle.frameNames {
+            let file = "\(name)\(suffix).png"
+            let url = Self.framesDirectory.appendingPathComponent(file)
+            let data = try #require(try? Data(contentsOf: url), "missing \(file)")
+            let rep = try #require(NSBitmapImageRep(data: data), "\(file): undecodable")
+            var mask: [UInt8] = []
+            var opaque = 0, nonBlack = 0
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    let color = try #require(rep.colorAt(x: x, y: y), "\(file): no color at (\(x), \(y))")
+                    mask.append(UInt8((color.alphaComponent * 255).rounded()))
+                    if color.alphaComponent > 0.2 { opaque += 1 }
+                    if color.redComponent != 0 || color.greenComponent != 0 || color.blueComponent != 0 {
+                        nonBlack += 1
+                    }
+                }
+            }
+            let total = rep.pixelsHigh * rep.pixelsWide
+            #expect(nonBlack == 0, "\(file): \(nonBlack) non-black pixels — template frames are pure #000 + alpha")
+            #expect(opaque > total / 6, "\(file): too few opaque pixels — frame looks blank")
+            #expect(opaque < total, "\(file): fully opaque — negative space/margin lost")
+            alphaMasks.append(mask)
+        }
+        #expect(alphaMasks.count == 17)
+        #expect(Set(alphaMasks).count == alphaMasks.count,
+            "idle\(suffix): every one of the 17 frames must differ from the others")
+    }
+
     /// ORIENTATION LOCK (regression guard, 2026-07-11). A sitting/curled cat is
     /// bottom-heavy: its seated base — haunches and folded paws — fills the lower
     /// half of the frame, while the ears and head leave the upper half sparser.
-    /// So the bottom half of the rendered sleep silhouette must hold MORE opaque
-    /// pixels than the top half. The groom pipeline decodes the source via
-    /// CoreGraphics; a stray vertical flip at that row-order boundary once
-    /// rendered the sleep cat upside down (top-heavy). A flip swaps the two
-    /// half-masses exactly, so `bottom > top` trips immediately if it returns.
-    /// Deliberately a mass-distribution check (not a pixel hash) so it stays
-    /// valid for any future seated/curled cat art — all of which are bottom-heavy.
-    @Test(arguments: ["sleep0", "sleep0@2x"])
-    func sleepFrameIsBottomHeavyNotUpsideDown(_ name: String) throws {
+    /// So the bottom half of every rendered hand-drawn silhouette must hold MORE
+    /// opaque pixels than the top half. The hand-drawn pipelines decode their
+    /// sources via CoreGraphics; a stray vertical flip at that row-order
+    /// boundary once rendered the sleep cat upside down (top-heavy). A flip
+    /// swaps the two half-masses exactly, so `bottom > top` trips immediately if
+    /// it returns. Deliberately a mass-distribution check (not a pixel hash) so
+    /// it stays valid for any seated cat art: all 17 idle frames — the paw-lick
+    /// ones included — are seated and bottom-heavy at both resolutions.
+    @Test(arguments: ["sleep0", "sleep0@2x"] + FrameSet.idle.frameNames.flatMap { [$0, "\($0)@2x"] })
+    func handDrawnFrameIsBottomHeavyNotUpsideDown(_ name: String) throws {
         let url = Self.framesDirectory.appendingPathComponent("\(name).png")
         let data = try #require(try? Data(contentsOf: url), "missing \(name).png")
         let rep = try #require(NSBitmapImageRep(data: data), "\(name): undecodable")
@@ -288,10 +326,10 @@ struct FrameAssetTests {
             }
         }
         #expect(bottom > top,
-            "\(name): sleep cat must be bottom-heavy (seated base below, ears above) — top=\(top) bottom=\(bottom). top-heavy means the groom pipeline flipped it vertically.")
+            "\(name): seated cat must be bottom-heavy (seated base below, ears above) — top=\(top) bottom=\(bottom). top-heavy means the pipeline flipped it vertically.")
     }
 
-    /// The directory contains exactly the 20 expected PNGs — no stale
+    /// The directory contains exactly the 54 expected PNGs — no stale
     /// leftovers from renamed frames.
     @Test func framesDirectoryContainsExactlyTheExpectedFiles() throws {
         let contents = try #require(
@@ -301,7 +339,7 @@ struct FrameAssetTests {
         let expected = Set(FrameSet.allCases.flatMap { set in
             set.frameNames.flatMap { ["\($0).png", "\($0)@2x.png"] }
         })
-        #expect(expected.count == 20)
+        #expect(expected.count == 54)
         #expect(pngs == expected)
     }
 
@@ -315,7 +353,7 @@ struct FrameAssetTests {
             #expect(images.count == set.frameCount)
             for image in images {
                 #expect(image.isTemplate, "menu bar frames must be template images")
-                // All frames are square (run/sit 18px, sleep 21px), so width
+                // All frames are square (run/sit 18px, sleep/idle 21px), so width
                 // == height at the render size; non-square art would scale
                 // width proportionally.
                 #expect(image.size == NSSize(

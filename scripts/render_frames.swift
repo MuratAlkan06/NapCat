@@ -18,12 +18,20 @@
 //       sleep state is a STILL image, not an animation (the user rejected the
 //       synthetic head-bob, decision log 2026-07-11). See the pipeline below.
 //
+//   idle0…idle16          — the user's hand-drawn 17-frame groom→sit cycle
+//       (art/idle/idle00…idle16.png, committed), processed into template
+//       frames at the same scale family as the groom cat: <name>.png = 21×21
+//       @1x, <name>@2x.png = 42×42 @2x (true higher-resolution render). ONE
+//       union crop for all 17 frames, so the cat never jitters. See the
+//       idle-cycle pipeline below.
+//
 // DETERMINISM: output must be byte-identical across runs so regeneration
 // keeps `git status` clean. The PNG encoder is self-contained and writes only
 // IHDR/IDAT/IEND with a stored (uncompressed) zlib stream — no timestamps, no
-// metadata chunks, no library whose compression may vary. The groom pipeline
-// is pure integer/float math over a fixed committed source, so it too is
-// reproducible (`make frames` twice → identical bytes, verified by shasum).
+// metadata chunks, no library whose compression may vary. The groom and idle
+// pipelines are pure integer/float math over fixed committed sources, so they
+// too are reproducible (`make frames` twice → identical bytes, verified by
+// shasum).
 //
 // ── run/sit design intent (ORIGINAL artwork — do not copy RunCat) ──────────
 // Drawn by hand on the 18×18 grid: chunky 2px limbs/tail, boxy square head
@@ -34,7 +42,7 @@
 //   sit — tall upright cat, tail wrapped along the ground; sit1 lifts the tip
 // (sleep is now the processed grooming cat — see the pipeline section.)
 
-import AppKit  // re-exports Foundation; CoreGraphics decodes the groom source
+import AppKit  // re-exports Foundation; CoreGraphics decodes the hand-drawn sources
 
 // MARK: - Pixel grids (single source of truth for run/sit)
 
@@ -330,34 +338,36 @@ func rasterize(grid: [String], scale: Int) -> [UInt8] {
 // rejected by the user; the upcoming 17-frame hand-drawn set will animate the
 // SIT state instead (decision log 2026-07-11).
 
-let groomSize = 640
+/// Every hand-drawn source (art/groom-source.png, art/idle/*.png) is a
+/// 640×640 export.
+let sourceSize = 640
 
-/// Decode the committed groom source into straight (un-premultiplied) RGBA,
-/// top row first. CoreGraphics decode of a fixed file is reproducible.
+/// Decode a committed hand-drawn source into straight (un-premultiplied)
+/// RGBA, top row first. CoreGraphics decode of a fixed file is reproducible.
 ///
 /// ORIENTATION: a CGBitmapContext's backing buffer is stored top-row-first
 /// (memory offset 0 = the visual TOP of the drawn image); `ctx.draw` maps the
 /// source image's top to that first row. So the buffer is already top-down and
 /// must NOT be flipped — an earlier flip here (mistaking the bottom-left user-
 /// space origin for the memory layout) rendered the sleep cat upside down.
-func decodeGroomSource(path: String) -> [UInt8] {
+func decodeSource(path: String) -> [UInt8] {
     guard let image = NSImage(contentsOfFile: path),
           let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-        fail("could not load groom source at \(path)")
+        fail("could not load source art at \(path)")
     }
-    guard cg.width == groomSize, cg.height == groomSize else {
-        fail("groom source must be \(groomSize)×\(groomSize), got \(cg.width)×\(cg.height)")
+    guard cg.width == sourceSize, cg.height == sourceSize else {
+        fail("\(path): source art must be \(sourceSize)×\(sourceSize), got \(cg.width)×\(cg.height)")
     }
-    var buf = [UInt8](repeating: 0, count: groomSize * groomSize * 4)
+    var buf = [UInt8](repeating: 0, count: sourceSize * sourceSize * 4)
     guard let ctx = CGContext(
-        data: &buf, width: groomSize, height: groomSize, bitsPerComponent: 8,
-        bytesPerRow: groomSize * 4, space: CGColorSpaceCreateDeviceRGB(),
+        data: &buf, width: sourceSize, height: sourceSize, bitsPerComponent: 8,
+        bytesPerRow: sourceSize * 4, space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     ) else { fail("could not create decode context") }
-    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: groomSize, height: groomSize))
-    // Un-premultiply so edge-pixel luma is straight (only affects the luma
-    // classification in step 1; blackening discards RGB afterward).
-    for i in 0..<(groomSize * groomSize) {
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: sourceSize, height: sourceSize))
+    // Un-premultiply so edge-pixel luma is straight (only affects luma
+    // classification/validation; blackening discards RGB afterward).
+    for i in 0..<(sourceSize * sourceSize) {
         let a = buf[i * 4 + 3]
         if a > 0 && a < 255 {
             for c in 0..<3 { buf[i * 4 + c] = UInt8(min(255, Int(buf[i * 4 + c]) * 255 / Int(a))) }
@@ -369,7 +379,7 @@ func decodeGroomSource(path: String) -> [UInt8] {
 
 /// Steps 1+2 → a black-cat alpha mask (RGB implicitly 0).
 func buildGroomSilhouette(_ px: [UInt8]) -> [UInt8] {
-    let n = groomSize
+    let n = sourceSize
     func idx(_ x: Int, _ y: Int) -> Int { y * n + x }
     func blocked(_ x: Int, _ y: Int) -> Bool { px[idx(x, y) * 4 + 3] > 40 }
     // Exterior = flood fill of {alpha ≤ 40} from the four corners (4-conn).
@@ -416,8 +426,12 @@ func buildGroomSilhouette(_ px: [UInt8]) -> [UInt8] {
     return alpha
 }
 
-func groomBBox(_ a: [UInt8]) -> (minX: Int, minY: Int, maxX: Int, maxY: Int) {
-    let n = groomSize
+typealias BBox = (minX: Int, minY: Int, maxX: Int, maxY: Int)
+
+/// Bounding box of the visible art (alpha > 10) in a sourceSize² alpha mask.
+/// An empty mask yields an inverted box (min > max); callers reject it.
+func alphaBBox(_ a: [UInt8]) -> BBox {
+    let n = sourceSize
     var minX = n, minY = n, maxX = -1, maxY = -1
     for y in 0..<n { for x in 0..<n where a[y * n + x] > 10 {
         if x < minX { minX = x }; if x > maxX { maxX = x }
@@ -426,10 +440,20 @@ func groomBBox(_ a: [UInt8]) -> (minX: Int, minY: Int, maxX: Int, maxY: Int) {
     return (minX, minY, maxX, maxY)
 }
 
+/// The centred crop square around a bounding box, padded with ~4% breathing
+/// room per side (side = longer bbox edge × 1.08).
+func paddedCropSquare(_ b: BBox) -> (ox: Double, oy: Double, side: Double) {
+    let cw = Double(b.maxX - b.minX + 1), ch = Double(b.maxY - b.minY + 1)
+    let side = max(cw, ch) * 1.08                 // +4% breathing room per side
+    let ox = Double(b.minX) - (side - cw) / 2
+    let oy = Double(b.minY) - (side - ch) / 2
+    return (ox, oy, side)
+}
+
 /// Area-average downscale of a single alpha channel from a source square
 /// [ox,oy] size `side` into `out`×`out` (fractional edge weighting).
 func downscaleAlpha(_ a: [UInt8], ox: Double, oy: Double, side: Double, out: Int) -> [UInt8] {
-    let n = groomSize
+    let n = sourceSize
     var result = [UInt8](repeating: 0, count: out * out)
     for oyi in 0..<out {
         let y0 = oy + Double(oyi) / Double(out) * side
@@ -478,12 +502,45 @@ func gammaBoostToRGBA(_ alpha: [UInt8], _ gamma: Double) -> [UInt8] {
 /// the former union bbox — the removed head-bob only ever shrank the head, so
 /// the rest pose was always the widest frame).
 func groomCropSquare(_ silhouette: [UInt8]) -> (ox: Double, oy: Double, side: Double) {
-    let b = groomBBox(silhouette)
-    let cw = Double(b.maxX - b.minX + 1), ch = Double(b.maxY - b.minY + 1)
-    let side = max(cw, ch) * 1.08                 // +4% breathing room per side
-    let ox = Double(b.minX) - (side - cw) / 2
-    let oy = Double(b.minY) - (side - ch) / 2
-    return (ox, oy, side)
+    paddedCropSquare(alphaBBox(silhouette))
+}
+
+// MARK: - Idle-cycle pipeline (idle frames from art/idle/idle00…idle16.png)
+//
+// The user's 17 hand-drawn 640×640 exports (frame order = export order:
+// 00–04 paw-lick with eyes closed, 05–11 paw lowers / eyes open, 12–16
+// upright sit) are WHITE art on transparency whose interior details — eyes,
+// mouth, paw and leg lines — are drawn as transparent HOLES. The alpha
+// channel alone therefore carries the whole drawing, and no outline/interior
+// classification is needed (unlike the dark-stroke groom source). Steps (all
+// deterministic; standing art rulings — no hard threshold, no dilation):
+//   1. Decode + validate: exactly idle00…idle16 present, each 640×640, every
+//      visible pixel LIGHT. A dark opaque stroke would be blackened into the
+//      body and silently lose its detail, so it fails the render loudly.
+//   2. Template: alpha kept exactly as drawn, RGB → 0 (pure black + alpha);
+//      the interior holes stay transparent → negative-space detail.
+//   3. ONE union bounding box across all 17 frames → centred square +4% pad
+//      per side. Every frame uses that single crop, so the cat never jitters
+//      frame to frame (only the drawn motion moves).
+//   4. Area-average downscale to 21px (@1x) and 42px (@2x) — a true 2× render.
+//   5. Gentle γ0.45 alpha boost.
+
+let idleFrameCount = 17
+
+/// Step 1+2 for one idle source → its alpha mask (RGB implicitly 0).
+func idleTemplateAlpha(_ px: [UInt8], name: String) -> [UInt8] {
+    var alpha = [UInt8](repeating: 0, count: sourceSize * sourceSize)
+    for i in 0..<(sourceSize * sourceSize) {
+        let a = px[i * 4 + 3]
+        if a > 40 {
+            let luma = 0.299 * Double(px[i * 4]) + 0.587 * Double(px[i * 4 + 1]) + 0.114 * Double(px[i * 4 + 2])
+            if luma < 128 {
+                fail("\(name): dark opaque pixel at (\(i % sourceSize), \(i / sourceSize)) — the idle pipeline expects white art whose interior details are transparent holes")
+            }
+        }
+        alpha[i] = a
+    }
+    return alpha
 }
 
 // MARK: - Resolve the repo root from the script's own path (works from any cwd)
@@ -526,7 +583,7 @@ for frame in gridFrames {
 // three sleep frames (the sleep icon is static; the head-bob was removed).
 let sleepFrameCount = 3
 let groomSourcePath = repoRoot.appendingPathComponent("art/groom-source.png").path
-let silhouette = buildGroomSilhouette(decodeGroomSource(path: groomSourcePath))
+let silhouette = buildGroomSilhouette(decodeSource(path: groomSourcePath))
 let square = groomCropSquare(silhouette)
 for (suffix, size) in [("", 21), ("@2x", 42)] {
     let alpha = downscaleAlpha(silhouette, ox: square.ox, oy: square.oy, side: square.side, out: size)
@@ -536,4 +593,31 @@ for (suffix, size) in [("", 21), ("@2x", 42)] {
     }
 }
 
-print("render_frames: \(gridFrames.count) grid + \(sleepFrameCount) sleep frames (static) -> \(outputDirectory.path)")
+// idle — the hand-drawn 17-frame groom→sit cycle at 21/42, one union crop.
+let idleSourceDirectory = repoRoot.appendingPathComponent("art/idle", isDirectory: true)
+let idleSourceNames = (0..<idleFrameCount).map { String(format: "idle%02d.png", $0) }
+let idleSourcesOnDisk = ((try? FileManager.default.contentsOfDirectory(atPath: idleSourceDirectory.path)) ?? [])
+    .filter { $0.hasSuffix(".png") }
+guard Set(idleSourcesOnDisk) == Set(idleSourceNames) else {
+    fail("art/idle must hold exactly \(idleSourceNames.first!)…\(idleSourceNames.last!), found \(idleSourcesOnDisk.sorted())")
+}
+let idleMasks = idleSourceNames.map { name in
+    idleTemplateAlpha(decodeSource(path: idleSourceDirectory.appendingPathComponent(name).path), name: name)
+}
+var idleUnion: BBox = (sourceSize, sourceSize, -1, -1)
+for (name, mask) in zip(idleSourceNames, idleMasks) {
+    let b = alphaBBox(mask)
+    guard b.minX <= b.maxX, b.minY <= b.maxY else { fail("\(name): blank frame (no visible art)") }
+    idleUnion = (min(idleUnion.minX, b.minX), min(idleUnion.minY, b.minY),
+                 max(idleUnion.maxX, b.maxX), max(idleUnion.maxY, b.maxY))
+}
+let idleSquare = paddedCropSquare(idleUnion)
+for (index, mask) in idleMasks.enumerated() {
+    for (suffix, size) in [("", 21), ("@2x", 42)] {
+        let alpha = downscaleAlpha(mask, ox: idleSquare.ox, oy: idleSquare.oy, side: idleSquare.side, out: size)
+        let data = encodePNG(width: size, height: size, rgba: gammaBoostToRGBA(alpha, 0.45))
+        write("idle\(index)\(suffix).png", data, "\(size)x\(size)")
+    }
+}
+
+print("render_frames: \(gridFrames.count) grid + \(sleepFrameCount) sleep (static) + \(idleFrameCount) idle frames -> \(outputDirectory.path)")
