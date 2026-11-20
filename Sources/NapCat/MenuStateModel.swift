@@ -590,6 +590,12 @@ final class MenuStateModel: ObservableObject {
             return Self.generalResidentSeverities(loginStatus: loginItemStatus, lockAvailable: lockScreenAvailable)
         case .alerts:
             return alertsResidentSeverities
+        case .claude:
+            // The hook liveness / version lines and the awake fact. The
+            // Claude status itself is the footer label, which carries its own
+            // (paused) warning — never counted, as in the Details badge.
+            guard claudeDetectionVisible else { return [] }
+            return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal]
         }
     }
 
@@ -759,6 +765,16 @@ final class MenuStateModel: ObservableObject {
     /// but has a non-obvious consequence for the lid and session alerts.
     nonisolated static let pauseDetectionCaption =
         "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
+
+    /// Settings › Claude's busy-hook pointer (slice W, issue #78): the full
+    /// installer command — exactly as the disk image's READ ME gives it — the
+    /// words around it, and the disk-image note the Setup Required alert
+    /// carries too. A fixed vocabulary: nothing here depends on state.
+    nonisolated static let claudeHookInstallIntro =
+        "Run this in Terminal from the NapCat repository, then open a new Claude session:"
+    nonisolated static let claudeHookInstallCommand = "./scripts/install-claude-busy-hook.sh"
+    nonisolated static let claudeHookInstallNote =
+        "Installed from the disk image? Clone github.com/MuratAlkan06/NapCat first."
 
     /// Hook liveness with its severity: "last seen …" is nominal. A long gap
     /// is NOT flagged — it may simply mean Claude has not been used.

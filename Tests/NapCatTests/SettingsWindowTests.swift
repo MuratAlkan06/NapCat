@@ -57,12 +57,12 @@ struct SettingsWindowTests {
     /// A finish-alert controller over fakes only (no watcher, no network, no
     /// marker dir), its run floor read from `defaults` like the app's.
     @MainActor
-    static func makeFinishAlert(_ lid: LidGuardHarness) -> FinishAlertController {
+    static func makeFinishAlert(_ lid: LidGuardHarness, markerDir: URL? = nil) -> FinishAlertController {
         let factory = WatcherFactory()
         let defaults = lid.defaults
         return FinishAlertController(
             store: FakeMarkerStore(),
-            markerDirURL: FileManager.default.temporaryDirectory
+            markerDirURL: markerDir ?? FileManager.default.temporaryDirectory
                 .appendingPathComponent("napcat-settings-absent-\(UUID().uuidString)"),
             config: lid.controller, sender: RecordingMessageSender(),
             makeWatcher: { factory.make($0) }, scheduler: ManualScheduler(), now: { 1_800_000_000 },
@@ -417,15 +417,131 @@ struct SettingsWindowTests {
         }
     }
 
+    // MARK: - Composition: the Claude pane
+
+    static let pauseCaption =
+        "Stops reading Claude busy markers. While paused the lid and session alerts cannot fire."
+    static let busyHookSection = SettingsSection(title: "Busy hook", rows: [
+        .hookInstall(intro: "Run this in Terminal from the NapCat repository, then open a new Claude session:",
+                     command: "./scripts/install-claude-busy-hook.sh",
+                     note: "Installed from the disk image? Clone github.com/MuratAlkan06/NapCat first."),
+    ])
+
+    struct ClaudeRow: CustomTestStringConvertible, Sendable {
+        let name: String
+        let status: PanelLine
+        let hook: PanelLine
+        let hookVersion: PanelLine?
+        let awake: PanelLine?
+        let paused: Bool
+        let detection: [SettingsRow]
+        var testDescription: String { name }
+    }
+
+    /// Running with a current hook, idle and holding awake, paused, and the
+    /// hook problems (each line at its own severity).
+    static let claudeRows: [ClaudeRow] = {
+        let running = PanelLine(text: "Claude: running", severity: .nominal)
+        let idle = PanelLine(text: "Claude: idle", severity: .nominal)
+        let paused = PanelLine(text: "Claude: paused", severity: .warning)
+        let seen = PanelLine(text: "Busy hook: last seen 1m ago", severity: .nominal)
+        let current = PanelLine(text: "Busy hook: installed copy is current", severity: .nominal)
+        let awake = PanelLine(text: "Claude is holding the Mac awake", severity: .nominal)
+        let missing = PanelLine(
+            text: "Busy hook: not installed — run install-claude-busy-hook.sh from the NapCat repository",
+            severity: .warning)
+        let outOfDate = PanelLine(text: "Busy hook: installed copy is out of date — re-run "
+                                      + "scripts/install-claude-busy-hook.sh and open a new Claude session",
+                                  severity: .warning)
+        let pause = { (isOn: Bool) in SettingsRow.pauseDetection(isOn: isOn, caption: pauseCaption) }
+        return [
+            ClaudeRow(name: "running, hook current", status: running, hook: seen, hookVersion: current, awake: nil,
+                      paused: false, detection: [.line(running), .line(seen), .line(current), pause(false)]),
+            ClaudeRow(name: "idle, holding awake", status: idle, hook: seen, hookVersion: current, awake: awake,
+                      paused: false,
+                      detection: [.line(idle), .line(seen), .line(current), .line(awake), pause(false)]),
+            ClaudeRow(name: "paused", status: paused, hook: seen, hookVersion: current, awake: nil, paused: true,
+                      detection: [.line(paused), .line(seen), .line(current), pause(true)]),
+            ClaudeRow(name: "no hook (no version line)", status: idle, hook: missing, hookVersion: nil, awake: nil,
+                      paused: false, detection: [.line(idle), .line(missing), pause(false)]),
+            ClaudeRow(name: "an out-of-date copy", status: running, hook: seen, hookVersion: outOfDate, awake: nil,
+                      paused: false, detection: [.line(running), .line(seen), .line(outOfDate), pause(false)]),
+        ]
+    }()
+
+    @Test(arguments: claudeRows)
+    func theClaudePaneComposition(row: ClaudeRow) {
+        let pane = MenuStateModel.claudePane(status: row.status, hook: row.hook, hookVersion: row.hookVersion,
+                                             awake: row.awake, paused: row.paused)
+        #expect(pane == SettingsPaneContent(sections: [
+            SettingsSection(title: "Detection", rows: row.detection), Self.busyHookSection,
+        ], footnote: nil))
+    }
+
+    /// The table's lines are the mappings' own output, and the installer
+    /// pointer is the command the disk image's READ ME gives — for a script
+    /// that exists.
+    @Test func theClaudeTableLinesAreTheMappingsOwn() throws {
+        #expect(MenuStateModel.claudeFooterLabel(inFlight: true, paused: false).text == "Claude: running")
+        #expect(MenuStateModel.claudeFooterLabel(inFlight: true, paused: true)
+                == PanelLine(text: "Claude: paused", severity: .warning))
+        #expect(MenuStateModel.claudeHookStatus(installed: false, everSeen: false, lastSeenSeconds: nil,
+                                                lidAlertEnabled: true, sessionAlertsEnabled: false).text
+                == "Busy hook: not installed — run install-claude-busy-hook.sh from the NapCat repository")
+        #expect(MenuStateModel.claudeHookVersionStatus(installedVersion: 1, expectedVersion: 2, markerDirExists: true)?
+            .text.contains("out of date") == true)
+        #expect(MenuStateModel.pauseDetectionCaption == Self.pauseCaption)
+
+        let command = MenuStateModel.claudeHookInstallCommand
+        let root = LidGuardStructureTests.repoRoot()
+        #expect(FileManager.default.isExecutableFile(atPath: root.appendingPathComponent(String(command.dropFirst(2))).path),
+                "\(command) must name the real installer")
+        let packager = try String(contentsOf: root.appendingPathComponent("scripts/make-dmg.sh"), encoding: .utf8)
+        #expect(packager.contains("    \(command)\n"), "the READ ME gives the same command")
+    }
+
+    /// Through the model: the Claude tab exists exactly with the detection
+    /// stack, and the pane is the composition of the model's own accessors.
+    @Test @MainActor func theModelComposesTheClaudePane() throws {
+        let markerDir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: markerDir) }
+        let detection = ClaudeActivityController(store: StubMarkerStore(), prober: StubProber(),
+                                                 assertions: StubAssertions(holdingAwake: true), markerDirURL: markerDir)
+        detection.sample()
+        withModel(detection: detection) { model, _ in
+            #expect(model.settingsPanes == [.general, .claude])
+            #expect(model.settingsContent(for: .claude, now: 0) == MenuStateModel.claudePane(
+                status: MenuStateModel.claudeFooterLabel(inFlight: model.claudeTaskInFlight,
+                                                         paused: model.claudeDetectionPaused),
+                hook: model.hookStatus, hookVersion: model.hookVersionStatus, awake: model.claudeAwakeLine,
+                paused: model.claudeDetectionPaused))
+            #expect(model.claudeAwakeLine != nil, "vacuity: the awake fact is shown")
+
+            // The Settings switch takes the panel's own route (the owner
+            // re-gates the finish alert on the pause notification).
+            var notified = 0
+            model.onDetectionPausedChange = { notified += 1 }
+            model.setDetectionPaused(true)
+            #expect(notified == 1 && model.claudeDetectionPaused)
+            #expect(model.claudePane.sections.first?.rows.first == .line(
+                PanelLine(text: "Claude: paused", severity: .warning)))
+            model.setDetectionPaused(false)
+        }
+    }
+
     // MARK: - The panes, their symbols, the restored pane
 
     @Test func thePanesAreLockedInToolbarOrder() {
         // Stored raw values: a rename would orphan every stored selection.
-        #expect(SettingsPane.allCases.map(\.rawValue) == ["general", "alerts"])
-        #expect(SettingsPane.allCases.map(\.title) == ["General", "Alerts"])
-        #expect(SettingsPane.allCases.map(\.symbol) == ["gearshape", "bell"])
-        #expect(MenuStateModel.settingsPanes(alertsVisible: true) == [.general, .alerts])
-        #expect(MenuStateModel.settingsPanes(alertsVisible: false) == [.general])
+        #expect(SettingsPane.allCases.map(\.rawValue) == ["general", "alerts", "claude"])
+        #expect(SettingsPane.allCases.map(\.title) == ["General", "Alerts", "Claude"])
+        #expect(SettingsPane.allCases.map(\.symbol) == ["gearshape", "bell", "terminal"])
+        #expect(MenuStateModel.settingsPanes(alertsVisible: true, claudeVisible: true) == [.general, .alerts, .claude])
+        #expect(MenuStateModel.settingsPanes(alertsVisible: false, claudeVisible: true) == [.general, .claude])
+        #expect(MenuStateModel.settingsPanes(alertsVisible: true, claudeVisible: false) == [.general, .alerts])
+        #expect(MenuStateModel.settingsPanes(alertsVisible: false, claudeVisible: false) == [.general],
+                "debugBattery wiring: General only")
         for pane in SettingsPane.allCases {
             #expect(NSImage(systemSymbolName: pane.symbol, accessibilityDescription: nil) != nil,
                     "\(pane.symbol) does not resolve")
@@ -436,6 +552,7 @@ struct SettingsWindowTests {
         ("unset", nil, SettingsPane.general),
         ("general", "general", .general),
         ("alerts", "alerts", .alerts),
+        ("claude", "claude", .claude),
         ("unknown pane", "advanced", .general),
         ("wrong case", "General", .general),
         ("not a string", 3, .general),
@@ -448,6 +565,7 @@ struct SettingsWindowTests {
         #expect(SettingsPane.restored(stored: "general", available: []) == .general)
         #expect(SettingsPane.restored(stored: "alerts", available: [.general]) == .general,
                 "a pane this wiring does not show (debugBattery mode) is never restored")
+        #expect(SettingsPane.restored(stored: "claude", available: [.general, .alerts]) == .general)
     }
 
     /// The controller opens on the stored pane; picking a pane stores it.
@@ -802,6 +920,116 @@ struct SettingsWindowTests {
         }
     }
 
+    /// THE BADGE AGREEMENT (slice W): with every pane in place the gear's
+    /// Settings-resident set is exactly the Details badge's set — the same
+    /// lines, the pause's echoes excluded the same way — so while Details
+    /// still exists (until slice P) the two badges never disagree. Every
+    /// subsystem state that can raise either one, through the model.
+    @Test @MainActor func theGearBadgeAgreesWithTheDetailsBadge() throws {
+        func detection(hook: Bool = true, version: Int?? = nil, holding: Bool = false, paused: Bool = false,
+                       _ body: (ClaudeActivityController, URL) throws -> Void) throws {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let store = StubMarkerStore(hookInstalled: hook)
+            if let version { store.installedVersion = version }
+            let controller = ClaudeActivityController(store: store, prober: StubProber(),
+                                                      assertions: StubAssertions(holdingAwake: holding), markerDirURL: dir)
+            controller.setPaused(paused)
+            controller.sample()
+            try body(controller, dir)
+        }
+        func check(_ model: MenuStateModel, _ expected: PanelSeverity, _ name: String) {
+            #expect(model.settingsPanes.count == 1 + (model.lidGuardVisible ? 1 : 0) + (model.claudeDetectionVisible ? 1 : 0))
+            #expect(model.settingsBadge == model.detailsBadge, "\(name): the badges disagree")
+            #expect(model.settingsBadge == expected, "\(name)")
+        }
+
+        withModel { model, _ in check(model, .nominal, "debugBattery wiring") }
+        let suite = "com.muratalkan.napcat.tests.settings.agree.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
+        check(MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter), .warning, "no lock API")
+
+        try detection(holding: true) { claude, _ in
+            withModel(detection: claude) { model, _ in check(model, .nominal, "healthy hook, holding awake") }
+        }
+        try detection(version: .some(ClaudeBusyConstants.hookVersion - 1)) { claude, _ in
+            withModel(detection: claude) { model, _ in check(model, .warning, "an out-of-date hook copy") }
+        }
+        try detection(version: .some(ClaudeBusyConstants.hookVersion + 1)) { claude, _ in
+            withModel(detection: claude) { model, _ in check(model, .info, "a newer hook copy") }
+        }
+        try detection(hook: false) { claude, _ in
+            withModel(detection: claude) { model, _ in check(model, .nominal, "no hook, both alerts off (H1)") }
+            withLidGuardHarness { lid in
+                lid.arm()
+                withModel(detection: claude, lidGuard: lid.controller) { model, _ in
+                    check(model, .warning, "no hook, lid alert on")
+                }
+            }
+        }
+        try detection(paused: true) { claude, markerDir in
+            withLidGuardHarness { lid in
+                lid.arm()
+                lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+                // The finish alert reads the SAME DISABLED flag (its marker
+                // dir is the detection's), so the session line is `.paused`.
+                let finish = Self.makeFinishAlert(lid, markerDir: markerDir)
+                withModel(detection: claude, lidGuard: lid.controller, finishAlert: finish) { model, _ in
+                    #expect(model.detailsLabel.severity == .warning, "vacuity: paused")
+                    #expect(model.finishAlertDisplayState == .paused && model.lidStatus.severity == .warning,
+                            "vacuity: both echoes warn at top level")
+                    check(model, .nominal, "paused — its echoes never count")
+                }
+            }
+        }
+        try detection { claude, _ in
+            withLidGuardHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { lid in
+                lid.arm()
+                lid.controller.sendTestMessage()
+                withModel(detection: claude, lidGuard: lid.controller) { model, _ in
+                    check(model, .error, "a refused lid send")
+                }
+            }
+            withLidGuardHarness { lid in
+                lid.arm()
+                let composite = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
+                                                       defaults: lid.defaults, isEntitled: { false })
+                composite.setPhoneTransportEnabled(true)
+                withModel(detection: claude, lidGuard: lid.controller, phoneTransport: composite) { model, _ in
+                    check(model, .info, "phone alerts on in an unentitled build")
+                }
+            }
+        }
+    }
+
+    /// The session lane's own problem — a refused session alert — raises
+    /// both badges alike (an error), the lid half healthy.
+    @Test @MainActor func aRefusedSessionAlertRaisesBothBadgesAlike() async throws {
+        typealias H = FinishAlertHarness
+        try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: .rejected(403))) { h in
+            h.store.put(H.s1, ts: H.t0 - 600)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.controller.lastSendOutcome == .rejected(403))
+            let suite = "com.muratalkan.napcat.tests.settings.session.\(UUID().uuidString)"
+            let lidDefaults = UserDefaults(suiteName: suite)!
+            defer { lidDefaults.removePersistentDomain(forName: suite) }
+            let lid = LidGuardHarness(defaults: lidDefaults, sender: RecordingMessageSender())
+            lid.arm()
+            lidDefaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _ in
+                #expect(model.lidStatus.severity == .nominal, "vacuity: the lid half is healthy")
+                #expect(model.settingsBadge == .error)
+                #expect(model.settingsBadge == model.detailsBadge)
+            }
+        }
+    }
+
     /// Both routes reach the window through the one dismissal gateway.
     @Test func showSettingsGoesThroughTheDismissalGateway() throws {
         let owner = try Self.code("MenuContentView.swift")
@@ -855,6 +1083,24 @@ struct SettingsWindowTests {
         }
     }
 
+    /// Every Settings control forwards to the SAME model action as its
+    /// panel twin — never a second path to a controller.
+    @Test func everySettingsControlForwardsToTheModel() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        for forward in ["set: { model.setLaunchAtLogin($0) }", "model.openLoginItemsSettings()",
+                        "set: { model.setLimitEnabled($0) }", "set: { model.setLimit(Int($0.rounded())) }",
+                        "Button(\"ntfy settings…\") { model.editLidGuardSettings() }",
+                        "SendFeedbackButton(model: model, controlSize: .regular)",
+                        "set: { model.setFinishAlertMinimumRunSeconds($0) }",
+                        "set: { model.setPhoneTransportEnabled($0) }", "set: { model.setDetectionPaused($0) }"] {
+            #expect(Self.occurrences(of: forward, in: views) == 1, "'\(forward)' — exactly one Settings control")
+        }
+        for token in ["cancelTracking", "request", "lidGuard?.", "finishAlert?.", "detection?.", "UserDefaults",
+                      "defaults."] {
+            #expect(!views.contains(token), "'\(token)' in a Settings view — controls only forward to the model")
+        }
+    }
+
     // MARK: - The iron rule: Settings never becomes a problem's only home
 
     /// Every member of MenuStateModel that yields a `PanelLine`.
@@ -881,6 +1127,11 @@ struct SettingsWindowTests {
         "lidLastSend": "SurfacedLine(line: model.lidLastSend(",
         "finishAlertLastSend": "SurfacedLine(line: model.finishAlertLastSend(",
         "phoneAlertStatus": "SurfacedLine(line: model.phoneAlertStatus(",
+        // The Claude status is the footer disclosure's own text, always shown.
+        "claudeFooterLabel": "let label = model.detailsLabel",
+        "hookStatus": "SurfacedLine(line: model.hookStatus)",
+        "hookVersionStatus": "SurfacedLine(line: model.hookVersionStatus)",
+        "claudeAwakeLine": "SurfacedLine(line: model.claudeAwakeLine)",
     ]
 
     static func settingsLineMappings() throws -> Set<String> {

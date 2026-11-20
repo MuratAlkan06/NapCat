@@ -654,9 +654,11 @@ struct MenuPanelStructureTests {
         }
     }
 
-    /// F3 (2026-10-18): the Pause detection kill switch exists ONCE, inside the
-    /// Details content — out of casual reach. (The top-level "Claude: paused"
-    /// footer label is the mapping's job, tested in MenuPanelPresentationTests.)
+    /// F3 (2026-10-18): the Pause detection kill switch exists ONCE in the
+    /// panel, inside the Details content — out of casual reach. (The
+    /// top-level "Claude: paused" footer label is the mapping's job, tested
+    /// in MenuPanelPresentationTests. Settings › Claude carries its own
+    /// switch on the same model action — SettingsWindowTests.)
     @Test func pauseDetectionToggleLivesOnlyInDetails() throws {
         let views = try Self.allViewCode()
         #expect(Self.occurrences(of: "setDetectionPaused(", in: views) == 1)

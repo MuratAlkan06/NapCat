@@ -155,6 +155,31 @@ struct SettingsRowView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        case let .pauseDetection(isOn, caption):
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Toggle("Pause detection", isOn: Binding(
+                    get: { isOn },
+                    set: { model.setDetectionPaused($0) }
+                ))
+                .toggleStyle(.switch)
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case let .hookInstall(intro, command, note):
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Text(intro)
+                    .fixedSize(horizontal: false, vertical: true)
+                // Selectable, so the command can be copied as it is.
+                Text(command)
+                    .font(.body.monospaced())
+                    .textSelection(.enabled)
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

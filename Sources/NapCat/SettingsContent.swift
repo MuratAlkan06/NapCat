@@ -13,12 +13,14 @@ import ServiceManagement
 enum SettingsPane: String, CaseIterable, Sendable {
     case general
     case alerts
+    case claude
 
     /// The toolbar label — and the window title while the pane is showing.
     var title: String {
         switch self {
         case .general: return "General"
         case .alerts: return "Alerts"
+        case .claude: return "Claude"
         }
     }
 
@@ -27,6 +29,7 @@ enum SettingsPane: String, CaseIterable, Sendable {
         switch self {
         case .general: return "gearshape"
         case .alerts: return "bell"
+        case .claude: return "terminal"
         }
     }
 
@@ -66,6 +69,11 @@ enum SettingsRow: Equatable, Sendable {
     case minimumRun(label: String, seconds: Int, choices: [Int], caption: String)
     /// The phone transport checkbox (F3 stage 1) and its hint.
     case phoneAlerts(title: String, isOn: Bool, hint: String)
+    /// The detection kill switch (F3, 2026-10-18) and what pausing costs.
+    case pauseDetection(isOn: Bool, caption: String)
+    /// Where the busy hook comes from: the full installer command, the words
+    /// around it, and the note for disk-image installs.
+    case hookInstall(intro: String, command: String, note: String)
 }
 
 /// One titled group of rows.
@@ -84,18 +92,22 @@ extension MenuStateModel {
     // MARK: Panes
 
     /// The panes this wiring can show, in toolbar order: Alerts only with the
-    /// lid guard (absent in debugBattery mode, like its panel rows).
-    nonisolated static func settingsPanes(alertsVisible: Bool) -> [SettingsPane] {
-        [.general] + (alertsVisible ? [.alerts] : [])
+    /// lid guard, Claude only with the detection stack (both absent in
+    /// debugBattery mode, like their panel rows).
+    nonisolated static func settingsPanes(alertsVisible: Bool, claudeVisible: Bool) -> [SettingsPane] {
+        [.general] + (alertsVisible ? [.alerts] : []) + (claudeVisible ? [.claude] : [])
     }
 
-    var settingsPanes: [SettingsPane] { Self.settingsPanes(alertsVisible: lidGuardVisible) }
+    var settingsPanes: [SettingsPane] {
+        Self.settingsPanes(alertsVisible: lidGuardVisible, claudeVisible: claudeDetectionVisible)
+    }
 
     /// `now` dates the History lines' relative times.
     func settingsContent(for pane: SettingsPane, now: Double) -> SettingsPaneContent {
         switch pane {
         case .general: return generalPane
         case .alerts: return alertsPane(now: now)
+        case .claude: return claudePane
         }
     }
 
@@ -177,5 +189,37 @@ extension MenuStateModel {
             ]))
         }
         return SettingsPaneContent(sections: sections, footnote: lidAlertTopicSecrecyNote)
+    }
+
+    // MARK: Claude
+
+    var claudePane: SettingsPaneContent {
+        Self.claudePane(status: Self.claudeFooterLabel(inFlight: claudeTaskInFlight, paused: claudeDetectionPaused),
+                        hook: hookStatus, hookVersion: hookVersionStatus, awake: claudeAwakeLine,
+                        paused: claudeDetectionPaused)
+    }
+
+    /// Detection (the Claude status — the footer label's own words — the
+    /// hook liveness and version lines, the holding-awake fact, then the
+    /// Pause detection switch with its cost), and the busy hook's installer
+    /// pointer with the full command.
+    nonisolated static func claudePane(
+        status: PanelLine,
+        hook: PanelLine,
+        hookVersion: PanelLine?,
+        awake: PanelLine?,
+        paused: Bool
+    ) -> SettingsPaneContent {
+        var detection: [SettingsRow] = [.line(status), .line(hook)]
+        if let hookVersion { detection.append(.line(hookVersion)) }
+        if let awake { detection.append(.line(awake)) }
+        detection.append(.pauseDetection(isOn: paused, caption: pauseDetectionCaption))
+        return SettingsPaneContent(sections: [
+            SettingsSection(title: "Detection", rows: detection),
+            SettingsSection(title: "Busy hook", rows: [
+                .hookInstall(intro: claudeHookInstallIntro, command: claudeHookInstallCommand,
+                             note: claudeHookInstallNote),
+            ]),
+        ], footnote: nil)
     }
 }
