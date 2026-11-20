@@ -516,7 +516,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         let errorCaption = NSTextField(wrappingLabelWithString:
             MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid) ?? "")
         errorCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        errorCaption.textColor = .systemRed
+        // Contrast program (canon C11, issue #48): the error's words are in
+        // the label color. systemRed text measured 3.57:1 on the light alert
+        // (target 4.5:1); the meaning rides on the words ("Nothing was
+        // saved. …"), never on color alone.
+        errorCaption.textColor = .labelColor
         let worstCaseBounds = NSRect(x: 0, y: 0, width: stackWidth, height: .greatestFiniteMagnitude)
         let errorBandHeight = ceil(errorCaption.cell?.cellSize(forBounds: worstCaseBounds).height
                                    ?? errorCaption.fittingSize.height)

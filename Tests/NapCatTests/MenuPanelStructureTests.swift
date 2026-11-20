@@ -348,6 +348,10 @@ struct MenuPanelStructureTests {
         #expect(interior.contains("Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)"),
                 "the ring holds the charge-state glyph")
         #expect(interior.contains(".font(.system(size: 12))"), "at the pre-round-2 glyph-to-ring proportion")
+        // C11 (#48): primary — the secondary glyph measured 3.78:1 on the
+        // light card.
+        #expect(interior.contains(".foregroundStyle(.primary)") && !interior.contains(".secondary"),
+                "the ring glyph is primary")
         #expect(!interior.contains("percent") && !interior.contains("Text("),
                 "the ring must not repeat the percent the headline states")
         #expect(textColumn.contains("MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent)"),
@@ -682,7 +686,8 @@ struct MenuPanelStructureTests {
             "let errorCaption = NSTextField(wrappingLabelWithString:\n"
                 + "            MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .invalid) ?? \"\")",
             "errorCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)",
-            "errorCaption.textColor = .systemRed",
+            // C11 (#48): the label color — systemRed text was 3.57:1 in light.
+            "errorCaption.textColor = .labelColor",
             "let worstCaseBounds = NSRect(x: 0, y: 0, width: stackWidth, height: .greatestFiniteMagnitude)",
             "errorCaption.cell?.cellSize(forBounds: worstCaseBounds).height",
             "let errorBandY = fieldsY + 54 + PanelMetrics.regular",
@@ -694,6 +699,7 @@ struct MenuPanelStructureTests {
         ] {
             #expect(editor.contains(token), "'\(token)' not found — the reserved error band was rewired")
         }
+        #expect(!editor.contains(".systemRed"), "C11: no red text in the editor")
         // Measured BEFORE the pass's own text replaces the worst case, and
         // added on every pass (at the method's top level, not under an `if`).
         let measured = try #require(editor.range(of: "cellSize(forBounds: worstCaseBounds)"))
@@ -1093,6 +1099,38 @@ struct MenuPanelStructureTests {
                     "'\(absolute)' outside the card's boost layer")
         }
         #expect(Self.occurrences(of: "Color.black", in: card) == 1 && Self.occurrences(of: "Color.white", in: card) == 1)
+    }
+
+    /// Contrast program (canon C11, issue #48): the severity tint lands on
+    /// ICONS only. Every `PanelSeverityTint.color(` in the panel styles the
+    /// `Image(systemName:)` right above it — the caption line's icon, the
+    /// footer status's icon, the gear's badge — and the words of a warning
+    /// or error are `.primary` (a tinted glyph measured 1.57:1 on the light
+    /// menu; fine as a redundant cue, never for the words).
+    @Test func severityTintsOnlyTheIcon() throws {
+        let views = try Self.allViewCode()
+        let lines = views.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var tinted = 0
+        for (index, line) in lines.enumerated() where line.contains("PanelSeverityTint.color(") {
+            tinted += 1
+            // Walk up the modifier chain to the view it styles.
+            let head = lines[..<index].last {
+                let trimmed = $0.trimmingCharacters(in: .whitespaces)
+                return !trimmed.isEmpty && !trimmed.hasPrefix(".")
+            } ?? ""
+            #expect(head.contains("Image(systemName:"), "a severity tint on something other than an icon: \(line)")
+        }
+        #expect(tinted == 3, "the caption icon, the footer status icon, the gear badge — got \(tinted)")
+        let source = try Self.code("MenuPanelView.swift")
+        for name in ["PanelCaptionLine", "PanelFooterStatus"] {
+            let chunk = try #require(Self.structChunk(name, in: source))
+            let flat = Self.flat(chunk)
+            #expect(flat.contains(".foregroundStyle(PanelSeverityTint.color(") && flat.contains(") Text(")
+                    && flat.contains(".text) .foregroundStyle(.primary)"),
+                    "\(name): the icon is tinted, the words stay primary")
+        }
+        #expect(!views.contains(".foregroundStyle(.orange)") && !views.contains(".foregroundStyle(.red)"),
+                "tints come from PanelSeverityTint only")
     }
 
     /// Canon C8 (slice P): exactly four text roles in the panel. `.headline`

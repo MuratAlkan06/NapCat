@@ -193,6 +193,11 @@ struct PanelGroup<Content: View>: View {
 /// One status line. Non-nominal ⇒ severity icon + text (never color alone),
 /// with the severity spoken to VoiceOver. Nominal ⇒ a plain secondary caption,
 /// rendered only when the caller shows nominal captions.
+///
+/// Contrast program (canon C11, issue #48): only the ICON carries the
+/// severity tint; the text of a warning or error stays `.primary`. A tinted
+/// glyph measured 1.57:1 against the light menu — fine for a redundant cue
+/// beside the words, never for the words themselves.
 struct PanelCaptionLine: View {
     let line: PanelLine
     var showsNominal = true
@@ -204,6 +209,7 @@ struct PanelCaptionLine: View {
                 Image(systemName: symbol)
                     .foregroundStyle(PanelSeverityTint.color(line.severity))
                 Text(line.text)
+                    .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -533,6 +539,7 @@ struct PanelFooterStatus: View {
                         Image(systemName: symbol)
                             .foregroundStyle(PanelSeverityTint.color(label.severity))
                         Text(label.text)
+                            .foregroundStyle(.primary)
                     }
                 } else {
                     Text(label.text)
@@ -709,10 +716,13 @@ struct BatteryHeader: View {
     /// already says "Battery N%", so the ring holds the charge-state glyph,
     /// never the percent — at 12pt, which keeps the glyph-to-ring proportion
     /// of the old compact header (whose 0.8 scale shrank ring and glyph alike).
+    /// Primary since the contrast program (canon C11, issue #48): the
+    /// secondary glyph was the faintest mark on the header, and on the light
+    /// card it measured 3.78:1.
     private var ringInterior: some View {
         Image(systemName: model.isCharging ? PanelSymbol.charging : PanelSymbol.battery)
             .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.primary)
     }
 }
 
