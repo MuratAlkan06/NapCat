@@ -128,6 +128,101 @@ struct PhoneTransportStructureTests {
         }).isEmpty)
     }
 
+    // MARK: - The composite: one gated construction site, injected everywhere
+
+    static let compositeFile = "CompositeMessageSender.swift"
+    static let compositeFactoryHead =
+        "static func makeIfEnabled(wrapping ntfy: (any MessageSender)?, defaults: UserDefaults) -> CompositeMessageSender? {"
+    static let appWrap = "let sender = CompositeMessageSender.makeIfEnabled(wrapping: ntfy, defaults: defaults)"
+
+    static func compositeWiringFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        // The composite and its CloudKit sender are built ONCE, in the
+        // gated factory, which bails out first when there is no ntfy sender
+        // (debugBattery mode).
+        for token in ["CompositeMessageSender(", "CloudKitMessageSender("] {
+            let sites = sources.flatMap { source in
+                Array(repeating: source.name, count: occurrences(of: token, in: source.text))
+            }
+            if sites != [compositeFile] {
+                failures.append("\(token) appears at \(sites) — expected exactly once, in \(compositeFile)")
+            }
+        }
+        let composite = sources.first { $0.name == compositeFile }?.text ?? ""
+        if let factory = body(after: compositeFactoryHead, in: composite) {
+            let statements = factory.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if statements.first != "guard let ntfy else { return nil }" {
+                failures.append("makeIfEnabled must bail out first without an ntfy sender (debugBattery mode)")
+            }
+            for token in ["CompositeMessageSender(", "CloudKitMessageSender("] where !factory.contains(token) {
+                failures.append("\(token) must be built inside makeIfEnabled")
+            }
+        } else {
+            failures.append("'\(compositeFactoryHead)' not found in \(compositeFile)")
+        }
+        // The app wraps the ONE ntfy sender and hands the composite — never
+        // the bare ntfy sender — to both features.
+        let app = sources.first { $0.name == "NapCatApp.swift" }?.text ?? ""
+        if occurrences(of: appWrap, in: app) != 1 {
+            failures.append("NapCatApp must wrap the shared ntfy sender exactly once: '\(appWrap)'")
+        }
+        if occurrences(of: "sender: sender", in: app) != 2 {
+            failures.append("the lid guard and the finish alert must both receive the composite ('sender: sender')")
+        }
+        if app.contains("sender: ntfy") || app.contains("sender: ntfySender") {
+            failures.append("a feature receives the bare ntfy sender, bypassing the composite")
+        }
+        if let wrap = app.range(of: appWrap), let lid = app.range(of: "LidGuardController.makeIfEnabled("),
+           !(wrap.upperBound < lid.lowerBound) {
+            failures.append("the composite must be built before the features that receive it")
+        }
+        return failures
+    }
+
+    @Test func theCompositeHasOneGatedSiteAndBothFeaturesGetIt() throws {
+        let sources = try Self.sources()
+        let failures = Self.compositeWiringFailures(sources)
+        #expect(failures.isEmpty, "\(failures)")
+
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("app builds a CloudKit sender", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet stray = CloudKitMessageSender()" }),
+            ("second composite", Self.mutate(sources, "LidGuardController.swift") {
+                $0 + "\nlet stray = CompositeMessageSender(ntfy: a, phone: b, defaults: d)" }),
+            ("debug gate dropped", Self.mutate(sources, Self.compositeFile) {
+                $0.replacingOccurrences(of: "guard let ntfy else { return nil }", with: "let ntfy = ntfy!") }),
+            ("lid guard gets the bare ntfy sender", Self.mutate(sources, "NapCatApp.swift") {
+                $0.replacingOccurrences(of: "sender: sender\n        )\n        self.lidGuard",
+                                        with: "sender: ntfy\n        )\n        self.lidGuard") }),
+            ("wrap removed", Self.mutate(sources, "NapCatApp.swift") {
+                $0.replacingOccurrences(of: Self.appWrap, with: "let sender = ntfy") }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.compositeWiringFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// Runtime half: in debugBattery mode there is no ntfy sender, hence no
+    /// composite and no CloudKit sender; outside it the composite exists and
+    /// building it touched nothing (the toggle is off by default, so a send
+    /// goes to the wrapped sender).
+    @Test func theCompositeIsAbsentInDebugSimulatorMode() {
+        let suite = "com.muratalkan.napcat.tests.phone.structure.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(CompositeMessageSender.makeIfEnabled(
+            wrapping: LidGuardController.makeSharedSender(debugBattery: true), defaults: defaults) == nil)
+        #expect(CompositeMessageSender.makeIfEnabled(wrapping: nil, defaults: defaults) == nil)
+
+        let wrapped = RecordingMessageSender()
+        let composite = CompositeMessageSender.makeIfEnabled(wrapping: wrapped, defaults: defaults)
+        #expect(composite != nil)
+        let destination = NtfyDestination(server: "https://ntfy.sh", topic: "napcat-phone-structure")
+        composite?.send(.test, to: destination, at: Date(timeIntervalSince1970: 0)) { _ in }
+        #expect(wrapped.sends.count == 1, "toggle off by default: the wrapped sender carries the alert")
+    }
+
     /// CloudKit is touched on the send path only: opening the menu reads
     /// stored state and never builds a store, checks the account, or saves.
     @Test func menuOpenNeverReachesCloudKit() throws {

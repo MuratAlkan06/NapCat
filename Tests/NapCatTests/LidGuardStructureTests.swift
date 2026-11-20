@@ -46,8 +46,9 @@ struct LidGuardStructureTests {
     }
 
     /// The files that make up the B2 subsystem. F3 stage 1 added the
-    /// CloudKit sender: it is a delivery file like the ntfy one, so the same
-    /// no-spawn / no-privilege / no-error-description / log rules apply to it.
+    /// CloudKit sender and the composite in front of both senders: they are
+    /// delivery files like the ntfy one, so the same no-spawn / no-privilege /
+    /// no-error-description / log rules apply to them.
     static let b2Files = [
         "LidGuardPolicy.swift",
         "LidGuardController.swift",
@@ -55,6 +56,7 @@ struct LidGuardStructureTests {
         "NtfyMessageSender.swift",
         "SystemSleepSource.swift",
         "CloudKitMessageSender.swift",
+        "CompositeMessageSender.swift",
     ]
 
     /// Files scanned by the no-topic-in-logs lint: the B2 subsystem PLUS the

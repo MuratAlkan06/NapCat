@@ -14,9 +14,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chargeLimiter: ChargeLimiter?
     private var statusItemController: StatusItemController?
     private var lidGuard: LidGuardController?
-    /// The ONE ntfy sender, shared by the lid guard and (Track C) the finish
-    /// alert. Nil in debugBattery mode.
+    /// The ONE ntfy sender. Nil in debugBattery mode.
     private var ntfySender: NtfyMessageSender?
+    /// F3 stage 1: the composite wrapping `ntfySender` — the sender the lid
+    /// guard and (Track C) the finish alert share. Phone first only when its
+    /// toggle is on in an iCloud-entitled build; otherwise exactly the ntfy
+    /// path. Nil in debugBattery mode.
+    private var alertSender: CompositeMessageSender?
     /// Track C finish alert + waiting buzz; nil in debugBattery mode. Watches
     /// the marker dir only while armed.
     private var finishAlert: FinishAlertController?
@@ -77,8 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (refreshArming below and on every menu open). The ntfy sender is
         // built ONCE behind the same gate and injected, so the lid guard and
         // the Track C finish alert share one instance (per-kind lanes inside).
-        let sender = LidGuardController.makeSharedSender(debugBattery: isDebugBattery)
-        ntfySender = sender
+        let ntfy = LidGuardController.makeSharedSender(debugBattery: isDebugBattery)
+        ntfySender = ntfy
+        // F3 stage 1: that one instance is wrapped by the composite, which is
+        // what both features get. Same gate (nil in debugBattery mode); with
+        // the phone toggle off it hands every call to `ntfy` unchanged.
+        let sender = CompositeMessageSender.makeIfEnabled(wrapping: ntfy, defaults: defaults)
+        alertSender = sender
         let lidGuard = LidGuardController.makeIfEnabled(
             debugBattery: isDebugBattery,
             defaults: defaults,
