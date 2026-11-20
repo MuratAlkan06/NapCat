@@ -68,41 +68,86 @@ enum PrivilegedCommand: CaseIterable, Sendable {
     /// Full argv actually executed: `/usr/bin/sudo -n <argv...>`.
     var sudoArgv: [String] { [Self.sudoPath, "-n"] + argv }
 
+    /// At most this many bytes are KEPT from each output stream. The
+    /// commands print one short line at most; anything past the cap is read
+    /// and discarded, never buffered.
+    static let maxCapturedOutputBytes = 4096
+
     /// Runs the command via `sudo -n`. Blocking; the privileged commands are
     /// all sub-100ms. Never prompts (`-n` + null stdin).
+    ///
+    /// stdout is captured (issue #58): the vendored smc reports failures as
+    /// an `Error: …` line on STDOUT and still exits 0, so the exit status
+    /// alone cannot tell a refused write from a real one.
     func run() -> PrivilegedCommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: Self.sudoPath)
         process.arguments = ["-n"] + argv
+        let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
+        process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         do {
             try process.run()
         } catch {
             return .commandFailed(exitStatus: -1, stderr: "failed to launch sudo: \(error.localizedDescription)")
         }
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        // Drained in turn: stdout to EOF first (the command's own output),
+        // then stderr, which only ever carries sudo's or the command's
+        // one-line message — far below a pipe buffer, so it cannot stall the
+        // child while stdout is being read.
+        let stdoutData = Self.readCapped(stdoutPipe.fileHandleForReading)
+        let stderrData = Self.readCapped(stderrPipe.fileHandleForReading)
         process.waitUntilExit()
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-        return Self.classify(exitStatus: process.terminationStatus, stderr: stderr)
+        return Self.classify(
+            exitStatus: process.terminationStatus,
+            stdout: String(decoding: stdoutData, as: UTF8.self),
+            stderr: String(decoding: stderrData, as: UTF8.self)
+        )
+    }
+
+    /// Reads `handle` to end of file, KEEPING at most `limit` leading bytes;
+    /// the rest is drained and dropped, so the child can always finish
+    /// writing and exit. A read error ends the read with what was kept.
+    static func readCapped(_ handle: FileHandle, limit: Int = maxCapturedOutputBytes) -> Data {
+        var kept = Data()
+        while let chunk = try? handle.read(upToCount: 4096), !chunk.isEmpty {
+            if kept.count < limit { kept.append(chunk.prefix(limit - kept.count)) }
+        }
+        return kept
     }
 
     /// Pure classification of a `sudo -n` outcome (unit-tested with real sudo
-    /// stderr fixtures):
-    /// - exit 0 → success
+    /// stderr fixtures and the vendored smc's stdout):
     /// - non-zero + stderr showing sudo itself refused ("a password is
     ///   required" from `-n` with no NOPASSWD rule, or "not allowed to
     ///   execute" when the rule doesn't cover the command) → sudoDenied
     ///   (setup missing/incomplete)
+    /// - a stdout line starting with `Error:` → the command failed, with
+    ///   that line as the detail — WHATEVER the exit status (smc exits 0)
+    /// - exit 0 → success
     /// - anything else → the underlying command failed
-    static func classify(exitStatus: Int32, stderr: String) -> PrivilegedCommandResult {
-        if exitStatus == 0 { return .success }
-        if stderr.contains("a password is required") || stderr.contains("not allowed to execute") {
+    static func classify(exitStatus: Int32, stdout: String, stderr: String) -> PrivilegedCommandResult {
+        if exitStatus != 0,
+           stderr.contains("a password is required") || stderr.contains("not allowed to execute") {
             return .sudoDenied
         }
+        if let line = errorLine(in: stdout) {
+            return .commandFailed(exitStatus: exitStatus, stderr: line)
+        }
+        if exitStatus == 0 { return .success }
         return .commandFailed(exitStatus: exitStatus, stderr: stderr)
+    }
+
+    /// The first output line that starts with `Error:` (leading/trailing
+    /// whitespace ignored), or nil. A value line such as
+    /// `  CHTE  [ui32]  0 (bytes 00 00 00 00)` never matches.
+    static func errorLine(in output: String) -> String? {
+        output.split(whereSeparator: \.isNewline)
+            .lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("Error:") }
     }
 }
 
@@ -110,6 +155,7 @@ enum PrivilegedCommandResult: Equatable, Sendable {
     case success
     /// `sudo -n` refused — the sudoers entry is missing (setup not run).
     case sudoDenied
-    /// sudo ran the command but the command itself failed.
+    /// sudo ran the command but the command itself failed: a non-zero exit,
+    /// or an `Error:` line on its stdout (then `stderr` carries that line).
     case commandFailed(exitStatus: Int32, stderr: String)
 }
