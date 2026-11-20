@@ -67,6 +67,29 @@ struct MenuStateModelTests {
         #expect(!model.adapterConnected)
         #expect(!model.isCharging)
     }
+
+    /// #58 end to end through the model: the charge section keeps showing
+    /// the user's SAVED toggle + limit, with the calm info caption in the
+    /// section's own caption slot (no new panel element).
+    @Test @MainActor func controlUnavailableShowsTheSavedStateWithACalmCaption() {
+        let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: DefaultsKey.limitEnabled)
+        defaults.set(85, forKey: DefaultsKey.limit)
+        let simulator = DebugPowerSimulator(batteryPercent: 95, adapterConnected: true)
+        simulator.chargeControlReadiness = .controlUnavailable
+        let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
+        limiter.start()
+        let model = MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter,
+                                   simulator: simulator)
+
+        #expect(model.featureState == .controlUnavailable)
+        #expect(model.limitEnabled && model.limit == 85, "saved intent shown as-is")
+        #expect(model.chargeLimitCaption
+                == PanelLine(text: "Charge limiting isn't available on this version of macOS.", severity: .info))
+        #expect(simulator.writeCalls.isEmpty)
+    }
     // MARK: Stay-awake toggle = P2 checkmark semantics on a SwiftUI Toggle
 
     @Test func observedEnabledRendersOn() {
@@ -134,6 +157,10 @@ struct MenuStateModelTests {
         #expect(MenuStateModel.featureMessage(for: .off) == nil)
         #expect(MenuStateModel.featureMessage(for: .notSupported)?.contains("Apple Silicon") == true)
         #expect(MenuStateModel.featureMessage(for: .setupRequired)?.contains("setup.sh") == true)
+        // #58: the exact, calm limitation sentence — no setup instruction
+        // (setup cannot help) and no error wording.
+        #expect(MenuStateModel.featureMessage(for: .controlUnavailable)
+                == "Charge limiting isn't available on this version of macOS.")
         #expect(MenuStateModel.featureMessage(for: .active)?.contains("pause") == true)
         #expect(MenuStateModel.featureMessage(for: .paused)?.contains("paused") == true)
         #expect(MenuStateModel.featureMessage(for: .error("smc exploded")) == "smc exploded",

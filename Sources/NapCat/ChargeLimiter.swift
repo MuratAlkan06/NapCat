@@ -2,7 +2,8 @@ import AppKit
 import os
 
 /// What the charge-limit UI should render (PLAN.md ADR §12 + P3b).
-/// Precedence: hidden > notSupported > setupRequired > off > error > paused/active.
+/// Precedence: hidden > notSupported > setupRequired > controlUnavailable >
+/// probe error > off > error > paused/active.
 enum ChargeLimitFeatureState: Equatable, Sendable {
     /// No battery (desktop Mac) — the section disappears entirely.
     case hidden
@@ -10,6 +11,10 @@ enum ChargeLimitFeatureState: Equatable, Sendable {
     case notSupported
     /// smc helper or sudoers entries missing — user has not run setup.sh.
     case setupRequired
+    /// This macOS exposes no charge-control key (issue #58): a calm
+    /// limitation, NOT an error — nothing failed, nothing is attempted, and
+    /// the saved limit/toggle are kept for when the keys come back.
+    case controlUnavailable
     /// Feature toggle is off.
     case off
     /// Enabled and monitoring; charging permitted.
@@ -141,7 +146,10 @@ final class ChargeLimiter: NSObject {
     // MARK: - Evaluation
 
     /// The feature acts only when it can act: battery present, Apple
-    /// Silicon, helper probed ready.
+    /// Silicon, helper probed ready. Every write path (evaluate, re-assert
+    /// tick and timer, pre-sleep, shutdown release, launch reconciliation)
+    /// is gated on this, so setupRequired / probeFailed / controlUnavailable
+    /// never execute a HysteresisEngine decision.
     private var featureOperable: Bool {
         power.hasBattery && isAppleSilicon && power.chargeControlReadiness == .ready
     }
@@ -318,6 +326,9 @@ final class ChargeLimiter: NSObject {
         guard hasBattery else { return .hidden }
         guard isAppleSilicon else { return .notSupported }
         if readiness == .setupRequired || failure == .sudoDenied { return .setupRequired }
+        // An OS limitation, like Intel's notSupported — shown even when the
+        // toggle is off; never an error (nothing was attempted).
+        if readiness == .controlUnavailable { return .controlUnavailable }
         if case .probeFailed(let message) = readiness {
             // Environment problem, like setupRequired — shown even when the
             // toggle is off so the user knows the feature cannot work.

@@ -23,6 +23,12 @@ enum ChargeControlReadiness: Equatable, Sendable {
     /// The helper exists but the key-family probe failed (message shown in
     /// the menu error state).
     case probeFailed(String)
+    /// The helper ran fine, but NEITHER key family returned data ("no data"
+    /// for CHTE and for CH0B — macOS 27.2.x, issue #58). Writes would be
+    /// silent no-ops, so none are attempted; the menu shows a calm
+    /// limitation caption, not an error. Re-probed on menu open, so the
+    /// feature resumes on its own if a later macOS exposes the keys again.
+    case controlUnavailable
 }
 
 @MainActor

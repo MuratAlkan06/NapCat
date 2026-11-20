@@ -30,8 +30,10 @@ enum SMCKeyReader {
         /// Key exists and has data; bytes normalized to lowercase hex with
         /// no separators (e.g. "01000000" for CHTE, "02" for CH0B).
         case value(bytesHex: String)
-        /// The vendored smc prints "no data" when the key does not exist on
-        /// this machine → probe falls back to the next key family (ADR §2).
+        /// The vendored smc prints "no data" when the key read returns
+        /// dataSize 0 — the key is absent on this machine, or (macOS 27.2.x,
+        /// issue #58) no longer exposed. Either way that family is unusable;
+        /// the probe tries the next one and never assumes it (ADR §2).
         case noData
         /// Helper missing, unlaunchable, non-zero exit, or unparseable
         /// output.
