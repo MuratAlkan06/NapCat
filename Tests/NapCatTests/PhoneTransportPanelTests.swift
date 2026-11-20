@@ -5,11 +5,11 @@ import AppKit
 import Testing
 @testable import NapCat
 
-/// F3 stage 1 — the panel side of the phone transport: one Details checkbox
-/// ("Phone alerts (beta)", default off) and ONE line from a closed
-/// vocabulary. Off renders nothing new and changes no badge; on-but-unusable
-/// and failed / unconfirmed attempts escape Details (the iron rule). Fakes
-/// only — no CloudKit, no network.
+/// F3 stage 1 — the panel side of the phone transport: one Settings ›
+/// Alerts checkbox ("Phone alerts (beta)", default off) and ONE line from a
+/// closed vocabulary. Off renders nothing new and changes no badge;
+/// on-but-unusable and failed / unconfirmed attempts surface in the panel
+/// (the iron rule). Fakes only — no CloudKit, no network.
 @MainActor
 struct PhoneTransportPanelTests {
     // MARK: - The pure mapping
@@ -125,7 +125,7 @@ struct PhoneTransportPanelTests {
                                                                 defaults: rig.lid.defaults),
                                          screenLock: ScreenLockController(), lidGuard: rig.lid.controller)
             #expect(!without.phoneTransportVisible && without.phoneAlertStatus(now: Self.now) == nil)
-            #expect(model.detailsBadge == without.detailsBadge)
+            #expect(model.settingsBadge == without.settingsBadge)
             #expect(model.lidStatus == without.lidStatus)
             #expect(model.lidLastSend(now: Self.now) == without.lidLastSend(now: Self.now))
             #expect(rig.probe.count == 0, "nothing is probed while the toggle is off")
@@ -141,8 +141,8 @@ struct PhoneTransportPanelTests {
             #expect(model.phoneTransportEnabled && !model.phoneTransportAvailable)
             let line = try #require(model.phoneAlertStatus(now: Self.now))
             #expect(line.severity == .info)
-            #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel)
-            #expect(model.detailsBadge == .info)
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel)
+            #expect(model.settingsBadge == .info)
             rig.lid.controller.sendTestMessage()
             #expect(rig.phone.sends.isEmpty, "unentitled: the phone transport is never asked")
         }
@@ -155,7 +155,7 @@ struct PhoneTransportPanelTests {
             model.setPhoneTransportEnabled(true)
             #expect(model.phoneAlertStatus(now: Self.now)
                     == PanelLine(text: "Phone alert: none since NapCat started", severity: .nominal))
-            #expect(MenuStateModel.placement(ofDetailsLine: .nominal) == .details)
+            #expect(MenuStateModel.placement(ofSettingsLine: .nominal) == .settings)
 
             rig.lid.controller.sendTestMessage()
             model.refresh()
@@ -163,19 +163,19 @@ struct PhoneTransportPanelTests {
             let line = try #require(model.phoneAlertStatus(now: 1_800_000_000))
             #expect(line == PanelLine(text: "Phone alert: failed just now — iCloud could not be reached; "
                                           + "ntfy was used instead", severity: .warning))
-            #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel)
-            #expect(model.detailsBadge >= .warning)
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel)
+            #expect(model.settingsBadge >= .warning)
         }
     }
 
-    @Test func anAcceptedPhoneAttemptStaysTucked() throws {
+    @Test func anAcceptedPhoneAttemptStaysInSettings() throws {
         try withRig { rig, model in
             model.setPhoneTransportEnabled(true)
             rig.lid.controller.sendTestMessage()
             model.refresh()
             let line = try #require(model.phoneAlertStatus(now: 1_800_000_000))
             #expect(line == PanelLine(text: "Phone alert: accepted by iCloud just now", severity: .nominal))
-            #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .details)
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .settings)
             model.setPhoneTransportEnabled(false)
             #expect(model.phoneAlertStatus(now: 1_800_000_000) == nil, "off again: no line")
         }

@@ -850,7 +850,7 @@ struct SettingsWindowTests {
     func theGeneralGearBadge(login: SMAppService.Status, lock: Bool, badge: PanelSeverity) {
         let severities = MenuStateModel.generalResidentSeverities(loginStatus: login, lockAvailable: lock)
         #expect(severities.count == 2)
-        #expect(MenuStateModel.detailsBadge(severities) == badge)
+        #expect(MenuStateModel.worstSeverity(severities) == badge)
     }
 
     /// Through the model: nominal at rest; an unavailable lock raises it; a
@@ -920,12 +920,39 @@ struct SettingsWindowTests {
         }
     }
 
-    /// THE BADGE AGREEMENT (slice W): with every pane in place the gear's
-    /// Settings-resident set is exactly the Details badge's set — the same
-    /// lines, the pause's echoes excluded the same way — so while Details
-    /// still exists (until slice P) the two badges never disagree. Every
-    /// subsystem state that can raise either one, through the model.
-    @Test @MainActor func theGearBadgeAgreesWithTheDetailsBadge() throws {
+    /// The gear badge's INDEPENDENT oracle — the retired Details badge's own
+    /// derivation, kept here when the disclosure left the panel (slice P):
+    /// the worst severity over every Settings-resident line read through the
+    /// model's public line accessors (the problems the panel surfaces below
+    /// its cards), plus the lid and session status lines with the pause's
+    /// echo removed — never through `settingsResidentSeverities`.
+    @MainActor static func badgeOracle(_ model: MenuStateModel, now: Double) -> PanelSeverity {
+        let lines: [PanelLine?] = [model.launchAtLoginCaption, model.lockScreenStatus]
+            + (model.claudeDetectionVisible ? [model.hookStatus, model.claudeAwakeLine, model.hookVersionStatus] : [])
+        var severities = lines.compactMap { $0?.severity }
+        if model.lidGuardVisible {
+            severities.append(MenuStateModel.lidAlertStatus(for: model.lidGuardArming, lastOutcome: model.lidGuardLastOutcome,
+                                                            detectionPaused: false).severity)
+            severities += [model.lidTopicStatus.severity, model.lidServerStatus.severity, model.lidLastSend(now: now).severity]
+        }
+        if model.finishAlertVisible {
+            let session = MenuStateModel.finishAlertStatus(
+                for: model.finishAlertDisplayState, lastOutcome: model.finishAlertLastOutcome,
+                lastOutcomeAt: model.finishAlertLastOutcomeAt, lidLastOutcome: model.lidGuardLastOutcome,
+                lidLastOutcomeAt: model.lidGuardLastOutcomeAt)
+            severities.append(model.finishAlertDisplayState == .paused ? .nominal : session.severity)
+            severities.append(model.finishAlertLastSend(now: now).severity)
+        }
+        if let phone = model.phoneAlertStatus(now: now) { severities.append(phone.severity) }
+        return severities.max() ?? .nominal
+    }
+
+    /// THE BADGE AGREEMENT (slice W, re-anchored in slice P): with every pane
+    /// in place the gear's Settings-resident set is exactly the oracle's set
+    /// — the same lines, the pause's echoes excluded the same way — so the
+    /// badge never disagrees with the problems the panel surfaces. Every
+    /// subsystem state that can raise it, through the model.
+    @Test @MainActor func theGearBadgeAgreesWithItsOracle() throws {
         func detection(hook: Bool = true, version: Int?? = nil, holding: Bool = false, paused: Bool = false,
                        _ body: (ClaudeActivityController, URL) throws -> Void) throws {
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
@@ -941,7 +968,7 @@ struct SettingsWindowTests {
         }
         func check(_ model: MenuStateModel, _ expected: PanelSeverity, _ name: String) {
             #expect(model.settingsPanes.count == 1 + (model.lidGuardVisible ? 1 : 0) + (model.claudeDetectionVisible ? 1 : 0))
-            #expect(model.settingsBadge == model.detailsBadge, "\(name): the badges disagree")
+            #expect(model.settingsBadge == Self.badgeOracle(model, now: 1_000_000), "\(name): the badge disagrees")
             #expect(model.settingsBadge == expected, "\(name)")
         }
 
@@ -979,7 +1006,7 @@ struct SettingsWindowTests {
                 // dir is the detection's), so the session line is `.paused`.
                 let finish = Self.makeFinishAlert(lid, markerDir: markerDir)
                 withModel(detection: claude, lidGuard: lid.controller, finishAlert: finish) { model, _ in
-                    #expect(model.detailsLabel.severity == .warning, "vacuity: paused")
+                    #expect(model.footerLabel?.severity == .warning, "vacuity: paused")
                     #expect(model.finishAlertDisplayState == .paused && model.lidStatus.severity == .warning,
                             "vacuity: both echoes warn at top level")
                     check(model, .nominal, "paused — its echoes never count")
@@ -1021,7 +1048,7 @@ struct SettingsWindowTests {
         }
     }
 
-    /// The session lane's own problems raise both badges alike, the lid half
+    /// The session lane's own problems raise the gear badge, the lid half
     /// healthy: a refused session alert (an error — the status line and the
     /// History line both raise it), and an UNCONFIRMED one (a warning), whose
     /// status line stays armed, so the History line is the SOLE raiser.
@@ -1029,8 +1056,8 @@ struct SettingsWindowTests {
         (MessageSendOutcome.rejected(403), PanelSeverity.error, PanelSeverity.error),
         (.timedOutUnconfirmed, .nominal, .warning),
     ])
-    @MainActor func aSessionSendProblemRaisesBothBadgesAlike(outcome: MessageSendOutcome, status: PanelSeverity,
-                                                             badge: PanelSeverity) async throws {
+    @MainActor func aSessionSendProblemRaisesTheGearBadge(outcome: MessageSendOutcome, status: PanelSeverity,
+                                                          badge: PanelSeverity) async throws {
         typealias H = FinishAlertHarness
         try await withFinishAlertHarness(sender: RecordingMessageSender(outcome: outcome)) { h in
             h.store.put(H.s1, ts: H.t0 - 600)
@@ -1051,7 +1078,7 @@ struct SettingsWindowTests {
                 #expect(model.finishAlertLastSend(now: Double(H.t0) + 120).severity == badge,
                         "vacuity: the History line")
                 #expect(model.settingsBadge == badge)
-                #expect(model.settingsBadge == model.detailsBadge)
+                #expect(model.settingsBadge == Self.badgeOracle(model, now: Double(H.t0) + 120))
             }
         }
     }
@@ -1099,7 +1126,7 @@ struct SettingsWindowTests {
     @Test func thePanesRenderTheCompositionAndNeverClassify() throws {
         let views = try Self.code(Self.settingsViewFile)
         #expect(views.contains("model.settingsContent(for: selection.pane,"))
-        for token in ["severity ==", "severity !=", ".severity", "placement(ofDetailsLine:", "SurfacedLine(",
+        for token in ["severity ==", "severity !=", ".severity", "placement(ofSettingsLine:", "SurfacedLine(",
                       "TuckedLine(", "featureState", "loginItemStatus"] {
             #expect(!views.contains(token), "'\(token)' in a Settings view — the composition decides")
         }
@@ -1153,8 +1180,8 @@ struct SettingsWindowTests {
         "lidLastSend": "SurfacedLine(line: model.lidLastSend(",
         "finishAlertLastSend": "SurfacedLine(line: model.finishAlertLastSend(",
         "phoneAlertStatus": "SurfacedLine(line: model.phoneAlertStatus(",
-        // The Claude status is the footer disclosure's own text, always shown.
-        "claudeFooterLabel": "let label = model.detailsLabel",
+        // The Claude status is the footer's own caption, always shown.
+        "claudeFooterLabel": "if let label = model.footerLabel {",
         "hookStatus": "SurfacedLine(line: model.hookStatus)",
         "hookVersionStatus": "SurfacedLine(line: model.hookVersionStatus)",
         "claudeAwakeLine": "SurfacedLine(line: model.claudeAwakeLine)",

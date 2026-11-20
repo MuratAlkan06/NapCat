@@ -6,12 +6,11 @@ import ServiceManagement
 import Testing
 @testable import NapCat
 
-/// Menu-panel redesign (2026-10-18, PLAN.md "UI Redesign — Menu Panel"): the
-/// pure mappings the panel renders — the Claude status (since the 2026-10-21
-/// declutter: the footer disclosure's text), F2 armed downgrade, severity
-/// classification, the iron rule (nothing non-nominal stays behind Details),
-/// the collapsed badge — plus the model's panel state (in-memory disclosure).
-/// The design froze on one layout the same day.
+/// Menu-panel redesign (2026-10-18, re-shaped by Panel 2.0): the pure
+/// mappings the panel renders — the Claude status (the footer's caption),
+/// F2 armed downgrade, severity classification, the iron rule (nothing
+/// non-nominal lives only in Settings), the gear badge — plus the model's
+/// panel state.
 struct MenuPanelPresentationTests {
     // MARK: - Status-as-disclosure: the footer label (2026-10-21)
 
@@ -27,10 +26,10 @@ struct MenuPanelPresentationTests {
                 == PanelLine(text: text, severity: severity))
     }
 
-    /// The footer shares its row with Quit, so its text is a SHORT
-    /// FIXED vocabulary — exactly these three strings, never anything else
-    /// (plus the plain "Details" name when detection is absent, see
-    /// `debugWiringKeepsThePlainDetailsLabel`).
+    /// The footer shares its row with the gear and Quit, so its text is a
+    /// SHORT FIXED vocabulary — exactly these three strings, never anything
+    /// else (and no caption at all when detection is absent, see
+    /// `debugWiringShowsNoClaudeStatus`).
     @Test func theFooterLabelVocabularyIsFixed() {
         var rendered = Set<String>()
         for inFlight in [false, true] {
@@ -39,17 +38,17 @@ struct MenuPanelPresentationTests {
             }
         }
         #expect(rendered == ["Claude: paused", "Claude: running", "Claude: idle"])
-        #expect(MenuStateModel.plainDetailsLabel == PanelLine(text: "Details", severity: .nominal))
-        for text in rendered.union([MenuStateModel.plainDetailsLabel.text]) {
+        for text in rendered {
             #expect(text.count <= 15, "'\(text)' is too long for the footer row")
         }
     }
 
     /// The iron rule for the Claude status: paused is non-nominal, so the
     /// footer renders it with the warning icon (and its tint, lint-locked in
-    /// MenuPanelStructureTests) — at top level, never behind Details. The old
-    /// "where to undo it" hint is gone by design: clicking the label opens
-    /// Details, where the Pause toggle explains its own consequence.
+    /// MenuPanelStructureTests) — at top level, always. The old "where to
+    /// undo it" hint is gone by design: the Pause toggle sits in Settings ›
+    /// Claude, behind the gear beside the label, and explains its own
+    /// consequence.
     @Test func thePausedLabelWarnsAtTopLevel() {
         let paused = MenuStateModel.claudeFooterLabel(inFlight: false, paused: true)
         #expect(paused.severity == .warning)
@@ -65,7 +64,7 @@ struct MenuPanelPresentationTests {
                 "the toggle itself warns about the lid-alert consequence")
     }
 
-    /// "Claude is holding the Mac awake" is a tucked Details line, present
+    /// "Claude is holding the Mac awake" is a Settings › Claude line, present
     /// ONLY while the sleep-assertion reader says so — never invented.
     @Test func theHoldingAwakeLineExistsOnlyWhileHolding() {
         #expect(MenuStateModel.claudeHoldingAwakeLine(holdingAwake: true)
@@ -73,7 +72,7 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.claudeHoldingAwakeLine(holdingAwake: false) == nil)
     }
 
-    /// Lock Screen availability as a Details › General line: nominal while
+    /// Lock Screen availability as a Settings › General line: nominal while
     /// the lock entry point resolved, the unavailable explanation as a
     /// warning (which surfaces) otherwise.
     @Test func theLockScreenStatusLine() {
@@ -81,11 +80,11 @@ struct MenuPanelPresentationTests {
         #expect(available == PanelLine(
             text: "Lock Screen: available — locks and turns the display off; the Mac keeps running",
             severity: .nominal))
-        #expect(MenuStateModel.placement(ofDetailsLine: available.severity) == .details)
+        #expect(MenuStateModel.placement(ofSettingsLine: available.severity) == .settings)
         let unavailable = MenuStateModel.lockScreenStatus(available: false)
         #expect(unavailable.severity == .warning)
         #expect(unavailable.text == MenuStateModel.lockScreenPresentation(available: false).caption)
-        #expect(MenuStateModel.placement(ofDetailsLine: unavailable.severity) == .topLevel)
+        #expect(MenuStateModel.placement(ofSettingsLine: unavailable.severity) == .topLevel)
     }
 
     // MARK: - F2: the armed line downgrades while detection is paused
@@ -145,7 +144,7 @@ struct MenuPanelPresentationTests {
             #expect(line.text.contains("cannot fire"))
             #expect(!line.text.contains("best-effort push"))
             #expect(line.severity != .nominal)
-            #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel)
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel)
         }
     }
 
@@ -154,7 +153,7 @@ struct MenuPanelPresentationTests {
     /// H1 truth table (UI audit, owner ruling 2026-11-19): every liveness
     /// class × both alert toggles. A liveness problem is a warning only while
     /// the lid alert or session alerts need the hook; with both off it is the
-    /// same text, nominal, tucked in Details. The toggles never change the text.
+    /// same text, nominal, in Settings only. The toggles never change the text.
     @Test(arguments: [(false, false), (true, false), (false, true), (true, true)])
     func hookStatusSeverity(lidAlertEnabled: Bool, sessionAlertsEnabled: Bool) {
         let problem: PanelSeverity = lidAlertEnabled || sessionAlertsEnabled ? .warning : .nominal
@@ -172,8 +171,8 @@ struct MenuPanelPresentationTests {
             #expect(line.severity == row.severity, "\(row) lid=\(lidAlertEnabled) session=\(sessionAlertsEnabled)")
             #expect(line.text == MenuStateModel.claudeHookLine(
                 installed: row.installed, everSeen: row.everSeen, lastSeenSeconds: row.lastSeen))
-            #expect(MenuStateModel.placement(ofDetailsLine: line.severity)
-                    == (row.severity == .nominal ? .details : .topLevel))
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity)
+                    == (row.severity == .nominal ? .settings : .topLevel))
         }
         #expect(MenuStateModel.claudeHookStatus(installed: true, everSeen: true, lastSeenSeconds: 65,
                                                 lidAlertEnabled: lidAlertEnabled,
@@ -220,9 +219,9 @@ struct MenuPanelPresentationTests {
                                                           markerDirExists: row.markerDirExists)
         #expect(line == row.line)
         if let line {
-            // Iron rule: only the current copy may stay tucked in Details.
-            #expect(MenuStateModel.placement(ofDetailsLine: line.severity)
-                    == (line.severity == .nominal ? .details : .topLevel))
+            // Iron rule: only the current copy may live in Settings alone.
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity)
+                    == (line.severity == .nominal ? .settings : .topLevel))
             #expect(Self.readsLikeAProblem(line.text) == (line.severity != .nominal), "\(line.text)")
         }
     }
@@ -405,7 +404,7 @@ struct MenuPanelPresentationTests {
     @Test func theOfflineWarningIsOneFixedTopLevelWarning() {
         let line = MenuStateModel.sessionAlertsOfflineLine
         #expect(line == PanelLine(text: Self.sessionAlertsOfflineText, severity: .warning))
-        #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .topLevel)
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel)
         #expect(MenuStateModel.severitySymbol(line.severity) == PanelSymbol.warning, "icon + text, never color alone")
         #expect(!line.text.contains { $0.isNumber }, "no count, minute or address in the fixed line")
         for secret in ["ntfy.sh", "https", "topic", "Topic"] {
@@ -415,8 +414,8 @@ struct MenuPanelPresentationTests {
 
     /// PLACEMENT LINT: the offline warning reaches the panel ONLY through the
     /// session-alerts slot (`model.finishAlertStatus`, rendered once, as the
-    /// Session alerts row's top-level caption above the Details tier) — no
-    /// view names the mirror or the line, Details never renders the slot,
+    /// Session alerts row's top-level caption inside the Alerts card) — no
+    /// view names the mirror or the line, no surfaced twin renders the slot,
     /// and the model's slot really applies the precedence.
     static func offlinePlacementFailures(_ sources: [(name: String, text: String)]) -> [String] {
         var failures: [String] = []
@@ -437,18 +436,16 @@ struct MenuPanelPresentationTests {
         }
         let layout = MenuPanelStructureTests.structChunk(MenuPanelStructureTests.layout,
                                                          in: sources.first { $0.name == MenuPanelStructureTests.layoutFile }?.text ?? "") ?? ""
-        if let caption = layout.range(of: "indentedCaption(model.finishAlertStatus)"),
-           let detailsDivider = layout.range(of: "Divider()", options: .backwards) {
-            if caption.lowerBound > detailsDivider.lowerBound {
-                failures.append("the slot must render above the Details tier")
-            }
-        } else {
-            failures.append("the layout must render the slot as the Session alerts row's top-level caption")
+        let alertsCard = MenuPanelStructureTests.cardBlocks(in: layout).last.map { layout[$0] } ?? ""
+        if !alertsCard.contains("indentedCaption(model.finishAlertStatus)") {
+            failures.append("the layout must render the slot as the Session alerts row's caption in the Alerts card")
         }
         let panelView = sources.first { $0.name == "MenuPanelView.swift" }?.text ?? ""
-        let details = MenuPanelStructureTests.structChunk("PanelDetailsContent", in: panelView) ?? ""
-        if details.isEmpty || details.contains("finishAlertStatus") {
-            failures.append("Details must never render the session-alerts slot")
+        for twin in ["ClaudeSurfacedLines", "LidAlertSurfacedLines", "SessionAlertsSurfacedLines", "GeneralSurfacedLines"] {
+            let chunk = MenuPanelStructureTests.structChunk(twin, in: panelView) ?? ""
+            if chunk.isEmpty || chunk.contains("finishAlertStatus") {
+                failures.append("\(twin) must never render the session-alerts slot")
+            }
         }
         let model = sources.first { $0.name == "MenuStateModel.swift" }?.text ?? ""
         if !model.contains("Self.sessionAlertsSlot(offline: sessionAlertsOffline, status: finishAlertStatusWithoutOffline)") {
@@ -463,16 +460,18 @@ struct MenuPanelPresentationTests {
         func mutate(_ name: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
             sources.map { $0.name == name ? ($0.name, transform($0.text)) : $0 }
         }
-        let detailsAnchor = "            generalGroup\n"
+        let twinAnchor = "        SurfacedLine(line: model.finishAlertLastSend(now: Date().timeIntervalSince1970))\n"
         let canaries: [(String, [(name: String, text: String)])] = [
             ("a view names the mirror", mutate("MenuPanelView.swift") {
                 $0 + "\nstruct Canary: View { @ObservedObject var model: MenuStateModel\n"
                     + "    var body: some View { if model.sessionAlertsOffline { Text(\"x\") } } }" }),
             ("a view renders the line directly", mutate("MenuPanelVariants.swift") {
                 $0 + "\nlet canary = MenuStateModel.sessionAlertsOfflineLine" }),
-            ("Details renders the slot", mutate("MenuPanelView.swift") {
-                $0.replacingOccurrences(of: detailsAnchor,
-                                        with: detailsAnchor + "            TuckedLine(line: model.finishAlertStatus)\n") }),
+            ("a surfaced twin renders the slot", mutate("MenuPanelView.swift") {
+                $0.replacingOccurrences(of: twinAnchor,
+                                        with: twinAnchor + "        SurfacedLine(line: model.finishAlertStatus)\n") }),
+            ("the slot leaves the Alerts card", mutate("MenuPanelVariants.swift") {
+                $0.replacingOccurrences(of: "indentedCaption(model.finishAlertStatus)", with: "EmptyView()") }),
             ("the slot loses its precedence", mutate("MenuStateModel.swift") {
                 $0.replacingOccurrences(
                     of: "Self.sessionAlertsSlot(offline: sessionAlertsOffline, status: finishAlertStatusWithoutOffline)",
@@ -491,7 +490,7 @@ struct MenuPanelPresentationTests {
     /// The failed-send caption tells the user to re-run the test send, so an
     /// ACCEPTED lid-lane send (that test send, or a lid alert) STRICTLY LATER
     /// than the failed session send clears the armed downgrade. Nothing else
-    /// does. The Details "Last session alert" line never changes (history).
+    /// does. The "Last session alert" History line never changes.
     struct SessionRecoveryRow: CustomTestStringConvertible, Sendable {
         let id: String
         var state: FinishAlertDisplayState = .armed
@@ -579,7 +578,7 @@ struct MenuPanelPresentationTests {
         // Same text ⇔ severity cross-check as the grammar table.
         #expect(Self.sessionDegradedPhrases.contains { line.text.contains($0) } == (line.severity != .nominal))
         #expect(line.text.contains("armed —") == (row.state == .armed && row.severity == .nominal))
-        // The Details history line takes no lid input: a refused / failed
+        // The History line takes no lid input: a refused / failed
         // session send stays an error there even once the caption recovered.
         let history = MenuStateModel.finishAlertLastSend(outcome: row.outcome, kind: Self.finishedKind,
                                                          at: row.outcomeAt, now: Self.sessionSendAt + 120)
@@ -647,7 +646,7 @@ struct MenuPanelPresentationTests {
     ]
 
     /// FA-4 (panel half): a refused (429) or failed last session send is an
-    /// error and ESCAPES Details; unconfirmed is a warning and escapes too.
+    /// error and SURFACES in the panel; unconfirmed is a warning and surfaces too.
     @Test(arguments: sessionLastSendRows)
     func sessionAlertsLastSendTable(_ row: SessionLastSendRow) {
         let line = MenuStateModel.finishAlertLastSend(outcome: row.outcome, kind: row.kind, at: row.at,
@@ -655,8 +654,8 @@ struct MenuPanelPresentationTests {
         #expect(line == PanelLine(text: row.text, severity: row.severity))
         #expect(line.text == MenuStateModel.finishAlertLastSendCaption(outcome: row.outcome, kind: row.kind,
                                                                        at: row.at, now: Self.lastSendNow))
-        #expect(MenuStateModel.placement(ofDetailsLine: line.severity)
-                == (row.severity == .nominal ? .details : .topLevel))
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity)
+                == (row.severity == .nominal ? .settings : .topLevel))
     }
 
     /// Mirrors the lid mapping exactly: same severity for every outcome, with
@@ -675,7 +674,7 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.stayAwakeCaption(forObserved: false) == nil)
         #expect(try #require(MenuStateModel.stayAwakeCaption(forObserved: nil)).severity == .warning)
 
-        // (The Lock Screen line moved to Details › General on 2026-10-21 —
+        // (The Lock Screen line became a Settings-home line —
         // `theLockScreenStatusLine`.)
 
         #expect(MenuStateModel.chargeLimitCaption(for: .hidden) == nil)
@@ -704,15 +703,15 @@ struct MenuPanelPresentationTests {
 
     // MARK: - THE IRON RULE (acceptance criterion 3)
 
-    @Test func placementKeepsOnlyNominalLinesInDetails() {
+    @Test func placementKeepsOnlyNominalLinesInSettingsAlone() {
         for severity in PanelSeverity.allCases {
-            #expect(MenuStateModel.placement(ofDetailsLine: severity) == (severity == .nominal ? .details : .topLevel))
+            #expect(MenuStateModel.placement(ofSettingsLine: severity) == (severity == .nominal ? .settings : .topLevel))
         }
     }
 
     /// Phrases that only ever describe a problem. Used to cross-check the
     /// severity mappings against the strings they classify, in BOTH directions:
-    /// a problem string must never be nominal (it would hide in Details), and a
+    /// a problem string must never be nominal (it would live only in Settings), and a
     /// nominal string must never read like a problem.
     static let problemPhrases = ["not installed", "not seen yet", "not usable", "refused", "failed",
                                  "unconfirmed", "Waiting for approval", "not found", "paused", "unavailable",
@@ -733,9 +732,9 @@ struct MenuPanelPresentationTests {
         MenuStateModel.claudeHookLine(installed: true, everSeen: false, lastSeenSeconds: nil),
     ]
 
-    /// Every line whose HOME is the Details disclosure, across every input that
-    /// can produce it. Zero non-nominal lines may stay tucked.
-    static func everyDetailsHomeLine() -> [PanelLine] {
+    /// Every line whose HOME is a Settings pane, across every input that can
+    /// produce it. Zero non-nominal lines may live there alone.
+    static func everySettingsHomeLine() -> [PanelLine] {
         var lines: [PanelLine] = []
         // H1: every liveness input × both alert toggles (8 × 4).
         for installed in [false, true] {
@@ -761,7 +760,7 @@ struct MenuPanelPresentationTests {
                 lines.append(MenuStateModel.lidAlertLastSend(outcome: outcome, at: at, now: 1_000_000))
             }
         }
-        // Track C: the last session alert lives in the same Details group.
+        // Track C: the last session alert lives in the same History group.
         for outcome in everyOutcome {
             for at: Double? in [nil, 999_880] {
                 for kind: LidGuardMessageKind? in [nil, finishedKind, waitingKind] {
@@ -774,7 +773,7 @@ struct MenuPanelPresentationTests {
             if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
         }
         // 2026-10-21 declutter: the awake fact and the Lock Screen
-        // availability became Details-home lines.
+        // availability became Settings-home lines.
         for holding in [false, true] {
             if let line = MenuStateModel.claudeHoldingAwakeLine(holdingAwake: holding) { lines.append(line) }
         }
@@ -800,13 +799,13 @@ struct MenuPanelPresentationTests {
                 }
             }
         }
-        // The Claude status is NOT a Details line: it is the footer
-        // disclosure's own text, always visible (`claudeFooterLabelTable`).
+        // The Claude status is NOT a Settings-home line: it is the footer's
+        // own caption, always visible (`claudeFooterLabelTable`).
         return lines
     }
 
-    @Test func noNonNominalLineStaysBehindTheDisclosure() {
-        let lines = Self.everyDetailsHomeLine()
+    @Test func noNonNominalLineLivesOnlyInSettings() {
+        let lines = Self.everySettingsHomeLine()
         // 32 hook (H1: 8 liveness inputs × 4 alert-toggle states) + 5 topic
         // + 6 server + 10 last-send + 30 last-session-alert + 2 login captions
         // + 1 holding-awake + 2 lock-screen + 9 hook-version (S7: 10 rows, one
@@ -817,20 +816,20 @@ struct MenuPanelPresentationTests {
         var quietHook = 0
         for line in lines {
             if line.severity == .nominal, Self.quietHookTexts.contains(line.text) {
-                // H1: nothing needs the hook, so it is a tucked fact.
+                // H1: nothing needs the hook, so it is a Settings-only fact.
                 quietHook += 1
-                #expect(MenuStateModel.placement(ofDetailsLine: line.severity) == .details)
+                #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .settings)
                 continue
             }
             let problem = Self.readsLikeAProblem(line.text)
             #expect(problem == (line.severity != .nominal),
                     "severity \(line.severity) disagrees with the text: \(line.text)")
-            let placement = MenuStateModel.placement(ofDetailsLine: line.severity)
+            let placement = MenuStateModel.placement(ofSettingsLine: line.severity)
             if problem {
                 surfaced += 1
-                #expect(placement == .topLevel, "a problem would hide behind Details: \(line.text)")
+                #expect(placement == .topLevel, "a problem would live only in Settings: \(line.text)")
             } else {
-                #expect(placement == .details)
+                #expect(placement == .settings)
             }
         }
         #expect(surfaced > 10, "vacuity guard — the input set must include problems")
@@ -850,14 +849,14 @@ struct MenuPanelPresentationTests {
         }
     }
 
-    // MARK: - Collapsed badge + icon/VoiceOver for every severity
+    // MARK: - The gear badge + icon/VoiceOver for every severity
 
-    @Test func detailsBadgeIsTheWorstSeverity() {
-        #expect(MenuStateModel.detailsBadge([]) == .nominal)
-        #expect(MenuStateModel.detailsBadge([.nominal, .nominal]) == .nominal)
-        #expect(MenuStateModel.detailsBadge([.nominal, .info]) == .info)
-        #expect(MenuStateModel.detailsBadge([.warning, .info, .nominal]) == .warning)
-        #expect(MenuStateModel.detailsBadge([.warning, .error, .nominal]) == .error)
+    @Test func theBadgeIsTheWorstSeverity() {
+        #expect(MenuStateModel.worstSeverity([]) == .nominal)
+        #expect(MenuStateModel.worstSeverity([.nominal, .nominal]) == .nominal)
+        #expect(MenuStateModel.worstSeverity([.nominal, .info]) == .info)
+        #expect(MenuStateModel.worstSeverity([.warning, .info, .nominal]) == .warning)
+        #expect(MenuStateModel.worstSeverity([.warning, .error, .nominal]) == .error)
     }
 
     /// Never color alone: every non-nominal severity has an icon AND a spoken
@@ -1158,15 +1157,15 @@ struct MenuPanelPresentationTests {
     }
 
     /// Every line the hook and alert wiring can put on the panel: the footer
-    /// label, the top-level captions and every Details-home line. (Stay
+    /// label, the top-level captions and every Settings-home line. (Stay
     /// Awake's caption reads pmset state this hermetic harness never samples;
     /// it has its own tests and does not depend on the hook.)
     @MainActor
     private static func hookAndAlertLines(_ model: MenuStateModel, now: Double) -> [PanelLine] {
-        let always = [model.detailsLabel, model.hookStatus, model.lidStatus, model.lidTopicStatus,
+        let always = [model.hookStatus, model.lidStatus, model.lidTopicStatus,
                       model.lidServerStatus, model.lidLastSend(now: now), model.finishAlertStatus,
                       model.finishAlertLastSend(now: now), model.lockScreenStatus]
-        let optional = [model.hookVersionStatus, model.claudeAwakeLine, model.launchAtLoginCaption,
+        let optional = [model.footerLabel, model.hookVersionStatus, model.claudeAwakeLine, model.launchAtLoginCaption,
                         model.chargeLimitCaption]
         return always + optional.compactMap { $0 }
     }
@@ -1177,18 +1176,18 @@ struct MenuPanelPresentationTests {
     // MARK: H1 acceptance — a fresh install opens without a hook warning
 
     /// No hook, both alerts off (someone who only wants Stay Awake or the
-    /// charge limit): the hook line keeps its text but is NOMINAL and tucked
-    /// in Details, so the panel shows no non-nominal line and no badge.
+    /// charge limit): the hook line keeps its text but is NOMINAL and lives
+    /// in Settings alone, so the panel shows no non-nominal line and no badge.
     @Test @MainActor func aFreshInstallWithBothAlertsOffShowsNoHookWarning() throws {
         try withFreshInstall(lidAlert: false, sessionAlerts: false) { model in
             #expect(!model.claudeHookInstalled, "vacuity: no hook")
             #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .nominal))
-            #expect(MenuStateModel.placement(ofDetailsLine: model.hookStatus.severity) == .details)
+            #expect(MenuStateModel.placement(ofSettingsLine: model.hookStatus.severity) == .settings)
             let lines = Self.hookAndAlertLines(model, now: 1_800_000_000)
             #expect(lines.count >= 9, "vacuity guard")
             let loud = lines.filter { $0.severity != .nominal }
             #expect(loud.isEmpty, "a fresh install must open quiet: \(loud)")
-            #expect(model.detailsBadge == .nominal)
+            #expect(model.settingsBadge == .nominal)
         }
     }
 
@@ -1201,8 +1200,8 @@ struct MenuPanelPresentationTests {
             #expect(model.lidStatus.severity == .nominal, "vacuity: the lid row is armed")
             #expect(model.finishAlertStatus == PanelLine(text: "Session alerts: off", severity: .nominal))
             #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .warning))
-            #expect(MenuStateModel.placement(ofDetailsLine: model.hookStatus.severity) == .topLevel)
-            #expect(model.detailsBadge == .warning)
+            #expect(MenuStateModel.placement(ofSettingsLine: model.hookStatus.severity) == .topLevel)
+            #expect(model.settingsBadge == .warning)
         }
     }
 
@@ -1215,23 +1214,8 @@ struct MenuPanelPresentationTests {
             #expect(model.finishAlertStatus == PanelLine(
                 text: "Session alerts: on — install the Claude busy hook first (see below)", severity: .warning))
             #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .warning))
-            #expect(MenuStateModel.placement(ofDetailsLine: model.hookStatus.severity) == .topLevel)
-            #expect(model.detailsBadge == .warning)
-        }
-    }
-
-    /// The disclosure is in-memory UI state: it survives refreshes (menu
-    /// reopen) but writes NOTHING to defaults.
-    @Test @MainActor func detailsDisclosureIsInMemoryOnly() {
-        withModel { model, defaults, suite in
-            #expect(!model.detailsExpanded, "starts collapsed")
-            model.setDetailsExpanded(true)
-            model.refresh()
-            #expect(model.detailsExpanded)
-            #expect((defaults.persistentDomain(forName: suite) ?? [:]).isEmpty,
-                    "toggling Details must persist nothing")
-            model.setDetailsExpanded(false)
-            #expect(!model.detailsExpanded)
+            #expect(MenuStateModel.placement(ofSettingsLine: model.hookStatus.severity) == .topLevel)
+            #expect(model.settingsBadge == .warning)
         }
     }
 
@@ -1241,28 +1225,28 @@ struct MenuPanelPresentationTests {
         try withModel { model, _, _ in
             #expect(!model.claudeDetectionVisible && !model.lidGuardVisible)
             try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
-            #expect(model.detailsBadge == .nominal)
+            #expect(model.settingsBadge == .nominal)
         }
     }
 
     /// Without the detection stack there is no Claude state to report, so the
-    /// footer keeps its plain "Details" name instead of claiming "idle".
-    @Test @MainActor func debugWiringKeepsThePlainDetailsLabel() throws {
+    /// footer shows no status caption at all instead of claiming "idle".
+    @Test @MainActor func debugWiringShowsNoClaudeStatus() throws {
         withModel { model, _, _ in
             #expect(!model.claudeDetectionVisible)
-            #expect(model.detailsLabel == MenuStateModel.plainDetailsLabel)
+            #expect(model.footerLabel == nil)
             #expect(model.claudeAwakeLine == nil)
         }
         try withDetection { detection in
             detection.sample()
             withModel(detection: detection) { model, _, _ in
-                #expect(model.detailsLabel == PanelLine(text: "Claude: idle", severity: .nominal))
+                #expect(model.footerLabel == PanelLine(text: "Claude: idle", severity: .nominal))
             }
         }
     }
 
-    /// THE BADGE RULE (2026-10-21): the Claude status is the disclosure's own
-    /// text and carries its own warning, so a PAUSED Claude does not raise
+    /// THE BADGE RULE (2026-10-21): the Claude status is the footer's own
+    /// caption and carries its own warning, so a PAUSED Claude does not raise
     /// the badge — neither directly nor through its echoes in the lid and
     /// session lines — but every OTHER problem still does: a hook problem, an
     /// unavailable Lock Screen, and a lid / session send failure.
@@ -1276,11 +1260,11 @@ struct MenuPanelPresentationTests {
             try withPausedSessionAlerts { lid, finish in
                 try withModel(detection: detection, lidGuard: lid.controller, finishAlert: finish) { model, _, _ in
                     try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
-                    #expect(model.detailsLabel.severity == .warning)
+                    #expect(model.footerLabel?.severity == .warning)
                     #expect(model.lidStatus.severity == .warning && model.lidStatus.text.contains("cannot fire"))
                     #expect(model.finishAlertDisplayState == .paused)
                     #expect(model.finishAlertStatus.severity == .warning)
-                    #expect(model.detailsBadge == .nominal, "the pause's echoes must not raise the badge")
+                    #expect(model.settingsBadge == .nominal, "the pause's echoes must not raise the badge")
                 }
             }
         }
@@ -1291,26 +1275,26 @@ struct MenuPanelPresentationTests {
             detection.sample()
             try withModel(detection: detection) { model, _, _ in
                 try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
-                #expect(model.detailsLabel == PanelLine(text: "Claude: paused", severity: .warning))
+                #expect(model.footerLabel == PanelLine(text: "Claude: paused", severity: .warning))
                 #expect(model.hookStatus.severity == .nominal)
                 #expect(model.claudeAwakeLine == PanelLine(text: "Claude is holding the Mac awake",
                                                            severity: .nominal),
                         "the awake fact is still reported while paused")
-                #expect(model.detailsBadge == .nominal, "a paused Claude must not raise the badge")
+                #expect(model.settingsBadge == .nominal, "a paused Claude must not raise the badge")
             }
         }
         // A hook problem an alert needs raises it (and still surfaces through
-        // its twin). With both alerts off it is a quiet, tucked fact (H1 —
+        // its twin). With both alerts off it is a quiet, Settings-only fact (H1 —
         // `aFreshInstallWithBothAlertsOffShowsNoHookWarning`).
         try withFreshInstall(lidAlert: true, sessionAlerts: false) { model in
-            #expect(model.detailsLabel.severity == .nominal)
+            #expect(model.footerLabel?.severity == .nominal)
             #expect(model.hookStatus.severity == .warning)
-            #expect(model.detailsBadge == .warning)
+            #expect(model.settingsBadge == .warning)
         }
         // An unavailable Lock Screen raises it.
         withModel(lockAvailable: false) { model, _, _ in
             #expect(model.lockScreenStatus.severity == .warning)
-            #expect(model.detailsBadge == .warning)
+            #expect(model.settingsBadge == .warning)
         }
         // A refused lid send raises it (to an error), paused Claude or not.
         try withDetection { detection in
@@ -1321,7 +1305,7 @@ struct MenuPanelPresentationTests {
                 lid.controller.sendTestMessage()
                 withModel(detection: detection, lidGuard: lid.controller) { model, _, _ in
                     #expect(model.lidLastSend(now: lid.clock.now).severity == .error)
-                    #expect(model.detailsBadge == .error)
+                    #expect(model.settingsBadge == .error)
                 }
             }
         }
@@ -1331,7 +1315,7 @@ struct MenuPanelPresentationTests {
     /// S7 end to end: the installed hook's stamp, sampled by the detection
     /// controller, reaches the panel — an out-of-date copy is a top-level
     /// warning that raises the badge; re-running the installer (the current
-    /// stamp) tucks it back into Details as nominal.
+    /// stamp) returns it to Settings alone, as nominal.
     @Test @MainActor func anOutOfDateHookCopySurfacesAndRaisesTheBadge() throws {
         let markerDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("napcat-menupanel-hookversion-\(UUID().uuidString)")
@@ -1347,14 +1331,14 @@ struct MenuPanelPresentationTests {
             try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
             #expect(model.hookStatus.severity == .nominal, "the liveness line itself is healthy")
             #expect(model.hookVersionStatus == PanelLine(text: Self.hookVersionOutOfDateText, severity: .warning))
-            #expect(MenuStateModel.placement(ofDetailsLine: model.hookVersionStatus?.severity ?? .nominal) == .topLevel)
-            #expect(model.detailsBadge == .warning)
+            #expect(MenuStateModel.placement(ofSettingsLine: model.hookVersionStatus?.severity ?? .nominal) == .topLevel)
+            #expect(model.settingsBadge == .warning)
 
             store.installedVersion = .some(ClaudeBusyConstants.hookVersion)
             detection.sample()
             model.refresh()
             #expect(model.hookVersionStatus == PanelLine(text: Self.hookVersionCurrentText, severity: .nominal))
-            #expect(model.detailsBadge == .nominal)
+            #expect(model.settingsBadge == .nominal)
         }
     }
 
@@ -1375,27 +1359,27 @@ struct MenuPanelPresentationTests {
                 detection.setPaused(true)
                 detection.sample()
                 model.refresh()
-                #expect(model.detailsLabel == PanelLine(text: "Claude: paused", severity: .warning))
+                #expect(model.footerLabel == PanelLine(text: "Claude: paused", severity: .warning))
                 #expect(model.lidStatus.text.contains("cannot fire"))
                 #expect(model.lidStatus.severity == .warning)
-                #expect(MenuStateModel.placement(ofDetailsLine: model.lidStatus.severity) == .topLevel)
+                #expect(MenuStateModel.placement(ofSettingsLine: model.lidStatus.severity) == .topLevel)
                 try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
-                #expect(model.detailsBadge == .nominal, "the pause's echo in the lid line must not raise the badge")
+                #expect(model.settingsBadge == .nominal, "the pause's echo in the lid line must not raise the badge")
 
                 detection.setPaused(false)
                 detection.sample()
                 model.refresh()
-                #expect(model.detailsLabel == PanelLine(text: "Claude: idle", severity: .nominal))
+                #expect(model.footerLabel == PanelLine(text: "Claude: idle", severity: .nominal))
                 #expect(model.lidStatus.text.contains("best-effort push"))
                 #expect(model.lidStatus.severity == .nominal)
-                #expect(model.detailsBadge == .nominal)
+                #expect(model.settingsBadge == .nominal)
             }
         }
     }
 
     /// FA-4 end to end: a session alert refused by the server (403 here —
     /// never retried, the controller's half) reaches the panel as an error
-    /// status, a last-send line that ESCAPES Details, and an error badge —
+    /// status, a last-send line that SURFACES in the panel, and an error badge —
     /// while the lid half is perfectly healthy, so the badge can only come
     /// from the session send. C6: re-running the test send as the caption
     /// says clears the status downgrade only once ntfy accepts it LATER than
@@ -1428,8 +1412,8 @@ struct MenuPanelPresentationTests {
                 #expect(last == PanelLine(
                     text: "Last session alert: refused by the server 2m ago (finished) (HTTP 403) — check the topic and server",
                     severity: .error))
-                #expect(MenuStateModel.placement(ofDetailsLine: last.severity) == .topLevel)
-                #expect(model.detailsBadge == .error)
+                #expect(MenuStateModel.placement(ofSettingsLine: last.severity) == .topLevel)
+                #expect(model.settingsBadge == .error)
 
                 // An accepted test send that PREDATES the refusal is no
                 // recovery (the lid clock starts far before H.t0).
@@ -1446,10 +1430,10 @@ struct MenuPanelPresentationTests {
                 #expect(model.finishAlertStatus == PanelLine(
                     text: "Session alerts: armed — a push when a Claude session finishes or waits for you",
                     severity: .nominal))
-                // …while the Details history line is untouched and still
-                // escapes Details (so the badge stays an error).
+                // …while the History line is untouched and still surfaces
+                // (so the badge stays an error).
                 #expect(model.finishAlertLastSend(now: Double(H.t0) + 120) == last)
-                #expect(model.detailsBadge == .error)
+                #expect(model.settingsBadge == .error)
             }
         }
     }
@@ -1457,8 +1441,8 @@ struct MenuPanelPresentationTests {
     /// B-1 end to end: a session alert refused with 429 holds the session
     /// lane (the controller's flush sits at the hold end) and the status
     /// says so as a WARNING — no "re-run Send test message" advice — while
-    /// the Details history line still reports the refusal as an error that
-    /// escapes Details (so the badge is an error). The C6 recovery rule
+    /// the History line still reports the refusal as an error that surfaces
+    /// in the panel (so the badge is an error). The C6 recovery rule
     /// applies unchanged: a LATER accepted lid-lane send clears the caption.
     @Test @MainActor func aRateLimitedSessionAlertSaysAlertsAreHeld() async throws {
         typealias H = FinishAlertHarness
@@ -1484,13 +1468,13 @@ struct MenuPanelPresentationTests {
                 #expect(model.finishAlertStatus == PanelLine(text: Self.sessionRateLimitedText, severity: .warning))
                 #expect(!model.finishAlertStatus.text.contains("Send test message"),
                         "a re-run test send would only burn more quota")
-                #expect(MenuStateModel.placement(ofDetailsLine: model.finishAlertStatus.severity) == .topLevel)
+                #expect(MenuStateModel.placement(ofSettingsLine: model.finishAlertStatus.severity) == .topLevel)
                 let last = model.finishAlertLastSend(now: Double(H.t0) + 120)
                 #expect(last == PanelLine(
                     text: "Last session alert: refused by the server 2m ago (finished) (HTTP 429) — check the topic and server",
                     severity: .error))
-                #expect(MenuStateModel.placement(ofDetailsLine: last.severity) == .topLevel)
-                #expect(model.detailsBadge == .error, "the history line still raises the badge")
+                #expect(MenuStateModel.placement(ofSettingsLine: last.severity) == .topLevel)
+                #expect(model.settingsBadge == .error, "the history line still raises the badge")
 
                 // A LATER accepted lid-lane send clears the held caption too.
                 lid.clock.advance(Double(H.t0) - lid.clock.now + 60)
@@ -1533,7 +1517,7 @@ struct MenuPanelPresentationTests {
                 #expect(model.sessionAlertsOffline)
                 #expect(model.finishAlertStatus == PanelLine(text: Self.sessionAlertsOfflineText, severity: .warning),
                         "offline > 429 hold")
-                #expect(MenuStateModel.placement(ofDetailsLine: model.finishAlertStatus.severity) == .topLevel)
+                #expect(MenuStateModel.placement(ofSettingsLine: model.finishAlertStatus.severity) == .topLevel)
             }
             await h.pathUp()
             #expect(h.controller.healing.phase == .flushing, "the flush waits for the open 429 hold")
@@ -1544,9 +1528,9 @@ struct MenuPanelPresentationTests {
         }
     }
 
-    /// The offline warning has no Details home, so it never raises the
-    /// collapsed Details badge (everything else here is healthy).
-    @Test @MainActor func theOfflineWarningNeverRaisesTheDetailsBadge() async throws {
+    /// The offline warning has no Settings home, so it never raises the
+    /// gear badge (everything else here is healthy).
+    @Test @MainActor func theOfflineWarningNeverRaisesTheGearBadge() async throws {
         typealias H = FinishAlertHarness
         try await withFinishAlertHarness(connectivity: ConnectivitySimulator()) { h in
             h.store.put(H.s1, ts: H.t0 - 600)
@@ -1565,7 +1549,7 @@ struct MenuPanelPresentationTests {
             try withModel(lidGuard: lid.controller, finishAlert: h.controller) { model, _, _ in
                 try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
                 #expect(model.finishAlertStatus == MenuStateModel.sessionAlertsOfflineLine)
-                #expect(model.detailsBadge == .nominal, "the offline warning must not raise the badge")
+                #expect(model.settingsBadge == .nominal, "the offline warning must not raise the badge")
             }
         }
     }
@@ -1578,7 +1562,7 @@ struct MenuPanelPresentationTests {
             lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
             withModel(lidGuard: lid.controller) { model, _, _ in
                 #expect(!model.finishAlertVisible)
-                #expect(model.detailsBadge == .nominal)
+                #expect(model.settingsBadge == .nominal)
             }
         }
     }

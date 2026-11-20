@@ -12,10 +12,11 @@ struct ScaffoldTests {
     /// Isolated defaults suite so tests never touch com.muratalkan.napcat.
     private static let testSuite = "com.muratalkan.napcat.tests"
 
-    private func makeMenuContent() -> MenuContentView {
+    private func makeMenuContent(simulator: DebugPowerSimulator = DebugPowerSimulator(batteryPercent: 80,
+                                                                                        adapterConnected: true))
+        -> MenuContentView {
         let defaults = UserDefaults(suiteName: Self.testSuite)!
         defaults.removePersistentDomain(forName: Self.testSuite)
-        let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
         let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
         return MenuContentView(
             sleep: SleepStateController(),
@@ -115,29 +116,37 @@ struct ScaffoldTests {
     }
 
     /// 2026-10-18 redesign — the NSMenu height problem. The panel's height
-    /// changes while the menu is OPEN (Details disclosure, async captions); a
-    /// frame measured once at menuWillOpen used to clip. MenuPanelHostingView
-    /// re-fits itself in the first layout pass that sees new content (NSMenu
-    /// follows an item view's frame live — NSMenuItem.h). Driven headlessly in
-    /// an offscreen window: no menu is shown, nothing is clicked.
-    @Test func panelRefitsItsHeightWhenDetailsToggleWhileOpen() throws {
-        let menuContent = makeMenuContent()
+    /// changes while the menu is OPEN (a caption appearing after an async
+    /// outcome); a frame measured once at menuWillOpen used to clip.
+    /// MenuPanelHostingView re-fits itself in the first layout pass that sees
+    /// new content (NSMenu follows an item view's frame live — NSMenuItem.h).
+    /// Since slice P removed the Details disclosure, the content that grows
+    /// here is a caption: the simulator's charge control turning
+    /// unavailable (setup required) adds the Charge Limit row's warning.
+    /// Driven headlessly in an offscreen window: no menu is shown, nothing
+    /// is clicked, and the simulator runs no privileged command.
+    @Test func panelRefitsItsHeightWhenACaptionAppearsWhileOpen() throws {
+        let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let menuContent = makeMenuContent(simulator: simulator)
         let view = try #require(menuContent.menu.items[0].view)
         let window = Self.offscreenHost(view)
         defer { window.contentView = nil }
 
         Self.settle(view)
-        let collapsed = view.frame.height
-        #expect(abs(collapsed - view.fittingSize.height) < 1)
+        let quiet = view.frame.height
+        #expect(abs(quiet - view.fittingSize.height) < 1)
 
-        menuContent.model.setDetailsExpanded(true)
+        simulator.chargeControlReadiness = .setupRequired
+        menuContent.model.refresh()
+        #expect(menuContent.model.chargeLimitCaption?.severity == .warning, "vacuity: the caption is a warning")
         Self.settle(view)
-        #expect(view.frame.height > collapsed + 20, "Details content must grow the panel")
+        #expect(view.frame.height > quiet + 10, "the caption must grow the panel")
         #expect(abs(view.frame.height - view.fittingSize.height) < 1, "frame must match content — no clipping")
 
-        menuContent.model.setDetailsExpanded(false)
+        simulator.chargeControlReadiness = .ready
+        menuContent.model.refresh()
         Self.settle(view)
-        #expect(abs(view.frame.height - collapsed) < 1, "collapsing must not leave dead space")
+        #expect(abs(view.frame.height - quiet) < 1, "the caption leaving must not leave dead space")
     }
 
     private static func offscreenHost(_ view: NSView) -> NSWindow {
