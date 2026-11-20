@@ -34,8 +34,8 @@ struct AnimationMappingTests {
             expectedSet: .sit, expectedFPS: 1,
             rationale: "charge paused at limit → sit @1fps"),
         Row(stayAwakeOn: false, chargePaused: false, screenAwake: true,
-            expectedSet: .sleep, expectedFPS: 0.5,
-            rationale: "idle → static grooming cat @0.5fps (frames identical; slow tick, 2026-07-11)"),
+            expectedSet: .idle, expectedFPS: 3,
+            rationale: "idle → hand-drawn 17-frame groom→sit cycle @3fps (user pick, 2026-11-19)"),
         Row(stayAwakeOn: true, chargePaused: true, screenAwake: false,
             expectedSet: nil, expectedFPS: nil,
             rationale: "screens asleep → timer stopped regardless of app state"),
@@ -73,8 +73,46 @@ struct AnimationMappingTests {
 
     @Test func frameSetNamesMatchAssetNaming() {
         #expect(FrameSet.run.frameNames == ["run0", "run1", "run2", "run3", "run4"])
-        #expect(FrameSet.sleep.frameNames == ["sleep0", "sleep1", "sleep2"])
+        #expect(FrameSet.idle.frameNames == (0...16).map { "idle\($0)" })
+        #expect(FrameSet.idle.frameNames.first == "idle0")
+        #expect(FrameSet.idle.frameNames.last == "idle16")
         #expect(FrameSet.sit.frameNames == ["sit0", "sit1"])
+    }
+
+    /// The idle cadence is the one named tunable, and the mapping uses it.
+    @Test func idleCadenceIsTheNamedTunable() {
+        let idle = AnimationEngine.frameSet(stayAwakeOn: false, chargePaused: false, screenAwake: true)
+        #expect(idle?.set == .idle)
+        #expect(idle?.fps == AnimationEngine.idleFPS)
+        #expect(AnimationEngine.idleFPS == 3.0, "user pick from previews (2026-11-19): continuous 3 fps")
+    }
+
+    /// run/sit play their frames straight through; idle plays all 17 forward,
+    /// then the reversed every-second-frame paw raise (15 → 5) before it wraps
+    /// to the paw-lick at frame 0 — the seam fix (user ruling 2026-11-19).
+    @Test func playbackSequencesArePinned() {
+        #expect(FrameSet.run.playbackSequence == [0, 1, 2, 3, 4])
+        #expect(FrameSet.sit.playbackSequence == [0, 1])
+        #expect(FrameSet.idle.playbackSequence == Array(0...16) + [15, 13, 11, 9, 7, 5])
+    }
+
+    /// Every sequence is a valid, continuous loop: it starts at asset 0,
+    /// shows every asset of its set, references only existing assets, and
+    /// never shows the same asset twice in a row — including across the wrap
+    /// (a repeat would read as a stall in a continuous loop).
+    @Test(arguments: FrameSet.allCases)
+    func playbackSequenceIsAValidContinuousLoop(set: FrameSet) throws {
+        let sequence = set.playbackSequence
+        let first = try #require(sequence.first, "\(set): empty playback sequence")
+        #expect(first == 0, "\(set): every set starts at asset 0")
+        #expect(sequence.allSatisfy { (0..<set.frameCount).contains($0) }, "\(set): index out of range")
+        #expect(Set(sequence) == Set(0..<set.frameCount), "\(set): every asset must be shown")
+        if sequence.count > 1 {
+            for (index, asset) in sequence.enumerated() {
+                let next = sequence[(index + 1) % sequence.count]
+                #expect(asset != next, "\(set): asset \(asset) repeats at sequence position \(index)")
+            }
+        }
     }
 
     // MARK: - Pure restart decision
@@ -109,15 +147,36 @@ struct AnimationEngineBehaviorTests {
         return (engine, recorder)
     }
 
-    @Test func idleStateAnimatesSleepFromFrameZero() {
+    @Test func idleStateAnimatesTheIdleCycleFromFrameZero() {
         let (engine, recorder) = makeEngine()
         engine.setAppState(stayAwakeOn: false, chargePaused: false)
-        #expect(engine.currentSet == .sleep)
-        #expect(engine.currentFPS == 0.5)
+        #expect(engine.currentSet == .idle)
+        #expect(engine.currentFPS == AnimationEngine.idleFPS)
         #expect(engine.frameIndex == 0)
         #expect(engine.isAnimating)
-        #expect(recorder.events.first?.set == .sleep)
+        #expect(recorder.events.first?.set == .idle)
         #expect(recorder.events.first?.index == 0)
+    }
+
+    /// The idle cycle is a CONTINUOUS loop of its playback sequence: every
+    /// tick shows the next sequence entry (onFrame reports the ASSET index),
+    /// and the last entry wraps back to the sequence start — no hold, no
+    /// periodic play. The upright sit (asset 16) is never followed directly
+    /// by the paw-lick (asset 0): the reversed paw raise plays between them.
+    @Test func idleCycleWalksThePlaybackSequenceAndWraps() {
+        let (engine, recorder) = makeEngine()
+        engine.setAppState(stayAwakeOn: false, chargePaused: false)
+        let oneCycle = FrameSet.idle.playbackSequence
+        #expect(oneCycle.count == 23)
+        for _ in 0..<(2 * oneCycle.count) { engine.tick() }
+        let shown = recorder.events.map(\.index)
+        #expect(shown == oneCycle + oneCycle + [oneCycle[0]])
+        #expect(recorder.events.allSatisfy { $0.set == .idle })
+        #expect(engine.tickCount == 46)
+        #expect(engine.sequencePosition == 0)
+        #expect(engine.frameIndex == 0)
+        #expect(!zip(shown, shown.dropFirst()).contains { $0 == 16 && $1 == 0 },
+            "the sit → paw-lick seam must go through the return transition")
     }
 
     @Test func tickAdvancesAndWrapsTheFrameIndex() {
@@ -208,9 +267,9 @@ struct FrameAssetTests {
             .appendingPathComponent("Resources/frames", isDirectory: true)
     }
 
-    /// run/sit are 18px on-grid pixel art (@2x = 36); sleep is the processed
-    /// grooming cat at iconPointHeight = 21px (@2x = 42) — see FrameSet
-    /// .baseDimension (decision log 2026-07-11).
+    /// run/sit are 18px on-grid pixel art (@2x = 36); idle (the hand-drawn
+    /// groom→sit cycle) is at iconPointHeight = 21px (@2x = 42) — see
+    /// FrameSet.baseDimension.
     @Test(arguments: FrameSet.allCases)
     func frameAssetsExistAsValidPNGsWithCorrectDimensions(set: FrameSet) throws {
         for name in set.frameNames {
@@ -225,53 +284,55 @@ struct FrameAssetTests {
         }
     }
 
-    /// The sleep state is a STILL processed grooming cat: all three frames are
-    /// byte-identical copies of the one rest pose (the user rejected the
-    /// synthetic head-bob, decision log 2026-07-11). This guards against a
-    /// regression that re-introduces motion, and confirms the single frame is a
-    /// real cutout cat (non-blank, not fully opaque — the interior cutouts and
-    /// breathing margin survived the pipeline).
-    @Test func sleepFramesAreStaticIdenticalCopies() throws {
-        func data(_ name: String) throws -> Data {
-            let url = Self.framesDirectory.appendingPathComponent("\(name).png")
-            return try #require(try? Data(contentsOf: url), "missing \(name).png")
-        }
-        // @1x and @2x: sleep0/1/2 must be byte-identical (no animation).
-        for suffix in ["", "@2x"] {
-            let s0 = try data("sleep0\(suffix)")
-            let s1 = try data("sleep1\(suffix)")
-            let s2 = try data("sleep2\(suffix)")
-            #expect(s0 == s1, "sleep0\(suffix) and sleep1\(suffix) must be identical (static sleep)")
-            #expect(s1 == s2, "sleep1\(suffix) and sleep2\(suffix) must be identical (static sleep)")
-        }
-        // The frame must actually contain the cat: a non-trivial opaque area
-        // (not blank) with cutouts/margin intact (not fully opaque).
-        for name in FrameSet.sleep.frameNames {
-            let rep = try #require(NSBitmapImageRep(data: try data(name)))
-            var opaque = 0
+    /// The idle state is the user's hand-drawn 17-frame groom→sit cycle: 17
+    /// DISTINCT frames at each resolution (a duplicated or dropped export would
+    /// show as a stutter), each a real template cat — pure black + alpha
+    /// (template icons render gray as dim), non-blank, and not fully opaque
+    /// (the negative-space details and breathing margin survived the pipeline).
+    @Test(arguments: ["", "@2x"])
+    func idleFramesAreDistinctNonBlankTemplateCats(suffix: String) throws {
+        var alphaMasks: [[UInt8]] = []
+        for name in FrameSet.idle.frameNames {
+            let file = "\(name)\(suffix).png"
+            let url = Self.framesDirectory.appendingPathComponent(file)
+            let data = try #require(try? Data(contentsOf: url), "missing \(file)")
+            let rep = try #require(NSBitmapImageRep(data: data), "\(file): undecodable")
+            var mask: [UInt8] = []
+            var opaque = 0, nonBlack = 0
             for y in 0..<rep.pixelsHigh {
-                for x in 0..<rep.pixelsWide where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.2 {
-                    opaque += 1
+                for x in 0..<rep.pixelsWide {
+                    let color = try #require(rep.colorAt(x: x, y: y), "\(file): no color at (\(x), \(y))")
+                    mask.append(UInt8((color.alphaComponent * 255).rounded()))
+                    if color.alphaComponent > 0.2 { opaque += 1 }
+                    if color.redComponent != 0 || color.greenComponent != 0 || color.blueComponent != 0 {
+                        nonBlack += 1
+                    }
                 }
             }
             let total = rep.pixelsHigh * rep.pixelsWide
-            #expect(opaque > total / 6, "\(name): too few opaque pixels — frame looks blank")
-            #expect(opaque < total, "\(name): fully opaque — cutout/margin lost")
+            #expect(nonBlack == 0, "\(file): \(nonBlack) non-black pixels — template frames are pure #000 + alpha")
+            #expect(opaque > total / 6, "\(file): too few opaque pixels — frame looks blank")
+            #expect(opaque < total, "\(file): fully opaque — negative space/margin lost")
+            alphaMasks.append(mask)
         }
+        #expect(alphaMasks.count == 17)
+        #expect(Set(alphaMasks).count == alphaMasks.count,
+            "idle\(suffix): every one of the 17 frames must differ from the others")
     }
 
     /// ORIENTATION LOCK (regression guard, 2026-07-11). A sitting/curled cat is
     /// bottom-heavy: its seated base — haunches and folded paws — fills the lower
     /// half of the frame, while the ears and head leave the upper half sparser.
-    /// So the bottom half of the rendered sleep silhouette must hold MORE opaque
-    /// pixels than the top half. The groom pipeline decodes the source via
-    /// CoreGraphics; a stray vertical flip at that row-order boundary once
-    /// rendered the sleep cat upside down (top-heavy). A flip swaps the two
-    /// half-masses exactly, so `bottom > top` trips immediately if it returns.
-    /// Deliberately a mass-distribution check (not a pixel hash) so it stays
-    /// valid for any future seated/curled cat art — all of which are bottom-heavy.
-    @Test(arguments: ["sleep0", "sleep0@2x"])
-    func sleepFrameIsBottomHeavyNotUpsideDown(_ name: String) throws {
+    /// So the bottom half of every rendered hand-drawn silhouette must hold MORE
+    /// opaque pixels than the top half. The idle pipeline decodes its sources
+    /// via CoreGraphics; a stray vertical flip at that row-order boundary once
+    /// rendered the former grooming-cat icon upside down (top-heavy). A flip
+    /// swaps the two half-masses exactly, so `bottom > top` trips immediately if
+    /// it returns. Deliberately a mass-distribution check (not a pixel hash) so
+    /// it stays valid for any seated cat art: all 17 idle frames — the paw-lick
+    /// ones included — are seated and bottom-heavy at both resolutions.
+    @Test(arguments: FrameSet.idle.frameNames.flatMap { [$0, "\($0)@2x"] })
+    func handDrawnFrameIsBottomHeavyNotUpsideDown(_ name: String) throws {
         let url = Self.framesDirectory.appendingPathComponent("\(name).png")
         let data = try #require(try? Data(contentsOf: url), "missing \(name).png")
         let rep = try #require(NSBitmapImageRep(data: data), "\(name): undecodable")
@@ -288,10 +349,44 @@ struct FrameAssetTests {
             }
         }
         #expect(bottom > top,
-            "\(name): sleep cat must be bottom-heavy (seated base below, ears above) — top=\(top) bottom=\(bottom). top-heavy means the groom pipeline flipped it vertically.")
+            "\(name): seated cat must be bottom-heavy (seated base below, ears above) — top=\(top) bottom=\(bottom). top-heavy means the pipeline flipped it vertically.")
     }
 
-    /// The directory contains exactly the 20 expected PNGs — no stale
+    /// SEAM GUARD (user ruling 2026-11-19: the loop "teleports back to the
+    /// starting position"). Walking the idle playback sequence — wrap
+    /// included — no step may change as much of the silhouette as the old
+    /// direct jump from the upright sit (last frame) to the paw-lick (frame 0)
+    /// did. Measured as the summed alpha difference of consecutive frames at
+    /// each resolution; relative to the art itself, so no tuned threshold.
+    @Test(arguments: ["", "@2x"])
+    func idleLoopHasNoStepAsLargeAsTheOldSeamJump(suffix: String) throws {
+        var masks: [[Int]] = []
+        for name in FrameSet.idle.frameNames {
+            let file = "\(name)\(suffix).png"
+            let url = Self.framesDirectory.appendingPathComponent(file)
+            let data = try #require(try? Data(contentsOf: url), "missing \(file)")
+            let rep = try #require(NSBitmapImageRep(data: data), "\(file): undecodable")
+            var mask: [Int] = []
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    mask.append(Int(((rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) * 255).rounded()))
+                }
+            }
+            masks.append(mask)
+        }
+        func distance(_ a: Int, _ b: Int) -> Int {
+            zip(masks[a], masks[b]).reduce(0) { $0 + abs($1.0 - $1.1) }
+        }
+        let oldSeam = distance(FrameSet.idle.frameCount - 1, 0)
+        let sequence = FrameSet.idle.playbackSequence
+        for (position, asset) in sequence.enumerated() {
+            let next = sequence[(position + 1) % sequence.count]
+            #expect(distance(asset, next) < oldSeam,
+                "idle\(suffix): step \(asset)→\(next) at sequence position \(position) is as large as the old sit→lick jump (\(oldSeam))")
+        }
+    }
+
+    /// The directory contains exactly the 48 expected PNGs — no stale
     /// leftovers from renamed frames.
     @Test func framesDirectoryContainsExactlyTheExpectedFiles() throws {
         let contents = try #require(
@@ -301,7 +396,7 @@ struct FrameAssetTests {
         let expected = Set(FrameSet.allCases.flatMap { set in
             set.frameNames.flatMap { ["\($0).png", "\($0)@2x.png"] }
         })
-        #expect(expected.count == 20)
+        #expect(expected.count == 48)
         #expect(pngs == expected)
     }
 
@@ -315,7 +410,7 @@ struct FrameAssetTests {
             #expect(images.count == set.frameCount)
             for image in images {
                 #expect(image.isTemplate, "menu bar frames must be template images")
-                // All frames are square (run/sit 18px, sleep 21px), so width
+                // All frames are square (run/sit 18px, idle 21px), so width
                 // == height at the render size; non-square art would scale
                 // width proportionally.
                 #expect(image.size == NSSize(

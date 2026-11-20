@@ -9,13 +9,15 @@ power state is, and gives you two switches that macOS hides:
 
 - **The cat runs** when Stay Awake is on: your Mac will keep working with the
   lid closed (`pmset disablesleep`).
-- **The cat curls up and sleeps** when Stay Awake is off: normal sleep
-  behavior, nothing held open.
+- **The cat grooms itself** when Stay Awake is off: normal sleep behavior,
+  nothing held open.
 - **The cat sits** when charging is paused at your charge limit: plugged in,
   battery parked at (for example) 90%.
 
-Original 18×18 pixel-art frames, rendered as template images so they follow
-light/dark menu bars.
+Original frames, rendered as template images so they follow light/dark menu
+bars: the grooming cat is a hand-drawn 17-frame cycle (it licks its paw,
+settles into a sit, then raises the paw again); the running and sitting cats
+are 18×18 pixel art.
 
 ## Features
 
@@ -691,7 +693,7 @@ pushes, and the row says so.
 make            # release build + assemble dist/NapCat.app + ad-hoc codesign
 make run        # build, then (re)launch the app
 make test       # unit tests (Swift Testing)
-make frames     # re-render the pixel-art frames from in-code grids
+make frames     # re-render the icon frames: hand-drawn art + in-code grids
 make smc        # build the vendored smc CLI to dist/smc
 make release-artifacts  # make, then dist/NapCat-<version>.dmg + .sha256
 make clean      # remove .build/ and dist/
