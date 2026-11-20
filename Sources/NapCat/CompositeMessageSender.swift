@@ -63,6 +63,7 @@ final class CompositeMessageSender: MessageSender, @unchecked Sendable {
     private var generation: [NtfySendLane: UInt64] = [:]
     private var lastPhoneOutcome: MessageSendOutcome?
     private var lastPhoneOutcomeAt: Double?
+    private var changeHandler: (@Sendable () -> Void)?
 
     /// `isEntitled` and `now` are TEST SEAMS (production: the cached probe
     /// and the wall clock).
@@ -98,6 +99,14 @@ final class CompositeMessageSender: MessageSender, @unchecked Sendable {
 
     func setPhoneTransportEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: DefaultsKey.phoneTransportEnabled)
+    }
+
+    /// Told after every CloudKit attempt records its outcome, so the menu
+    /// can republish (MenuContentView hops to the main actor itself).
+    func setChangeHandler(_ handler: (@Sendable () -> Void)?) {
+        lock.lock()
+        changeHandler = handler
+        lock.unlock()
     }
 
     var phoneSnapshot: PhoneTransportSnapshot {
@@ -168,7 +177,9 @@ final class CompositeMessageSender: MessageSender, @unchecked Sendable {
         lock.lock()
         lastPhoneOutcome = outcome
         lastPhoneOutcomeAt = at
+        let handler = changeHandler
         lock.unlock()
+        handler?()
     }
 
     /// Releases `lane`'s claim ONLY when `claim` is still that lane's live one.

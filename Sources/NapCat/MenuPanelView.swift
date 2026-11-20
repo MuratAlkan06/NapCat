@@ -167,7 +167,9 @@ struct GeneralSurfacedLines: View {
     }
 }
 
-/// Top-level home for the lid-alert Details lines that can be problems.
+/// Top-level home for the lid-alert Details lines that can be problems —
+/// the shared delivery settings of the "ntfy alerts" group, including (F3
+/// stage 1) the phone transport line.
 struct LidAlertSurfacedLines: View {
     @ObservedObject var model: MenuStateModel
 
@@ -175,6 +177,7 @@ struct LidAlertSurfacedLines: View {
         SurfacedLine(line: model.lidTopicStatus)
         SurfacedLine(line: model.lidServerStatus)
         SurfacedLine(line: model.lidLastSend(now: Date().timeIntervalSince1970))
+        SurfacedLine(line: model.phoneAlertStatus(now: Date().timeIntervalSince1970))
     }
 }
 
@@ -338,6 +341,24 @@ struct SessionAlertsToggle: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .accessibilityLabel("Session alerts — notify me when a Claude session finishes or waits for me")
+    }
+}
+
+/// F3 stage 1: the phone transport toggle — a small Details checkbox, off by
+/// default. A stored setting only (no AppKit flow, no send), so it forwards
+/// straight to the model and never dismisses the menu.
+struct PhoneTransportToggle: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Toggle(MenuStateModel.phoneTransportToggleTitle, isOn: Binding(
+            get: { model.phoneTransportEnabled },
+            set: { model.setPhoneTransportEnabled($0) }
+        ))
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .help(MenuStateModel.phoneTransportToggleHint)
+        .accessibilityHint(MenuStateModel.phoneTransportToggleHint)
     }
 }
 
@@ -616,6 +637,12 @@ struct PanelDetailsContent: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // F3 stage 1: phone first, ntfy as the fallback — off by default.
+            if model.phoneTransportVisible {
+                PhoneTransportToggle(model: model)
+                    .padding(.top, 2)
+                TuckedLine(line: model.phoneAlertStatus(now: Date().timeIntervalSince1970))
+            }
         }
     }
 

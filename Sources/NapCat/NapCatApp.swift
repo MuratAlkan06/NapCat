@@ -130,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 detection: detection,
                 lidGuard: lidGuard,
                 finishAlert: finishAlert,
+                phoneTransport: sender,
                 defaults: defaults
             )
         )
