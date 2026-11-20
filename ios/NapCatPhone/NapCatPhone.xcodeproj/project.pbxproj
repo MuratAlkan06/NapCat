@@ -1,0 +1,570 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		12806947F9B337FCF25FD29E /* idle0@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = B727E3BA55156DAD7D76607F /* idle0@2x.png */; };
+		1990190648612DB1D9BB7CB5 /* idle14@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 7B6A438DE38C3CD5487DFB2C /* idle14@2x.png */; };
+		1F9155456E79460B1AA938C3 /* groom-source.png in Resources */ = {isa = PBXBuildFile; fileRef = 852DF26E7E05D45887E0C2F6 /* groom-source.png */; };
+		269D8783CE1E5ADFC45A20F6 /* idle8@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 12B263D636FA8D96E649EC5D /* idle8@2x.png */; };
+		2894E67D92B22803EBCA19A4 /* idle10@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = CEBA9FC361B4E7CCB75EDFA6 /* idle10@2x.png */; };
+		32A7553B728693DB7D3194B1 /* idle3@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = C8441EE1EC0F5EF26351EBF4 /* idle3@2x.png */; };
+		376334E885AF1D83CBEFDA9C /* idle6@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = ED043D0C899D2A482CFA1C9E /* idle6@2x.png */; };
+		60068A508F11838D3958278D /* idle2@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 6B39C505C808501716455042 /* idle2@2x.png */; };
+		6293F4821F877502A0AF405C /* idle11@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = EAA5A64DA0CD0B476EA8D49D /* idle11@2x.png */; };
+		71308D2AC6AE1ECB51A559CF /* idle12@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 5F212CB3BA077D272D634306 /* idle12@2x.png */; };
+		77BB70F2B4D07697576B7B06 /* idle9@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = CAE366663A9598BFCF4510DD /* idle9@2x.png */; };
+		7B1318A3B7F49E0A35B7A5C4 /* idle13@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 59562AE805B47F1A7E9423DE /* idle13@2x.png */; };
+		894CE755290AD1D98B9A7BD5 /* idle1@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2DE98083F5222E815D44AF22 /* idle1@2x.png */; };
+		8F49A43AD0AF16E1145F166F /* idle7@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = DF61549136FD82A6E2727498 /* idle7@2x.png */; };
+		9875B52CEB90DCFFEEFCAE7F /* idle15@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 6F93771B0879A099E8E2A44E /* idle15@2x.png */; };
+		9EC23BFB4BD7020CF8A06B47 /* idle5@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 82E5A00B067D7281643E39CE /* idle5@2x.png */; };
+		C5FD7695A2AB0CA683CBDFE6 /* NapCatWire in Frameworks */ = {isa = PBXBuildFile; productRef = B7AA02646492D041AE0C117E /* NapCatWire */; };
+		CF747BB4AC943093783D1A4B /* idle16@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 340CD0EB846A1C7117394BFC /* idle16@2x.png */; };
+		DF6BFBAB9AE121DCD7551850 /* NapCatWire in Frameworks */ = {isa = PBXBuildFile; productRef = 20BAD925B0425BDAE07EE7D7 /* NapCatWire */; };
+		E28EE72920B000350D68E7B4 /* idle4@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B39C964D05344E78251E219 /* idle4@2x.png */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8EA8B9516330D395603C7A24 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 3D5CB091D6E346974718B164 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7735B80224CC871C6847993D;
+			remoteInfo = NapCatPhone;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		02567A1C82DFED1BFAAE9F3B /* NapCat */ = {isa = PBXFileReference; lastKnownFileType = folder; name = NapCat; path = ../..; sourceTree = SOURCE_ROOT; };
+		12B263D636FA8D96E649EC5D /* idle8@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle8@2x.png"; sourceTree = "<group>"; };
+		24B1A18D6412400119E30DEF /* NapCatPhone.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NapCatPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2B39C964D05344E78251E219 /* idle4@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle4@2x.png"; sourceTree = "<group>"; };
+		2DE98083F5222E815D44AF22 /* idle1@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle1@2x.png"; sourceTree = "<group>"; };
+		340CD0EB846A1C7117394BFC /* idle16@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle16@2x.png"; sourceTree = "<group>"; };
+		59562AE805B47F1A7E9423DE /* idle13@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle13@2x.png"; sourceTree = "<group>"; };
+		5D3691C8BEAD07A3910A8CFD /* NapCatPhoneTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NapCatPhoneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F212CB3BA077D272D634306 /* idle12@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle12@2x.png"; sourceTree = "<group>"; };
+		6B39C505C808501716455042 /* idle2@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle2@2x.png"; sourceTree = "<group>"; };
+		6F93771B0879A099E8E2A44E /* idle15@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle15@2x.png"; sourceTree = "<group>"; };
+		7B6A438DE38C3CD5487DFB2C /* idle14@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle14@2x.png"; sourceTree = "<group>"; };
+		82E5A00B067D7281643E39CE /* idle5@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle5@2x.png"; sourceTree = "<group>"; };
+		852DF26E7E05D45887E0C2F6 /* groom-source.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = "groom-source.png"; path = "../../art/groom-source.png"; sourceTree = "<group>"; };
+		B727E3BA55156DAD7D76607F /* idle0@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle0@2x.png"; sourceTree = "<group>"; };
+		C8441EE1EC0F5EF26351EBF4 /* idle3@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle3@2x.png"; sourceTree = "<group>"; };
+		CAE366663A9598BFCF4510DD /* idle9@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle9@2x.png"; sourceTree = "<group>"; };
+		CEBA9FC361B4E7CCB75EDFA6 /* idle10@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle10@2x.png"; sourceTree = "<group>"; };
+		DF61549136FD82A6E2727498 /* idle7@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle7@2x.png"; sourceTree = "<group>"; };
+		EAA5A64DA0CD0B476EA8D49D /* idle11@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle11@2x.png"; sourceTree = "<group>"; };
+		ED043D0C899D2A482CFA1C9E /* idle6@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "idle6@2x.png"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		14A6CD4EBD30BA496D53DCDE /* NapCatPhoneTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = NapCatPhoneTests;
+			sourceTree = "<group>";
+		};
+		4870BE70F3F3560FE42D2CC4 /* NapCatPhone */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = NapCatPhone;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		27405F8A519AD85F007B01AE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5FD7695A2AB0CA683CBDFE6 /* NapCatWire in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F286CAEF1C75588EC3E0F4EE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DF6BFBAB9AE121DCD7551850 /* NapCatWire in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		60C958CAE90EE3429842FA87 /* frames */ = {
+			isa = PBXGroup;
+			children = (
+				B727E3BA55156DAD7D76607F /* idle0@2x.png */,
+				2DE98083F5222E815D44AF22 /* idle1@2x.png */,
+				6B39C505C808501716455042 /* idle2@2x.png */,
+				C8441EE1EC0F5EF26351EBF4 /* idle3@2x.png */,
+				2B39C964D05344E78251E219 /* idle4@2x.png */,
+				82E5A00B067D7281643E39CE /* idle5@2x.png */,
+				ED043D0C899D2A482CFA1C9E /* idle6@2x.png */,
+				DF61549136FD82A6E2727498 /* idle7@2x.png */,
+				12B263D636FA8D96E649EC5D /* idle8@2x.png */,
+				CAE366663A9598BFCF4510DD /* idle9@2x.png */,
+				CEBA9FC361B4E7CCB75EDFA6 /* idle10@2x.png */,
+				EAA5A64DA0CD0B476EA8D49D /* idle11@2x.png */,
+				5F212CB3BA077D272D634306 /* idle12@2x.png */,
+				59562AE805B47F1A7E9423DE /* idle13@2x.png */,
+				7B6A438DE38C3CD5487DFB2C /* idle14@2x.png */,
+				6F93771B0879A099E8E2A44E /* idle15@2x.png */,
+				340CD0EB846A1C7117394BFC /* idle16@2x.png */,
+			);
+			name = frames;
+			path = ../../Resources/frames;
+			sourceTree = "<group>";
+		};
+		648782D5D832AC18E439C72E /* RepoArt */ = {
+			isa = PBXGroup;
+			children = (
+				852DF26E7E05D45887E0C2F6 /* groom-source.png */,
+				60C958CAE90EE3429842FA87 /* frames */,
+			);
+			name = RepoArt;
+			sourceTree = "<group>";
+		};
+		9B33F8AA77B0936BD6EBF8D6 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				02567A1C82DFED1BFAAE9F3B /* NapCat */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		BD55339FB5BAD740A4C5BD9E = {
+			isa = PBXGroup;
+			children = (
+				4870BE70F3F3560FE42D2CC4 /* NapCatPhone */,
+				14A6CD4EBD30BA496D53DCDE /* NapCatPhoneTests */,
+				9B33F8AA77B0936BD6EBF8D6 /* Packages */,
+				648782D5D832AC18E439C72E /* RepoArt */,
+				EF90CA9B9CD4309BDDB64ED4 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		EF90CA9B9CD4309BDDB64ED4 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				24B1A18D6412400119E30DEF /* NapCatPhone.app */,
+				5D3691C8BEAD07A3910A8CFD /* NapCatPhoneTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7735B80224CC871C6847993D /* NapCatPhone */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C98D5CCDC3883EEB731399D2 /* Build configuration list for PBXNativeTarget "NapCatPhone" */;
+			buildPhases = (
+				905A24164434014DC09ABC59 /* Sources */,
+				4D29423BFBCB9AE7AF45D95C /* Resources */,
+				F286CAEF1C75588EC3E0F4EE /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4870BE70F3F3560FE42D2CC4 /* NapCatPhone */,
+			);
+			name = NapCatPhone;
+			packageProductDependencies = (
+				20BAD925B0425BDAE07EE7D7 /* NapCatWire */,
+			);
+			productName = NapCatPhone;
+			productReference = 24B1A18D6412400119E30DEF /* NapCatPhone.app */;
+			productType = "com.apple.product-type.application";
+		};
+		7D1F6F03A15A50F8B7D036EF /* NapCatPhoneTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 17F799E2E020B512DD139814 /* Build configuration list for PBXNativeTarget "NapCatPhoneTests" */;
+			buildPhases = (
+				E358051CC5FF84A40EC3FF6B /* Sources */,
+				CDB20CA278E509DF671C277E /* Resources */,
+				27405F8A519AD85F007B01AE /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				011D8F3F4085E64DB15671BB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				14A6CD4EBD30BA496D53DCDE /* NapCatPhoneTests */,
+			);
+			name = NapCatPhoneTests;
+			packageProductDependencies = (
+				B7AA02646492D041AE0C117E /* NapCatWire */,
+			);
+			productName = NapCatPhoneTests;
+			productReference = 5D3691C8BEAD07A3910A8CFD /* NapCatPhoneTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		3D5CB091D6E346974718B164 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = ED75C7F0734340C1A6BFE269 /* Build configuration list for PBXProject "NapCatPhone" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = BD55339FB5BAD740A4C5BD9E;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				F9CF72ED83EB6853363C8F83 /* XCLocalSwiftPackageReference "../.." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = EF90CA9B9CD4309BDDB64ED4 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7735B80224CC871C6847993D /* NapCatPhone */,
+				7D1F6F03A15A50F8B7D036EF /* NapCatPhoneTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4D29423BFBCB9AE7AF45D95C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1F9155456E79460B1AA938C3 /* groom-source.png in Resources */,
+				12806947F9B337FCF25FD29E /* idle0@2x.png in Resources */,
+				2894E67D92B22803EBCA19A4 /* idle10@2x.png in Resources */,
+				6293F4821F877502A0AF405C /* idle11@2x.png in Resources */,
+				71308D2AC6AE1ECB51A559CF /* idle12@2x.png in Resources */,
+				7B1318A3B7F49E0A35B7A5C4 /* idle13@2x.png in Resources */,
+				1990190648612DB1D9BB7CB5 /* idle14@2x.png in Resources */,
+				9875B52CEB90DCFFEEFCAE7F /* idle15@2x.png in Resources */,
+				CF747BB4AC943093783D1A4B /* idle16@2x.png in Resources */,
+				894CE755290AD1D98B9A7BD5 /* idle1@2x.png in Resources */,
+				60068A508F11838D3958278D /* idle2@2x.png in Resources */,
+				32A7553B728693DB7D3194B1 /* idle3@2x.png in Resources */,
+				E28EE72920B000350D68E7B4 /* idle4@2x.png in Resources */,
+				9EC23BFB4BD7020CF8A06B47 /* idle5@2x.png in Resources */,
+				376334E885AF1D83CBEFDA9C /* idle6@2x.png in Resources */,
+				8F49A43AD0AF16E1145F166F /* idle7@2x.png in Resources */,
+				269D8783CE1E5ADFC45A20F6 /* idle8@2x.png in Resources */,
+				77BB70F2B4D07697576B7B06 /* idle9@2x.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CDB20CA278E509DF671C277E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		905A24164434014DC09ABC59 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E358051CC5FF84A40EC3FF6B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		011D8F3F4085E64DB15671BB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7735B80224CC871C6847993D /* NapCatPhone */;
+			targetProxy = 8EA8B9516330D395603C7A24 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		31457E84AEA601ACB3361D5F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		9DB041B2C5E59904D9E6DF62 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NapCat;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.muratalkan.napcat.phone;
+				PRODUCT_NAME = NapCatPhone;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		D0ED0521B4B8D7E03174BB29 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.muratalkan.napcat.phone.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NapCatPhone.app/NapCatPhone";
+			};
+			name = Debug;
+		};
+		D223D98496994E01304C216C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NapCat;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.muratalkan.napcat.phone;
+				PRODUCT_NAME = NapCatPhone;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		D7978DC73200D2C16FF23AFD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E02DFB83FA994B1942F9333C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.muratalkan.napcat.phone.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NapCatPhone.app/NapCatPhone";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		17F799E2E020B512DD139814 /* Build configuration list for PBXNativeTarget "NapCatPhoneTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0ED0521B4B8D7E03174BB29 /* Debug */,
+				E02DFB83FA994B1942F9333C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C98D5CCDC3883EEB731399D2 /* Build configuration list for PBXNativeTarget "NapCatPhone" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9DB041B2C5E59904D9E6DF62 /* Debug */,
+				D223D98496994E01304C216C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		ED75C7F0734340C1A6BFE269 /* Build configuration list for PBXProject "NapCatPhone" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D7978DC73200D2C16FF23AFD /* Debug */,
+				31457E84AEA601ACB3361D5F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		F9CF72ED83EB6853363C8F83 /* XCLocalSwiftPackageReference "../.." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		20BAD925B0425BDAE07EE7D7 /* NapCatWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = NapCatWire;
+		};
+		B7AA02646492D041AE0C117E /* NapCatWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = NapCatWire;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 3D5CB091D6E346974718B164 /* Project object */;
+}

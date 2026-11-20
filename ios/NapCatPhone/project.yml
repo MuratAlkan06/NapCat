@@ -1,0 +1,87 @@
+# XcodeGen spec for NapCat Phone, the iOS receiver (F3). This file is the
+# source of truth; NapCatPhone.xcodeproj is GENERATED from it and committed so
+# the app builds with Xcode alone. After editing this file run, from this
+# directory, `xcodegen generate` and commit both. Never hand-edit the
+# .xcodeproj.
+#
+# The app's own sources are a synchronized folder (Xcode 16+), so adding or
+# removing a Swift file under NapCatPhone/ does not change the project file.
+name: NapCatPhone
+options:
+  bundleIdPrefix: com.muratalkan.napcat
+  deploymentTarget:
+    iOS: "18.0"
+  projectFormat: xcode16_0
+  createIntermediateGroups: false
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  # The repository root. Only its `NapCatWire` product (the wire contract,
+  # constants only) is linked; the Mac app's targets are never built here.
+  NapCat:
+    path: ../..
+targets:
+  NapCatPhone:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: NapCatPhone
+        type: syncedFolder
+      # The repository's own committed art, referenced in place (never
+      # copied): the menu-bar idle cycle and the grooming-cat source drawing.
+      - path: ../../Resources/frames
+        group: RepoArt
+        includes:
+          - "idle*@2x.png"
+        buildPhase: resources
+      - path: ../../art/groom-source.png
+        group: RepoArt
+        buildPhase: resources
+    dependencies:
+      - package: NapCat
+        product: NapCatWire
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.muratalkan.napcat.phone
+        PRODUCT_NAME: NapCatPhone
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: NapCat
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        ENABLE_PREVIEWS: YES
+  # Unit tests (Swift Testing), hosted in the app, run on the simulator.
+  NapCatPhoneTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: NapCatPhoneTests
+        type: syncedFolder
+    dependencies:
+      - target: NapCatPhone
+      - package: NapCat
+        product: NapCatWire
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.muratalkan.napcat.phone.tests
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  NapCatPhone:
+    build:
+      targets:
+        NapCatPhone: all
+        NapCatPhoneTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - NapCatPhoneTests
