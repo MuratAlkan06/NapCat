@@ -96,7 +96,7 @@ body {
 .wrap {
   max-width: var(--measure);
   margin: 0 auto;
-  padding: 0 var(--space-4);
+  padding-inline: var(--space-4);
 }
 
 a {
@@ -407,6 +407,24 @@ code.cmd {
   white-space: nowrap;
 }
 
+/* Sign-off: the page ends on the cat from the menu bar, grooming, at rest.
+   Static: the hero's groom stays the page's one animation. */
+
+.sign-off {
+  padding: var(--space-5) 0 var(--space-7);
+  text-align: center;
+}
+
+.sign-off-cat {
+  display: block;
+  margin: 0 auto var(--space-3);
+}
+
+.sign-off p {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
 /* Footer */
 
 .site-footer {
@@ -426,6 +444,6 @@ code.cmd {
   }
 
   .wrap {
-    padding: 0 var(--space-5);
+    padding-inline: var(--space-5);
   }
 }
