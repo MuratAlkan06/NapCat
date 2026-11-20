@@ -386,6 +386,151 @@ struct FrameAssetTests {
         }
     }
 
+    // MARK: - Widened interior details (issue #59)
+
+    private static var idleArtDirectory: URL {
+        framesDirectory
+            .deletingLastPathComponent() // Resources
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("art/idle", isDirectory: true)
+    }
+
+    /// Straight alpha of a square PNG, top row first (CoreGraphics decode, as
+    /// in scripts/render_frames.swift; alpha survives premultiplication).
+    private static func squareAlpha(_ url: URL) throws -> (side: Int, alpha: [UInt8]) {
+        let image = try #require(NSImage(contentsOf: url), "missing \(url.lastPathComponent)")
+        let cg = try #require(image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+                              "\(url.lastPathComponent): undecodable")
+        let side = cg.width
+        try #require(cg.height == side, "\(url.lastPathComponent): not square")
+        var rgba = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        try #require(drawn, "\(url.lastPathComponent): could not create a decode context")
+        return (side, (0..<(side * side)).map { rgba[$0 * 4 + 3] })
+    }
+
+    /// Pixels of a side×side grid reachable from its border through
+    /// 8-connected `passable` pixels. Span fill (each seed claims its whole
+    /// row run, then seeds the runs above and below, one pixel past each end
+    /// for the diagonals) — the debug test build floods the 640² sources
+    /// many times faster this way than pixel by pixel.
+    private static func borderFlood(side: Int, passable: [Bool]) -> [Bool] {
+        var reached = [Bool](repeating: false, count: side * side)
+        var stack: [Int] = []
+        for i in 0..<side { stack += [i, (side - 1) * side + i, i * side, i * side + side - 1] }
+        while let p = stack.popLast() {
+            if reached[p] || !passable[p] { continue }
+            let row = (p / side) * side
+            var left = p - row, right = left
+            while left > 0 && passable[row + left - 1] && !reached[row + left - 1] { left -= 1 }
+            while right < side - 1 && passable[row + right + 1] && !reached[row + right + 1] { right += 1 }
+            for x in left...right { reached[row + x] = true }
+            for neighbourRow in [row - side, row + side] where neighbourRow >= 0 && neighbourRow < side * side {
+                var inRun = false
+                for x in max(0, left - 1)...min(side - 1, right + 1) {
+                    let open = passable[neighbourRow + x] && !reached[neighbourRow + x]
+                    if open && !inRun { stack.append(neighbourRow + x) }
+                    inRun = open
+                }
+            }
+        }
+        return reached
+    }
+
+    /// At icon size a pixel is "see-through" when it shows less than half
+    /// ink (alpha < 128). The frame's OUTSIDE is the see-through region
+    /// reachable from the frame border; see-through pixels it cannot reach
+    /// are interior detail — the holes the eyes, mouth and lines read as.
+    private static let seeThroughAlphaBelow: UInt8 = 128
+
+    private static func iconOutside(_ alpha: [UInt8], side: Int) -> [Bool] {
+        borderFlood(side: side, passable: alpha.map { $0 < seeThroughAlphaBelow })
+    }
+
+    /// DETAIL LOCK (owner, issue #59: the eyes, mouth and paw/leg lines must
+    /// read at menu-bar size). The renderer widens the drawn interior holes
+    /// before the ~15× downscale; without that, the 42px frames keep almost
+    /// none of them as real see-through holes. Measured, not tuned (interior
+    /// detail pixels per @2x frame): the un-widened render (pre-#59) had 0–7;
+    /// widened by 6 / 9 / 12 source px — the three offered strengths — the
+    /// per-frame minimum is 12 / 23 / 33. The bound, 12, therefore passes any
+    /// offered strength without re-deriving, and fails a collapse back to the
+    /// drawn hairlines (every frame) or to a widening of 5 px or less.
+    private static let minimumInteriorDetailPixels = 12
+
+    @Test(arguments: FrameSet.idle.frameNames)
+    func idleFrameKeepsWidenedInteriorDetail(_ name: String) throws {
+        let (side, alpha) = try Self.squareAlpha(Self.framesDirectory.appendingPathComponent("\(name)@2x.png"))
+        let outside = Self.iconOutside(alpha, side: side)
+        let interiorDetail = (0..<(side * side)).filter { !outside[$0] && alpha[$0] < Self.seeThroughAlphaBelow }.count
+        #expect(interiorDetail >= Self.minimumInteriorDetailPixels,
+            "\(name)@2x: only \(interiorDetail) see-through interior detail pixels (need ≥ \(Self.minimumInteriorDetailPixels)) — the widened eyes/mouth/lines collapsed")
+    }
+
+    /// SILHOUETTE LOCK (issue #59). Widening may only open holes INSIDE the
+    /// drawn cat; it must never merge a detail into the outside. So every
+    /// pixel a @2x frame shows as outside must be outside in the art too:
+    /// the source square it was averaged from must contain a pixel of the
+    /// art's exterior (8-connected to the canvas border through alpha ≤ 10)
+    /// or reach off the canvas. The squares follow the renderer's ONE union
+    /// crop (alpha > 10 bounding box over all 17 sources, longer edge × 1.08,
+    /// centred — scripts/render_frames.swift `paddedCropSquare`). Measured:
+    /// the un-widened render and all three offered strengths pass; the same
+    /// widening with a 3 px outline guard instead of 16 fails frames 0, 12,
+    /// 13 and 14 (a paw line and a leg line visually cut into the outline).
+    @Test func idleFramesShowOutsideOnlyWhereTheArtIsOutside() throws {
+        var sources: [[UInt8]] = []
+        for index in 0..<FrameSet.idle.frameCount {
+            let url = Self.idleArtDirectory.appendingPathComponent(String(format: "idle%02d.png", index))
+            let (side, alpha) = try Self.squareAlpha(url)
+            try #require(side == 640, "\(url.lastPathComponent): idle sources are 640×640")
+            sources.append(alpha)
+        }
+        let n = 640
+        var minX = n, minY = n, maxX = -1, maxY = -1
+        for alpha in sources {
+            for y in 0..<n { for x in 0..<n where alpha[y * n + x] > 10 {
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            }}
+        }
+        let width = Double(maxX - minX + 1), height = Double(maxY - minY + 1)
+        let cropSide = max(width, height) * 1.08
+        let originX = Double(minX) - (cropSide - width) / 2
+        let originY = Double(minY) - (cropSide - height) / 2
+
+        for (index, name) in FrameSet.idle.frameNames.enumerated() {
+            let artExterior = Self.borderFlood(side: n, passable: sources[index].map { $0 <= 10 })
+            let (side, alpha) = try Self.squareAlpha(Self.framesDirectory.appendingPathComponent("\(name)@2x.png"))
+            let step = cropSide / Double(side)
+            let outside = Self.iconOutside(alpha, side: side)
+            var strays: [String] = []
+            for p in 0..<(side * side) where outside[p] {
+                let i = p % side, j = p / side
+                let x0 = Int((originX + Double(i) * step).rounded(.down))
+                let x1 = Int((originX + Double(i + 1) * step).rounded(.up))
+                let y0 = Int((originY + Double(j) * step).rounded(.down))
+                let y1 = Int((originY + Double(j + 1) * step).rounded(.up))
+                var touchesArtOutside = false
+                search: for y in y0..<y1 {
+                    for x in x0..<x1 where x < 0 || y < 0 || x >= n || y >= n || artExterior[y * n + x] {
+                        touchesArtOutside = true
+                        break search
+                    }
+                }
+                if !touchesArtOutside { strays.append("(\(i), \(j))") }
+            }
+            #expect(strays.isEmpty,
+                "\(name)@2x: shows outside at \(strays) where the art is solid cat — a widened detail breached the silhouette")
+        }
+    }
+
     /// The directory contains exactly the 48 expected PNGs — no stale
     /// leftovers from renamed frames.
     @Test func framesDirectoryContainsExactlyTheExpectedFiles() throws {
