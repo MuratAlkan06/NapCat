@@ -15,7 +15,9 @@
 //       frames scaled for iconPointHeight=21: <name>.png = 21×21 @1x,
 //       <name>@2x.png = 42×42 @2x (a true higher-resolution render, not pixel
 //       doubling). ONE union crop for all 17 frames, so the cat never
-//       jitters. See the idle-cycle pipeline below. (It replaced the static
+//       jitters. The drawn interior details (eyes, mouth, paw/leg lines) are
+//       widened at source resolution first so they read at icon size. See the
+//       idle-cycle pipeline below. (It replaced the static
 //       grooming-cat "sleep" still from art/groom-source.png, 2026-11-19; that
 //       source now feeds only scripts/render_appicon.swift.)
 //
@@ -315,15 +317,26 @@ func rasterize(grid: [String], scale: Int) -> [UInt8] {
 // 00–04 paw-lick with eyes closed, 05–11 paw lowers / eyes open, 12–16
 // upright sit) are WHITE art on transparency whose interior details — eyes,
 // mouth, paw and leg lines — are drawn as transparent HOLES. The alpha
-// channel alone therefore carries the whole drawing, and no outline/interior
-// classification is needed (unlike the retired dark-stroke groom pipeline).
-// Steps (all deterministic; standing art rulings — no hard threshold, no
-// dilation):
+// channel alone therefore carries the whole drawing (unlike the retired
+// dark-stroke groom pipeline, no dark-outline classification is needed).
+// Steps (all deterministic; standing art rulings — NO hard threshold and NO
+// dilation on the final rasters. Step 2b, the owner-requested detail
+// widening of issue #59, opens the source HOLES before the downscale; the
+// silhouette and steps 3–5 stay exactly as ruled):
 //   1. Decode + validate: exactly idle00…idle16 present, each 640×640, every
 //      visible pixel LIGHT. A dark opaque stroke would be blackened into the
 //      body and silently lose its detail, so it fails the render loudly.
 //   2. Template: alpha kept exactly as drawn, RGB → 0 (pure black + alpha);
 //      the interior holes stay transparent → negative-space detail.
+//   2b. Widen the interior details (owner request, issue #59, 2026-11-19):
+//      the ~15× downscale + γ boost filled the 4–8 px drawn holes in until
+//      the face and paws no longer read. Transparency reachable from the
+//      canvas border is the EXTERIOR; every other at-least-half-transparent
+//      pixel is a drawn DETAIL. Details grow by a disc of
+//      `idleDetailWidenRadius` source px, but never within `idleOutlineGuard`
+//      px of the exterior or the canvas edge, so the silhouette is untouched
+//      and its outline stays visibly closed at icon size. The render fails
+//      loudly if a widened detail ever touches or merges into the exterior.
 //   3. ONE union bounding box across all 17 frames → centred square +4% pad
 //      per side. Every frame uses that single crop, so the cat never jitters
 //      frame to frame (only the drawn motion moves).
@@ -334,6 +347,29 @@ let idleFrameCount = 17
 
 /// Every idle source (art/idle/*.png) is a 640×640 export.
 let sourceSize = 640
+
+/// Interior-detail widening strength (step 2b): source pixels added to EACH
+/// side of every drawn detail (disc kernel). Owner-tunable — the previews
+/// offered 6 (subtle), 9 (medium) and 12 (bold); changing it is this one
+/// line plus `make frames`.
+let idleDetailWidenRadius = 6
+
+/// Minimum distance, in source pixels, between any widened pixel and the
+/// exterior (or the canvas edge). About one pixel of the 42px frame (the crop
+/// maps ≈16.4 source px onto one @2x pixel), so the outline that separates a
+/// widened detail from the outside survives the downscale as a visible wall
+/// instead of a sub-pixel sliver that the area average washes out.
+let idleOutlineGuard = 16
+
+/// The exterior flood passes only through effectively empty pixels — alpha
+/// ≤ 10, the same "not visible art" cutoff `alphaBBox` uses — so the
+/// anti-aliased fringe around a drawn detail walls it off from the outside.
+let idleExteriorMaxAlpha: UInt8 = 10
+
+/// A non-exterior pixel at least half transparent belongs to a drawn detail.
+/// The details are anti-aliased: a hairline's core often never reaches the
+/// exterior cutoff, so a stricter test would widen it as scattered dots.
+let idleDetailMaxAlpha: UInt8 = 127
 
 /// Decode a committed hand-drawn source into straight (un-premultiplied)
 /// RGBA, top row first. CoreGraphics decode of a fixed file is reproducible.
@@ -457,6 +493,162 @@ func idleTemplateAlpha(_ px: [UInt8], name: String) -> [UInt8] {
     return alpha
 }
 
+/// Pixels reachable from the canvas border through 8-connected exterior
+/// transparency (alpha ≤ `idleExteriorMaxAlpha`) in a sourceSize² mask.
+/// Span fill: each popped seed claims its whole horizontal run, then seeds
+/// every run in the rows above and below that touches it — diagonals
+/// included (the scan spans one pixel past each end). Same set as a
+/// pixel-by-pixel flood, many times faster under `swift`'s unoptimised
+/// script mode.
+func exteriorMask(_ a: [UInt8]) -> [Bool] {
+    let n = sourceSize
+    var exterior = [Bool](repeating: false, count: n * n)
+    var stack: [Int] = []
+    for i in 0..<n { stack += [i, (n - 1) * n + i, i * n, i * n + n - 1] }
+    while let p = stack.popLast() {
+        if exterior[p] || a[p] > idleExteriorMaxAlpha { continue }
+        let row = (p / n) * n
+        var left = p - row, right = left
+        while left > 0 && !exterior[row + left - 1] && a[row + left - 1] <= idleExteriorMaxAlpha { left -= 1 }
+        while right < n - 1 && !exterior[row + right + 1] && a[row + right + 1] <= idleExteriorMaxAlpha { right += 1 }
+        var x = left
+        while x <= right { exterior[row + x] = true; x += 1 }
+        for neighbourRow in [row - n, row + n] where neighbourRow >= 0 && neighbourRow < n * n {
+            var inRun = false
+            x = max(0, left - 1)
+            while x <= min(n - 1, right + 1) {
+                let q = neighbourRow + x
+                let open = !exterior[q] && a[q] <= idleExteriorMaxAlpha
+                if open && !inRun { stack.append(q) }
+                inRun = open
+                x += 1
+            }
+        }
+    }
+    return exterior
+}
+
+/// Exact squared Euclidean distance from every pixel to the nearest `true`
+/// pixel of a sourceSize² mask (Meijster, Roerdink & Hesselink 2000):
+/// integer-only, so it is deterministic. A mask with no `true` pixel yields
+/// distances far beyond any radius used here. (Plain while loops and no
+/// nested helper functions: `swift`'s unoptimised script mode runs them
+/// several times faster.)
+func squaredDistanceTransform(_ mask: [Bool]) -> [Int] {
+    let n = sourceSize
+    let far = 2 * n
+    // Phase 1: per column, the distance g to the nearest feature in that
+    // column; phase 2 only needs it squared (g2).
+    var g = [Int](repeating: 0, count: n * n)
+    for x in 0..<n {
+        g[x] = mask[x] ? 0 : far
+        var y = 1
+        while y < n {
+            let p = y * n + x
+            g[p] = mask[p] ? 0 : min(far, g[p - n] + 1)
+            y += 1
+        }
+        y = n - 2
+        while y >= 0 {
+            let p = y * n + x
+            if g[p + n] < g[p] { g[p] = g[p + n] + 1 }
+            y -= 1
+        }
+    }
+    let g2 = g.map { $0 * $0 }
+    // Phase 2: per row, the lower envelope of the parabolas (x−i)² + g²(i):
+    // s = the envelope's parabola apexes, t = where each takes over.
+    var result = [Int](repeating: 0, count: n * n)
+    var s = [Int](repeating: 0, count: n), t = [Int](repeating: 0, count: n)
+    var row = 0
+    while row < n * n {
+        var q = 0
+        s[0] = 0; t[0] = 0
+        var u = 1
+        while u < n {
+            // Drop envelope parabolas that u's parabola beats at their start.
+            while q >= 0 {
+                let start = t[q], apex = s[q]
+                let old = (start - apex) * (start - apex) + g2[row + apex]
+                let new = (start - u) * (start - u) + g2[row + u]
+                if old > new { q -= 1 } else { break }
+            }
+            if q < 0 {
+                q = 0; s[0] = u
+            } else {
+                // Floor of the intersection abscissa (denominator > 0), + 1.
+                let i = s[q]
+                let num = u * u - i * i + g2[row + u] - g2[row + i]
+                let den = 2 * (u - i)
+                let w = 1 + (num >= 0 ? num / den : -((-num + den - 1) / den))
+                if w < n { q += 1; s[q] = u; t[q] = w }
+            }
+            u += 1
+        }
+        u = n - 1
+        while u >= 0 {
+            let i = s[q]
+            result[row + u] = (u - i) * (u - i) + g2[row + i]
+            if u == t[q] { q -= 1 }
+            u -= 1
+        }
+        row += n
+    }
+    return result
+}
+
+/// Step 2b for one idle template alpha: grow the drawn interior details by a
+/// disc of `idleDetailWidenRadius`, clamped `idleOutlineGuard` px clear of the
+/// exterior and the canvas edge. Widened pixels become fully transparent;
+/// every other pixel keeps its drawn alpha. Fails the render if a detail
+/// merges into the exterior or a widened pixel touches an exterior-adjacent
+/// pixel or the canvas edge.
+func widenInteriorDetails(_ alpha: [UInt8], name: String) -> [UInt8] {
+    let n = sourceSize
+    let exterior = exteriorMask(alpha)
+    // Keep-out features: the exterior plus the canvas edge (art that touches
+    // the edge has no exterior pixel beyond it, but the crop treats
+    // off-canvas as empty, so the edge is outline too).
+    var keepOut = exterior
+    for i in 0..<n {
+        keepOut[i] = true; keepOut[(n - 1) * n + i] = true
+        keepOut[i * n] = true; keepOut[i * n + n - 1] = true
+    }
+    let keepOutDistance = squaredDistanceTransform(keepOut)
+    let guardSquared = idleOutlineGuard * idleOutlineGuard
+    var details = [Bool](repeating: false, count: n * n)
+    for p in 0..<(n * n) where !exterior[p] && alpha[p] <= idleDetailMaxAlpha && keepOutDistance[p] > guardSquared {
+        details[p] = true
+    }
+    let detailDistance = squaredDistanceTransform(details)
+    let radiusSquared = idleDetailWidenRadius * idleDetailWidenRadius
+    var widened = alpha
+    for p in 0..<(n * n) where detailDistance[p] <= radiusSquared && keepOutDistance[p] > guardSquared {
+        widened[p] = 0
+    }
+    // Silhouette check, independent of the distance transforms above: the
+    // exterior recomputed from the widened art must be exactly the drawn one
+    // (no detail merged into it), and no changed pixel may touch an
+    // exterior-adjacent pixel or the canvas edge — every widened detail keeps
+    // at least a 2 px wall of drawn art between itself and the outside.
+    let widenedExterior = exteriorMask(widened)
+    guard widenedExterior == exterior else {
+        fail("\(name): a widened interior detail merged into the exterior — the silhouette would breach")
+    }
+    for p in 0..<(n * n) where widened[p] != alpha[p] {
+        let x = p % n, y = p / n
+        guard x >= 2 && y >= 2 && x < n - 2 && y < n - 2 else {
+            fail("\(name): widened detail pixel (\(x), \(y)) touches the canvas edge")
+        }
+        for dy in -2...2 {
+            for dx in -2...2 where widenedExterior[(y + dy) * n + x + dx] {
+                fail("\(name): widened detail pixel (\(x), \(y)) touches an exterior-adjacent pixel")
+            }
+        }
+    }
+    return widened
+}
+
 // MARK: - Resolve the repo root from the script's own path (works from any cwd)
 
 let scriptPath = CommandLine.arguments.first ?? "scripts/render_frames.swift"
@@ -502,7 +694,9 @@ guard Set(idleSourcesOnDisk) == Set(idleSourceNames) else {
     fail("art/idle must hold exactly \(idleSourceNames.first!)…\(idleSourceNames.last!), found \(idleSourcesOnDisk.sorted())")
 }
 let idleMasks = idleSourceNames.map { name in
-    idleTemplateAlpha(decodeSource(path: idleSourceDirectory.appendingPathComponent(name).path), name: name)
+    widenInteriorDetails(
+        idleTemplateAlpha(decodeSource(path: idleSourceDirectory.appendingPathComponent(name).path), name: name),
+        name: name)
 }
 var idleUnion: BBox = (sourceSize, sourceSize, -1, -1)
 for (name, mask) in zip(idleSourceNames, idleMasks) {
@@ -520,4 +714,4 @@ for (index, mask) in idleMasks.enumerated() {
     }
 }
 
-print("render_frames: \(gridFrames.count) grid + \(idleFrameCount) idle frames -> \(outputDirectory.path)")
+print("render_frames: \(gridFrames.count) grid + \(idleFrameCount) idle frames (details widened r=\(idleDetailWidenRadius), guard \(idleOutlineGuard)) -> \(outputDirectory.path)")
