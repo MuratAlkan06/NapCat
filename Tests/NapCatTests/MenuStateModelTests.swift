@@ -15,12 +15,17 @@ struct MenuStateModelTests {
 
     @MainActor
     private func makeModel(
-        simulator: DebugPowerSimulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        simulator: DebugPowerSimulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true),
+        turnOn: StayAwakeTurnOnFeedback? = nil
     ) -> MenuStateModel {
         let defaults = UserDefaults(suiteName: Self.testSuite)!
         defaults.removePersistentDomain(forName: Self.testSuite)
         let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
-        return MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter, simulator: simulator)
+        guard let turnOn else {
+            return MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter, simulator: simulator)
+        }
+        return MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter, simulator: simulator,
+                              stayAwakeTurnOn: turnOn)
     }
 
     // MARK: Live wiring (menu stays open; panel updates in place)
@@ -34,6 +39,122 @@ struct MenuStateModelTests {
         model.setStayAwake(true)
         model.setStayAwake(false)
         #expect(recorded == [true, false])
+    }
+
+    // MARK: Stay Awake "Turning on…" (owner ruling e) — injected clock, no sleeps
+
+    /// The three locked cases, each on a manual clock (time only moves when
+    /// the test advances it). Fast confirm: pmset confirms inside the hold, so
+    /// the caption never appears, not even when the hold runs out later.
+    @Test @MainActor func aFastConfirmNeverShowsTheCaption() {
+        let clock = ManualTurnOnClock()
+        let feedback = StayAwakeTurnOnFeedback(after: clock.clock)
+        feedback.flippedOn()
+        #expect(clock.scheduledDelays == [PanelMotion.turnOnCaptionDelay])
+        #expect(Self.slot(observed: false, feedback) == nil, "no caption inside the hold")
+        clock.advance(to: 0.2)
+        feedback.observed(true)
+        #expect(feedback.phase == .idle)
+        clock.advance(to: 0.5)
+        #expect(feedback.phase == .idle, "the expired hold cannot resurrect a confirmed turn-on")
+        #expect(Self.slot(observed: true, feedback) == nil)
+    }
+
+    /// Slow confirm: still unconfirmed when the hold runs out ⇒ "Turning on…".
+    @Test @MainActor func aSlowConfirmShowsTheCaptionWhenTheHoldRunsOut() throws {
+        let clock = ManualTurnOnClock()
+        let feedback = StayAwakeTurnOnFeedback(after: clock.clock)
+        feedback.flippedOn()
+        clock.advance(to: 0.399)
+        #expect(feedback.phase == .waiting)
+        #expect(Self.slot(observed: false, feedback) == nil, "not before the ~400 ms hold")
+        clock.advance(to: 0.4)
+        #expect(feedback.phase == .showing)
+        let line = try #require(Self.slot(observed: false, feedback))
+        #expect(line == PanelLine(text: "Turning on…", severity: .nominal))
+    }
+
+    /// Confirm clears: the caption goes as soon as pmset reports ON, and a
+    /// later OFF does not bring it back.
+    @Test @MainActor func theConfirmClearsTheCaption() {
+        let clock = ManualTurnOnClock()
+        let feedback = StayAwakeTurnOnFeedback(after: clock.clock)
+        feedback.flippedOn()
+        clock.advance(to: 0.5)
+        #expect(Self.slot(observed: false, feedback) != nil, "vacuity: the caption was showing")
+        feedback.observed(false)
+        #expect(feedback.phase == .showing, "an unconfirmed read keeps it")
+        clock.advance(to: 0.9)
+        feedback.observed(true)
+        #expect(feedback.phase == .idle)
+        #expect(Self.slot(observed: true, feedback) == nil)
+        feedback.observed(false)
+        #expect(Self.slot(observed: false, feedback) == nil, "turning off later shows nothing")
+    }
+
+    /// One hold per flip: a repeat flip while pending schedules nothing, and a
+    /// hold left over from an earlier, confirmed flip cannot promote a newer
+    /// one early.
+    @Test @MainActor func aStaleHoldNeverPromotesANewerFlip() {
+        let clock = ManualTurnOnClock()
+        let feedback = StayAwakeTurnOnFeedback(after: clock.clock)
+        feedback.flippedOn()
+        clock.advance(to: 0.05)
+        feedback.flippedOn()
+        #expect(clock.scheduledDelays.count == 1, "a repeat flip while pending starts no second hold")
+        clock.advance(to: 0.1)
+        feedback.observed(true)
+        clock.advance(to: 0.2)
+        feedback.flippedOn()                       // a new turn-on: its hold ends at 0.2 + 0.4
+        clock.advance(to: 0.4)                     // the FIRST hold ends here
+        #expect(feedback.phase == .waiting, "the stale hold was ignored")
+        clock.advance(to: 0.65)                    // past the second hold (0.2 + 0.4 is not exactly 0.6 in binary)
+        #expect(feedback.phase == .showing)
+    }
+
+    /// Every menu open starts clean: a failed attempt (reported by its own
+    /// alert, with the menu closed) never leaves a stale caption.
+    @Test @MainActor func openingThePanelClearsAStaleCaption() {
+        let clock = ManualTurnOnClock()
+        let feedback = StayAwakeTurnOnFeedback(after: clock.clock)
+        feedback.flippedOn()
+        clock.advance(to: 1)
+        #expect(feedback.phase == .showing)
+        feedback.panelOpened()
+        #expect(feedback.phase == .idle)
+        #expect(Self.slot(observed: false, feedback) == nil)
+    }
+
+    /// Through the model: flipping ON starts the hold BEFORE the request is
+    /// forwarded (so a confirm published during the forward clears it).
+    /// Flipping OFF — the disable path — forwards exactly as before and never
+    /// touches the feedback: no phase change, no hold, ever.
+    @Test @MainActor func onlyFlippingOnStartsTheTurnOnFeedback() {
+        let clock = ManualTurnOnClock()
+        let model = makeModel(turnOn: StayAwakeTurnOnFeedback(after: clock.clock))
+        var forwarded: [(desired: Bool, phase: StayAwakeTurnOnPhase)] = []
+        model.requestStayAwakeToggle = { forwarded.append(($0, model.stayAwakeTurnOn.phase)) }
+
+        model.setStayAwake(false)
+        #expect(forwarded.map(\.desired) == [false])
+        #expect(model.stayAwakeTurnOn.phase == .idle)
+        #expect(clock.scheduledDelays.isEmpty, "the disable path schedules nothing")
+        clock.advance(to: 10)
+        #expect(model.stayAwakeTurnOn.phase == .idle)
+
+        model.setStayAwake(true)
+        #expect(forwarded.map(\.desired) == [false, true])
+        #expect(forwarded.last?.phase == .waiting, "the hold starts before the forward")
+        #expect(clock.scheduledDelays == [PanelMotion.turnOnCaptionDelay])
+        model.refresh()
+        #expect(model.stayAwakeTurnOn.phase == .waiting, "an unconfirmed refresh keeps it pending")
+        clock.advance(to: 10.4)
+        #expect(model.stayAwakeTurnOn.phase == .showing)
+    }
+
+    @MainActor
+    private static func slot(observed: Bool?, _ feedback: StayAwakeTurnOnFeedback) -> PanelLine? {
+        MenuStateModel.stayAwakeSlot(observed: observed, turnOn: feedback.phase)
     }
 
     /// Track C: flipping the detection pause tells the owner (MenuContentView
@@ -574,5 +695,29 @@ struct MenuStateModelTests {
             #expect(menu.model.finishAlertStatus == PanelLine(text: "Session alerts: set an ntfy topic to arm them",
                                                               severity: .warning))
         }
+    }
+}
+
+/// The injected clock for `StayAwakeTurnOnFeedback` (owner ruling e): it
+/// records each scheduled hold and fires it only when a test advances time
+/// past its due moment, so no test ever sleeps.
+@MainActor
+final class ManualTurnOnClock {
+    private(set) var now = 0.0
+    private(set) var scheduledDelays: [Double] = []
+    private var pending: [(due: Double, fire: @MainActor @Sendable () -> Void)] = []
+
+    var clock: StayAwakeTurnOnFeedback.Clock {
+        { [self] delay, fire in
+            scheduledDelays.append(delay)
+            pending.append((now + delay, fire))
+        }
+    }
+
+    func advance(to time: Double) {
+        now = time
+        let due = pending.filter { $0.due <= time }
+        pending.removeAll { $0.due <= time }
+        for hold in due { hold.fire() }
     }
 }

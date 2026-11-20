@@ -65,25 +65,37 @@ enum PanelMetrics {
 /// - Zero motion on open / close: the menu window appears and disappears in
 ///   one step, its height changes snap (`MenuPanelHostingView`), and no view
 ///   animates its own insertion or removal.
-/// - Every animation is an ease-out of at most `maxDuration`. The frozen
-///   motion lint (`MenuPanelStructureTests.motionIsGatedAndShort`) holds the
-///   panel to a tighter 200 ms, inside this ceiling.
+/// - Every animation is an ease-out of at most `maxDuration`. The motion lint
+///   (`MenuPanelStructureTests.motionIsGatedAndShort`, amended by owner
+///   ruling f on 2026-11-20) holds the panel to a tighter 200 ms, inside this
+///   ceiling.
 /// - Every animation is nil under Reduce Motion — the chevron's pattern,
 ///   `.animation(reduceMotion ? nil : .easeOut(duration: …), value: …)`.
-/// - Observed-state changes never animate.
+/// - Only values the user drives animate: the Details chevron, a button's
+///   press, and the charge-limit readout (the owner's one exemption — the
+///   limit is the slider's own value). Observed-state changes never animate.
 ///
-/// The animated lines spell their duration as a literal (the frozen lint
+/// The animated lines spell their duration as a literal (the motion lint
 /// reads it); `panelMotionCodifiesEveryAnimation` holds each literal to one
 /// of the durations below.
 enum PanelMotion {
-    /// The Details chevron's turn — the panel's one animation since the
-    /// 2026-10-18 freeze.
+    /// The Details chevron's turn — the panel's first animation (2026-10-18
+    /// freeze).
     static let chevron: Double = 0.15
-    /// The pressed-state fade of a plain-style panel button.
+    /// The pressed-state fade of a plain-style panel button
+    /// (`PanelPressFadeButtonStyle`).
     static let pressFade: Double = 0.10
+    /// A pressed plain-style panel button's opacity, reached over `pressFade`.
+    static let pressedOpacity: Double = 0.7
+    /// The charge-limit readout's digit roll (`ChargeLimitReadout`).
+    static let limitReadout: Double = 0.2
     /// How long the test send's "Sent" acknowledgment holds before the
     /// button reverts. A hold, not an animation: the label swap snaps.
     static let sentRevert: Double = 1.5
+    /// How long a flipped-ON Stay Awake switch waits for pmset to confirm
+    /// before its row says "Turning on…" (owner ruling e). A hold, not an
+    /// animation: the caption snaps in, and a fast confirm never shows it.
+    static let turnOnCaptionDelay: Double = 0.4
     /// The ceiling for any panel animation.
     static let maxDuration: Double = 0.3
 }
@@ -277,6 +289,23 @@ struct StayAwakeToggle: View {
     }
 }
 
+/// The Stay Awake row's caption slot (`MenuStateModel.stayAwakeSlot`): the
+/// unreadable-state warning, or (owner ruling e) the transient "Turning on…"
+/// in the quiet nominal caption style while a flipped-ON switch waits past
+/// `PanelMotion.turnOnCaptionDelay` for pmset to confirm. It is the ONLY view
+/// observing `StayAwakeTurnOnFeedback`, so a flip re-renders this slot and
+/// never the switch.
+struct StayAwakeCaptionSlot: View {
+    @ObservedObject var model: MenuStateModel
+    @ObservedObject var turnOn: StayAwakeTurnOnFeedback
+
+    var body: some View {
+        if let line = MenuStateModel.stayAwakeSlot(observed: model.stayAwakeObserved, turnOn: turnOn.phase) {
+            PanelCaptionLine(line: line)
+        }
+    }
+}
+
 /// One click: lock the session AND turn the display off, with the Mac still
 /// running. The menu closes first (the user is walking away) — handled by
 /// MenuContentView through the single dismissal gateway. Since the
@@ -339,6 +368,25 @@ struct ChargeLimitSlider: View {
         .controlSize(.small)
         .disabled(model.featureState == .notSupported || !model.limitEnabled)
         .accessibilityValue(MenuStateModel.limitLabel(limit: model.limit))
+    }
+}
+
+/// The Charge Limit row's live readout (#67, owner ruling f): the limit as
+/// the slider sets it, in monospaced digits that roll as they change, in the
+/// direction of the drag. The roll is keyed on `model.limit`, the user-driven
+/// value the owner exempted from "observed state never animates". It runs
+/// for `PanelMotion.limitReadout` and is nil under Reduce Motion.
+struct ChargeLimitReadout: View {
+    @ObservedObject var model: MenuStateModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
+            .font(.callout)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .contentTransition(.numericText(value: Double(model.limit)))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limit)
     }
 }
 
@@ -561,9 +609,10 @@ struct BatteryHeader: View {
 /// carries the severity icon + tint right here, at top level; the badge then
 /// summarises only the OTHER tucked lines. Toggling is pure model state (never
 /// dismisses the menu); the height change snaps (MenuPanelHostingView) and
-/// only the chevron turns — ≤150ms ease-out, none under Reduce Motion. The
-/// content opens ABOVE the footer, so the expanded chevron points UP at it
-/// (right ▸ collapsed, up ▴ expanded).
+/// only the chevron turns — ≤150ms ease-out, none under Reduce Motion. While
+/// pressed, the button fades to `PanelMotion.pressedOpacity`
+/// (`PanelPressFadeButtonStyle`, #67). The content opens ABOVE the footer, so
+/// the expanded chevron points UP at it (right ▸ collapsed, up ▴ expanded).
 struct PanelDetailsDisclosure: View {
     @ObservedObject var model: MenuStateModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -594,7 +643,7 @@ struct PanelDetailsDisclosure: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PanelPressFadeButtonStyle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Details")
         .accessibilityValue("\(PanelSeverityTint.spoken(label)), \(expanded ? "expanded" : "collapsed")")
@@ -620,6 +669,20 @@ struct PanelDetailsDisclosure: View {
                     .foregroundStyle(PanelSeverityTint.color(badge))
             }
         }
+    }
+}
+
+/// The plain look plus a press state (#67, owner ruling f): while the pointer
+/// holds the button, its label fades to `PanelMotion.pressedOpacity` over
+/// `PanelMotion.pressFade`, and back on release. There is no fade under
+/// Reduce Motion. The press is the user's own, so it may animate.
+struct PanelPressFadeButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 

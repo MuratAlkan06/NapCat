@@ -75,6 +75,91 @@ struct TestSendButtonPresentation: Equatable, Sendable {
     let enabled: Bool
 }
 
+/// Owner ruling (e), 2026-11-20: where a flipped-ON Stay Awake switch stands
+/// while pmset has not confirmed it. Moved ONLY by
+/// `MenuStateModel.stayAwakeTurnOnPhase(_:on:)`, held by
+/// `StayAwakeTurnOnFeedback`.
+enum StayAwakeTurnOnPhase: Equatable, Sendable {
+    /// Nothing pending.
+    case idle
+    /// Flipped ON, inside `PanelMotion.turnOnCaptionDelay`: no caption yet,
+    /// so a fast confirm never flashes one.
+    case waiting
+    /// The hold ran out unconfirmed: the row says "Turning on…".
+    case showing
+}
+
+/// What moves the Stay Awake turn-on phase.
+enum StayAwakeTurnOnEvent: Equatable, Sendable {
+    /// The user flipped the switch ON. Flipping it OFF is not an event: the
+    /// disable path is unchanged.
+    case flippedOn
+    /// `PanelMotion.turnOnCaptionDelay` elapsed since the flip.
+    case holdElapsed
+    /// A published observed `pmset -g` state (nil = unreadable).
+    case observed(Bool?)
+    /// The menu is opening: every panel session starts clean, so a failed
+    /// attempt (reported by its own alert) never leaves a stale caption.
+    case panelOpened
+}
+
+/// The Stay Awake turn-on feedback (owner ruling e): the phase plus its one
+/// timer, behind an injected clock (`after`).
+///
+/// It is its own ObservableObject, deliberately apart from the model. The
+/// switch renders the OBSERVED state (ADR §6), and any model publish
+/// re-renders it, so a flip published through the model would snap the
+/// switch back off before pmset confirms. Only `StayAwakeCaptionSlot`
+/// observes this object, so a flip re-renders the caption slot and never the
+/// switch.
+@MainActor
+final class StayAwakeTurnOnFeedback: ObservableObject {
+    /// Runs `fire` once, `delay` seconds from now.
+    typealias Clock = @MainActor (_ delay: Double, _ fire: @escaping @MainActor @Sendable () -> Void) -> Void
+
+    /// The production clock: a main-actor task sleep. Tests inject a manual
+    /// clock instead, so no test ever sleeps.
+    static let taskClock: Clock = { delay, fire in
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            fire()
+        }
+    }
+
+    @Published private(set) var phase = StayAwakeTurnOnPhase.idle
+    private let after: Clock
+    /// Identifies the live hold, so a hold left over from an earlier flip
+    /// can never promote a newer one.
+    private var holdID = 0
+
+    init(after: @escaping Clock = StayAwakeTurnOnFeedback.taskClock) {
+        self.after = after
+    }
+
+    /// The switch flipped ON. Starts the hold from idle only; a repeat flip
+    /// while one is pending changes nothing.
+    func flippedOn() {
+        guard phase == .idle else { return }
+        apply(.flippedOn)
+        holdID &+= 1
+        let id = holdID
+        after(PanelMotion.turnOnCaptionDelay) { [weak self] in
+            guard let self, self.holdID == id else { return }
+            self.apply(.holdElapsed)
+        }
+    }
+
+    func observed(_ value: Bool?) { apply(.observed(value)) }
+
+    func panelOpened() { apply(.panelOpened) }
+
+    /// Publishes only a real change (the model refreshes often).
+    private func apply(_ event: StayAwakeTurnOnEvent) {
+        let next = MenuStateModel.stayAwakeTurnOnPhase(phase, on: event)
+        if next != phase { phase = next }
+    }
+}
+
 /// Observable bridge between the controllers and the SwiftUI menu panel
 /// (P3b rich-menu decision). Views bind to the @Published mirrors, which are
 /// re-read from the controllers on every change hook and menu open — the UI
@@ -155,6 +240,10 @@ final class MenuStateModel: ObservableObject {
     /// menu opens) and starts collapsed at launch. Collapsing is always safe —
     /// problems never live only in Details (the iron rule).
     @Published private(set) var detailsExpanded = false
+    /// Owner ruling (e): the Stay Awake turn-on feedback. In-memory UI state,
+    /// held OUTSIDE the published mirrors on purpose (see
+    /// `StayAwakeTurnOnFeedback`).
+    let stayAwakeTurnOn: StayAwakeTurnOnFeedback
 
     // MARK: Wiring
 
@@ -215,7 +304,8 @@ final class MenuStateModel: ObservableObject {
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
-        phoneTransport: CompositeMessageSender? = nil
+        phoneTransport: CompositeMessageSender? = nil,
+        stayAwakeTurnOn: StayAwakeTurnOnFeedback = StayAwakeTurnOnFeedback()
     ) {
         self.power = power
         self.sleep = sleep
@@ -227,6 +317,7 @@ final class MenuStateModel: ObservableObject {
         self.lidGuard = lidGuard
         self.finishAlert = finishAlert
         self.phoneTransport = phoneTransport
+        self.stayAwakeTurnOn = stayAwakeTurnOn
         refresh()
     }
 
@@ -237,6 +328,8 @@ final class MenuStateModel: ObservableObject {
         adapterConnected = power.adapterConnected
         hasBattery = power.hasBattery
         stayAwakeObserved = sleep.observedSleepDisabled
+        // Ruling (e): an observed ON is the turn-on's confirm.
+        stayAwakeTurnOn.observed(stayAwakeObserved)
         featureState = limiter.featureState
         limit = limiter.limit
         limitEnabled = limiter.enabled
@@ -280,7 +373,13 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: Actions (forwarded)
 
-    func setStayAwake(_ desired: Bool) { requestStayAwakeToggle?(desired) }
+    /// Flipping ON starts the turn-on feedback BEFORE forwarding, so a confirm
+    /// published during the forward clears it. Flipping OFF only forwards, as
+    /// it always has.
+    func setStayAwake(_ desired: Bool) {
+        if desired { stayAwakeTurnOn.flippedOn() }
+        requestStayAwakeToggle?(desired)
+    }
     func lockScreen() { requestLockScreen?() }
     func setLimitEnabled(_ enabled: Bool) { limiter.setEnabled(enabled) }
     func setLimit(_ newLimit: Int) { limiter.setLimit(newLimit) }
@@ -338,7 +437,6 @@ final class MenuStateModel: ObservableObject {
     // MARK: Panel presentation — what the panel renders (thin wrappers over
     // the pure mappings; the views compose these and never classify).
 
-    var stayAwakeCaption: PanelLine? { Self.stayAwakeCaption(forObserved: stayAwakeObserved) }
     var lockScreenStatus: PanelLine { Self.lockScreenStatus(available: lockScreenAvailable) }
     var chargeLimitCaption: PanelLine? { Self.chargeLimitCaption(for: featureState) }
     var launchAtLoginCaption: PanelLine? { Self.launchAtLoginCaption(for: loginItemStatus) }
@@ -1233,6 +1331,37 @@ final class MenuStateModel: ObservableObject {
     /// Unreadable sleep state is a warning (never a silent "off").
     nonisolated static func stayAwakeCaption(forObserved observed: Bool?) -> PanelLine? {
         stayAwakeToggle(forObserved: observed).caption.map { PanelLine(text: $0, severity: .warning) }
+    }
+
+    /// Owner ruling (e): the transient acknowledgment under a flipped-ON
+    /// switch that pmset has not confirmed within the hold.
+    nonisolated static let stayAwakeTurningOnText = "Turning on…"
+
+    /// How the turn-on phase moves. A flip starts the hold from idle; the hold
+    /// elapsing unconfirmed shows the caption; an observed ON (the confirm)
+    /// clears it, as does the menu opening. An observed OFF or unreadable state
+    /// changes nothing: the command may still be running.
+    nonisolated static func stayAwakeTurnOnPhase(_ phase: StayAwakeTurnOnPhase,
+                                                 on event: StayAwakeTurnOnEvent) -> StayAwakeTurnOnPhase {
+        switch (phase, event) {
+        case (.idle, .flippedOn):
+            return .waiting
+        case (.waiting, .holdElapsed):
+            return .showing
+        case (_, .observed(true)), (_, .panelOpened):
+            return .idle
+        default:
+            return phase
+        }
+    }
+
+    /// The Stay Awake row's caption slot. Precedence: the unreadable-state
+    /// warning, then "Turning on…" (nominal: the panel's quiet caption style,
+    /// shown while the hold has run out unconfirmed), then nothing.
+    nonisolated static func stayAwakeSlot(observed: Bool?, turnOn: StayAwakeTurnOnPhase) -> PanelLine? {
+        if let unreadable = stayAwakeCaption(forObserved: observed) { return unreadable }
+        guard turnOn == .showing, observed != true else { return nil }
+        return PanelLine(text: stayAwakeTurningOnText, severity: .nominal)
     }
 
     /// Lock Screen availability as a Details-home line (Details › General)

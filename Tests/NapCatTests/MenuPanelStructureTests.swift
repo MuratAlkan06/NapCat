@@ -57,6 +57,12 @@ struct MenuPanelStructureTests {
         text.components(separatedBy: token).count - 1
     }
 
+    /// Whitespace-flattened source: comment lines (blanked by `codeOnly`) and
+    /// indentation drop out, so a lock reads the code's shape only.
+    static func flat(_ text: some StringProtocol) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     // MARK: - Design freeze: one fixed layout
 
     /// Design freeze (2026-10-18): MenuPanelView renders the Quiet Rows layout
@@ -732,7 +738,7 @@ struct MenuPanelStructureTests {
     /// imperatively, and the hosting view's re-fit snaps to the new size.
     static func motionFailures(views: String, owner: String) -> [String] {
         var failures: [String] = []
-        let durations = [PanelMotion.chevron, PanelMotion.pressFade]
+        let durations = [PanelMotion.chevron, PanelMotion.pressFade, PanelMotion.limitReadout]
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
         if animated.isEmpty { failures.append("vacuity: the chevron animates") }
         for line in animated {
@@ -754,6 +760,23 @@ struct MenuPanelStructureTests {
         if !disclosure.contains(".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.chevron)), value: expanded)") {
             failures.append("the chevron must turn at PanelMotion.chevron")
         }
+        // #67 items 3 and 4 (owner ruling f): the Details press fade and the
+        // charge-limit readout, each in its one home at its own constant.
+        let pressStyle = Self.structChunk("PanelPressFadeButtonStyle", in: views) ?? ""
+        if !pressStyle.contains(".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)")
+            || !pressStyle.contains(
+                ".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.pressFade)), value: configuration.isPressed)") {
+            failures.append("the press fade must dim to PanelMotion.pressedOpacity over PanelMotion.pressFade")
+        }
+        if !disclosure.contains(".buttonStyle(PanelPressFadeButtonStyle())") {
+            failures.append("the Details disclosure must use the press-fade style")
+        }
+        let readout = Self.structChunk("ChargeLimitReadout", in: views) ?? ""
+        for token in [".monospacedDigit()", ".contentTransition(.numericText(value: Double(model.limit)))",
+                      ".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.limitReadout)), value: model.limit)"]
+        where !readout.contains(token) {
+            failures.append("the charge-limit readout lost '\(token)'")
+        }
         for token in [".transition(", "withAnimation", "withTransaction", ".transaction", "matchedGeometryEffect",
                       "NSAnimationContext", "animator()"] where (views + "\n" + owner).contains(token) {
             failures.append("'\(token)' — nothing animates the panel's open, close or height change")
@@ -769,10 +792,22 @@ struct MenuPanelStructureTests {
         let owner = try Self.code("MenuContentView.swift")
         #expect(Self.motionFailures(views: views, owner: owner).isEmpty, "\(Self.motionFailures(views: views, owner: owner))")
         #expect(PanelMotion.chevron <= PanelMotion.maxDuration && PanelMotion.pressFade <= PanelMotion.maxDuration)
+        #expect(PanelMotion.limitReadout <= PanelMotion.maxDuration && PanelMotion.limitReadout <= Self.gatedMotionCap,
+                "the readout's ~200 ms roll sits inside both ceilings")
+        #expect(PanelMotion.pressedOpacity == 0.7)
         let canaries: [(name: String, views: String, owner: String)] = [
             ("an insertion transition", views + "\nlet canary = Text(\"x\").transition(.opacity)", owner),
             ("the chevron off its PanelMotion duration",
              views.replacingOccurrences(of: "duration: 0.15)", with: "duration: 0.25)"), owner),
+            ("the press fade off its PanelMotion duration",
+             views.replacingOccurrences(of: "duration: 0.1), value: configuration.isPressed",
+                                        with: "duration: 0.12), value: configuration.isPressed"), owner),
+            ("the disclosure back on the plain style",
+             views.replacingOccurrences(of: ".buttonStyle(PanelPressFadeButtonStyle())", with: ".buttonStyle(.plain)"), owner),
+            ("the readout without its digit roll",
+             views.replacingOccurrences(of: ".contentTransition(.numericText(value: Double(model.limit)))", with: ""), owner),
+            ("the readout keyed on the limiter's state",
+             views.replacingOccurrences(of: "value: model.limit)", with: "value: model.featureState)"), owner),
             ("an animation not gated on Reduce Motion",
              views + "\nlet canary = Text(\"x\").animation(.easeOut(duration: 0.1), value: 1)", owner),
             ("a transaction", views + "\nlet canary = Text(\"x\").transaction { $0.animation = .default }", owner),
@@ -832,6 +867,93 @@ struct MenuPanelStructureTests {
         for token in [".animation(", "fixedSize", "cancelTracking", "setDetailsExpanded", "request"] {
             #expect(!button.contains(token), "'\(token)' in the test-send wrapper")
         }
+    }
+
+    /// #67 item 3: the Charge Limit row's trailing readout is `ChargeLimitReadout`
+    /// — rendered once, in the row, before the toggle — so the digit roll
+    /// lives in exactly one place and the row's shape is unchanged.
+    @Test func theChargeLimitRowShowsTheLiveReadout() throws {
+        let views = try Self.allViewCode()
+        let body = try Self.layoutBody()
+        #expect(Self.occurrences(of: "ChargeLimitReadout(", in: views) == 1, "ONE readout")
+        #expect(Self.flat(body).contains("PanelRow(symbol: PanelSymbol.chargeLimit, title: \"Charge Limit\") {"
+                                         + " ChargeLimitReadout(model: model) ChargeLimitToggle(model: model) }"),
+                "the readout sits in the Charge Limit row, before its toggle")
+        #expect(Self.occurrences(of: "MenuStateModel.chargeLimitValueText(", in: views) == 1,
+                "the value text renders only through the readout")
+        let readout = try #require(Self.structChunk("ChargeLimitReadout", in: try Self.code("MenuPanelView.swift")))
+        for token in ["Text(MenuStateModel.chargeLimitValueText(limit: model.limit))", ".font(.callout)",
+                      ".foregroundStyle(.secondary)"] {
+            #expect(readout.contains(token), "'\(token)' — the readout keeps the row's frozen look")
+        }
+    }
+
+    /// Owner ruling (e): the Stay Awake row's caption slot is
+    /// `StayAwakeCaptionSlot`, in the Stay Awake feature at the title indent,
+    /// where the unreadable warning has always rendered. It is the ONLY view
+    /// that observes the turn-on feedback; the switch never sees it, so a flip
+    /// cannot re-render the switch.
+    @Test func theStayAwakeSlotOwnsTheTurnOnCaption() throws {
+        let views = try Self.allViewCode()
+        let body = try Self.layoutBody()
+        #expect(Self.flat(body).contains("StayAwakeToggle(model: model) }"
+                                         + " StayAwakeCaptionSlot(model: model, turnOn: model.stayAwakeTurnOn)"
+                                         + " .padding(.leading, PanelMetrics.titleIndent) }"),
+                "the slot hangs directly under the Stay Awake row, inside its feature")
+        #expect(Self.occurrences(of: "StayAwakeCaptionSlot(", in: views) == 1, "ONE slot")
+        #expect(Self.occurrences(of: "model.stayAwakeTurnOn", in: views) == 1, "the feedback reaches only the slot")
+        #expect(Self.occurrences(of: "StayAwakeTurnOnFeedback", in: views) == 1, "one observer of the feedback")
+        #expect(!views.contains("stayAwakeCaption("), "the slot mapping replaced the bare caption")
+
+        let source = try Self.code("MenuPanelView.swift")
+        let slot = try #require(Self.structChunk("StayAwakeCaptionSlot", in: source))
+        #expect(slot.contains("@ObservedObject var turnOn: StayAwakeTurnOnFeedback"))
+        #expect(slot.contains("MenuStateModel.stayAwakeSlot(observed: model.stayAwakeObserved, turnOn: turnOn.phase)"),
+                "the slot composes the pure precedence mapping; it never classifies")
+        #expect(slot.contains("PanelCaptionLine(line: line)"), "the panel's own caption line, nominal style included")
+        let toggle = try #require(Self.structChunk("StayAwakeToggle", in: source))
+        #expect(!toggle.contains("turnOn") && !toggle.contains("TurnOn"), "the switch never observes the feedback")
+        #expect(toggle.contains("get: { MenuStateModel.stayAwakeToggle(forObserved: model.stayAwakeObserved).isOn }"),
+                "the switch still renders the OBSERVED state")
+    }
+
+    /// Owner ruling (e): the DISABLE path is unchanged. Turning OFF never
+    /// touches the turn-on feedback: the model's only new statement is gated
+    /// on `desired`, and MenuContentView's three stay-awake functions — the
+    /// one route to the privileged command — never mention it (the disable
+    /// branch keeps its exact text). The owner wires only the reset on menu
+    /// open, and the model's refresh feeds the observed state in as the
+    /// confirm.
+    @Test func theDisablePathNeverTouchesTheTurnOnFeedback() throws {
+        let model = try Self.code("MenuStateModel.swift")
+        #expect(Self.flat(model).contains("func setStayAwake(_ desired: Bool) {"
+                                          + " if desired { stayAwakeTurnOn.flippedOn() }"
+                                          + " requestStayAwakeToggle?(desired) }"),
+                "flipping OFF only forwards, as before")
+        #expect(Self.occurrences(of: "stayAwakeTurnOn.flippedOn()", in: model) == 1)
+        #expect(Self.flat(model).contains("stayAwakeObserved = sleep.observedSleepDisabled"
+                                          + " stayAwakeTurnOn.observed(stayAwakeObserved)"),
+                "refresh feeds the observed state in, right after mirroring it")
+
+        let owner = try Self.code("MenuContentView.swift")
+        #expect(owner.contains("if sleep.refreshObservedState() == true {\n"
+                               + "            applyStayAwake(false)\n"
+                               + "        } else if"),
+                "the disable branch keeps its exact text")
+        for function in ["toggleStayAwake", "applyStayAwake", "handleStayAwakeOutcome"] {
+            let start = try #require(owner.range(of: "func \(function)("), "\(function) not found")
+            let tail = owner[start.upperBound...]
+            let end = tail.range(of: "\n    private func ")?.lowerBound ?? tail.endIndex
+            let chunk = tail[..<end]
+            #expect(!chunk.contains("stayAwakeTurnOn") && !chunk.contains("flippedOn"),
+                    "'\(function)' reaches the turn-on feedback — the command path must stay as it was")
+        }
+        #expect(Self.occurrences(of: "stayAwakeTurnOn", in: owner) == 1, "only the menu-open reset")
+        let open = try #require(owner.range(of: "func menuWillOpen("))
+        let reset = try #require(owner.range(of: "model.stayAwakeTurnOn.panelOpened()"))
+        let refreshCall = try #require(owner[reset.upperBound...].range(of: "model.refresh()"))
+        #expect(open.upperBound < reset.lowerBound && reset.upperBound <= refreshCall.lowerBound,
+                "menu open resets the feedback before it refreshes")
     }
 
     @Test func systemColorsOnly() throws {
