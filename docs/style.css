@@ -1,4 +1,4 @@
-/* NapCat landing page. Plain CSS, no frameworks, no web fonts, no images. */
+/* NapCat landing page. Plain CSS, no frameworks, no web fonts; the only image is the app icon. */
 
 :root {
   color-scheme: light dark;
@@ -120,8 +120,22 @@ a:focus-visible {
   font-size: var(--text-sm);
 }
 
-h1 {
+.title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-3);
+}
+
+/* Sized to the title's line box, so the hero keeps its height. */
+.app-icon {
+  flex: none;
+  width: calc(var(--text-hero) * var(--leading-tight));
+  height: auto;
+}
+
+h1 {
+  margin: 0;
   font-size: var(--text-hero);
   line-height: var(--leading-tight);
   letter-spacing: -0.01em;
