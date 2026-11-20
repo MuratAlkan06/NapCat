@@ -107,7 +107,7 @@ struct MenuPanelPresentationTests {
             let armed: LidRow
             if paused {
                 armed = LidRow(state: .armed, outcome: outcome, paused: true,
-                               fragment: "armed — but Claude detection is paused; alerts cannot fire", severity: .warning)
+                               fragment: "Cannot fire — Claude detection is paused", severity: .warning)
             } else {
                 switch outcome {
                 case .rejected?, .sendFailed?:
@@ -115,11 +115,11 @@ struct MenuPanelPresentationTests {
                                    fragment: "the last message did not go out", severity: .error)
                 default:
                     armed = LidRow(state: .armed, outcome: outcome, paused: false,
-                                   fragment: "armed — best-effort push", severity: .nominal)
+                                   fragment: "Armed — a best-effort push", severity: .nominal)
                 }
             }
             return [
-                LidRow(state: .off, outcome: outcome, paused: paused, fragment: "Lid alert: off", severity: .nominal),
+                LidRow(state: .off, outcome: outcome, paused: paused, fragment: "Off", severity: .nominal),
                 LidRow(state: .needsTopic, outcome: outcome, paused: paused, fragment: "set an ntfy topic", severity: .warning),
                 LidRow(state: .needsTestSend, outcome: outcome, paused: paused, fragment: "send the test message", severity: .warning),
                 armed,
@@ -141,7 +141,7 @@ struct MenuPanelPresentationTests {
     @Test func armedButPausedNeverClaimsPlainArmed() {
         for outcome in Self.everyOutcome {
             let line = MenuStateModel.lidAlertStatus(for: .armed, lastOutcome: outcome, detectionPaused: true)
-            #expect(line.text.contains("cannot fire"))
+            #expect(line.text.hasPrefix("Cannot fire"))
             #expect(!line.text.contains("best-effort push"))
             #expect(line.severity != .nominal)
             #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel)
@@ -282,7 +282,7 @@ struct MenuPanelPresentationTests {
         [nil, .accepted, .timedOutUnconfirmed, .rejected(429), .sendFailed("boom"), .rejected(403)]
 
     static let sessionRateLimitedText =
-        "Session alerts: ntfy is rate-limiting this Mac — alerts are held and folded for a while"
+        "Held — ntfy is rate-limiting this Mac; alerts are folded for a while"
 
     /// Every display state × every last outcome (6 × 6 = 36 rows), exact
     /// strings. Only `.armed` reads the last outcome. B-1: a 429 is the
@@ -296,24 +296,24 @@ struct MenuPanelPresentationTests {
             armed = SessionRow(state: .armed, outcome: outcome, text: sessionRateLimitedText, severity: .warning)
         case .rejected?, .sendFailed?:
             armed = SessionRow(state: .armed, outcome: outcome,
-                               text: "Session alerts: the last message did not go out — re-run Send test message",
+                               text: "Failed — the last message did not go out; re-run Send test message in Settings",
                                severity: .error)
         default:
             armed = SessionRow(state: .armed, outcome: outcome,
-                               text: "Session alerts: armed — a push when a Claude session finishes or waits for you",
+                               text: "Armed — a push when a Claude session finishes or waits for you",
                                severity: .nominal)
         }
         return [
-            SessionRow(state: .off, outcome: outcome, text: "Session alerts: off", severity: .nominal),
+            SessionRow(state: .off, outcome: outcome, text: "Off", severity: .nominal),
             SessionRow(state: .needsTopic, outcome: outcome,
-                       text: "Session alerts: set an ntfy topic to arm them", severity: .warning),
+                       text: "Not armed — set an ntfy topic in Settings", severity: .warning),
             SessionRow(state: .needsTestSend, outcome: outcome,
-                       text: "Session alerts: send the test message to check your phone gets it", severity: .warning),
+                       text: "Not armed — send the test message in Settings to check your phone gets it", severity: .warning),
             SessionRow(state: .paused, outcome: outcome,
-                       text: "Session alerts: on — but Claude detection is paused; alerts cannot fire",
+                       text: "Cannot fire — Claude detection is paused",
                        severity: .warning),
             SessionRow(state: .hookNotInstalled, outcome: outcome,
-                       text: "Session alerts: on — install the Claude busy hook first (see below)",
+                       text: "Not armed — install the Claude busy hook first (see below)",
                        severity: .warning),
             armed,
         ]
@@ -335,7 +335,7 @@ struct MenuPanelPresentationTests {
             lidLastOutcome: nil, lidLastOutcomeAt: nil).text == row.text)
     }
 
-    static let sessionDegradedPhrases = ["set an ntfy topic", "send the test message", "cannot fire",
+    static let sessionDegradedPhrases = ["set an ntfy topic", "send the test message", "Cannot fire",
                                          "install the Claude busy hook", "did not go out", "rate-limiting"]
 
     /// Severity per row, cross-checked against the text in BOTH directions (a
@@ -349,14 +349,14 @@ struct MenuPanelPresentationTests {
         #expect(line.severity == row.severity)
         #expect(Self.sessionDegradedPhrases.contains { line.text.contains($0) } == (line.severity != .nominal),
                 "\(line.text)")
-        #expect(line.text.contains("armed —") == (row.state == .armed && row.severity == .nominal))
+        #expect(line.text.hasPrefix("Armed —") == (row.state == .armed && row.severity == .nominal))
     }
 
     // MARK: Alert healing (issue #23): the offline warning owns the slot
 
     static let sessionAlertsOfflineText =
         "Offline — session alerts are held until the connection returns; lid alerts may be missed"
-    static let sessionAlertsArmedText = "Session alerts: armed — a push when a Claude session finishes or waits for you"
+    static let sessionAlertsArmedText = "Armed — a push when a Claude session finishes or waits for you"
 
     struct SlotRow: CustomTestStringConvertible, Sendable {
         let id: String
@@ -384,10 +384,10 @@ struct MenuPanelPresentationTests {
         SlotRow(id: "P6 lid-only mode (session alerts off): the same one line", offline: true, state: .off,
                 outcome: nil, expected: PanelLine(text: sessionAlertsOfflineText, severity: .warning)),
         SlotRow(id: "P7 not offline (healing disarmed) ⇒ no offline line", offline: false, state: .off, outcome: nil,
-                expected: PanelLine(text: "Session alerts: off", severity: .nominal)),
+                expected: PanelLine(text: "Off", severity: .nominal)),
         SlotRow(id: "P8 not offline: a failed send keeps its error", offline: false, state: .armed,
                 outcome: .sendFailed("this Mac had no internet connection"),
-                expected: PanelLine(text: "Session alerts: the last message did not go out — re-run Send test message",
+                expected: PanelLine(text: "Failed — the last message did not go out; re-run Send test message in Settings",
                                     severity: .error)),
     ]
 
@@ -503,8 +503,8 @@ struct MenuPanelPresentationTests {
         var testDescription: String { id }
     }
 
-    static let sessionArmedText = "Session alerts: armed — a push when a Claude session finishes or waits for you"
-    static let sessionFailedText = "Session alerts: the last message did not go out — re-run Send test message"
+    static let sessionArmedText = "Armed — a push when a Claude session finishes or waits for you"
+    static let sessionFailedText = "Failed — the last message did not go out; re-run Send test message in Settings"
 
     static let sessionRecoveryRows: [SessionRecoveryRow] = {
         let t = sessionSendAt
@@ -538,7 +538,7 @@ struct MenuPanelPresentationTests {
                                lidOutcomeAt: t + 60, text: sessionFailedText, severity: .error),
             SessionRecoveryRow(id: "R10 recovery never overrides a non-armed state", state: .paused,
                                outcome: .sendFailed("boom"), outcomeAt: t, lidOutcome: .accepted, lidOutcomeAt: t + 60,
-                               text: "Session alerts: on — but Claude detection is paused; alerts cannot fire",
+                               text: "Cannot fire — Claude detection is paused",
                                severity: .warning),
             SessionRecoveryRow(id: "R11 a failed LID send never downgrades a healthy session line",
                                outcome: .accepted, outcomeAt: t, lidOutcome: .sendFailed("boom"), lidOutcomeAt: t + 60,
@@ -561,7 +561,7 @@ struct MenuPanelPresentationTests {
                                text: sessionRateLimitedText, severity: .warning),
             SessionRecoveryRow(id: "R17 429 never overrides a non-armed state", state: .hookNotInstalled,
                                outcome: .rejected(429), outcomeAt: t, lidOutcome: nil, lidOutcomeAt: nil,
-                               text: "Session alerts: on — install the Claude busy hook first (see below)",
+                               text: "Not armed — install the Claude busy hook first (see below)",
                                severity: .warning),
         ]
     }()
@@ -577,7 +577,7 @@ struct MenuPanelPresentationTests {
             lidLastOutcome: row.lidOutcome, lidLastOutcomeAt: row.lidOutcomeAt))
         // Same text ⇔ severity cross-check as the grammar table.
         #expect(Self.sessionDegradedPhrases.contains { line.text.contains($0) } == (line.severity != .nominal))
-        #expect(line.text.contains("armed —") == (row.state == .armed && row.severity == .nominal))
+        #expect(line.text.hasPrefix("Armed —") == (row.state == .armed && row.severity == .nominal))
         // The History line takes no lid input: a refused / failed
         // session send stays an error there even once the caption recovered.
         let history = MenuStateModel.finishAlertLastSend(outcome: row.outcome, kind: Self.finishedKind,
@@ -685,7 +685,7 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.chargeLimitCaption(for: .setupRequired)?.severity == .warning)
         // #58: a calm info line (like Intel's), never the red error treatment.
         #expect(MenuStateModel.chargeLimitCaption(for: .controlUnavailable)
-                == PanelLine(text: "Charge limiting isn't available on this version of macOS.", severity: .info))
+                == PanelLine(text: "Unavailable on this version of macOS", severity: .info))
         #expect(MenuStateModel.chargeLimitCaption(for: .error("smc exploded"))
                 == PanelLine(text: "smc exploded", severity: .error))
 
@@ -693,6 +693,59 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.launchAtLoginCaption(for: .notRegistered) == nil)
         #expect(MenuStateModel.launchAtLoginCaption(for: .requiresApproval)?.severity == .warning)
         #expect(MenuStateModel.launchAtLoginCaption(for: .notFound)?.severity == .warning)
+    }
+
+    /// Canon C2 (slice P): every ROW caption — the Stay Awake slot, the
+    /// Charge Limit row's, the Lid alert's and the Session alerts' slot, the
+    /// surfaced Launch at Login row's — is a fragment with its state word
+    /// first: it opens with one word or phrase from this CLOSED list, never
+    /// repeats its row's title as a prefix, and ends without a period. (The
+    /// charge-limit `.error` message is the limiter's own text, outside the
+    /// closed vocabulary. Lines that surface below the cards keep a "Subject:"
+    /// label — "Busy hook:", "Topic:" — since no row title sits above them.)
+    static let rowCaptionStateWords = ["Off", "Armed", "Not armed", "Cannot fire", "Failed", "Held", "Offline",
+                                       "Unknown", "Turning on…", "Charging", "Paused", "Setup needed", "Unavailable",
+                                       "Waiting for approval", "Not found"]
+
+    static func everyRowCaption() -> [PanelLine] {
+        var lines: [PanelLine] = []
+        for observed: Bool? in [nil, false, true] {
+            for phase in [StayAwakeTurnOnPhase.idle, .waiting, .showing] {
+                if let line = MenuStateModel.stayAwakeSlot(observed: observed, turnOn: phase) { lines.append(line) }
+            }
+        }
+        for state: ChargeLimitFeatureState in [.hidden, .off, .notSupported, .setupRequired, .controlUnavailable,
+                                               .active, .paused] {
+            if let line = MenuStateModel.chargeLimitCaption(for: state) { lines.append(line) }
+        }
+        lines += lidRows.map { MenuStateModel.lidAlertStatus(for: $0.state, lastOutcome: $0.outcome, detectionPaused: $0.paused) }
+        for row in sessionRows {
+            let status = MenuStateModel.finishAlertStatus(for: row.state, lastOutcome: row.outcome, lastOutcomeAt: row.outcomeAt,
+                                                          lidLastOutcome: nil, lidLastOutcomeAt: nil)
+            lines += [status, MenuStateModel.sessionAlertsSlot(offline: true, status: status)]
+        }
+        for status: SMAppService.Status in [.notRegistered, .enabled, .requiresApproval, .notFound] {
+            if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
+        }
+        return lines
+    }
+
+    @Test func rowCaptionsAreStateFirstFragments() {
+        let lines = Self.everyRowCaption()
+        #expect(lines.count == 4 + 5 + 40 + 72 + 2, "vacuity guard — update when the input set changes")
+        for line in lines {
+            #expect(Self.rowCaptionStateWords.contains { line.text == $0 || line.text.hasPrefix($0 + " ") },
+                    "'\(line.text)' does not open with a state word")
+            #expect(!line.text.hasSuffix("."), "'\(line.text)' is a sentence, not a fragment")
+            for title in ["Stay Awake", "Charge Limit", "Charge limit", "Lid alert", "Session alerts", "Launch at Login",
+                          "Login item"] {
+                #expect(!line.text.hasPrefix(title), "'\(line.text)' repeats its row title")
+            }
+        }
+        // Every state word is used: the closed list holds no dead entry.
+        for word in Self.rowCaptionStateWords {
+            #expect(lines.contains { $0.text == word || $0.text.hasPrefix(word + " ") }, "'\(word)' is never used")
+        }
     }
 
     @Test func chargeLimitValueText() {
@@ -714,7 +767,7 @@ struct MenuPanelPresentationTests {
     /// a problem string must never be nominal (it would live only in Settings), and a
     /// nominal string must never read like a problem.
     static let problemPhrases = ["not installed", "not seen yet", "not usable", "refused", "failed",
-                                 "unconfirmed", "Waiting for approval", "not found", "paused", "unavailable",
+                                 "unconfirmed", "Waiting for approval", "Not found", "paused", "unavailable",
                                  "out of date", "no version stamp", "newer than"]
 
     static func readsLikeAProblem(_ text: String) -> Bool {
@@ -841,7 +894,7 @@ struct MenuPanelPresentationTests {
     /// Tier-2 lines are always top level, but they must still be classified:
     /// a degraded lid status is never rendered as a plain caption.
     @Test func degradedLidStatusIsNeverNominal() {
-        let degraded = ["set an ntfy topic", "send the test message", "did not go out", "cannot fire"]
+        let degraded = ["set an ntfy topic", "send the test message", "did not go out", "Cannot fire"]
         for row in Self.lidRows {
             let line = MenuStateModel.lidAlertStatus(for: row.state, lastOutcome: row.outcome, detectionPaused: row.paused)
             let isDegraded = degraded.contains { line.text.contains($0) }
@@ -1019,9 +1072,9 @@ struct MenuPanelPresentationTests {
     /// only once the hold ran out unconfirmed, then nothing. A confirmed ON
     /// never shows "Turning on…", whatever the phase says.
     @Test(arguments: [
-        (Bool?.none, StayAwakeTurnOnPhase.idle, "Sleep state could not be read", PanelSeverity?.some(.warning)),
-        (nil, .waiting, "Sleep state could not be read", .warning),
-        (nil, .showing, "Sleep state could not be read", .warning),
+        (Bool?.none, StayAwakeTurnOnPhase.idle, "Unknown — the sleep state could not be read", PanelSeverity?.some(.warning)),
+        (nil, .waiting, "Unknown — the sleep state could not be read", .warning),
+        (nil, .showing, "Unknown — the sleep state could not be read", .warning),
         (false, .idle, nil, nil),
         (false, .waiting, nil, nil),
         (false, .showing, "Turning on…", .nominal),
@@ -1198,7 +1251,7 @@ struct MenuPanelPresentationTests {
     @Test @MainActor func aFreshInstallWithTheLidAlertOnSurfacesTheHookWarning() throws {
         try withFreshInstall(lidAlert: true, sessionAlerts: false) { model in
             #expect(model.lidStatus.severity == .nominal, "vacuity: the lid row is armed")
-            #expect(model.finishAlertStatus == PanelLine(text: "Session alerts: off", severity: .nominal))
+            #expect(model.finishAlertStatus == PanelLine(text: "Off", severity: .nominal))
             #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .warning))
             #expect(MenuStateModel.placement(ofSettingsLine: model.hookStatus.severity) == .topLevel)
             #expect(model.settingsBadge == .warning)
@@ -1209,10 +1262,10 @@ struct MenuPanelPresentationTests {
     /// "(see below)", and the hook warning it points at is surfaced.
     @Test @MainActor func aFreshInstallWithSessionAlertsOnSurfacesTheHookWarning() throws {
         try withFreshInstall(lidAlert: false, sessionAlerts: true) { model in
-            #expect(model.lidStatus == PanelLine(text: "Lid alert: off", severity: .nominal))
+            #expect(model.lidStatus == PanelLine(text: "Off", severity: .nominal))
             #expect(model.finishAlertDisplayState == .hookNotInstalled)
             #expect(model.finishAlertStatus == PanelLine(
-                text: "Session alerts: on — install the Claude busy hook first (see below)", severity: .warning))
+                text: "Not armed — install the Claude busy hook first (see below)", severity: .warning))
             #expect(model.hookStatus == PanelLine(text: Self.hookNotInstalledText, severity: .warning))
             #expect(MenuStateModel.placement(ofSettingsLine: model.hookStatus.severity) == .topLevel)
             #expect(model.settingsBadge == .warning)
@@ -1261,7 +1314,7 @@ struct MenuPanelPresentationTests {
                 try withModel(detection: detection, lidGuard: lid.controller, finishAlert: finish) { model, _, _ in
                     try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
                     #expect(model.footerLabel?.severity == .warning)
-                    #expect(model.lidStatus.severity == .warning && model.lidStatus.text.contains("cannot fire"))
+                    #expect(model.lidStatus.severity == .warning && model.lidStatus.text.hasPrefix("Cannot fire"))
                     #expect(model.finishAlertDisplayState == .paused)
                     #expect(model.finishAlertStatus.severity == .warning)
                     #expect(model.settingsBadge == .nominal, "the pause's echoes must not raise the badge")
@@ -1360,7 +1413,7 @@ struct MenuPanelPresentationTests {
                 detection.sample()
                 model.refresh()
                 #expect(model.footerLabel == PanelLine(text: "Claude: paused", severity: .warning))
-                #expect(model.lidStatus.text.contains("cannot fire"))
+                #expect(model.lidStatus.text.hasPrefix("Cannot fire"))
                 #expect(model.lidStatus.severity == .warning)
                 #expect(MenuStateModel.placement(ofSettingsLine: model.lidStatus.severity) == .topLevel)
                 try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
@@ -1406,7 +1459,7 @@ struct MenuPanelPresentationTests {
                 #expect(model.finishAlertVisible)
                 #expect(model.lidStatus.severity == .nominal)
                 #expect(model.finishAlertStatus == PanelLine(
-                    text: "Session alerts: the last message did not go out — re-run Send test message",
+                    text: "Failed — the last message did not go out; re-run Send test message in Settings",
                     severity: .error))
                 let last = model.finishAlertLastSend(now: Double(H.t0) + 120)
                 #expect(last == PanelLine(
@@ -1428,7 +1481,7 @@ struct MenuPanelPresentationTests {
                 lid.controller.sendTestMessage()
                 model.refresh()
                 #expect(model.finishAlertStatus == PanelLine(
-                    text: "Session alerts: armed — a push when a Claude session finishes or waits for you",
+                    text: "Armed — a push when a Claude session finishes or waits for you",
                     severity: .nominal))
                 // …while the History line is untouched and still surfaces
                 // (so the badge stays an error).

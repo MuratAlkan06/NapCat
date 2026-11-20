@@ -28,6 +28,13 @@ struct MenuPanelView: View {
     }
 }
 
+/// Type (canon C8, Panel 2.0 slice P): exactly four text roles. `.headline`
+/// is the battery headline alone; `.body` (the default) the row titles;
+/// `.caption` every status — row and surfaced captions, the charging line,
+/// the Charge Limit value, group headers (semibold), the footer; `.caption2`
+/// at most once (none today). No `.callout`. Glyphs size themselves apart
+/// from the roles (`.system(size:)`, the desktop symbol's `.largeTitle`).
+///
 /// Shared geometry: 4/8/12 spacing rhythm, a fixed symbol column.
 ///
 /// Density pass (curation round 1, 2026-10-18 — "the rows feel crowded"):
@@ -411,7 +418,7 @@ struct ChargeLimitValue: View {
 
     var body: some View {
         Text(MenuStateModel.chargeLimitValueText(limit: model.limit))
-            .font(.callout)
+            .font(.caption)
             .monospacedDigit()
             .foregroundStyle(.secondary)
     }

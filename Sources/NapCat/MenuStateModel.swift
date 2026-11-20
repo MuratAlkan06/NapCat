@@ -621,7 +621,7 @@ final class MenuStateModel: ObservableObject {
         switch observed {
         case .some(true): return (true, nil)
         case .some(false): return (false, nil)
-        case .none: return (false, "Sleep state could not be read")
+        case .none: return (false, "Unknown — the sleep state could not be read")
         }
     }
 
@@ -635,7 +635,7 @@ final class MenuStateModel: ObservableObject {
     ) -> (enabled: Bool, caption: String?) {
         available
             ? (true, nil)
-            : (false, "Locking is unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q).")
+            : (false, "Lock Screen: unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q)")
     }
 
     nonisolated static func limitLabel(limit: Int) -> String {
@@ -655,9 +655,9 @@ final class MenuStateModel: ObservableObject {
         case .notRegistered:
             return (false, nil, false)
         case .requiresApproval:
-            return (false, "Waiting for approval in System Settings › General › Login Items.", true)
+            return (false, "Waiting for approval — System Settings › General › Login Items", true)
         case .notFound:
-            return (false, "Login item not found — toggle again to re-register this copy of NapCat.", false)
+            return (false, "Not found — toggle again to re-register this copy of NapCat", false)
         @unknown default:
             return (false, nil, false)
         }
@@ -665,24 +665,26 @@ final class MenuStateModel: ObservableObject {
 
     /// Issue #58: this macOS exposes no charge-control key. A plain statement
     /// of the limitation — no error wording, no instruction to act.
-    nonisolated static let chargeControlUnavailableText =
-        "Charge limiting isn't available on this version of macOS."
+    nonisolated static let chargeControlUnavailableText = "Unavailable on this version of macOS"
 
-    /// Feature-state messaging line under the charge-limit controls.
+    /// Feature-state messaging line under the charge-limit controls — the
+    /// Charge Limit row's caption (canon C2: a fragment, its state word
+    /// first, never repeating the row title). The `.error` message is the
+    /// limiter's own.
     nonisolated static func featureMessage(for state: ChargeLimitFeatureState) -> String? {
         switch state {
         case .hidden, .off:
             return nil
         case .notSupported:
-            return "Charge limiting needs an Apple Silicon Mac. Stay Awake still works here."
+            return "Unavailable — needs an Apple Silicon Mac; Stay Awake still works here"
         case .setupRequired:
-            return "One-time setup needed: run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu."
+            return "Setup needed — run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu"
         case .controlUnavailable:
             return chargeControlUnavailableText
         case .active:
-            return "Charging normally — will pause at the limit."
+            return "Charging — pauses at the limit"
         case .paused:
-            return "Charging is paused at the limit."
+            return "Paused at the limit"
         case .error(let message):
             return message
         }
@@ -804,7 +806,9 @@ final class MenuStateModel: ObservableObject {
     // MARK: - Track B / B2 (lid-close alert) presentation
 
     /// Primary line: what the feature will do right now, and if it is not
-    /// armed, the NEXT step. Modeled on `featureMessage(for:)`.
+    /// armed, the NEXT step. Modeled on `featureMessage(for:)` — the Lid
+    /// alert row's caption, so (canon C2) a fragment with its state word
+    /// first and no "Lid alert:" prefix repeating the row title.
     ///
     /// Honesty downgrade: `primedAt` (hence `.armed`) survives in UserDefaults
     /// even after the feed stops working — a deleted topic, a self-hosted
@@ -828,20 +832,20 @@ final class MenuStateModel: ObservableObject {
     ) -> String {
         switch state {
         case .off:
-            return "Lid alert: off"
+            return "Off"
         case .needsTopic:
-            return "Lid alert: set an ntfy topic to arm it"
+            return "Not armed — set an ntfy topic in Settings"
         case .needsTestSend:
-            return "Lid alert: send the test message to check your phone gets it"
+            return "Not armed — send the test message in Settings to check your phone gets it"
         case .armed:
             if detectionPaused {
-                return "Lid alert: armed — but Claude detection is paused; alerts cannot fire"
+                return "Cannot fire — Claude detection is paused"
             }
             switch lastOutcome {
             case .rejected?, .sendFailed?:
-                return "Lid alert: the last message did not go out — re-run Send test message"
+                return "Failed — the last message did not go out; re-run Send test message in Settings"
             default:
-                return "Lid alert: armed — best-effort push if this Mac sleeps mid-task"
+                return "Armed — a best-effort push if this Mac sleeps mid-task"
             }
         }
     }
@@ -915,7 +919,7 @@ final class MenuStateModel: ObservableObject {
         case .empty:
             return "Topic: none set"
         case .invalid:
-            return "Topic is not usable — letters, digits, “_” and “-” only, "
+            return "Topic: not usable — letters, digits, “_” and “-” only, "
                 + "max \(LidGuardTuning.maxTopicLength) characters"
         }
     }
@@ -929,7 +933,7 @@ final class MenuStateModel: ObservableObject {
         case .empty:
             return "Server: \(LidGuardTuning.defaultNtfyServer)"
         case .invalid:
-            return "Server is not usable — it must be an https address like \(LidGuardTuning.defaultNtfyServer)"
+            return "Server: not usable — it must be an https address like \(LidGuardTuning.defaultNtfyServer)"
         }
     }
 
@@ -1034,7 +1038,8 @@ final class MenuStateModel: ObservableObject {
 
     // MARK: - Track C (session alerts: finish + waiting pushes) presentation
 
-    /// Primary line under the "Session alerts" toggle — the lid grammar
+    /// Primary line under the "Session alerts" toggle (canon C2: a fragment,
+    /// state word first, no "Session alerts:" prefix) — the lid grammar
     /// (off / set a topic / send the test message / armed / failed-send
     /// downgrade) plus the two states only the finish alert has. `.armed` here
     /// already means the marker-dir watcher is RUNNING (the controller reports
@@ -1055,24 +1060,24 @@ final class MenuStateModel: ObservableObject {
     ) -> String {
         switch state {
         case .off:
-            return "Session alerts: off"
+            return "Off"
         case .needsTopic:
-            return "Session alerts: set an ntfy topic to arm them"
+            return "Not armed — set an ntfy topic in Settings"
         case .needsTestSend:
-            return "Session alerts: send the test message to check your phone gets it"
+            return "Not armed — send the test message in Settings to check your phone gets it"
         case .paused:
-            return "Session alerts: on — but Claude detection is paused; alerts cannot fire"
+            return "Cannot fire — Claude detection is paused"
         case .hookNotInstalled:
-            return "Session alerts: on — install the Claude busy hook first (see below)"
+            return "Not armed — install the Claude busy hook first (see below)"
         case .armed:
             if finishAlertSendDowngraded(lastOutcome: lastOutcome, lastOutcomeAt: lastOutcomeAt,
                                          lidLastOutcome: lidLastOutcome, lidLastOutcomeAt: lidLastOutcomeAt) {
                 if finishAlertRateLimited(lastOutcome) {
-                    return "Session alerts: ntfy is rate-limiting this Mac — alerts are held and folded for a while"
+                    return "Held — ntfy is rate-limiting this Mac; alerts are folded for a while"
                 }
-                return "Session alerts: the last message did not go out — re-run Send test message"
+                return "Failed — the last message did not go out; re-run Send test message in Settings"
             }
-            return "Session alerts: armed — a push when a Claude session finishes or waits for you"
+            return "Armed — a push when a Claude session finishes or waits for you"
         }
     }
 

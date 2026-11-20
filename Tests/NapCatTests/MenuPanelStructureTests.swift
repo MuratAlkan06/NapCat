@@ -1095,6 +1095,34 @@ struct MenuPanelStructureTests {
         #expect(Self.occurrences(of: "Color.black", in: card) == 1 && Self.occurrences(of: "Color.white", in: card) == 1)
     }
 
+    /// Canon C8 (slice P): exactly four text roles in the panel. `.headline`
+    /// is the battery headline alone; `.body` (the default) the row titles;
+    /// `.caption` every status; `.caption2` at most once. No `.callout` (the
+    /// Charge Limit value moved to `.caption`) and no other text style. Glyph
+    /// sizes are not roles: the four `.system(size:)` glyphs (row symbols,
+    /// the icon buttons' glyph, the gear badge, the ring interior) and the
+    /// desktop symbol's `.largeTitle`.
+    @Test func thePanelUsesFourTypeRoles() throws {
+        let views = try Self.allViewCode()
+        let styles = views.components(separatedBy: ".font(.").dropFirst()
+            .map { String($0.prefix { $0.isLetter || $0.isNumber }) }
+        let roles = Set(styles).subtracting(["system", "largeTitle"])
+        #expect(roles.isSubset(of: ["headline", "body", "caption", "caption2"]), "text styles in use: \(roles.sorted())")
+        #expect(roles.contains("headline") && roles.contains("caption"), "vacuity")
+        #expect(Self.occurrences(of: ".font(.headline)", in: views) == 1, "the headline role is the battery's alone")
+        let (header, _, _) = try Self.batteryHeaderParts()
+        #expect(header.contains("MenuStateModel.batteryHeadline(hasBattery: model.hasBattery, percent: model.batteryPercent))\n"
+                                + "                    .font(.headline)"))
+        #expect(Self.occurrences(of: ".caption2", in: views) <= 1, "caption2 at most once")
+        #expect(!views.contains("callout"), "no .callout")
+        #expect(Self.occurrences(of: ".font(.system(size:", in: views) == 4, "glyph sizes only")
+        #expect(Self.occurrences(of: ".font(.largeTitle)", in: views) == 1, "the desktop symbol only")
+        let value = try #require(Self.structChunk("ChargeLimitValue", in: try Self.code("MenuPanelView.swift")))
+        #expect(value.contains(".font(.caption)"), "the Charge Limit value is a caption")
+        let row = try #require(Self.structChunk("PanelRow", in: try Self.code("MenuPanelView.swift")))
+        #expect(Self.flat(row).contains("Text(title) .layoutPriority(1)"), "row titles keep the default body role")
+    }
+
     /// Growable text may wrap vertically but is never frozen horizontally:
     /// the only bare `.fixedSize()` is on PanelRow's trailing CONTROLS.
     @Test func textIsNeverFixedHorizontally() throws {

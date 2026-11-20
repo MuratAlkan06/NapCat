@@ -123,12 +123,12 @@ struct SettingsWindowTests {
     static let lockAvailableLine = PanelLine(
         text: "Lock Screen: available — locks and turns the display off; the Mac keeps running", severity: .nominal)
     static let lockUnavailableLine = PanelLine(
-        text: "Locking is unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q).",
+        text: "Lock Screen: unavailable on this version of macOS — use Apple menu › Lock Screen (⌃⌘Q)",
         severity: .warning)
     static let approvalCaption = PanelLine(
-        text: "Waiting for approval in System Settings › General › Login Items.", severity: .warning)
+        text: "Waiting for approval — System Settings › General › Login Items", severity: .warning)
     static let notFoundCaption = PanelLine(
-        text: "Login item not found — toggle again to re-register this copy of NapCat.", severity: .warning)
+        text: "Not found — toggle again to re-register this copy of NapCat", severity: .warning)
 
     static func startup(_ isOn: Bool, _ caption: PanelLine? = nil, shortcut: Bool = false) -> SettingsSection {
         SettingsSection(title: "Startup",
@@ -165,7 +165,7 @@ struct SettingsWindowTests {
                    sections: [
                        startup(true),
                        chargeLimit("Pause charging at 90%", on: true, limit: 90, sliderEnabled: true,
-                                   PanelLine(text: "Charging normally — will pause at the limit.", severity: .nominal)),
+                                   PanelLine(text: "Charging — pauses at the limit", severity: .nominal)),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "everything off", login: .notRegistered, feature: .off, limit: 90, limitOn: false,
@@ -178,14 +178,14 @@ struct SettingsWindowTests {
                    limit: 80, limitOn: true, lock: true, sections: [
                        startup(false, approvalCaption, shortcut: true),
                        chargeLimit("Pause charging at 80%", on: true, limit: 80, sliderEnabled: true,
-                                   PanelLine(text: "Charging is paused at the limit.", severity: .nominal)),
+                                   PanelLine(text: "Paused at the limit", severity: .nominal)),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "login not found, setup required", login: .notFound, feature: .setupRequired, limit: 90,
                    limitOn: true, lock: true, sections: [
                        startup(false, notFoundCaption),
                        chargeLimit("Pause charging at 90%", on: true, limit: 90, sliderEnabled: true, PanelLine(
-                           text: "One-time setup needed: run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu.",
+                           text: "Setup needed — run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu",
                            severity: .warning)),
                        lockScreen(lockAvailableLine),
                    ]),
@@ -194,7 +194,7 @@ struct SettingsWindowTests {
                        startup(true),
                        chargeLimit("Pause charging at 90%", on: true, switchEnabled: false, limit: 90,
                                    sliderEnabled: false, PanelLine(
-                                       text: "Charge limiting needs an Apple Silicon Mac. Stay Awake still works here.",
+                                       text: "Unavailable — needs an Apple Silicon Mac; Stay Awake still works here",
                                        severity: .info)),
                        lockScreen(lockAvailableLine),
                    ]),
@@ -202,7 +202,7 @@ struct SettingsWindowTests {
                    limitOn: false, lock: true, sections: [
                        startup(true),
                        chargeLimit("Pause charging at 75%", on: false, limit: 75, sliderEnabled: false, PanelLine(
-                           text: "Charge limiting isn't available on this version of macOS.", severity: .info)),
+                           text: "Unavailable on this version of macOS", severity: .info)),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "a write failed, no limit", login: .enabled, feature: .error("The charge-limit write failed."),
@@ -308,9 +308,9 @@ struct SettingsWindowTests {
     static let alertsRows: [AlertsRow] = {
         let server = PanelLine(text: "Server: https://ntfy.sh", severity: .nominal)
         let unusableServer = PanelLine(
-            text: "Server is not usable — it must be an https address like https://ntfy.sh", severity: .warning)
+            text: "Server: not usable — it must be an https address like https://ntfy.sh", severity: .warning)
         let unusableTopic = PanelLine(
-            text: "Topic is not usable — letters, digits, “_” and “-” only, max 64 characters", severity: .warning)
+            text: "Topic: not usable — letters, digits, “_” and “-” only, max 64 characters", severity: .warning)
         let refused = PanelLine(
             text: "Last message: refused by the server 2m ago (HTTP 403) — check the topic and server", severity: .error)
         let accepted = PanelLine(text: "Last message: accepted by ntfy 2m ago", severity: .nominal)
@@ -913,7 +913,7 @@ struct SettingsWindowTests {
         withLidGuardHarness { lid in
             lid.arm()
             withModel(detection: detection, lidGuard: lid.controller) { model, _ in
-                #expect(model.lidStatus.severity == .warning && model.lidStatus.text.contains("cannot fire"),
+                #expect(model.lidStatus.severity == .warning && model.lidStatus.text.hasPrefix("Cannot fire"),
                         "vacuity: the pause's echo")
                 #expect(model.settingsResidentSeverities(.alerts).allSatisfy { $0 == .nominal })
             }
