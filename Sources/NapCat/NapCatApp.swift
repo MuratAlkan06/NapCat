@@ -120,20 +120,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        statusItemController = StatusItemController(
-            menuContent: MenuContentView(
-                sleep: sleepController,
-                watchdog: watchdogController,
-                power: power,
-                limiter: limiter,
-                simulator: simulator,
-                detection: detection,
-                lidGuard: lidGuard,
-                finishAlert: finishAlert,
-                phoneTransport: sender,
-                defaults: defaults
-            )
+        let menuContent = MenuContentView(
+            sleep: sleepController,
+            watchdog: watchdogController,
+            power: power,
+            limiter: limiter,
+            simulator: simulator,
+            detection: detection,
+            lidGuard: lidGuard,
+            finishAlert: finishAlert,
+            phoneTransport: sender,
+            defaults: defaults
         )
+        statusItemController = StatusItemController(menuContent: menuContent)
+        // Never shown (an accessory app owns no menu bar), but its key
+        // equivalents work whenever NapCat is active: ⌘, opens Settings from
+        // anywhere outside the status menu (slice W). The status item keeps
+        // `menuContent` alive; menu item targets are weak.
+        NSApp.mainMenu = AppMainMenu.make(settingsTarget: menuContent)
         // reconcileAtLaunch() has already refreshed the observed sleep state,
         // so the mirror the fire gate reads is primed before we may arm.
         lidGuard?.refreshArming()

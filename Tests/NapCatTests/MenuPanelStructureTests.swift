@@ -18,7 +18,9 @@ import Testing
 /// only.
 struct MenuPanelStructureTests {
     /// Every SwiftUI view file of the panel. A new view file must be added
-    /// here AND to the LidGuard / ClaudeDetection scanned-file sets.
+    /// here AND to the LidGuard / ClaudeDetection scanned-file sets. (The
+    /// Settings window's files are a separate surface with their own locks:
+    /// `SettingsWindowTests.settingsFiles`.)
     static let viewFiles = ["MenuPanelView.swift", "MenuPanelVariants.swift"]
     /// The panel's one layout since the 2026-10-18 design freeze (the user
     /// kept A "Quiet Rows"; B and C were deleted).

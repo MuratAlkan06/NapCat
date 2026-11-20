@@ -1,0 +1,125 @@
+import SwiftUI
+
+/// The Settings window's SwiftUI content (Panel 2.0 slice W, issue #78),
+/// hosted by `SettingsWindowController`. It renders the pane the toolbar
+/// selected as a grouped form, row by row from the model's composition
+/// (`MenuStateModel.settingsContent(for:)`, SettingsContent.swift) — the views
+/// decide arrangement only, never what a row says or how loud it is. System
+/// materials, semantic colors and the panel's shared components only.
+///
+/// Fixed width (`SettingsMetrics.width`), height fitted to the pane: the form
+/// does not scroll and its ideal height is the window's content height, so a
+/// pane switch or a caption appearing resizes the window (snap — no motion).
+struct SettingsRootView: View {
+    @ObservedObject var model: MenuStateModel
+    @ObservedObject var selection: SettingsSelection
+
+    var body: some View {
+        SettingsPaneView(model: model, content: model.settingsContent(for: selection.pane))
+            // A fresh identity per pane, so no row state carries across tabs.
+            .id(selection.pane)
+    }
+}
+
+enum SettingsMetrics {
+    /// The window's fixed content width.
+    static let width: CGFloat = 440
+}
+
+/// One pane: its sections in order, the footnote under the last one.
+struct SettingsPaneView: View {
+    @ObservedObject var model: MenuStateModel
+    let content: SettingsPaneContent
+
+    var body: some View {
+        Form {
+            ForEach(Array(content.sections.enumerated()), id: \.offset) { index, section in
+                Section {
+                    ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
+                        SettingsRowView(model: model, row: row)
+                    }
+                } header: {
+                    if let title = section.title {
+                        Text(title)
+                    }
+                } footer: {
+                    if index == content.sections.count - 1, let footnote = content.footnote {
+                        Text(footnote)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+        .frame(width: SettingsMetrics.width)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// One row. Controls render the state the row carries and forward to the
+/// model — the same actions the panel's controls forward to.
+struct SettingsRowView: View {
+    @ObservedObject var model: MenuStateModel
+    let row: SettingsRow
+
+    var body: some View {
+        switch row {
+        case let .launchAtLogin(isOn, caption, showsSettingsShortcut):
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Toggle("Launch at Login", isOn: Binding(
+                    get: { isOn },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
+                .toggleStyle(.checkbox)
+                if let caption {
+                    PanelCaptionLine(line: caption)
+                }
+                if showsSettingsShortcut {
+                    Button("Open Login Items Settings…") { model.openLoginItemsSettings() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+            }
+        case let .chargeLimit(header, isOn, switchEnabled, limit, sliderEnabled, caption):
+            VStack(alignment: .leading, spacing: PanelMetrics.regular) {
+                HStack {
+                    Text(header)
+                        .monospacedDigit()
+                    Spacer(minLength: PanelMetrics.regular)
+                    Toggle("Charge Limit", isOn: Binding(
+                        get: { isOn },
+                        set: { model.setLimitEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .disabled(!switchEnabled)
+                }
+                Slider(
+                    value: Binding(
+                        get: { Double(limit) },
+                        set: { model.setLimit(Int($0.rounded())) }
+                    ),
+                    in: 50...100,
+                    step: Double(ChargeLimiter.limitStep)
+                ) {
+                    Text("Charge limit")
+                } minimumValueLabel: {
+                    Text("50%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                } maximumValueLabel: {
+                    Text("100%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                }
+                .labelsHidden()
+                .disabled(!sliderEnabled)
+                .accessibilityValue(header)
+                if let caption {
+                    PanelCaptionLine(line: caption)
+                }
+            }
+        case let .line(line):
+            PanelCaptionLine(line: line, font: .body)
+        }
+    }
+}

@@ -65,6 +65,15 @@ enum DefaultsKey {
     /// the key existed. It adds no destination of its own: the ntfy topic /
     /// server / priming above still arm the alerts.
     static let phoneTransportEnabled = "phoneTransportEnabled"
+
+    // MARK: Panel 2.0 slice W — the Settings window
+
+    /// The Settings pane the window last showed (String, a `SettingsPane`
+    /// raw value), so it reopens there — across launches too. Written only
+    /// when the user picks a pane; unset, unknown, or a pane this wiring does
+    /// not show reads as the first pane (`SettingsPane.restored`). UI state
+    /// only: nothing else reads it.
+    static let settingsSelectedPane = "settingsSelectedPane"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

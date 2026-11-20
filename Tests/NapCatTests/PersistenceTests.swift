@@ -30,6 +30,8 @@ struct PersistenceTests {
         #expect(DefaultsKey.finishAlertMinimumRunSeconds == "finishAlertMinimumRunSeconds")
         // F3 stage 1 — the phone transport toggle (default off).
         #expect(DefaultsKey.phoneTransportEnabled == "phoneTransportEnabled")
+        // Slice W (issue #78) — the Settings window's last pane (UI state).
+        #expect(DefaultsKey.settingsSelectedPane == "settingsSelectedPane")
         // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
         // live key — retired at the design freeze (RetiredDefaultsKey).
     }
@@ -317,7 +319,7 @@ struct PersistenceTests {
                     DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
                     DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
                     DefaultsKey.claudeFinishAlertEnabled, DefaultsKey.finishAlertMinimumRunSeconds,
-                    DefaultsKey.phoneTransportEnabled]
+                    DefaultsKey.phoneTransportEnabled, DefaultsKey.settingsSelectedPane]
         for key in RetiredDefaultsKey.all {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }

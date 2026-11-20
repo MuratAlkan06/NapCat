@@ -74,12 +74,13 @@ struct LidGuardStructureTests {
         "MenuPanelVariants.swift",
         "MenuContentView.swift",
         "TopicFieldVisibility.swift",   // the editor's masked topic passes through it (issue #10)
-    ]
+    ] + SettingsWindowTests.settingsFiles
 
     /// Every menu source file (2026-10-18 redesign split the view into two
-    /// files — a new panel file must be added here).
+    /// files — a new panel file must be added here). Slice W adds the
+    /// Settings window's files (`SettingsWindowTests.settingsFiles`).
     static let menuFiles = ["MenuStateModel.swift", "MenuPanelView.swift", "MenuPanelVariants.swift",
-                            "MenuContentView.swift", "TopicFieldVisibility.swift"]
+                            "MenuContentView.swift", "TopicFieldVisibility.swift"] + SettingsWindowTests.settingsFiles
 
     /// What counts as "a line that emits output", matched case-INSENSITIVELY
     /// (so `osLogger.`/`alertLogger.` cannot slip past). `Logger` is the only

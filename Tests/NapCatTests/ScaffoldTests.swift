@@ -83,10 +83,15 @@ struct ScaffoldTests {
     }
 
     /// P3b: the menu is a single view-based item hosting the SwiftUI panel.
+    /// Slice W (issue #78) adds ONE more item that is never drawn: the hidden
+    /// ⌘, key item (SettingsWindowTests), so the panel stays the only VISIBLE
+    /// item.
     @Test func menuHostsExactlyOneSwiftUIPanelItem() throws {
         let menuContent = makeMenuContent()
         let menu = menuContent.menu
-        #expect(menu.items.count == 1)
+        #expect(menu.items.filter { !$0.isHidden }.count == 1)
+        #expect(menu.items.count == 2)
+        #expect(menu.items[1].isHidden && menu.items[1].keyEquivalent == ",", "the only other item is the hidden ⌘, item")
 
         let panelItem = menu.items[0]
         // Types spelled as strings: `import SwiftUI` next to `import Testing`
