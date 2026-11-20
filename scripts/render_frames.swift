@@ -352,7 +352,7 @@ let sourceSize = 640
 /// side of every drawn detail (disc kernel). Owner-tunable — the previews
 /// offered 6 (subtle), 9 (medium) and 12 (bold); changing it is this one
 /// line plus `make frames`.
-let idleDetailWidenRadius = 9
+let idleDetailWidenRadius = 6
 
 /// Minimum distance, in source pixels, between any widened pixel and the
 /// exterior (or the canvas edge). About one pixel of the 42px frame (the crop
