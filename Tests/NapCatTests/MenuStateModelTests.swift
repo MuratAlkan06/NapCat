@@ -211,6 +211,46 @@ struct MenuStateModelTests {
         #expect(model.chargeLimitCaption == nil, "and has no caption")
         #expect(simulator.writeCalls.isEmpty)
     }
+
+    /// #84 revival, through the model: while the firmware gates control the
+    /// row is hidden and Settings › General shows the one note; once the
+    /// menu-open probe reads the keys again (readiness → .ready, the limiter
+    /// re-evaluates, the model re-reads), the row is back with the SAVED
+    /// toggle and limit, and the note has given way to the controls.
+    @Test @MainActor func aRevivedProbeBringsTheRowBackWithTheSavedState() {
+        let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: DefaultsKey.limitEnabled)
+        defaults.set(85, forKey: DefaultsKey.limit)
+        let simulator = DebugPowerSimulator(batteryPercent: 60, adapterConnected: true)
+        simulator.chargeControlReadiness = .controlUnavailable
+        let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
+        limiter.start()
+        let model = MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter,
+                                   simulator: simulator)
+        let note = SettingsSection(title: "Charge Limit", rows: [.note(MenuStateModel.chargeControlUnavailableText)])
+
+        #expect(model.featureState == .controlUnavailable)
+        #expect(!model.chargeLimitRowVisible)
+        #expect(model.generalPane.sections.contains(note), "the gated Mac's one note")
+
+        simulator.chargeControlReadiness = .ready
+        limiter.evaluate(reason: "menu open")
+        model.refresh()
+
+        #expect(model.featureState == .active)
+        #expect(model.chargeLimitRowVisible, "the row is back")
+        #expect(model.limitEnabled && model.limit == 85, "with the saved toggle and limit")
+        #expect(model.chargeLimitCaption == PanelLine(text: "Charging — pauses at the limit", severity: .nominal))
+        let charge = model.generalPane.sections.filter { $0.title == "Charge Limit" }
+        #expect(charge == [SettingsSection(title: "Charge Limit", rows: [
+            .chargeLimit(header: "Pause charging at 85%", isOn: true, switchEnabled: true, limit: 85, sliderEnabled: true,
+                         caption: PanelLine(text: "Charging — pauses at the limit", severity: .nominal)),
+        ])], "the note gave way to the controls")
+        #expect(simulator.writeCalls.isEmpty, "below the limit: nothing to write")
+    }
+
     // MARK: Stay-awake toggle = P2 checkmark semantics on a SwiftUI Toggle
 
     @Test func observedEnabledRendersOn() {
