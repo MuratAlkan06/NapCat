@@ -1189,6 +1189,9 @@ struct SettingsWindowTests {
     /// Settings button, and those three are the only buttons. The bezel is
     /// the card's treatment — its radius, fill, boost and hairline, no new
     /// color — and a disabled label takes AppKit's disabled control text.
+    /// The link look keeps `.link`'s role: a custom style reads as a button
+    /// (external AXButton), so the link look — and only it — adds `.isLink`,
+    /// which external clients read as AXLink, as on `.link`.
     @Test func everySettingsButtonPressesWithTheQuietSpring() throws {
         let views = try Self.code(Self.settingsViewFile)
         let flat = MenuPanelStructureTests.flat(views)
@@ -1227,6 +1230,11 @@ struct SettingsWindowTests {
         for token in ["Color.white", "Color.black", "cardBoostLight", "cardBoostDark", ".opacity(0", "Color.accentColor"] {
             #expect(!style.contains(token), "'\(token)' — the bezel reuses the card's colors, nothing new")
         }
+        #expect(MenuPanelStructureTests.flat(style).contains(
+            "case .link: label .foregroundStyle(ink(.link)) .accessibilityAddTraits(.isLink) }"),
+                "the link look must keep the link role (external AXLink, as on .link)")
+        #expect(Self.occurrences(of: ".accessibilityAddTraits(.isLink)", in: views) == 1
+                && !views.contains("accessibilityRemoveTraits"), "the link role is the link look's alone")
     }
 
     /// Issue #86: the bezel keeps the native regular push button's footprint

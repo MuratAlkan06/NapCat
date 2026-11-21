@@ -225,7 +225,10 @@ struct SettingsRowView: View {
 ///   (`SettingsMetrics.bezelHeight` / `bezelPadding`). The tint does not
 ///   change on press: the motion is the feedback.
 /// - `link` (Open Login Items Settings…): the system link color in the
-///   label's own footprint, like `.link`.
+///   label's own footprint, like `.link`, and its link role — a custom style
+///   reads as a button (AXButton), so the look adds `.isLink` and external
+///   accessibility clients read AXLink, as on `.link`. The pointer stays the
+///   arrow, as on `.link` (macOS 27.2.1).
 ///
 /// Disabled, the label takes AppKit's disabled control text, as a system
 /// button's title does.
@@ -272,6 +275,7 @@ struct SettingsPressButtonStyle: ButtonStyle {
         case .link:
             label
                 .foregroundStyle(ink(.link))
+                .accessibilityAddTraits(.isLink)
         }
     }
 
