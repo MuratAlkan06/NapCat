@@ -780,32 +780,45 @@ struct MenuPanelStructureTests {
     static let userDrivenAnimationKeys: [String: String] = [
         "configuration.isPressed": "a button's press state",
     ]
+    /// The press-in's ease-out cap (owner ruling f). The release spring is
+    /// held to `PanelMotion.maxDuration` instead, by its visible settle
+    /// (`theQuietSpringSettlesInsideTheCeiling`).
     static let gatedMotionCap = 0.2
 
-    /// Every animated line, one by one: the Reduce-Motion-nil ease-out
-    /// pattern, at most `gatedMotionCap`, keyed on a value from
-    /// `userDrivenAnimationKeys`, and each key animated in ONE place. No
-    /// `withAnimation` anywhere.
+    /// The one animation a view may name (owner pick "motion b", issue #82):
+    /// `PanelMotion.press`, gated on the view's own Reduce Motion, keyed on
+    /// a user-driven press, and SCOPED (a trailing body) to the press's own
+    /// modifiers — never `value:`-keyed, which would animate everything else
+    /// that changes in the same update (a label swap on release).
+    static func sanctionedPress(key: String) -> String {
+        ".animation(PanelMotion.press(\(key), reduceMotion: reduceMotion)) {"
+    }
+
+    /// `PanelMotion.press`, flattened: nil under Reduce Motion, else the
+    /// `pressFade` ease-out in and the quiet spring out — the PanelMotion
+    /// constants by name, no literal.
+    static let sanctionedPressHelper = "static func press(_ isPressed: Bool, reduceMotion: Bool) -> Animation? {"
+        + " if reduceMotion { return nil } return isPressed ? .easeOut(duration: pressFade)"
+        + " : .spring(response: releaseResponse, dampingFraction: releaseDampingFraction) }"
+
+    /// Every animated line, one by one: exactly the sanctioned press call,
+    /// keyed on a value from `userDrivenAnimationKeys`, and each key animated
+    /// in ONE place. No `withAnimation` anywhere.
     static func motionGateFailures(views: String) -> [String] {
         var failures: [String] = []
         if views.contains("withAnimation") {
             failures.append("'withAnimation' — observed-state snaps must never animate")
         }
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
-        if animated.isEmpty { failures.append("vacuity: the press fade animates") }
+        if animated.isEmpty { failures.append("vacuity: the press animates") }
         var keyed: [String: Int] = [:]
         for line in animated {
-            guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
-                failures.append("not gated on Reduce Motion, or not an ease-out: \(line)")
+            let key = line.components(separatedBy: ".animation(PanelMotion.press(").dropFirst().first?
+                .components(separatedBy: ", reduceMotion: ").first ?? ""
+            guard !key.isEmpty, line.contains(Self.sanctionedPress(key: key)) else {
+                failures.append("not the sanctioned press (PanelMotion.press, gated on Reduce Motion, scoped): \(line)")
                 continue
             }
-            let duration = line.components(separatedBy: "duration: ").dropFirst().first
-                .flatMap { Double($0.prefix { "0123456789.".contains($0) }) }
-            if (duration ?? 1) > Self.gatedMotionCap {
-                failures.append("animation longer than 200ms: \(line)")
-            }
-            let key = line.components(separatedBy: ", value: ").dropFirst().last
-                .map { String($0.trimmingCharacters(in: .whitespaces).dropLast()) } ?? ""
             guard Self.userDrivenAnimationKeys[key] != nil else {
                 failures.append("keyed on '\(key)', which the user does not drive — observed state never animates: \(line)")
                 continue
@@ -818,42 +831,49 @@ struct MenuPanelStructureTests {
         return failures
     }
 
-    /// Motion ≤200ms ease-out or none, always behind Reduce Motion, and never
-    /// on an observed-state change. Owner ruling (f)'s PanelMotion shape still
-    /// governs: any number of animations may pass, but each one has the gated
-    /// ease-out shape and is keyed on a value the user drives
-    /// (`userDrivenAnimationKeys` — since slice P, only the press).
+    /// Motion is the press or nothing, always behind Reduce Motion, and never
+    /// on an observed-state change. Owner ruling (f)'s PanelMotion shape,
+    /// amended for the quiet spring (issue #82): every animation is the ONE
+    /// sanctioned `PanelMotion.press` call — its ease-out press-in within
+    /// `gatedMotionCap`, its spring within `PanelMotion.maxDuration` — keyed
+    /// on a value the user drives (`userDrivenAnimationKeys` — since slice P,
+    /// only the press). A literal ease-out, spring or curve in a view fails.
     @Test func motionIsGatedAndShort() throws {
         let views = try Self.allViewCode()
         #expect(Self.motionGateFailures(views: views).isEmpty, "\(Self.motionGateFailures(views: views))")
         #expect(Self.userDrivenAnimationKeys.keys.sorted() == ["configuration.isPressed"],
                 "the user-driven keys are a closed list")
+        #expect(PanelMotion.pressFade <= Self.gatedMotionCap, "the press-in stays a ≤200 ms ease-out")
 
         // Tested on a fixed panel (independent of which animations the
-        // source ships): a press fade passes.
-        let press = "\nlet press = Text(\"x\").animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)"
-        #expect(Self.motionGateFailures(views: press).isEmpty, "a press fade is user-driven")
+        // source ships): the sanctioned press passes.
+        let press = "\nlet press = Text(\"x\").animation(PanelMotion.press(configuration.isPressed, reduceMotion: reduceMotion)) { $0.opacity(1) }"
+        #expect(Self.motionGateFailures(views: press).isEmpty, "the quiet-spring press is user-driven")
 
         let line = { (tail: String) in "\nlet canary = Text(\"x\")" + tail }
+        let scoped = { (key: String) in ".animation(PanelMotion.press(\(key), reduceMotion: reduceMotion)) { $0.opacity(1) }" }
         let canaries: [(name: String, views: String)] = [
             ("withAnimation", views + line(".onTapGesture { withAnimation { } }")),
-            ("an animation keyed on the observed pmset state",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.stayAwakeObserved)")),
-            ("an animation keyed on the battery",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.batteryPercent)")),
-            ("the retired readout roll, keyed on the limit set in Settings",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limit)")),
-            ("the retired chevron", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)")),
-            ("an animation keyed on the limit toggle",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: model.limitEnabled)")),
-            ("an animation not gated on Reduce Motion",
-             views + line(".animation(.easeOut(duration: 0.1), value: configuration.isPressed)")),
+            ("a press keyed on the observed pmset state", views + line(scoped("model.stayAwakeObserved"))),
+            ("a press keyed on the battery", views + line(scoped("model.batteryPercent"))),
+            ("the retired readout roll, keyed on the limit set in Settings", views + line(scoped("model.limit"))),
+            ("the retired chevron", views + line(scoped("expanded"))),
+            ("a press keyed on the limit toggle", views + line(scoped("model.limitEnabled"))),
+            ("the press not gated on Reduce Motion",
+             views + line(".animation(PanelMotion.press(configuration.isPressed, reduceMotion: false)) { $0.opacity(1) }")),
+            ("the pre-#82 literal ease-out fade",
+             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)")),
+            ("an ungated ease-out", views + line(".animation(.easeOut(duration: 0.1), value: configuration.isPressed)")),
             ("a linear animation",
              views + line(".animation(reduceMotion ? nil : .linear(duration: 0.1), value: configuration.isPressed)")),
-            ("a 250 ms animation",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: configuration.isPressed)")),
-            ("a second animation on the same key",
-             views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)")),
+            ("a literal copy of the quiet spring",
+             views + line(".animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)")),
+            ("option C's livelier spring",
+             views + line(".animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.55), value: configuration.isPressed)")),
+            ("the default spring", views + line(".animation(.spring(), value: configuration.isPressed)")),
+            ("the press value-keyed instead of scoped",
+             views + line(".animation(PanelMotion.press(configuration.isPressed, reduceMotion: reduceMotion), value: configuration.isPressed)")),
+            ("a second animation on the same key", views + line(scoped("configuration.isPressed"))),
             ("an animation with no value key", views + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.1))")),
         ]
         for canary in canaries {
@@ -861,39 +881,109 @@ struct MenuPanelStructureTests {
         }
     }
 
+    // MARK: The quiet spring's physics
+
+    /// The share of its travel the release still has to go `t` s after
+    /// release from rest: the underdamped model SwiftUI's
+    /// `Spring(response:dampingRatio:)` uses — unit mass, stiffness
+    /// (2π / response)², damping 4π·ζ / response. At the PanelMotion
+    /// constants it reproduces the option B preview's SwiftUI-measured peak
+    /// (≈1.0028 from 0.94) and visible settle (≈227 ms).
+    static func springRemaining(_ t: Double, response: Double = PanelMotion.releaseResponse,
+                                damping zeta: Double = PanelMotion.releaseDampingFraction) -> Double {
+        let omega = 2 * Double.pi / response
+        let decay = zeta * omega
+        let damped = omega * (1 - zeta * zeta).squareRoot()
+        return exp(-decay * t) * (cos(damped * t) + decay / damped * sin(damped * t))
+    }
+
+    /// The option B preview's own "visibly settled" measure (pick.html): the
+    /// last moment, on a 1 ms grid, the scale is more than 0.0015 off rest
+    /// (0.09 pt across Quit — sub-pixel) or the opacity more than 0.004 off
+    /// it (one 8-bit level). The opacity stops at 1.
+    static func visibleSettle(fromScale scale: Double, opacity: Double, response: Double = PanelMotion.releaseResponse,
+                              damping: Double = PanelMotion.releaseDampingFraction) -> Double {
+        var last = 0.0
+        for ms in 0...2000 {
+            let t = Double(ms) / 1000
+            let remaining = springRemaining(t, response: response, damping: damping)
+            let s = 1 - (1 - scale) * remaining
+            let o = min(1, 1 - (1 - opacity) * remaining)
+            if abs(s - 1) > 0.0015 || abs(o - 1) > 0.004 { last = t }
+        }
+        return last
+    }
+
+    /// The release's highest scale from a squash (its single overshoot).
+    static func releasePeak(fromScale scale: Double) -> Double {
+        (0...2000).map { 1 - (1 - scale) * springRemaining(Double($0) / 1000) }.max() ?? 1
+    }
+
+    /// Issue #82: the sanctioned spring, computed from the PanelMotion
+    /// constants — underdamped (one soft overshoot), the overshoot
+    /// sub-pixel, and visibly settled inside `PanelMotion.maxDuration`
+    /// (300 ms) from the panel's squash and from the gentler wide-control
+    /// one. `Spring.settlingDuration` (559 ms here) measures down to a 0.1%
+    /// tolerance, a sub-pixel tail, so the ceiling holds the VISIBLE settle.
+    @Test func theQuietSpringSettlesInsideTheCeiling() {
+        let zeta = PanelMotion.releaseDampingFraction
+        #expect(zeta > 0 && zeta < 1, "an underdamped spring: one soft overshoot")
+        #expect(PanelMotion.releaseResponse > 0)
+
+        let panel = Self.visibleSettle(fromScale: PanelMotion.pressedScale, opacity: PanelMotion.pressedOpacity)
+        #expect(panel > 0 && panel < PanelMotion.maxDuration, "panel press visibly settles in \(panel) s")
+        let wide = Self.visibleSettle(fromScale: PanelMotion.widePressedScale, opacity: 1)
+        #expect(wide > 0 && wide < PanelMotion.maxDuration, "wide-control press visibly settles in \(wide) s")
+        let peak = Self.releasePeak(fromScale: PanelMotion.pressedScale)
+        #expect(peak > 1 && peak - 1 < 0.005, "the overshoot stays sub-pixel — peak \(peak)")
+
+        // The two squashes: the wide-control one is its own, gentler factor.
+        #expect(PanelMotion.widePressedScale != PanelMotion.pressedScale)
+        #expect(PanelMotion.pressedScale < PanelMotion.widePressedScale && PanelMotion.widePressedScale < 1)
+        #expect(PanelMotion.pressedScale > 0.9, "a quiet squash, not option C's 0.90")
+
+        // Reduce Motion: no animation, in or out.
+        #expect(PanelMotion.press(true, reduceMotion: true) == nil)
+        #expect(PanelMotion.press(false, reduceMotion: true) == nil)
+        #expect(PanelMotion.press(true, reduceMotion: false) != nil)
+        #expect(PanelMotion.press(false, reduceMotion: false) != nil)
+
+        // Canaries: the measure is not vacuous. The ~1.04-overshoot spring
+        // the option C brief asked for (ζ 0.25) takes over a second.
+        #expect(Self.visibleSettle(fromScale: 0.90, opacity: 0.7, response: 0.25, damping: 0.25) > PanelMotion.maxDuration)
+        #expect(Self.visibleSettle(fromScale: 0.90, opacity: 0.7, response: 0.6, damping: 0.7) > PanelMotion.maxDuration,
+                "a slow spring")
+    }
+
     /// #67: the panel's motion, codified in `PanelMotion`. Every animated line
-    /// is the Reduce-Motion-nil ease-out pattern and spells one of
-    /// `PanelMotion`'s animation durations, within `PanelMotion.maxDuration`.
-    /// The press fade lives in one style, which the icon buttons and Quit
-    /// use; the Charge Limit value SNAPS (slice P: no roll without the panel
-    /// slider). Zero motion on open / close: no view animates its insertion
-    /// or removal (`.transition(`), nothing animates through a transaction or
+    /// is the sanctioned `PanelMotion.press` call, and the helper itself is
+    /// exactly the quiet spring of the PanelMotion constants (issue #82): nil
+    /// under Reduce Motion, the `pressFade` ease-out in, the `releaseResponse`
+    /// / `releaseDampingFraction` spring out. The press lives in one style,
+    /// which the icon buttons and Quit use: it fades to `pressedOpacity` and
+    /// squashes to `pressedScale` — no squash under Reduce Motion. The Charge
+    /// Limit value SNAPS (slice P: no roll without the panel slider). Zero
+    /// motion on open / close: no view animates its insertion or removal
+    /// (`.transition(`), nothing animates through a transaction or
     /// imperatively, and the hosting view's re-fit snaps to the new size.
     static func motionFailures(views: String, owner: String) -> [String] {
         var failures: [String] = []
-        let durations = [PanelMotion.pressFade]
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
-        if animated.isEmpty { failures.append("vacuity: the press fade animates") }
-        for line in animated {
-            guard line.contains(".animation(reduceMotion ? nil : .easeOut(duration: ") else {
-                failures.append("not the Reduce-Motion-nil ease-out pattern: \(line)")
-                continue
-            }
-            let duration = line.components(separatedBy: "duration: ").dropFirst().first
-                .flatMap { Double($0.prefix { "0123456789.".contains($0) }) }
-            guard let duration, durations.contains(duration) else {
-                failures.append("the duration is not a PanelMotion constant: \(line)")
-                continue
-            }
-            if duration > PanelMotion.maxDuration {
-                failures.append("longer than PanelMotion.maxDuration: \(line)")
-            }
+        if animated.isEmpty { failures.append("vacuity: the press animates") }
+        for line in animated where !line.contains(".animation(PanelMotion.press(") {
+            failures.append("not the PanelMotion.press call: \(line)")
+        }
+        if Self.occurrences(of: "static func press(", in: views) != 1
+            || !Self.flat(views).contains(Self.sanctionedPressHelper) {
+            failures.append("PanelMotion.press must be exactly the quiet spring of the PanelMotion constants")
         }
         let pressStyle = Self.structChunk("PanelPressFadeButtonStyle", in: views) ?? ""
-        if !pressStyle.contains(".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)")
-            || !pressStyle.contains(
-                ".animation(reduceMotion ? nil : .easeOut(duration: \(PanelMotion.pressFade)), value: configuration.isPressed)") {
-            failures.append("the press fade must dim to PanelMotion.pressedOpacity over PanelMotion.pressFade")
+        for token in [Self.sanctionedPress(key: "configuration.isPressed") + " label in",
+                      ".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)",
+                      ".scaleEffect(configuration.isPressed && !reduceMotion ? PanelMotion.pressedScale : 1)"]
+            where !pressStyle.contains(token) {
+            failures.append("the press must fade to PanelMotion.pressedOpacity and squash to PanelMotion.pressedScale"
+                            + " (no squash under Reduce Motion) through PanelMotion.press — missing '\(token)'")
         }
         let iconButton = Self.structChunk("PanelIconButton", in: views) ?? ""
         let footer = Self.structChunk("PanelFooterRow", in: views) ?? ""
@@ -906,8 +996,11 @@ struct MenuPanelStructureTests {
             || value.contains(".animation(") {
             failures.append("the Charge Limit value must be monospaced and snap")
         }
+        // The motion APIs that run by themselves — on appear, or on a value
+        // the user never touched — are not the press either.
         for token in [".transition(", "withAnimation", "withTransaction", ".transaction", "matchedGeometryEffect",
-                      "NSAnimationContext", "animator()"] where (views + "\n" + owner).contains(token) {
+                      "NSAnimationContext", "animator()", "phaseAnimator", "keyframeAnimator", ".symbolEffect("]
+            where (views + "\n" + owner).contains(token) {
             failures.append("'\(token)' — nothing animates the panel's open, close or height change")
         }
         if !owner.contains("        setFrameSize(fitting)\n") {
@@ -922,11 +1015,29 @@ struct MenuPanelStructureTests {
         #expect(Self.motionFailures(views: views, owner: owner).isEmpty, "\(Self.motionFailures(views: views, owner: owner))")
         #expect(PanelMotion.pressFade <= PanelMotion.maxDuration && PanelMotion.pressFade <= Self.gatedMotionCap)
         #expect(PanelMotion.pressedOpacity == 0.7)
+        let replacing = { (old: String, new: String) in views.replacingOccurrences(of: old, with: new) }
         let canaries: [(name: String, views: String, owner: String)] = [
             ("an insertion transition", views + "\nlet canary = Text(\"x\").transition(.opacity)", owner),
-            ("the press fade off its PanelMotion duration",
-             views.replacingOccurrences(of: "duration: 0.1), value: configuration.isPressed",
-                                        with: "duration: 0.12), value: configuration.isPressed"), owner),
+            ("the press-in off its PanelMotion duration",
+             replacing(".easeOut(duration: pressFade)", ".easeOut(duration: 0.12)"), owner),
+            ("the release off the quiet spring's constants",
+             replacing("dampingFraction: releaseDampingFraction)", "dampingFraction: 0.55)"), owner),
+            ("the release swapped for an ease-out",
+             replacing(".spring(response: releaseResponse, dampingFraction: releaseDampingFraction)",
+                       ".easeOut(duration: pressFade)"), owner),
+            ("the press animating under Reduce Motion", replacing("if reduceMotion { return nil }", ""), owner),
+            ("a second press helper",
+             views + "\nstatic func press(_ isPressed: Bool) -> Animation? { .spring() }", owner),
+            ("the press dropping its squash",
+             replacing(".scaleEffect(configuration.isPressed && !reduceMotion ? PanelMotion.pressedScale : 1)", ""), owner),
+            ("the squash kept under Reduce Motion",
+             replacing("configuration.isPressed && !reduceMotion ? PanelMotion.pressedScale",
+                       "configuration.isPressed ? PanelMotion.pressedScale"), owner),
+            ("the press dropping its fade",
+             replacing(".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)", ""), owner),
+            ("a symbol effect that plays by itself",
+             views + "\nlet canary = Image(systemName: \"x\").symbolEffect(.pulse)", owner),
+            ("a phase animator", views + "\nlet canary = Text(\"x\").phaseAnimator([0, 1]) { $0.opacity($1) }", owner),
             ("the icon buttons and Quit back on the plain style",
              views.replacingOccurrences(of: ".buttonStyle(PanelPressFadeButtonStyle())", with: ".buttonStyle(.plain)"), owner),
             ("the Charge Limit value rolling again",
