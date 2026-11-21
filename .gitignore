@@ -15,3 +15,7 @@ DerivedData/
 # Private planning docs — kept locally, excluded from the public history
 PLAN.md
 CLAUDE.md
+
+# Provisioning profiles are passed to make (PROVISIONING_PROFILE=) from
+# outside the checkout and never committed.
+*.provisionprofile

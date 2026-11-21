@@ -6,7 +6,10 @@ name: Release
 # ONLY on a vMAJOR.MINOR.PATCH tag push AND only when every signing secret below
 # is configured. Without them the run fails soft: it uploads the image as a
 # workflow artifact named NapCat-<version>-UNSIGNED and never attaches it to a
-# GitHub Release. workflow_dispatch is always such an unsigned dry run.
+# GitHub Release. workflow_dispatch is always such an unsigned dry run; it also
+# proves the entitled signing path, with no signing identity at all, on ad-hoc
+# signed bundles that are never uploaded. Every unsigned bundle is checked to
+# carry no entitlements.
 #
 # Secrets used by the signed path (none are needed for the unsigned one) live in
 # the `release` environment, whose required reviewer is the owner. Only the
@@ -24,6 +27,16 @@ name: Release
 #   NOTARY_API_KEY_P8_BASE64      base64 of the App Store Connect API key (.p8)
 #   NOTARY_API_KEY_ID             its key ID
 #   NOTARY_API_ISSUER_ID          its issuer ID
+#   MACOS_PROVISIONING_PROFILE_BASE64
+#                                 base64 of the Developer ID provisioning
+#                                 profile for com.muratalkan.napcat (iCloud
+#                                 with CloudKit, container
+#                                 iCloud.com.muratalkan.napcat). It is decoded
+#                                 to a temporary file, embedded as
+#                                 Contents/embedded.provisionprofile, and the
+#                                 bundle is signed with
+#                                 Resources/NapCat.entitlements; both are
+#                                 checked before notarization. Never printed.
 # Secrets reach run steps only through env:, never through ${{ }} in a script.
 #
 # The GitHub Release is only ever created as a DRAFT; the owner reviews and
@@ -263,6 +276,123 @@ jobs:
       - name: Run unit tests
         run: make test
 
+      # Dry runs only. Reads no secret, uses no signing identity and touches no
+      # keychain. Bundles are built through the signed path's make variables
+      # (the committed entitlements and a placeholder profile) but signed
+      # ad-hoc: SIGN_IDENTITY=dry-run only gets past make's ad-hoc guard, and
+      # CODESIGN is the ad-hoc command. The placeholder profiles are the
+      # committed entitlements wrapped in CMS by a throwaway self-signed
+      # certificate. The check refuses an ad-hoc signature last, so the
+      # placeholder shaped like a Developer ID profile must fail with exactly
+      # that refusal and nothing else, which means every other check passed.
+      # One for another App ID, an expired one and one without the container
+      # must each fail earlier, with exactly their own message. make must also
+      # refuse either variable with the ad-hoc identity. The binary is never
+      # launched (AMFI would kill it). Every file is removed on exit, pass or
+      # fail; the unsigned build below replaces the bundle built here.
+      - name: Prove the entitled signing path without a signing identity
+        if: needs.validate.outputs.publish != 'true'
+        env:
+          OPENSSL: ${{ steps.openssl.outputs.path }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/napcat-entitled-prover.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+
+          # The check looks for jq only on its fixed PATH.
+          check_jq="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin; command -v jq || true)"
+          if [ -z "$check_jq" ]; then
+            echo "::error::There is no jq on the entitlement check's PATH (/usr/bin:/bin:/usr/sbin:/sbin)."
+            exit 1
+          fi
+          echo "The entitlement check uses $check_jq ($("$check_jq" --version))."
+
+          # Ad-hoc signing with either variable must stop make before it builds.
+          for variable in ENTITLEMENTS=Resources/NapCat.entitlements "PROVISIONING_PROFILE=$work/any.provisionprofile"; do
+            if make "$variable" > "$work/make.log" 2>&1; then
+              echo "::error::make accepted ${variable%%=*} with the ad-hoc identity."
+              exit 1
+            fi
+            if ! grep -q 'need a real SIGN_IDENTITY' "$work/make.log"; then
+              cat "$work/make.log"
+              echo "::error::make failed with ${variable%%=*} and the ad-hoc identity, but not with the entitlement guard's error."
+              exit 1
+            fi
+            echo "make refuses ${variable%%=*} with the ad-hoc identity."
+          done
+
+          # A throwaway self-signed certificate wraps the placeholder profiles
+          # in CMS, as Apple's signature wraps a real one. It signs no code,
+          # and its unencrypted key never leaves the step's 0700 directory.
+          "$OPENSSL" req -x509 -newkey rsa:2048 -days 1 -quiet -noenc -subj "/CN=napcat-entitled-prover" \
+            -keyout "$work/prover.key.pem" -out "$work/prover.cert.pem"
+
+          # $1 names a placeholder profile, $2 is a jq filter over the
+          # committed entitlements, $3 its ExpirationDate (UTC, ISO 8601).
+          plutil -convert json -o "$work/entitlements.json" Resources/NapCat.entitlements
+          app_id="$(jq -r '."com.apple.application-identifier"' "$work/entitlements.json")"
+          make_profile() {
+            jq "$2" "$work/entitlements.json" \
+              | jq --arg name "$1" '{Name: ("NapCat dry-run placeholder: " + $name), Entitlements: .}' > "$work/$1.json"
+            plutil -convert xml1 -o "$work/$1.plist" "$work/$1.json"
+            plutil -insert ExpirationDate -date "$3" "$work/$1.plist"
+            "$OPENSSL" cms -sign -nodetach -binary -outform DER -signer "$work/prover.cert.pem" \
+              -inkey "$work/prover.key.pem" -in "$work/$1.plist" -out "$work/$1.provisionprofile"
+          }
+          tomorrow="$(date -u -v+1d +%Y-%m-%dT%H:%M:%SZ)"
+          yesterday="$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)"
+          # Shaped like a Developer ID profile: every iCloud service ("*") and
+          # grants beyond the ones NapCat claims.
+          make_profile developer-id \
+            '. + {"com.apple.developer.icloud-services": "*", "keychain-access-groups": [(."com.apple.developer.team-identifier" + ".*")]}' \
+            "$tomorrow"
+          make_profile other-app-id '."com.apple.application-identifier" += ".other"' "$tomorrow"
+          make_profile expired '.' "$yesterday"
+          make_profile no-container '."com.apple.developer.icloud-container-identifiers" = []' "$tomorrow"
+
+          # The signed path's make variables with the ad-hoc signature.
+          build_with() {
+            make all SIGN_IDENTITY=dry-run CODESIGN="codesign --force -s -" \
+              ENTITLEMENTS=Resources/NapCat.entitlements PROVISIONING_PROFILE="$work/$1.provisionprofile"
+          }
+          check() {
+            ./scripts/check-release-entitlements.sh entitled dist/NapCat.app Resources/NapCat.entitlements
+          }
+
+          # $1 names a placeholder profile; the check must refuse the bundle
+          # built with it, and its whole output must be exactly the error $2.
+          expect_refusal() {
+            local output
+            if ! build_with "$1" > "$work/build-$1.log" 2>&1; then
+              cat "$work/build-$1.log"
+              echo "::error::make could not build with the $1 placeholder profile."
+              return 1
+            fi
+            if output="$(check 2>&1)"; then
+              echo "::error::The entitlement check accepted the $1 placeholder profile on an ad-hoc signed bundle."
+              return 1
+            fi
+            if [ "$output" != "check-release-entitlements: error: $2" ]; then
+              printf '%s\n' "$output"
+              echo "::error::The entitlement check refused the $1 placeholder profile, but its output is not exactly the expected error: $2"
+              return 1
+            fi
+            echo "Refused the $1 placeholder profile with exactly: $2"
+          }
+
+          expect_refusal developer-id "dist/NapCat.app is ad-hoc signed; entitlements need a real signing identity."
+          echo "So the Developer ID-shaped placeholder passed every check but the last (ad-hoc) one."
+          echo "Entitlements on the ad-hoc signed bundle:"
+          codesign -d --entitlements - --xml dist/NapCat.app 2> /dev/null | plutil -p -
+          ls -l dist/NapCat.app/Contents/embedded.provisionprofile
+
+          expect_refusal other-app-id \
+            "the embedded provisioning profile is not for $app_id (the application identifier in Resources/NapCat.entitlements)."
+          expect_refusal expired "the embedded provisioning profile expired at $yesterday."
+          expect_refusal no-container \
+            "the embedded provisioning profile does not grant: com.apple.developer.icloud-container-identifiers"
+
       # Signing is attempted only for a tag push with EVERY secret present.
       # The secrets are compared to '' here, so only true/false reaches env.
       - name: Decide whether this run can sign
@@ -275,6 +405,7 @@ jobs:
           HAVE_NOTARY_KEY: ${{ secrets.NOTARY_API_KEY_P8_BASE64 != '' }}
           HAVE_NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID != '' }}
           HAVE_NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID != '' }}
+          HAVE_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 != '' }}
         run: |
           set -euo pipefail
           missing=""
@@ -284,6 +415,7 @@ jobs:
           [ "$HAVE_NOTARY_KEY" = "true" ] || missing="$missing NOTARY_API_KEY_P8_BASE64"
           [ "$HAVE_NOTARY_KEY_ID" = "true" ] || missing="$missing NOTARY_API_KEY_ID"
           [ "$HAVE_NOTARY_ISSUER_ID" = "true" ] || missing="$missing NOTARY_API_ISSUER_ID"
+          [ "$HAVE_PROVISIONING_PROFILE" = "true" ] || missing="$missing MACOS_PROVISIONING_PROFILE_BASE64"
           if [ "$PUBLISH" != "true" ]; then
             echo "sign=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Dry run::This run builds an UNSIGNED disk image as a workflow artifact only. Nothing is signed or published."
@@ -360,6 +492,23 @@ jobs:
           # The always() cleanup step deletes it, which also drops it from there.
           security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
 
+      # The profile grants the CloudKit entitlements; make embeds it in the
+      # bundle before signing. It is decoded to a temporary file that only this
+      # job can read, and its contents are never printed.
+      - name: Decode the provisioning profile
+        if: steps.gate.outputs.sign == 'true'
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          profile="$RUNNER_TEMP/napcat-embedded.provisionprofile"
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
+          if ! security cms -D -i "$profile" -o /dev/null 2> /dev/null; then
+            echo "::error::MACOS_PROVISIONING_PROFILE_BASE64 does not decode to a provisioning profile. Upload the base64 of the Developer ID .provisionprofile for com.muratalkan.napcat."
+            exit 1
+          fi
+
       - name: Build the bundle and disk image
         env:
           SIGNING: ${{ steps.gate.outputs.sign }}
@@ -368,13 +517,31 @@ jobs:
           set -euo pipefail
           if [ "$SIGNING" = "true" ]; then
             keychain="$RUNNER_TEMP/napcat-release.keychain-db"
+            profile="$RUNNER_TEMP/napcat-embedded.provisionprofile"
             # The Makefile's signed CODESIGN command plus --keychain, so codesign
-            # looks for the identity only in the temporary keychain.
+            # looks for the identity only in the temporary keychain. make adds
+            # --entitlements after it and embeds the profile before signing.
             make release-artifacts SIGN_IDENTITY="$DEVELOPER_ID" \
-              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s '$DEVELOPER_ID'"
+              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s '$DEVELOPER_ID'" \
+              ENTITLEMENTS=Resources/NapCat.entitlements PROVISIONING_PROFILE="$profile"
           else
             make release-artifacts
           fi
+
+      # Before anything goes to Apple: the bundle must be signed with exactly
+      # the committed entitlements, and its embedded profile must be for the
+      # same application identifier, unexpired, and grant every one of them.
+      # Any mismatch fails the job here, so nothing is notarized or published.
+      - name: Check the bundle's entitlements and provisioning profile
+        if: steps.gate.outputs.sign == 'true'
+        run: ./scripts/check-release-entitlements.sh entitled dist/NapCat.app Resources/NapCat.entitlements
+
+      # Every unsigned build (a dry run, or a tag push without every signing
+      # secret) is the plain ad-hoc make, which must carry no entitlements and
+      # no provisioning profile.
+      - name: Check the unsigned bundle carries no entitlements
+        if: steps.gate.outputs.sign != 'true'
+        run: ./scripts/check-release-entitlements.sh unentitled dist/NapCat.app
 
       - name: Sign, notarize and staple the disk image
         if: steps.gate.outputs.sign == 'true'
@@ -458,7 +625,7 @@ jobs:
             security delete-keychain "$keychain" || true
           fi
           rm -f "$RUNNER_TEMP/napcat-signing.p12" "$RUNNER_TEMP/napcat-notary-key.p8" \
-            "$RUNNER_TEMP/napcat-notary-result.json"
+            "$RUNNER_TEMP/napcat-notary-result.json" "$RUNNER_TEMP/napcat-embedded.provisionprofile"
 
   publish:
     name: Create the draft GitHub Release
