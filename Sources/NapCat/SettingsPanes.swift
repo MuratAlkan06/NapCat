@@ -10,6 +10,7 @@ import SwiftUI
 /// Fixed width (`SettingsMetrics.width`), height fitted to the pane: the form
 /// does not scroll and its ideal height is the window's content height, so a
 /// pane switch or a caption appearing resizes the window (snap — no motion).
+/// The window's one motion is a button's press (`SettingsPressButtonStyle`).
 struct SettingsRootView: View {
     @ObservedObject var model: MenuStateModel
     @ObservedObject var selection: SettingsSelection
@@ -25,6 +26,14 @@ struct SettingsRootView: View {
 enum SettingsMetrics {
     /// The window's fixed content width.
     static let width: CGFloat = 440
+    /// The bordered buttons' bezel (`SettingsPressButtonStyle.Look.bezel`,
+    /// issue #86): the native regular push button's footprint, measured on
+    /// macOS 27.2.1 — a fixed 24 pt tall, the width the label's plus this
+    /// padding on each side ("Send test message": 140 × 24 pt, the system
+    /// button's own frame). A press squashes the drawing only; the layout
+    /// never moves.
+    static let bezelHeight: CGFloat = 24
+    static let bezelPadding: CGFloat = 12
 }
 
 /// One pane: its sections in order, the footnote under the last one.
@@ -80,7 +89,7 @@ struct SettingsRowView: View {
                 }
                 if showsSettingsShortcut {
                     Button("Open Login Items Settings…") { model.openLoginItemsSettings() }
-                        .buttonStyle(.link)
+                        .buttonStyle(SettingsPressButtonStyle(look: .link))
                         .font(.caption)
                 }
             }
@@ -140,6 +149,7 @@ struct SettingsRowView: View {
                 Button("ntfy settings…") { model.editLidGuardSettings() }
                 SendFeedbackButton(model: model, controlSize: .regular)
             }
+            .buttonStyle(SettingsPressButtonStyle(look: .bezel))
         case let .minimumRun(label, seconds, choices, caption):
             VStack(alignment: .leading, spacing: PanelMetrics.tight) {
                 Picker(label, selection: Binding(
@@ -193,5 +203,87 @@ struct SettingsRowView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+// MARK: - Press motion
+
+/// Every Settings button's look plus the panel's quiet spring (issue #86,
+/// owner pick "settings b"). The system `.bordered` and `.link` styles expose
+/// no press state, so the window draws its own: a style gets
+/// `configuration.isPressed` from SwiftUI itself — no gesture, no AppKit
+/// tracking. While the pointer holds the button, the WHOLE button fades to
+/// `PanelMotion.pressedOpacity` and squashes to `PanelMotion.widePressedScale`
+/// over `PanelMotion.pressFade`, then springs back on release
+/// (`PanelMotion.press` — the panel's one animation, scoped to those two
+/// modifiers). Under Reduce Motion there is no squash and the fade snaps.
+///
+/// - `bezel` (ntfy settings…, Send test message): the card family's bezel —
+///   `PanelMetrics.cardRadius` continuous corners, the card's fill
+///   (`quaternarySystemFill` plus `PanelCard.boost`) and its `cardStroke`
+///   separator hairline, no new color — in the native button's footprint
+///   (`SettingsMetrics.bezelHeight` / `bezelPadding`). The tint does not
+///   change on press: the motion is the feedback.
+/// - `link` (Open Login Items Settings…): the system link color in the
+///   label's own footprint, like `.link`, and its link role — a custom style
+///   reads as a button (AXButton), so the look adds `.isLink` and external
+///   accessibility clients read AXLink, as on `.link`. The pointer stays the
+///   arrow, as on `.link` (macOS 27.2.1).
+///
+/// Disabled, the label takes AppKit's disabled control text, as a system
+/// button's title does.
+struct SettingsPressButtonStyle: ButtonStyle {
+    enum Look {
+        case bezel
+        case link
+    }
+
+    let look: Look
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        rest(configuration.label)
+            .animation(PanelMotion.press(configuration.isPressed, reduceMotion: reduceMotion)) { button in
+                button
+                    .opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)
+                    .scaleEffect(configuration.isPressed && !reduceMotion ? PanelMotion.widePressedScale : 1)
+            }
+    }
+
+    /// The button at rest, in its look.
+    @ViewBuilder
+    private func rest(_ label: Configuration.Label) -> some View {
+        switch look {
+        case .bezel:
+            let shape = RoundedRectangle(cornerRadius: PanelMetrics.cardRadius, style: .continuous)
+            label
+                .foregroundStyle(ink(.primary))
+                .padding(.horizontal, SettingsMetrics.bezelPadding)
+                .frame(height: SettingsMetrics.bezelHeight)
+                .background {
+                    ZStack {
+                        shape.fill(Color(nsColor: .quaternarySystemFill))
+                        shape.fill(PanelCard<EmptyView>.boost(colorScheme))
+                    }
+                }
+                .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: PanelMetrics.cardStroke))
+                // The whole bezel takes the click, and the keyboard focus
+                // ring follows its corners.
+                .contentShape([.interaction, .focusEffect], shape)
+        case .link:
+            label
+                .foregroundStyle(ink(.link))
+                .accessibilityAddTraits(.isLink)
+        }
+    }
+
+    /// The label's color: its look's own, or — disabled ("Send test message"
+    /// while no topic is set, and while "Sending…") — AppKit's disabled
+    /// control text, as on a system button. A custom style is not dimmed for
+    /// it.
+    private func ink(_ enabled: some ShapeStyle) -> AnyShapeStyle {
+        isEnabled ? AnyShapeStyle(enabled) : AnyShapeStyle(Color(nsColor: .disabledControlTextColor))
     }
 }

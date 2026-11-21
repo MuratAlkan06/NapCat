@@ -105,7 +105,9 @@ enum PanelMetrics {
 ///
 /// The animated lines name `press(_:reduceMotion:)` and nothing else — no
 /// literal duration or spring in a view; `panelMotionCodifiesEveryAnimation`
-/// admits exactly that call and holds it to the constants below.
+/// admits exactly that call and holds it to the constants below. The
+/// Settings window (issue #86) is its one other user: its buttons press with
+/// the same helper, squashing to `widePressedScale` instead.
 enum PanelMotion {
     /// The press-in: a pressed button eases out to its pressed look over this
     /// long (`press(_:reduceMotion:)`).
@@ -117,14 +119,16 @@ enum PanelMotion {
     /// Settings gear, Lock Screen) and Quit — scales to this, reached over
     /// `pressFade`. 1.1 pt on the 18.5 pt lock glyph, 3.6 pt across Quit.
     static let pressedScale: CGFloat = 0.94
-    /// The squash of a wide control that keeps its system look (the Settings
-    /// window's bordered buttons). A fixed factor grows with the button:
+    /// The squash of a wide control: every Settings window button
+    /// (`SettingsPressButtonStyle`, issue #86 — owner pick "settings b"), with
+    /// the same `pressedOpacity` fade. A fixed factor grows with the button:
     /// `pressedScale` would shrink the 140 pt "Send test message" by about
-    /// 8 pt (the option B Settings render). 0.97 keeps a 100–140 pt button's
-    /// squash at 3–4 pt, the size Quit's 0.94 gives. Not applied yet (issue
-    /// #82): a system-styled button exposes no press state, and a
-    /// gesture-tracked squash sticks on an AppKit-backed control, whose
-    /// tracking loop swallows the mouse-up.
+    /// 8 pt. 0.97 keeps a 100–140 pt button's squash at 3–4 pt (4.2 pt on
+    /// Send, 4.0 pt on the Login Items link), the size Quit's 0.94 gives; its
+    /// release peaks at ≈1.0014, sub-pixel. The system styles expose no press
+    /// state (and a gesture-tracked squash sticks on an AppKit-backed control,
+    /// whose tracking loop swallows the mouse-up — issue #82), so those
+    /// buttons draw their own look and get `configuration.isPressed` natively.
     static let widePressedScale: CGFloat = 0.97
     /// The release: the quiet spring, exactly as option B rendered it —
     /// `.spring(response: releaseResponse, dampingFraction:
