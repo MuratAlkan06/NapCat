@@ -3,6 +3,7 @@
 // CLT frameworks dir does not ship (see PLAN.md decision log 2026-07-09).
 import AppKit
 import ServiceManagement
+import SwiftUI
 import Testing
 @testable import NapCat
 
@@ -1168,10 +1169,87 @@ struct SettingsWindowTests {
                       "TuckedLine(", "featureState", "loginItemStatus"] {
             #expect(!views.contains(token), "'\(token)' in a Settings view — the composition decides")
         }
-        // No motion of its own: pane switches and caption changes snap.
-        for token in [".animation(", "withAnimation", ".transition("] {
+        // No motion of its own: pane switches and caption changes snap. The
+        // one animation is a button's press (issue #86) — the panel's
+        // sanctioned `PanelMotion.press`, held to the panel's motion locks
+        // (MenuPanelStructureTests).
+        #expect(Self.occurrences(of: ".animation(", in: views) == 1, "one animation: the buttons' press")
+        #expect(MenuPanelStructureTests.motionGateFailures(views: views).isEmpty,
+                "\(MenuPanelStructureTests.motionGateFailures(views: views))")
+        for token in ["withAnimation", ".transition("] {
             #expect(!views.contains(token), "'\(token)' — the Settings window does not animate")
         }
+    }
+
+    /// Issue #86 (owner pick "settings b"): every Settings button is drawn by
+    /// `SettingsPressButtonStyle`, so each one presses with the panel's quiet
+    /// spring — the bordered pair (ntfy settings…, and the test send through
+    /// its wrapper) on the card-family bezel, the Login Items shortcut as a
+    /// link. A system style exposes no press state, so none is left on a
+    /// Settings button, and those three are the only buttons. The bezel is
+    /// the card's treatment — its radius, fill, boost and hairline, no new
+    /// color — and a disabled label takes AppKit's disabled control text.
+    @Test func everySettingsButtonPressesWithTheQuietSpring() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        let flat = MenuPanelStructureTests.flat(views)
+        #expect(flat.contains("Button(\"Open Login Items Settings…\") { model.openLoginItemsSettings() }"
+                              + " .buttonStyle(SettingsPressButtonStyle(look: .link)) .font(.caption)"),
+                "the Login Items shortcut presses as a link")
+        #expect(flat.contains("case .ntfyButtons: HStack(spacing: PanelMetrics.regular) {"
+                              + " Button(\"ntfy settings…\") { model.editLidGuardSettings() }"
+                              + " SendFeedbackButton(model: model, controlSize: .regular) }"
+                              + " .buttonStyle(SettingsPressButtonStyle(look: .bezel))"),
+                "the bordered pair — the test send included — presses on the bezel")
+        #expect(Self.occurrences(of: "Button(\"", in: views) == 2 && Self.occurrences(of: "SendFeedbackButton(", in: views) == 1
+                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these three")
+        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 2, "every button under the one style")
+        for token in [".buttonStyle(.", "PanelPressFadeButtonStyle", "BorderedButtonStyle", "LinkButtonStyle",
+                      "PlainButtonStyle", "onLongPressGesture", "DragGesture", ".gesture(", "NSTrackingArea"] {
+            #expect(!views.contains(token), "'\(token)' — the press comes from configuration.isPressed alone")
+        }
+
+        let style = try #require(MenuPanelStructureTests.structChunk("SettingsPressButtonStyle", in: views))
+        for token in [
+            "@Environment(\\.isEnabled) private var isEnabled",
+            "let shape = RoundedRectangle(cornerRadius: PanelMetrics.cardRadius, style: .continuous)",
+            ".foregroundStyle(ink(.primary))",
+            ".padding(.horizontal, SettingsMetrics.bezelPadding)",
+            ".frame(height: SettingsMetrics.bezelHeight)",
+            "shape.fill(Color(nsColor: .quaternarySystemFill))",
+            "shape.fill(PanelCard<EmptyView>.boost(colorScheme))",
+            ".overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: PanelMetrics.cardStroke))",
+            ".contentShape([.interaction, .focusEffect], shape)",
+            ".foregroundStyle(ink(.link))",
+            "isEnabled ? AnyShapeStyle(enabled) : AnyShapeStyle(Color(nsColor: .disabledControlTextColor))",
+        ] {
+            #expect(style.contains(token), "'\(token)' not found — the Settings button look was rewired")
+        }
+        for token in ["Color.white", "Color.black", "cardBoostLight", "cardBoostDark", ".opacity(0", "Color.accentColor"] {
+            #expect(!style.contains(token), "'\(token)' — the bezel reuses the card's colors, nothing new")
+        }
+    }
+
+    /// Issue #86: the bezel keeps the native regular push button's footprint
+    /// (`SettingsMetrics`, measured on macOS 27.2.1 — "Send test message"
+    /// 140 × 24 pt and "ntfy settings…" 110.5 × 24 pt, the system button's
+    /// own frames): a fixed 24 pt tall, the label `bezelPadding` in from each
+    /// side — disabled too. The link keeps its label's own size, as `.link`
+    /// does. The press only scales the drawing, so no size here ever moves.
+    @Test @MainActor func theSettingsButtonsKeepTheNativeFootprint() {
+        #expect(SettingsMetrics.bezelHeight == 24 && SettingsMetrics.bezelPadding == 12)
+        func size(_ view: some View) -> CGSize { NSHostingView(rootView: view).fittingSize }
+        for title in ["ntfy settings…", "Send test message"] {
+            let label = size(Text(title))
+            for enabled in [true, false] {
+                let bezel = size(Button(title) {}.buttonStyle(SettingsPressButtonStyle(look: .bezel)).disabled(!enabled))
+                #expect(bezel.height == SettingsMetrics.bezelHeight, "\(title): \(bezel)")
+                #expect(abs(bezel.width - (label.width + 2 * SettingsMetrics.bezelPadding)) < 0.01,
+                        "\(title): \(bezel.width) pt for a \(label.width) pt label")
+            }
+        }
+        let title = "Open Login Items Settings…"
+        let link = size(Button(title) {}.buttonStyle(SettingsPressButtonStyle(look: .link)).font(.caption))
+        #expect(link == size(Text(title).font(.caption)), "the link is its label's size: \(link)")
     }
 
     /// #84: the note is a fact, not a control — the info glyph (hidden from
