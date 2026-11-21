@@ -103,9 +103,9 @@ enum PanelMetrics {
 ///   readout's digit roll left with the panel slider — the limit is set in
 ///   Settings now, so in the panel it is observed state and snaps.)
 ///
-/// The animated lines spell their duration as a literal (the motion lint
-/// reads it); `panelMotionCodifiesEveryAnimation` holds each literal to one
-/// of the durations below.
+/// The animated lines name `press(_:reduceMotion:)` and nothing else — no
+/// literal duration or spring in a view; `panelMotionCodifiesEveryAnimation`
+/// admits exactly that call and holds it to the constants below.
 enum PanelMotion {
     /// The press-in: a pressed button eases out to its pressed look over this
     /// long (`press(_:reduceMotion:)`).
@@ -764,17 +764,24 @@ struct BatteryHeader: View {
 
 // MARK: - Press fade
 
-/// The plain look plus a press state (#67, owner ruling f): while the pointer
-/// holds the button, its label fades to `PanelMotion.pressedOpacity` over
-/// `PanelMotion.pressFade`, and back on release. There is no fade under
-/// Reduce Motion. The press is the user's own, so it may animate.
+/// The plain look plus a press state (#67, owner ruling f; the quiet spring
+/// since issue #82): while the pointer holds the button, its label fades to
+/// `PanelMotion.pressedOpacity` and squashes to `PanelMotion.pressedScale`
+/// over `PanelMotion.pressFade`, then springs back on release
+/// (`PanelMotion.press`). The animation is scoped to those two modifiers, so
+/// nothing else in the label animates with the press. Under Reduce Motion
+/// there is no squash and the fade snaps — the press feedback before #82.
+/// The press is the user's own, so it may animate.
 struct PanelPressFadeButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
+            .animation(PanelMotion.press(configuration.isPressed, reduceMotion: reduceMotion)) { label in
+                label
+                    .opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)
+                    .scaleEffect(configuration.isPressed && !reduceMotion ? PanelMotion.pressedScale : 1)
+            }
     }
 }
 
