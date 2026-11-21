@@ -189,10 +189,10 @@ struct MenuStateModelTests {
         #expect(!model.isCharging)
     }
 
-    /// #58 end to end through the model: the charge section keeps showing
-    /// the user's SAVED toggle + limit, with the calm info caption in the
-    /// section's own caption slot (no new panel element).
-    @Test @MainActor func controlUnavailableShowsTheSavedStateWithACalmCaption() {
+    /// #58 end to end through the model, under #84's contract: the user's
+    /// SAVED toggle + limit are kept as-is, but the panel row is hidden and
+    /// carries no caption; nothing is written.
+    @Test @MainActor func controlUnavailableKeepsTheSavedStateAndHidesTheRow() {
         let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -206,11 +206,51 @@ struct MenuStateModelTests {
                                    simulator: simulator)
 
         #expect(model.featureState == .controlUnavailable)
-        #expect(model.limitEnabled && model.limit == 85, "saved intent shown as-is")
-        #expect(model.chargeLimitCaption
-                == PanelLine(text: "Unavailable on this version of macOS", severity: .info))
+        #expect(model.limitEnabled && model.limit == 85, "saved intent kept as-is")
+        #expect(!model.chargeLimitRowVisible, "the panel row is hidden")
+        #expect(model.chargeLimitCaption == nil, "and has no caption")
         #expect(simulator.writeCalls.isEmpty)
     }
+
+    /// #84 revival, through the model: while the firmware gates control the
+    /// row is hidden and Settings › General shows the one note; once the
+    /// menu-open probe reads the keys again (readiness → .ready, the limiter
+    /// re-evaluates, the model re-reads), the row is back with the SAVED
+    /// toggle and limit, and the note has given way to the controls.
+    @Test @MainActor func aRevivedProbeBringsTheRowBackWithTheSavedState() {
+        let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: DefaultsKey.limitEnabled)
+        defaults.set(85, forKey: DefaultsKey.limit)
+        let simulator = DebugPowerSimulator(batteryPercent: 60, adapterConnected: true)
+        simulator.chargeControlReadiness = .controlUnavailable
+        let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: defaults)
+        limiter.start()
+        let model = MenuStateModel(power: simulator, sleep: SleepStateController(), limiter: limiter,
+                                   simulator: simulator)
+        let note = SettingsSection(title: "Charge Limit", rows: [.note(MenuStateModel.chargeControlUnavailableText)])
+
+        #expect(model.featureState == .controlUnavailable)
+        #expect(!model.chargeLimitRowVisible)
+        #expect(model.generalPane.sections.contains(note), "the gated Mac's one note")
+
+        simulator.chargeControlReadiness = .ready
+        limiter.evaluate(reason: "menu open")
+        model.refresh()
+
+        #expect(model.featureState == .active)
+        #expect(model.chargeLimitRowVisible, "the row is back")
+        #expect(model.limitEnabled && model.limit == 85, "with the saved toggle and limit")
+        #expect(model.chargeLimitCaption == PanelLine(text: "Charging — pauses at the limit", severity: .nominal))
+        let charge = model.generalPane.sections.filter { $0.title == "Charge Limit" }
+        #expect(charge == [SettingsSection(title: "Charge Limit", rows: [
+            .chargeLimit(header: "Pause charging at 85%", isOn: true, switchEnabled: true, limit: 85, sliderEnabled: true,
+                         caption: PanelLine(text: "Charging — pauses at the limit", severity: .nominal)),
+        ])], "the note gave way to the controls")
+        #expect(simulator.writeCalls.isEmpty, "below the limit: nothing to write")
+    }
+
     // MARK: Stay-awake toggle = P2 checkmark semantics on a SwiftUI Toggle
 
     @Test func observedEnabledRendersOn() {
@@ -278,10 +318,9 @@ struct MenuStateModelTests {
         #expect(MenuStateModel.featureMessage(for: .off) == nil)
         #expect(MenuStateModel.featureMessage(for: .notSupported)?.contains("Apple Silicon") == true)
         #expect(MenuStateModel.featureMessage(for: .setupRequired)?.contains("setup.sh") == true)
-        // #58: the exact, calm limitation sentence — no setup instruction
-        // (setup cannot help) and no error wording.
-        #expect(MenuStateModel.featureMessage(for: .controlUnavailable)
-                == "Unavailable on this version of macOS")
+        // #58 → #84: no row caption — the row is hidden; the limitation's one
+        // plain note lives in Settings › General.
+        #expect(MenuStateModel.featureMessage(for: .controlUnavailable) == nil)
         #expect(MenuStateModel.featureMessage(for: .active)?.contains("pause") == true)
         #expect(MenuStateModel.featureMessage(for: .paused)?.hasPrefix("Paused") == true)
         #expect(MenuStateModel.featureMessage(for: .error("smc exploded")) == "smc exploded",

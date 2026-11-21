@@ -198,11 +198,12 @@ struct SettingsWindowTests {
                                        severity: .info)),
                        lockScreen(lockAvailableLine),
                    ]),
+        // #84: the firmware gates charge control — the header stays, the
+        // switch and slider give way to ONE plain note (no severity line).
         GeneralRow(name: "no charge-control key (#58)", login: .enabled, feature: .controlUnavailable, limit: 75,
                    limitOn: false, lock: true, sections: [
                        startup(true),
-                       chargeLimit("Pause charging at 75%", on: false, limit: 75, sliderEnabled: false, PanelLine(
-                           text: "Unavailable on this version of macOS", severity: .info)),
+                       SettingsSection(title: "Charge Limit", rows: [.note("Unavailable on this version of macOS")]),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "a write failed, no limit", login: .enabled, feature: .error("The charge-limit write failed."),
@@ -236,6 +237,43 @@ struct SettingsWindowTests {
             #expect(features.contains(state), "\(state)")
         }
         #expect(Set(Self.generalRows.map(\.lock)) == [false, true])
+    }
+
+    /// #84, every feature state: the panel hides the Charge Limit row ONLY
+    /// without a battery (ADR §12) or while the firmware gates control, and
+    /// Settings › General carries the one note ONLY for the gated state —
+    /// every other state shows the row and keeps the controls in Settings,
+    /// so a lifted gate always brings the row back.
+    @Test(arguments: [ChargeLimitFeatureState.hidden, .notSupported, .setupRequired, .controlUnavailable, .off,
+                      .active, .paused, .error("The charge-limit write failed.")])
+    func onlyNoBatteryAndTheFirmwareGateHideTheChargeLimitRow(state: ChargeLimitFeatureState) throws {
+        let visible = MenuStateModel.chargeLimitRowVisible(for: state)
+        let pane = MenuStateModel.generalPane(loginStatus: .enabled, featureState: state, limit: 80,
+                                              limitEnabled: true, lockAvailable: true)
+        let charge = pane.sections.filter { $0.title == "Charge Limit" }
+        let notes = pane.sections.flatMap(\.rows).filter { row in
+            if case .note = row { return true }
+            return false
+        }
+        switch state {
+        case .hidden:
+            #expect(!visible)
+            #expect(charge.isEmpty && notes.isEmpty, "no battery: no Charge Limit anywhere")
+        case .controlUnavailable:
+            #expect(!visible)
+            #expect(MenuStateModel.chargeLimitCaption(for: state) == nil)
+            #expect(charge == [SettingsSection(title: "Charge Limit",
+                                               rows: [.note(MenuStateModel.chargeControlUnavailableText)])])
+        default:
+            #expect(visible, "\(state) shows the row")
+            #expect(notes.isEmpty, "\(state) carries no note")
+            let row = try #require(charge.first?.rows.first, "\(state) keeps the Charge Limit group")
+            #expect(charge.count == 1 && charge[0].rows.count == 1)
+            guard case .chargeLimit = row else {
+                Issue.record("\(state): the controls, not \(row)")
+                return
+            }
+        }
     }
 
     /// The model's wrapper feeds the pure composition its own mirrors, and
@@ -1136,6 +1174,30 @@ struct SettingsWindowTests {
         }
     }
 
+    /// #84: the note is a fact, not a control — the info glyph (hidden from
+    /// VoiceOver: the text says it all) and the text, both secondary, with
+    /// nothing focusable, tappable or actionable. The composition builds it
+    /// exactly once, from the existing constant, for the gated state only.
+    @Test func theNoteIsAQuietFactForTheGatedStateOnly() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        #expect(Self.occurrences(of: "case let .note(text):", in: views) == 1)
+        let note = try #require(views.components(separatedBy: "case let .note(text):").dropFirst().first?
+            .components(separatedBy: "case ").first)
+        #expect(MenuPanelStructureTests.flat(note) == [
+            "HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.tight) {",
+            "Image(systemName: PanelSymbol.info) .accessibilityHidden(true)",
+            "Text(text) .fixedSize(horizontal: false, vertical: true) .frame(maxWidth: .infinity, alignment: .leading)",
+            "} .foregroundStyle(.secondary)",
+        ].joined(separator: " "), "the note was rewired: \(MenuPanelStructureTests.flat(note))")
+        let composition = MenuPanelStructureTests.flat(try Self.code(Self.compositionFile))
+        #expect(Self.occurrences(of: ".note(", in: composition) == 1, "one note")
+        #expect(composition.contains(
+            "if featureState == .controlUnavailable { "
+                + "sections.append(SettingsSection(title: \"Charge Limit\", rows: [.note(chargeControlUnavailableText)])) "
+                + "} else if featureState != .hidden {"),
+            "the note replaces the controls for the gated state only")
+    }
+
     /// Every Settings control forwards to the SAME model action as its
     /// panel twin — never a second path to a controller.
     @Test func everySettingsControlForwardsToTheModel() throws {
@@ -1194,6 +1256,14 @@ struct SettingsWindowTests {
         }
     }
 
+    /// Doctrine (#84): a permanent hardware limitation is an ABSENCE, not a
+    /// problem. A firmware-gated charge limit (`.controlUnavailable`, and that
+    /// state ONLY) hides its panel row outright instead of captioning it —
+    /// sanctioned, so the missing caption is not a line losing its home. Its
+    /// Settings › General note is deliberately a plain string
+    /// (`SettingsRow.note`), not a `PanelLine` severity line: it stays outside
+    /// this scan, and the iron rule keeps its full force for real problems —
+    /// every line that CAN be one still has exactly one top-level home.
     @Test func everySettingsLineHasOneTopLevelHomeInThePanel() throws {
         let members = try Self.panelLineMembers()
         #expect(members.isSuperset(of: ["lockScreenStatus", "hookStatus", "lidLastSend", "claudeHookStatus"]),

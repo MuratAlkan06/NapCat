@@ -57,6 +57,11 @@ enum SettingsRow: Equatable, Sendable {
     /// severity.
     case chargeLimit(header: String, isOn: Bool, switchEnabled: Bool, limit: Int, sliderEnabled: Bool,
                      caption: PanelLine?)
+    /// A plain, non-interactive fact in place of a control (issue #84: the
+    /// firmware-gated charge limit): an info glyph and the text, both
+    /// secondary. A plain string, NOT a `PanelLine`: it carries no severity,
+    /// so it never raises the gear badge and needs no panel home.
+    case note(String)
     /// A status line in full, at whatever severity its mapping gave it
     /// (severity icon + text when not nominal).
     case line(PanelLine)
@@ -120,8 +125,9 @@ extension MenuStateModel {
 
     /// Startup (Launch at Login, relocated from Details › General), Charge
     /// Limit (hidden entirely without a battery — ADR §12 — with the same
-    /// enable rules as the panel's controls and every feature caption), and
-    /// Lock Screen availability.
+    /// enable rules as the panel's controls and every feature caption; one
+    /// note in place of the controls while the firmware gates charge
+    /// control — #84), and Lock Screen availability.
     nonisolated static func generalPane(
         loginStatus: SMAppService.Status,
         featureState: ChargeLimitFeatureState,
@@ -134,7 +140,12 @@ extension MenuStateModel {
             .launchAtLogin(isOn: login.isOn, caption: launchAtLoginCaption(for: loginStatus),
                            showsSettingsShortcut: login.showSettingsShortcut),
         ])]
-        if featureState != .hidden {
+        if featureState == .controlUnavailable {
+            // #84: nothing here can act, so the switch and the slider give
+            // way to the one note. The saved toggle and limit stay stored for
+            // when the menu-open probe sees the keys again.
+            sections.append(SettingsSection(title: "Charge Limit", rows: [.note(chargeControlUnavailableText)]))
+        } else if featureState != .hidden {
             let supported = featureState != .notSupported
             sections.append(SettingsSection(title: "Charge Limit", rows: [
                 .chargeLimit(header: limitLabel(limit: limit), isOn: limitEnabled, switchEnabled: supported,

@@ -438,6 +438,7 @@ final class MenuStateModel: ObservableObject {
 
     var lockScreenStatus: PanelLine { Self.lockScreenStatus(available: lockScreenAvailable) }
     var chargeLimitCaption: PanelLine? { Self.chargeLimitCaption(for: featureState) }
+    var chargeLimitRowVisible: Bool { Self.chargeLimitRowVisible(for: featureState) }
     var launchAtLoginCaption: PanelLine? { Self.launchAtLoginCaption(for: loginItemStatus) }
 
     /// The footer's status caption (Panel 2.0 slice P): the Claude status.
@@ -664,23 +665,32 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Issue #58: this macOS exposes no charge-control key. A plain statement
-    /// of the limitation — no error wording, no instruction to act.
+    /// of the limitation — no error wording, no instruction to act. Since
+    /// #84 it is not a panel caption: the panel hides the Charge Limit row in
+    /// this state and Settings › General carries this as its one plain note.
     nonisolated static let chargeControlUnavailableText = "Unavailable on this version of macOS"
+
+    /// Issue #84: the panel's Charge Limit row shows only where charge
+    /// control can act or be set up — hidden without a battery (ADR §12) and
+    /// while the firmware gates control (#58). The menu-open probe re-runs
+    /// for the gated state, so the row returns, with the saved toggle and
+    /// limit, as soon as the keys read back again.
+    nonisolated static func chargeLimitRowVisible(for state: ChargeLimitFeatureState) -> Bool {
+        state != .hidden && state != .controlUnavailable
+    }
 
     /// Feature-state messaging line under the charge-limit controls — the
     /// Charge Limit row's caption (canon C2: a fragment, its state word
     /// first, never repeating the row title). The `.error` message is the
-    /// limiter's own.
+    /// limiter's own. `.controlUnavailable` has none: its row is hidden (#84).
     nonisolated static func featureMessage(for state: ChargeLimitFeatureState) -> String? {
         switch state {
-        case .hidden, .off:
+        case .hidden, .off, .controlUnavailable:
             return nil
         case .notSupported:
             return "Unavailable — needs an Apple Silicon Mac; Stay Awake still works here"
         case .setupRequired:
             return "Setup needed — run “sudo ./scripts/setup.sh” in the NapCat folder, then reopen this menu"
-        case .controlUnavailable:
-            return chargeControlUnavailableText
         case .active:
             return "Charging — pauses at the limit"
         case .paused:
@@ -1414,17 +1424,19 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// Charge-limit message with severity: a write/verify error is an error,
-    /// missing setup is a warning, Intel (permanently unsupported) and an OS
-    /// without charge-control keys (#58) are info — calm, never the error
-    /// treatment; "charging normally" / "paused at the limit" are nominal.
+    /// missing setup is a warning, Intel (permanently unsupported) is info —
+    /// calm, never the error treatment; "charging normally" / "paused at the
+    /// limit" are nominal. An OS without charge-control keys (#58) has no
+    /// caption at all — its row is hidden (#84) — so it never reaches the
+    /// switch.
     nonisolated static func chargeLimitCaption(for state: ChargeLimitFeatureState) -> PanelLine? {
         guard let text = featureMessage(for: state) else { return nil }
         let severity: PanelSeverity
         switch state {
         case .error: severity = .error
         case .setupRequired: severity = .warning
-        case .notSupported, .controlUnavailable: severity = .info
-        case .hidden, .off, .active, .paused: severity = .nominal
+        case .notSupported: severity = .info
+        case .hidden, .off, .controlUnavailable, .active, .paused: severity = .nominal
         }
         return PanelLine(text: text, severity: severity)
     }

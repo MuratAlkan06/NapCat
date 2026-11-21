@@ -49,8 +49,11 @@ struct GroupedCardsPanel: View {
                 }
 
                 // ADR §12: no battery → the charge-limit row is hidden
-                // entirely, not disabled. The slider lives in Settings.
-                if model.featureState != .hidden {
+                // entirely, not disabled; so is a firmware-gated Mac's (#84 —
+                // its one note lives in Settings). It returns as soon as the
+                // menu-open probe sees the keys, with no motion. The slider
+                // lives in Settings.
+                if model.chargeLimitRowVisible {
                     PanelFeature {
                         PanelRow(symbol: PanelSymbol.chargeLimit, title: "Charge Limit") {
                             ChargeLimitValue(model: model)

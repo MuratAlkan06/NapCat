@@ -606,6 +606,21 @@ struct MenuPanelStructureTests {
         #expect(!body.contains("Divider()"), "the cards are the grouping — no dividers")
     }
 
+    /// #84: the Charge Limit row is gated on the model's one visibility
+    /// mapping (`chargeLimitRowVisible`: no battery, or the firmware gate)
+    /// and on nothing else — the layout never reads the feature state
+    /// itself. Its return is not animated: `motionFailures` holds every
+    /// view to the press as the only motion.
+    @Test func theChargeLimitRowIsGatedOnTheVisibilityMapping() throws {
+        let body = try Self.layoutBody()
+        #expect(Self.flat(body).contains(
+            "if model.chargeLimitRowVisible { PanelFeature { "
+                + "PanelRow(symbol: PanelSymbol.chargeLimit, title: \"Charge Limit\") {"),
+            "the Charge Limit row sits directly inside the visibility gate")
+        #expect(Self.occurrences(of: "chargeLimitRowVisible", in: try Self.allViewCode()) == 1, "one gate")
+        #expect(!body.contains("featureState"), "the layout never classifies the feature state")
+    }
+
     /// Track C (C4): the "Session alerts" row sits in the Alerts card
     /// DIRECTLY under the Lid alert row — same PanelRow shape (symbol, title,
     /// toggle), its status as a non-nominal-only caption under it. Its
