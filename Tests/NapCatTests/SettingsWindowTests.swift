@@ -1195,6 +1195,14 @@ struct SettingsWindowTests {
         }
     }
 
+    /// Doctrine (#84): a permanent hardware limitation is an ABSENCE, not a
+    /// problem. A firmware-gated charge limit (`.controlUnavailable`, and that
+    /// state ONLY) hides its panel row outright instead of captioning it —
+    /// sanctioned, so the missing caption is not a line losing its home. Its
+    /// Settings › General note is deliberately a plain string
+    /// (`SettingsRow.note`), not a `PanelLine` severity line: it stays outside
+    /// this scan, and the iron rule keeps its full force for real problems —
+    /// every line that CAN be one still has exactly one top-level home.
     @Test func everySettingsLineHasOneTopLevelHomeInThePanel() throws {
         let members = try Self.panelLineMembers()
         #expect(members.isSuperset(of: ["lockScreenStatus", "hookStatus", "lidLastSend", "claudeHookStatus"]),

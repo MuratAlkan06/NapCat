@@ -683,9 +683,9 @@ struct MenuPanelPresentationTests {
         #expect(MenuStateModel.chargeLimitCaption(for: .paused)?.severity == .nominal)
         #expect(MenuStateModel.chargeLimitCaption(for: .notSupported)?.severity == .info)
         #expect(MenuStateModel.chargeLimitCaption(for: .setupRequired)?.severity == .warning)
-        // #58: a calm info line (like Intel's), never the red error treatment.
-        #expect(MenuStateModel.chargeLimitCaption(for: .controlUnavailable)
-                == PanelLine(text: "Unavailable on this version of macOS", severity: .info))
+        // #58 → #84: no caption at all, not even a calm info line — the row
+        // itself is hidden, and Settings › General carries the one plain note.
+        #expect(MenuStateModel.chargeLimitCaption(for: .controlUnavailable) == nil)
         #expect(MenuStateModel.chargeLimitCaption(for: .error("smc exploded"))
                 == PanelLine(text: "smc exploded", severity: .error))
 
@@ -732,7 +732,8 @@ struct MenuPanelPresentationTests {
 
     @Test func rowCaptionsAreStateFirstFragments() {
         let lines = Self.everyRowCaption()
-        #expect(lines.count == 4 + 5 + 40 + 72 + 2, "vacuity guard — update when the input set changes")
+        // Charge Limit contributes 4 (#84: `.controlUnavailable` has no caption — its row is hidden).
+        #expect(lines.count == 4 + 4 + 40 + 72 + 2, "vacuity guard — update when the input set changes")
         for line in lines {
             #expect(Self.rowCaptionStateWords.contains { line.text == $0 || line.text.hasPrefix($0 + " ") },
                     "'\(line.text)' does not open with a state word")

@@ -321,10 +321,12 @@ machine awake, as designed.
   write shows an error in the menu, never a false "paused".
 - **Unavailable where macOS hides the keys.** On the newest macOS (seen on
   27.2) the charge-control keys read back empty, `CHTE` and `CH0B` alike and
-  even as root, so no write can take effect. NapCat detects this and the
-  Charge Limit row says "Unavailable on this version of macOS" instead
-  of attempting writes; your limit is kept and re-checked each time the menu
-  opens. Systems that still expose the keys are unaffected.
+  even as root, so no write can take effect. NapCat detects this and,
+  instead of attempting writes, hides the Charge Limit row from the menu;
+  Settings › General says "Unavailable on this version of macOS". Your
+  limit is kept and re-checked each time the menu opens, and the row comes
+  back as soon as the keys do. Systems that still expose the keys are
+  unaffected.
 - **Hysteresis.** Charging pauses at ≥ limit and resumes at ≤ limit − 5, so
   it does not flap around the threshold. A limit of 100 means "no limit".
   Unplugging, disabling the feature, or an unreadable battery all release

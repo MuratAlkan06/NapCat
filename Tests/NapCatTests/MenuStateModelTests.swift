@@ -189,10 +189,10 @@ struct MenuStateModelTests {
         #expect(!model.isCharging)
     }
 
-    /// #58 end to end through the model: the charge section keeps showing
-    /// the user's SAVED toggle + limit, with the calm info caption in the
-    /// section's own caption slot (no new panel element).
-    @Test @MainActor func controlUnavailableShowsTheSavedStateWithACalmCaption() {
+    /// #58 end to end through the model, under #84's contract: the user's
+    /// SAVED toggle + limit are kept as-is, but the panel row is hidden and
+    /// carries no caption; nothing is written.
+    @Test @MainActor func controlUnavailableKeepsTheSavedStateAndHidesTheRow() {
         let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -206,9 +206,9 @@ struct MenuStateModelTests {
                                    simulator: simulator)
 
         #expect(model.featureState == .controlUnavailable)
-        #expect(model.limitEnabled && model.limit == 85, "saved intent shown as-is")
-        #expect(model.chargeLimitCaption
-                == PanelLine(text: "Unavailable on this version of macOS", severity: .info))
+        #expect(model.limitEnabled && model.limit == 85, "saved intent kept as-is")
+        #expect(!model.chargeLimitRowVisible, "the panel row is hidden")
+        #expect(model.chargeLimitCaption == nil, "and has no caption")
         #expect(simulator.writeCalls.isEmpty)
     }
     // MARK: Stay-awake toggle = P2 checkmark semantics on a SwiftUI Toggle
@@ -278,10 +278,9 @@ struct MenuStateModelTests {
         #expect(MenuStateModel.featureMessage(for: .off) == nil)
         #expect(MenuStateModel.featureMessage(for: .notSupported)?.contains("Apple Silicon") == true)
         #expect(MenuStateModel.featureMessage(for: .setupRequired)?.contains("setup.sh") == true)
-        // #58: the exact, calm limitation sentence — no setup instruction
-        // (setup cannot help) and no error wording.
-        #expect(MenuStateModel.featureMessage(for: .controlUnavailable)
-                == "Unavailable on this version of macOS")
+        // #58 → #84: no row caption — the row is hidden; the limitation's one
+        // plain note lives in Settings › General.
+        #expect(MenuStateModel.featureMessage(for: .controlUnavailable) == nil)
         #expect(MenuStateModel.featureMessage(for: .active)?.contains("pause") == true)
         #expect(MenuStateModel.featureMessage(for: .paused)?.hasPrefix("Paused") == true)
         #expect(MenuStateModel.featureMessage(for: .error("smc exploded")) == "smc exploded",
