@@ -6,7 +6,7 @@ extension Theme {
     /// labels and an 8 pt spacing rhythm. Dark mode is derived: warm
     /// charcoal grounds with cream ink. The empty state is Night Groom's (the
     /// owner's hybrid pick): the smooth grooming cat as a large, faint
-    /// watermark behind the message, in the accent's navy.
+    /// watermark behind the message, in a warm sepia (sand in dark mode).
     static var pixelNap: Theme {
         Theme(
             id: .pixelNap,
@@ -18,7 +18,7 @@ extension Theme {
             accent: Color(light: 0x2C4896, dark: 0x7EA6EC),
             hairline: Color(light: 0x23211D, dark: 0x8C867B),
             pillFill: Color(light: 0xF1EFE9, dark: 0x272521),
-            artTint: Color(light: 0x2C4896, dark: 0x7EA6EC, lightAlpha: 0.08, darkAlpha: 0.10),
+            artTint: Color(light: 0x7D5631, dark: 0xD8C3A0, lightAlpha: 0.09, darkAlpha: 0.08),
             warning: Color(light: 0x8F5300, dark: 0xF2B35D),
             error: Color(light: 0xB3261E, dark: 0xF2877C),
             titleFont: .system(.title, design: .monospaced, weight: .bold),
