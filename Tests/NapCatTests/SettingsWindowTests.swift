@@ -198,11 +198,12 @@ struct SettingsWindowTests {
                                        severity: .info)),
                        lockScreen(lockAvailableLine),
                    ]),
+        // #84: the firmware gates charge control — the header stays, the
+        // switch and slider give way to ONE plain note (no severity line).
         GeneralRow(name: "no charge-control key (#58)", login: .enabled, feature: .controlUnavailable, limit: 75,
                    limitOn: false, lock: true, sections: [
                        startup(true),
-                       chargeLimit("Pause charging at 75%", on: false, limit: 75, sliderEnabled: false, PanelLine(
-                           text: "Unavailable on this version of macOS", severity: .info)),
+                       SettingsSection(title: "Charge Limit", rows: [.note("Unavailable on this version of macOS")]),
                        lockScreen(lockAvailableLine),
                    ]),
         GeneralRow(name: "a write failed, no limit", login: .enabled, feature: .error("The charge-limit write failed."),

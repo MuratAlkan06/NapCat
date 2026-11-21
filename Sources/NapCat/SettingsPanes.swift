@@ -119,6 +119,18 @@ struct SettingsRowView: View {
                     PanelCaptionLine(line: caption)
                 }
             }
+        case let .note(text):
+            // A fact, not a control: the Lock Screen line's look (body,
+            // secondary) with the panel's info glyph beside it, `tight` apart
+            // like a caption line. Nothing here takes focus or acts.
+            HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.tight) {
+                Image(systemName: PanelSymbol.info)
+                    .accessibilityHidden(true)
+                Text(text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(.secondary)
         case let .line(line):
             PanelCaptionLine(line: line, font: .body)
         case .ntfyButtons:
