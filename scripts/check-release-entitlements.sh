@@ -92,8 +92,13 @@ fi
 [ "$(stat -f %Lp "$PROFILE")" = "644" ] || die "Contents/embedded.provisionprofile is not mode 0644."
 security cms -D -i "$PROFILE" -o "$WORK/profile.plist" 2> /dev/null \
     || die "Contents/embedded.provisionprofile is not a CMS-signed provisioning profile."
-plutil -extract Entitlements json -o "$WORK/granted.json" "$WORK/profile.plist" 2> /dev/null \
+# A profile also holds dates and data, which JSON cannot represent, and macOS
+# 15's plutil refuses `-extract ... json` from such a plist. So the Entitlements
+# are extracted as XML first, and only they are converted to JSON.
+plutil -extract Entitlements xml1 -o "$WORK/granted.plist" "$WORK/profile.plist" 2> /dev/null \
     || die "the embedded provisioning profile has no Entitlements dictionary."
+plutil -convert json -o "$WORK/granted.json" "$WORK/granted.plist" 2> /dev/null \
+    || die "the embedded provisioning profile's Entitlements are not convertible to JSON."
 
 GRANTED_ID="$(jq -r '."com.apple.application-identifier" // empty' "$WORK/granted.json")"
 [ "$GRANTED_ID" = "$APP_ID" ] \
