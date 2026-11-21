@@ -1,16 +1,16 @@
 #!/bin/bash
 # NapCat release check: the entitlements and provisioning profile a built
 # bundle carries. The release workflow runs it on the Developer ID bundle
-# before notarization, and its dry run on a throwaway-signed bundle and on the
-# plain ad-hoc build.
+# before notarization, and its dry run on ad-hoc signed bundles built through
+# the entitled path and on the plain ad-hoc build.
 #
 #   ./scripts/check-release-entitlements.sh entitled <app> <entitlements.plist>
-#       <app>'s signature verifies and is not ad-hoc; its signed entitlements
-#       equal the plist exactly; Contents/embedded.provisionprofile is a
-#       regular 0644 file whose decoded profile names the plist's application
-#       identifier, has not expired, and grants every entitlement the plist
-#       claims (a profile value may be a list, or "*", or end in a ".*"
-#       wildcard, as Developer ID profiles do).
+#       <app>'s signature verifies; its signed entitlements equal the plist
+#       exactly; Contents/embedded.provisionprofile is a regular 0644 file
+#       whose decoded profile names the plist's application identifier, has
+#       not expired, and grants every entitlement the plist claims (a profile
+#       value may be a list, or "*", or end in a ".*" wildcard, as Developer
+#       ID profiles do); and, checked last, the signature is not ad-hoc.
 #   ./scripts/check-release-entitlements.sh unentitled <app>
 #       <app>'s signature verifies, and it carries no entitlements and no
 #       embedded provisioning profile (what a plain ad-hoc `make` produces).
@@ -78,12 +78,6 @@ plutil -convert json -o "$WORK/expected.json" "$EXPECTED" || die "$EXPECTED is n
 APP_ID="$(jq -r '."com.apple.application-identifier" // empty' "$WORK/expected.json")"
 [ -n "$APP_ID" ] || die "$EXPECTED names no com.apple.application-identifier."
 
-# Restricted entitlements on an ad-hoc signature make AMFI kill the app.
-SIGNATURE_INFO="$(codesign -d --verbose=2 "$APP" 2>&1)" || die "codesign cannot describe the signature of $APP."
-if grep -qx 'Signature=adhoc' <<< "$SIGNATURE_INFO"; then
-    die "$APP is ad-hoc signed; entitlements need a real signing identity."
-fi
-
 [ -s "$WORK/signed.plist" ] || die "$APP carries no entitlements."
 plutil -convert json -o "$WORK/signed.json" "$WORK/signed.plist" \
     || die "the signed entitlements of $APP are not a property list."
@@ -131,6 +125,14 @@ UNGRANTED="$(jq -r -n --slurpfile claimed "$WORK/expected.json" --slurpfile gran
 ')"
 if [ -n "$UNGRANTED" ]; then
     die "the embedded provisioning profile does not grant: $(printf '%s' "$UNGRANTED" | tr '\n' ' ')"
+fi
+
+# Restricted entitlements on an ad-hoc signature make AMFI kill the app.
+# Checked last, so a bundle refused only for being ad-hoc signed passed every
+# check above (the release dry run relies on that).
+SIGNATURE_INFO="$(codesign -d --verbose=2 "$APP" 2>&1)" || die "codesign cannot describe the signature of $APP."
+if grep -qx 'Signature=adhoc' <<< "$SIGNATURE_INFO"; then
+    die "$APP is ad-hoc signed; entitlements need a real signing identity."
 fi
 
 echo "check-release-entitlements: $APP is signed with exactly the entitlements in $EXPECTED:"

@@ -7,8 +7,9 @@ name: Release
 # is configured. Without them the run fails soft: it uploads the image as a
 # workflow artifact named NapCat-<version>-UNSIGNED and never attaches it to a
 # GitHub Release. workflow_dispatch is always such an unsigned dry run; it also
-# proves the entitled signing path on a throwaway-signed bundle that is never
-# uploaded. Every unsigned bundle is checked to carry no entitlements.
+# proves the entitled signing path, with no signing identity at all, on ad-hoc
+# signed bundles that are never uploaded. Every unsigned bundle is checked to
+# carry no entitlements.
 #
 # Secrets used by the signed path (none are needed for the unsigned one) live in
 # the `release` environment, whose required reviewer is the owner. Only the
@@ -275,18 +276,21 @@ jobs:
       - name: Run unit tests
         run: make test
 
-      # Dry runs only. Reads no secret and never uses a real identity: a
-      # throwaway self-signed code-signing identity (made like the prover's
-      # above) and placeholder profiles (the committed entitlements wrapped in
-      # CMS by that identity) go through the same make variables and the same
-      # check script as the signed path. The check must pass on a placeholder
-      # shaped like a Developer ID profile, and refuse, for the right reason,
-      # one for another App ID, an expired one and one without the container.
-      # make must also refuse either variable with the ad-hoc identity. The
-      # signed binary is never launched (AMFI would kill it). The keychain and
-      # every file are removed on exit, pass or fail; the unsigned build below
-      # replaces the bundle built here.
-      - name: Prove the entitled signing path with a throwaway identity
+      # Dry runs only. Reads no secret, uses no signing identity and touches no
+      # keychain. Bundles are built through the signed path's make variables
+      # (the committed entitlements and a placeholder profile) but signed
+      # ad-hoc: SIGN_IDENTITY=dry-run only gets past make's ad-hoc guard, and
+      # CODESIGN is the ad-hoc command. The placeholder profiles are the
+      # committed entitlements wrapped in CMS by a throwaway self-signed
+      # certificate. The check refuses an ad-hoc signature last, so the
+      # placeholder shaped like a Developer ID profile must fail with exactly
+      # that refusal and nothing else, which means every other check passed.
+      # One for another App ID, an expired one and one without the container
+      # must each fail earlier, with exactly their own message. make must also
+      # refuse either variable with the ad-hoc identity. The binary is never
+      # launched (AMFI would kill it). Every file is removed on exit, pass or
+      # fail; the unsigned build below replaces the bundle built here.
+      - name: Prove the entitled signing path without a signing identity
         if: needs.validate.outputs.publish != 'true'
         env:
           OPENSSL: ${{ steps.openssl.outputs.path }}
@@ -294,17 +298,15 @@ jobs:
           set -euo pipefail
           umask 077
           work="$(mktemp -d "$RUNNER_TEMP/napcat-entitled-prover.XXXXXX")"
-          keychain="$work/napcat-entitled-prover.keychain-db"
-          cleanup() {
-            status=$?
-            if [ -e "$keychain" ] && ! security delete-keychain "$keychain"; then
-              echo "::error::Could not delete the entitled prover's throwaway keychain."
-              status=1
-            fi
-            rm -rf "$work"
-            exit "$status"
-          }
-          trap cleanup EXIT
+          trap 'rm -rf "$work"' EXIT
+
+          # The check looks for jq only on its fixed PATH.
+          check_jq="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin; command -v jq || true)"
+          if [ -z "$check_jq" ]; then
+            echo "::error::There is no jq on the entitlement check's PATH (/usr/bin:/bin:/usr/sbin:/sbin)."
+            exit 1
+          fi
+          echo "The entitlement check uses $check_jq ($("$check_jq" --version))."
 
           # Ad-hoc signing with either variable must stop make before it builds.
           for variable in ENTITLEMENTS=Resources/NapCat.entitlements "PROVISIONING_PROFILE=$work/any.provisionprofile"; do
@@ -320,44 +322,23 @@ jobs:
             echo "make refuses ${variable%%=*} with the ad-hoc identity."
           done
 
-          # Random, used only inside this step, never printed.
-          PROVER_KEY_PASSWORD="$("$OPENSSL" rand -hex 32)"
-          PROVER_P12_PASSWORD="$("$OPENSSL" rand -hex 32)"
-          export PROVER_KEY_PASSWORD PROVER_P12_PASSWORD
-          keychain_password="$("$OPENSSL" rand -hex 32)"
-          "$OPENSSL" req -x509 -newkey rsa:2048 -days 1 -quiet -subj "/CN=napcat-entitled-prover" \
-            -addext extendedKeyUsage=codeSigning \
-            -keyout "$work/prover.key.pem" -out "$work/prover.cert.pem" -passout env:PROVER_KEY_PASSWORD
-          "$OPENSSL" pkcs12 -export -in "$work/prover.cert.pem" -inkey "$work/prover.key.pem" \
-            -passin env:PROVER_KEY_PASSWORD -out "$work/prover.p12" -passout env:PROVER_P12_PASSWORD
-          identity_hash="$("$OPENSSL" x509 -in "$work/prover.cert.pem" -noout -fingerprint -sha1)"
-          identity_hash="${identity_hash#*=}"
-          identity_hash="$(printf '%s\n' "${identity_hash//:/}" | tr 'a-f' 'A-F')"
-          if ! [[ "$identity_hash" =~ ^[0-9A-F]{40}$ ]]; then
-            echo "::error::The entitled prover's identity has no SHA-1 fingerprint."
-            exit 1
-          fi
-          # Every security call names the throwaway keychain explicitly. As on
-          # the signed path, it joins the user search list so codesign can
-          # build the identity's chain; delete-keychain drops it from there.
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$work/prover.p12" -k "$keychain" -f pkcs12 -P "$PROVER_P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          # A throwaway self-signed certificate wraps the placeholder profiles
+          # in CMS, as Apple's signature wraps a real one. It signs no code,
+          # and its unencrypted key never leaves the step's 0700 directory.
+          "$OPENSSL" req -x509 -newkey rsa:2048 -days 1 -quiet -noenc -subj "/CN=napcat-entitled-prover" \
+            -keyout "$work/prover.key.pem" -out "$work/prover.cert.pem"
 
           # $1 names a placeholder profile, $2 is a jq filter over the
           # committed entitlements, $3 its ExpirationDate (UTC, ISO 8601).
           plutil -convert json -o "$work/entitlements.json" Resources/NapCat.entitlements
+          app_id="$(jq -r '."com.apple.application-identifier"' "$work/entitlements.json")"
           make_profile() {
             jq "$2" "$work/entitlements.json" \
               | jq --arg name "$1" '{Name: ("NapCat dry-run placeholder: " + $name), Entitlements: .}' > "$work/$1.json"
             plutil -convert xml1 -o "$work/$1.plist" "$work/$1.json"
             plutil -insert ExpirationDate -date "$3" "$work/$1.plist"
             "$OPENSSL" cms -sign -nodetach -binary -outform DER -signer "$work/prover.cert.pem" \
-              -inkey "$work/prover.key.pem" -passin env:PROVER_KEY_PASSWORD \
-              -in "$work/$1.plist" -out "$work/$1.provisionprofile"
+              -inkey "$work/prover.key.pem" -in "$work/$1.plist" -out "$work/$1.provisionprofile"
           }
           tomorrow="$(date -u -v+1d +%Y-%m-%dT%H:%M:%SZ)"
           yesterday="$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)"
@@ -370,25 +351,17 @@ jobs:
           make_profile expired '.' "$yesterday"
           make_profile no-container '."com.apple.developer.icloud-container-identifiers" = []' "$tomorrow"
 
-          # The signed path's make invocation, with --timestamp=none: a
-          # throwaway identity has no Apple chain to timestamp.
+          # The signed path's make variables with the ad-hoc signature.
           build_with() {
-            make all SIGN_IDENTITY="$identity_hash" \
-              CODESIGN="codesign --force --options runtime --timestamp=none --keychain '$keychain' -s '$identity_hash'" \
+            make all SIGN_IDENTITY=dry-run CODESIGN="codesign --force -s -" \
               ENTITLEMENTS=Resources/NapCat.entitlements PROVISIONING_PROFILE="$work/$1.provisionprofile"
           }
           check() {
             ./scripts/check-release-entitlements.sh entitled dist/NapCat.app Resources/NapCat.entitlements
           }
 
-          build_with developer-id
-          check
-          echo "Entitlements on the throwaway-signed bundle:"
-          codesign -d --entitlements - --xml dist/NapCat.app 2> /dev/null | plutil -p -
-          ls -l dist/NapCat.app/Contents/embedded.provisionprofile
-
-          # $1 names a placeholder the check must refuse; $2 is the reason it
-          # must give.
+          # $1 names a placeholder profile; the check must refuse the bundle
+          # built with it, and its whole output must be exactly the error $2.
           expect_refusal() {
             local output
             if ! build_with "$1" > "$work/build-$1.log" 2>&1; then
@@ -397,19 +370,28 @@ jobs:
               return 1
             fi
             if output="$(check 2>&1)"; then
-              echo "::error::The entitlement check accepted the $1 placeholder profile."
+              echo "::error::The entitlement check accepted the $1 placeholder profile on an ad-hoc signed bundle."
               return 1
             fi
-            if ! grep -qF "$2" <<< "$output"; then
+            if [ "$output" != "check-release-entitlements: error: $2" ]; then
               printf '%s\n' "$output"
-              echo "::error::The entitlement check refused the $1 placeholder profile, but its message lacks \"$2\"."
+              echo "::error::The entitlement check refused the $1 placeholder profile, but its output is not exactly the expected error: $2"
               return 1
             fi
-            echo "Refused the $1 placeholder profile: ${output##*error: }"
+            echo "Refused the $1 placeholder profile with exactly: $2"
           }
-          expect_refusal other-app-id "is not for"
-          expect_refusal expired "expired at"
-          expect_refusal no-container "does not grant: com.apple.developer.icloud-container-identifiers"
+
+          expect_refusal developer-id "dist/NapCat.app is ad-hoc signed; entitlements need a real signing identity."
+          echo "So the Developer ID-shaped placeholder passed every check but the last (ad-hoc) one."
+          echo "Entitlements on the ad-hoc signed bundle:"
+          codesign -d --entitlements - --xml dist/NapCat.app 2> /dev/null | plutil -p -
+          ls -l dist/NapCat.app/Contents/embedded.provisionprofile
+
+          expect_refusal other-app-id \
+            "the embedded provisioning profile is not for $app_id (the application identifier in Resources/NapCat.entitlements)."
+          expect_refusal expired "the embedded provisioning profile expired at $yesterday."
+          expect_refusal no-container \
+            "the embedded provisioning profile does not grant: com.apple.developer.icloud-container-identifiers"
 
       # Signing is attempted only for a tag push with EVERY secret present.
       # The secrets are compared to '' here, so only true/false reaches env.
