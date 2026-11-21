@@ -42,6 +42,12 @@ struct MenuPanelStructureTests {
         try viewFiles.map(code).joined(separator: "\n")
     }
 
+    /// Every Settings window source (`SettingsWindowTests.settingsFiles`): the
+    /// motion locks below hold them to the panel's rules too (issue #86).
+    static func allSettingsCode() throws -> String {
+        try SettingsWindowTests.settingsFiles.map(code).joined(separator: "\n")
+    }
+
     /// Source of one top-level `struct <name>` declaration, up to the next
     /// top-level declaration — coarse but stable for lint assertions.
     static func structChunk(_ name: String, in source: String) -> String? {
@@ -853,9 +859,13 @@ struct MenuPanelStructureTests {
     /// `gatedMotionCap`, its spring within `PanelMotion.maxDuration` — keyed
     /// on a value the user drives (`userDrivenAnimationKeys` — since slice P,
     /// only the press). A literal ease-out, spring or curve in a view fails.
+    /// The Settings window (issue #86) is the press's SECOND user, held to the
+    /// same gate on its own: its one animation is the same call, once.
     @Test func motionIsGatedAndShort() throws {
         let views = try Self.allViewCode()
+        let settings = try Self.allSettingsCode()
         #expect(Self.motionGateFailures(views: views).isEmpty, "\(Self.motionGateFailures(views: views))")
+        #expect(Self.motionGateFailures(views: settings).isEmpty, "\(Self.motionGateFailures(views: settings))")
         #expect(Self.userDrivenAnimationKeys.keys.sorted() == ["configuration.isPressed"],
                 "the user-driven keys are a closed list")
         #expect(PanelMotion.pressFade <= Self.gatedMotionCap, "the press-in stays a ≤200 ms ease-out")
@@ -893,6 +903,26 @@ struct MenuPanelStructureTests {
         ]
         for canary in canaries {
             #expect(!Self.motionGateFailures(views: canary.views).isEmpty, "canary '\(canary.name)' was NOT caught")
+        }
+
+        // The Settings window: anything beyond its one sanctioned press fails.
+        let settingsCanaries: [(name: String, settings: String)] = [
+            ("a pane switch that animates",
+             settings + line(".animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: selection.pane)")),
+            ("withAnimation in a Settings view", settings + line(".onTapGesture { withAnimation { } }")),
+            ("a second press in Settings", settings + line(scoped("configuration.isPressed"))),
+            ("a Settings press keyed on the send outcome", settings + line(scoped("model.lidGuardLastOutcomeAt"))),
+            ("a literal copy of the quiet spring in Settings",
+             settings + line(".animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)")),
+            ("the Settings press not gated on Reduce Motion",
+             settings.replacingOccurrences(of: "reduceMotion: reduceMotion)) {", with: "reduceMotion: false)) {")),
+            ("the Settings press value-keyed instead of scoped",
+             settings.replacingOccurrences(of: "reduceMotion: reduceMotion)) {",
+                                           with: "reduceMotion: reduceMotion), value: configuration.isPressed) {")),
+        ]
+        for canary in settingsCanaries {
+            #expect(canary.settings != settings, "canary setup '\(canary.name)'")
+            #expect(!Self.motionGateFailures(views: canary.settings).isEmpty, "canary '\(canary.name)' was NOT caught")
         }
     }
 
@@ -938,8 +968,11 @@ struct MenuPanelStructureTests {
     /// constants — underdamped (one soft overshoot), the overshoot
     /// sub-pixel, and visibly settled inside `PanelMotion.maxDuration`
     /// (300 ms) from the panel's squash and from the gentler wide-control
-    /// one. `Spring.settlingDuration` (559 ms here) measures down to a 0.1%
-    /// tolerance, a sub-pixel tail, so the ceiling holds the VISIBLE settle.
+    /// one, which the Settings window's buttons press with (issue #86 — the
+    /// same `pressedOpacity` fade; peak ≈1.0014, settled ≈125 ms in the
+    /// option B render). `Spring.settlingDuration` (559 ms here) measures
+    /// down to a 0.1% tolerance, a sub-pixel tail, so the ceiling holds the
+    /// VISIBLE settle.
     @Test func theQuietSpringSettlesInsideTheCeiling() {
         let zeta = PanelMotion.releaseDampingFraction
         #expect(zeta > 0 && zeta < 1, "an underdamped spring: one soft overshoot")
@@ -947,10 +980,12 @@ struct MenuPanelStructureTests {
 
         let panel = Self.visibleSettle(fromScale: PanelMotion.pressedScale, opacity: PanelMotion.pressedOpacity)
         #expect(panel > 0 && panel < PanelMotion.maxDuration, "panel press visibly settles in \(panel) s")
-        let wide = Self.visibleSettle(fromScale: PanelMotion.widePressedScale, opacity: 1)
-        #expect(wide > 0 && wide < PanelMotion.maxDuration, "wide-control press visibly settles in \(wide) s")
+        let wide = Self.visibleSettle(fromScale: PanelMotion.widePressedScale, opacity: PanelMotion.pressedOpacity)
+        #expect(wide > 0 && wide < PanelMotion.maxDuration, "Settings press visibly settles in \(wide) s")
         let peak = Self.releasePeak(fromScale: PanelMotion.pressedScale)
         #expect(peak > 1 && peak - 1 < 0.005, "the overshoot stays sub-pixel — peak \(peak)")
+        let widePeak = Self.releasePeak(fromScale: PanelMotion.widePressedScale)
+        #expect(widePeak > 1 && widePeak < peak, "the Settings overshoot is the gentler one — peak \(widePeak)")
 
         // The two squashes: the wide-control one is its own, gentler factor.
         #expect(PanelMotion.widePressedScale != PanelMotion.pressedScale)
@@ -981,7 +1016,13 @@ struct MenuPanelStructureTests {
     /// motion on open / close: no view animates its insertion or removal
     /// (`.transition(`), nothing animates through a transaction or
     /// imperatively, and the hosting view's re-fit snaps to the new size.
-    static func motionFailures(views: String, owner: String) -> [String] {
+    ///
+    /// Issue #86: the Settings window (`settings`, all its sources) is the
+    /// helper's second user. Its ONE animated line is the same call, in
+    /// `SettingsPressButtonStyle`: the same `pressedOpacity` fade, the wide
+    /// squash `widePressedScale` (no squash under Reduce Motion), and no
+    /// helper of its own. The zero-motion-on-open scan covers it too.
+    static func motionFailures(views: String, owner: String, settings: String) -> [String] {
         var failures: [String] = []
         let animated = views.split(separator: "\n").filter { $0.contains(".animation(") }
         if animated.isEmpty { failures.append("vacuity: the press animates") }
@@ -1011,12 +1052,36 @@ struct MenuPanelStructureTests {
             || value.contains(".animation(") {
             failures.append("the Charge Limit value must be monospaced and snap")
         }
+        // The Settings window: one animated line, the same call, the wide squash.
+        let settingsAnimated = settings.split(separator: "\n").filter { $0.contains(".animation(") }
+        if settingsAnimated.count != 1 {
+            failures.append("the Settings window animates its buttons' press and nothing else — "
+                            + "\(settingsAnimated.count) animated lines")
+        }
+        for line in settingsAnimated where !line.contains(".animation(PanelMotion.press(") {
+            failures.append("not the PanelMotion.press call: \(line)")
+        }
+        if settings.contains("static func press(") {
+            failures.append("a press helper of the Settings window's own — use PanelMotion.press")
+        }
+        let settingsStyle = Self.structChunk("SettingsPressButtonStyle", in: settings) ?? ""
+        for token in ["@Environment(\\.accessibilityReduceMotion) private var reduceMotion",
+                      Self.sanctionedPress(key: "configuration.isPressed") + " button in",
+                      ".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)",
+                      ".scaleEffect(configuration.isPressed && !reduceMotion ? PanelMotion.widePressedScale : 1)"]
+            where !settingsStyle.contains(token) {
+            failures.append("a Settings press must fade to PanelMotion.pressedOpacity and squash to"
+                            + " PanelMotion.widePressedScale (no squash under Reduce Motion) through PanelMotion.press"
+                            + " — missing '\(token)'")
+        }
         // The motion APIs that run by themselves — on appear, or on a value
-        // the user never touched — are not the press either.
+        // the user never touched — are not the press either: not in the
+        // panel, its owner, or the Settings window (which opens, closes and
+        // re-fits to a pane in one step).
         for token in [".transition(", "withAnimation", "withTransaction", ".transaction", "matchedGeometryEffect",
                       "NSAnimationContext", "animator()", "phaseAnimator", "keyframeAnimator", ".symbolEffect("]
-            where (views + "\n" + owner).contains(token) {
-            failures.append("'\(token)' — nothing animates the panel's open, close or height change")
+            where (views + "\n" + owner + "\n" + settings).contains(token) {
+            failures.append("'\(token)' — nothing animates the panel's or the Settings window's open, close or height change")
         }
         if !owner.contains("        setFrameSize(fitting)\n") {
             failures.append("MenuPanelHostingView's re-fit must snap (a plain setFrameSize)")
@@ -1027,7 +1092,9 @@ struct MenuPanelStructureTests {
     @Test func panelMotionCodifiesEveryAnimation() throws {
         let views = try Self.allViewCode()
         let owner = try Self.code("MenuContentView.swift")
-        #expect(Self.motionFailures(views: views, owner: owner).isEmpty, "\(Self.motionFailures(views: views, owner: owner))")
+        let settings = try Self.allSettingsCode()
+        #expect(Self.motionFailures(views: views, owner: owner, settings: settings).isEmpty,
+                "\(Self.motionFailures(views: views, owner: owner, settings: settings))")
         #expect(PanelMotion.pressFade <= PanelMotion.maxDuration && PanelMotion.pressFade <= Self.gatedMotionCap)
         #expect(PanelMotion.pressedOpacity == 0.7)
         let replacing = { (old: String, new: String) in views.replacingOccurrences(of: old, with: new) }
@@ -1068,7 +1135,39 @@ struct MenuPanelStructureTests {
         ]
         for canary in canaries {
             #expect(canary.views != views || canary.owner != owner, "canary setup '\(canary.name)'")
-            #expect(!Self.motionFailures(views: canary.views, owner: canary.owner).isEmpty,
+            #expect(!Self.motionFailures(views: canary.views, owner: canary.owner, settings: settings).isEmpty,
+                    "canary '\(canary.name)' was NOT caught")
+        }
+
+        // Issue #86: the Settings window's press, and its zero motion on open.
+        let inSettings = { (old: String, new: String) in settings.replacingOccurrences(of: old, with: new) }
+        let settingsCanaries: [(name: String, settings: String)] = [
+            ("a stray animation in Settings",
+             settings + "\nlet canary = Text(\"x\").animation(.easeOut(duration: 0.1), value: 1)"),
+            ("a second press in Settings",
+             settings + "\nlet canary = Text(\"x\").animation(PanelMotion.press(configuration.isPressed, reduceMotion: reduceMotion)) { $0 }"),
+            ("a press helper of the Settings window's own",
+             settings + "\nstatic func press(_ isPressed: Bool) -> Animation? { .spring() }"),
+            ("the Settings press squashing like the panel",
+             inSettings("PanelMotion.widePressedScale : 1)", "PanelMotion.pressedScale : 1)")),
+            ("the Settings press dropping its squash",
+             inSettings(".scaleEffect(configuration.isPressed && !reduceMotion ? PanelMotion.widePressedScale : 1)", "")),
+            ("the Settings squash kept under Reduce Motion",
+             inSettings("configuration.isPressed && !reduceMotion ? PanelMotion.widePressedScale",
+                        "configuration.isPressed ? PanelMotion.widePressedScale")),
+            ("the Settings press dropping its fade",
+             inSettings(".opacity(configuration.isPressed ? PanelMotion.pressedOpacity : 1)", "")),
+            ("the Settings press off the helper",
+             inSettings("PanelMotion.press(configuration.isPressed, reduceMotion: reduceMotion)",
+                        "reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7)")),
+            ("a pane that fades in", settings + "\nlet canary = Text(\"x\").transition(.opacity)"),
+            ("the window animating open", settings + "\nlet canary = window.animator().alphaValue"),
+            ("an imperative animation in the window controller", settings + "\nlet canary = NSAnimationContext.current"),
+            ("a Settings transaction", settings + "\nlet canary = Text(\"x\").transaction { $0.animation = .default }"),
+        ]
+        for canary in settingsCanaries {
+            #expect(canary.settings != settings, "canary setup '\(canary.name)'")
+            #expect(!Self.motionFailures(views: views, owner: owner, settings: canary.settings).isEmpty,
                     "canary '\(canary.name)' was NOT caught")
         }
     }
