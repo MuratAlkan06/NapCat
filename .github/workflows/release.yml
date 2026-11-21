@@ -24,6 +24,16 @@ name: Release
 #   NOTARY_API_KEY_P8_BASE64      base64 of the App Store Connect API key (.p8)
 #   NOTARY_API_KEY_ID             its key ID
 #   NOTARY_API_ISSUER_ID          its issuer ID
+#   MACOS_PROVISIONING_PROFILE_BASE64
+#                                 base64 of the Developer ID provisioning
+#                                 profile for com.muratalkan.napcat (iCloud
+#                                 with CloudKit, container
+#                                 iCloud.com.muratalkan.napcat). It is decoded
+#                                 to a temporary file, embedded as
+#                                 Contents/embedded.provisionprofile, and the
+#                                 bundle is signed with
+#                                 Resources/NapCat.entitlements; both are
+#                                 checked before notarization. Never printed.
 # Secrets reach run steps only through env:, never through ${{ }} in a script.
 #
 # The GitHub Release is only ever created as a DRAFT; the owner reviews and
@@ -275,6 +285,7 @@ jobs:
           HAVE_NOTARY_KEY: ${{ secrets.NOTARY_API_KEY_P8_BASE64 != '' }}
           HAVE_NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID != '' }}
           HAVE_NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID != '' }}
+          HAVE_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 != '' }}
         run: |
           set -euo pipefail
           missing=""
@@ -284,6 +295,7 @@ jobs:
           [ "$HAVE_NOTARY_KEY" = "true" ] || missing="$missing NOTARY_API_KEY_P8_BASE64"
           [ "$HAVE_NOTARY_KEY_ID" = "true" ] || missing="$missing NOTARY_API_KEY_ID"
           [ "$HAVE_NOTARY_ISSUER_ID" = "true" ] || missing="$missing NOTARY_API_ISSUER_ID"
+          [ "$HAVE_PROVISIONING_PROFILE" = "true" ] || missing="$missing MACOS_PROVISIONING_PROFILE_BASE64"
           if [ "$PUBLISH" != "true" ]; then
             echo "sign=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Dry run::This run builds an UNSIGNED disk image as a workflow artifact only. Nothing is signed or published."
@@ -360,6 +372,23 @@ jobs:
           # The always() cleanup step deletes it, which also drops it from there.
           security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
 
+      # The profile grants the CloudKit entitlements; make embeds it in the
+      # bundle before signing. It is decoded to a temporary file that only this
+      # job can read, and its contents are never printed.
+      - name: Decode the provisioning profile
+        if: steps.gate.outputs.sign == 'true'
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          profile="$RUNNER_TEMP/napcat-embedded.provisionprofile"
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
+          if ! security cms -D -i "$profile" -o /dev/null 2> /dev/null; then
+            echo "::error::MACOS_PROVISIONING_PROFILE_BASE64 does not decode to a provisioning profile. Upload the base64 of the Developer ID .provisionprofile for com.muratalkan.napcat."
+            exit 1
+          fi
+
       - name: Build the bundle and disk image
         env:
           SIGNING: ${{ steps.gate.outputs.sign }}
@@ -368,13 +397,24 @@ jobs:
           set -euo pipefail
           if [ "$SIGNING" = "true" ]; then
             keychain="$RUNNER_TEMP/napcat-release.keychain-db"
+            profile="$RUNNER_TEMP/napcat-embedded.provisionprofile"
             # The Makefile's signed CODESIGN command plus --keychain, so codesign
-            # looks for the identity only in the temporary keychain.
+            # looks for the identity only in the temporary keychain. make adds
+            # --entitlements after it and embeds the profile before signing.
             make release-artifacts SIGN_IDENTITY="$DEVELOPER_ID" \
-              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s '$DEVELOPER_ID'"
+              CODESIGN="codesign --force --options runtime --timestamp --keychain '$keychain' -s '$DEVELOPER_ID'" \
+              ENTITLEMENTS=Resources/NapCat.entitlements PROVISIONING_PROFILE="$profile"
           else
             make release-artifacts
           fi
+
+      # Before anything goes to Apple: the bundle must be signed with exactly
+      # the committed entitlements, and its embedded profile must be for the
+      # same application identifier, unexpired, and grant every one of them.
+      # Any mismatch fails the job here, so nothing is notarized or published.
+      - name: Check the bundle's entitlements and provisioning profile
+        if: steps.gate.outputs.sign == 'true'
+        run: ./scripts/check-release-entitlements.sh entitled dist/NapCat.app Resources/NapCat.entitlements
 
       - name: Sign, notarize and staple the disk image
         if: steps.gate.outputs.sign == 'true'
@@ -458,7 +498,7 @@ jobs:
             security delete-keychain "$keychain" || true
           fi
           rm -f "$RUNNER_TEMP/napcat-signing.p12" "$RUNNER_TEMP/napcat-notary-key.p8" \
-            "$RUNNER_TEMP/napcat-notary-result.json"
+            "$RUNNER_TEMP/napcat-notary-result.json" "$RUNNER_TEMP/napcat-embedded.provisionprofile"
 
   publish:
     name: Create the draft GitHub Release
