@@ -89,12 +89,14 @@ enum PanelMetrics {
 /// - Zero motion on open / close: the menu window appears and disappears in
 ///   one step, its height changes snap (`MenuPanelHostingView`), and no view
 ///   animates its own insertion or removal.
-/// - Every animation is an ease-out of at most `maxDuration`. The motion lint
-///   (`MenuPanelStructureTests.motionIsGatedAndShort`, amended by owner
-///   ruling f on 2026-11-20) holds the panel to a tighter 200 ms, inside this
-///   ceiling.
-/// - Every animation is nil under Reduce Motion — the chevron's pattern,
-///   `.animation(reduceMotion ? nil : .easeOut(duration: …), value: …)`.
+/// - The one animation is the press, the quiet spring (owner pick "motion
+///   b", 2026-11-20, issue #82): an ease-out press-in of `pressFade` — the
+///   200 ms ease-out cap of the motion lint
+///   (`MenuPanelStructureTests.motionIsGatedAndShort`, owner ruling f) — and
+///   the release spring, visibly settled inside `maxDuration`. Views name it
+///   only as `press(_:reduceMotion:)`, scoped to the press's own modifiers.
+/// - Every animation is nil under Reduce Motion, and the squash goes with
+///   it: the press falls back to the snapped fade.
 /// - Only values the user drives animate: a button's press. Observed-state
 ///   changes never animate. (Panel 2.0 slice P retired the panel's other
 ///   two: the Details chevron left with the disclosure, and the charge-limit
@@ -105,11 +107,45 @@ enum PanelMetrics {
 /// reads it); `panelMotionCodifiesEveryAnimation` holds each literal to one
 /// of the durations below.
 enum PanelMotion {
-    /// The pressed-state fade of a plain-style panel button
-    /// (`PanelPressFadeButtonStyle`).
+    /// The press-in: a pressed button eases out to its pressed look over this
+    /// long (`press(_:reduceMotion:)`).
     static let pressFade: Double = 0.10
     /// A pressed plain-style panel button's opacity, reached over `pressFade`.
     static let pressedOpacity: Double = 0.7
+    /// The quiet spring's squash (owner pick "motion b", 2026-11-20, issue
+    /// #82): a pressed plain-style panel button — the icon buttons (the
+    /// Settings gear, Lock Screen) and Quit — scales to this, reached over
+    /// `pressFade`. 1.1 pt on the 18.5 pt lock glyph, 3.6 pt across Quit.
+    static let pressedScale: CGFloat = 0.94
+    /// The squash of a wide control that keeps its system look (the Settings
+    /// window's bordered buttons). A fixed factor grows with the button:
+    /// `pressedScale` would shrink the 140 pt "Send test message" by about
+    /// 8 pt (the option B Settings render). 0.97 keeps a 100–140 pt button's
+    /// squash at 3–4 pt, the size Quit's 0.94 gives. Not applied yet (issue
+    /// #82): a system-styled button exposes no press state, and a
+    /// gesture-tracked squash sticks on an AppKit-backed control, whose
+    /// tracking loop swallows the mouse-up.
+    static let widePressedScale: CGFloat = 0.97
+    /// The release: the quiet spring, exactly as option B rendered it —
+    /// `.spring(response: releaseResponse, dampingFraction:
+    /// releaseDampingFraction)` on both the scale and the fade. From the
+    /// pressed look its single overshoot peaks at ≈1.0028 (0.17 pt on Quit,
+    /// sub-pixel) and it is visibly settled ≈227 ms after release, inside
+    /// `maxDuration`. (`Spring.settlingDuration`'s 559 ms measures down to a
+    /// 0.1% tolerance; that tail is sub-pixel.) A spring picks up from
+    /// wherever the press got to, so a quick click is interruptible.
+    static let releaseResponse: Double = 0.25
+    static let releaseDampingFraction: Double = 0.7
+    /// The ONE animation a panel view may name: a press-state
+    /// change eases in over `pressFade` and springs back with the quiet
+    /// spring. Nil under Reduce Motion — the views then also drop the scale,
+    /// so the press is the snapped fade alone.
+    static func press(_ isPressed: Bool, reduceMotion: Bool) -> Animation? {
+        if reduceMotion { return nil }
+        return isPressed
+            ? .easeOut(duration: pressFade)
+            : .spring(response: releaseResponse, dampingFraction: releaseDampingFraction)
+    }
     /// How long the test send's "Sent" acknowledgment holds before the
     /// button reverts. A hold, not an animation: the label swap snaps.
     static let sentRevert: Double = 1.5
