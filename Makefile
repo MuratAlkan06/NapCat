@@ -10,8 +10,25 @@ BINARY   := .build/release/$(APP_NAME)
 # timestamp, both of which notarization requires (the timestamp needs network).
 # The ad-hoc branch spells out the exact command `make` has always run.
 SIGN_IDENTITY := -
+
+# CloudKit entitlements and the provisioning profile that grants them, for a
+# Developer ID build only: the release workflow passes
+# ENTITLEMENTS=Resources/NapCat.entitlements and PROVISIONING_PROFILE=<decoded
+# .provisionprofile>. Both are empty by default, so a plain `make` stays
+# unentitled (the app's entitlement probe then keeps it on ntfy). When set, the
+# profile is installed as Contents/embedded.provisionprofile before signing and
+# codesign gets --entitlements. Never commit a .provisionprofile.
+# Ad-hoc signing with either one set (on the command line or in the
+# environment) is refused: AMFI kills an ad-hoc binary that claims restricted
+# entitlements as soon as it launches.
+ENTITLEMENTS ?=
+PROVISIONING_PROFILE ?=
+
 ifeq ($(strip $(SIGN_IDENTITY)),-)
 CODESIGN := codesign --force -s -
+ifneq ($(strip $(ENTITLEMENTS)$(PROVISIONING_PROFILE)),)
+$(error ENTITLEMENTS and PROVISIONING_PROFILE need a real SIGN_IDENTITY: an ad-hoc signed (SIGN_IDENTITY=-) NapCat that claims restricted entitlements is killed by AMFI at launch. Unset both for a local build, or pass SIGN_IDENTITY=<Developer ID identity>)
+endif
 else
 CODESIGN := codesign --force --options runtime --timestamp -s "$(SIGN_IDENTITY)"
 endif
@@ -35,7 +52,8 @@ all: smc
 	install -m 0755 Resources/napcat-watchdog.sh $(APP)/Contents/Resources/napcat-watchdog.sh
 	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
 	iconutil -c icns Resources/AppIcon.iconset -o $(APP)/Contents/Resources/AppIcon.icns
-	$(CODESIGN) $(APP)
+	$(if $(strip $(PROVISIONING_PROFILE)),install -m 0644 "$(strip $(PROVISIONING_PROFILE))" $(APP)/Contents/embedded.provisionprofile)
+	$(CODESIGN)$(if $(strip $(ENTITLEMENTS)), --entitlements "$(strip $(ENTITLEMENTS))") $(APP)
 
 # pkill only SIGNALS the running instance; `open` issued while it is still
 # exiting can hand off to the dying process, and nothing launches. So wait for

@@ -72,4 +72,42 @@ struct ReleaseEntitlementsTests {
                 == [AlertWire.containerIdentifier])
         #expect(entitlements["com.apple.developer.icloud-container-environment"] as? String == "Production")
     }
+
+    /// A plain `make` stays unentitled: both variables default to empty, the
+    /// ad-hoc command is still exactly `codesign --force -s -`, and inside the
+    /// ad-hoc branch either variable stops make with an error. With a real
+    /// identity the profile is embedded BEFORE the bundle is signed (codesign
+    /// seals it), and codesign gets --entitlements only when one is given.
+    @Test func aPlainMakeStaysUnentitledAndAdHocRefusesEntitlements() throws {
+        let makefile = try String(contentsOf: Self.repoRoot.appendingPathComponent("Makefile"), encoding: .utf8)
+        let lines = makefile.components(separatedBy: "\n")
+        func index(_ line: String) -> Int? { lines.firstIndex(of: line) }
+
+        let order = [
+            "ENTITLEMENTS ?=",
+            "PROVISIONING_PROFILE ?=",
+            "ifeq ($(strip $(SIGN_IDENTITY)),-)",
+            "CODESIGN := codesign --force -s -",
+            "ifneq ($(strip $(ENTITLEMENTS)$(PROVISIONING_PROFILE)),)",
+        ].map(index)
+        #expect(!order.contains(nil), "Makefile lines missing: \(order)")
+        let found = order.compactMap { $0 }
+        #expect(found == found.sorted() && Set(found).count == found.count,
+                "the defaults, then the ad-hoc branch, then its guard — in that order")
+        if let guardLine = found.last {
+            #expect(lines[guardLine + 1].hasPrefix("$(error ENTITLEMENTS and PROVISIONING_PROFILE need a real SIGN_IDENTITY"))
+            #expect(lines[guardLine + 2] == "endif" && lines[guardLine + 3] == "else",
+                    "the guard must sit inside the ad-hoc branch only")
+        }
+
+        let embed = "\t$(if $(strip $(PROVISIONING_PROFILE)),install -m 0644 \"$(strip $(PROVISIONING_PROFILE))\" "
+            + "$(APP)/Contents/embedded.provisionprofile)"
+        let sign = "\t$(CODESIGN)$(if $(strip $(ENTITLEMENTS)), --entitlements \"$(strip $(ENTITLEMENTS))\") $(APP)"
+        let embedAt = try #require(index(embed), "the profile is embedded as Contents/embedded.provisionprofile")
+        let signAt = try #require(index(sign), "codesign gets --entitlements only when ENTITLEMENTS is set")
+        #expect(signAt == embedAt + 1, "embed the profile immediately before signing")
+        let assignments = lines.filter { $0.hasPrefix("ENTITLEMENTS") || $0.hasPrefix("PROVISIONING_PROFILE") }
+        #expect(assignments == ["ENTITLEMENTS ?=", "PROVISIONING_PROFILE ?="],
+                "both variables are assigned once, empty — a plain `make` never entitles")
+    }
 }
