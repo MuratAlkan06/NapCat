@@ -1175,6 +1175,41 @@ struct SettingsWindowTests {
         }
     }
 
+    /// Issue #111: the update state is NOMINAL under the iron rule. A known
+    /// newer release shows the panel's one INFO line and nothing else; a
+    /// failed check shows nothing at all — and neither ever raises the gear
+    /// badge (which still agrees with its oracle).
+    @Test @MainActor func theUpdateStateNeverRaisesTheGearBadge() async throws {
+        for (stored, answer, line) in [
+            ("v1.7.0" as String?, ReleaseCheckOutcome.failed(.transport),
+             PanelLine(text: "Update available — v1.7.0", severity: .info) as PanelLine?),
+            (nil, .failed(.httpStatus(403)), nil),
+            (nil, .latest(ReleaseVersion(tag: "v2.0.0")!), PanelLine(text: "Update available — v2.0.0", severity: .info)),
+            (nil, .latest(ReleaseVersion(tag: "v1.6.0")!), nil),
+        ] {
+            let suite = "com.muratalkan.napcat.tests.settings.updatebadge.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            if let stored { defaults.set(stored, forKey: DefaultsKey.updateCheckLatestTag) }
+            let checker = ScriptedReleaseChecker()
+            let update = UpdateCheckController(running: try #require(ReleaseVersion(bundleVersion: "1.6.0")),
+                                               defaults: defaults, checker: checker, now: { 1_000_000 },
+                                               openReleasePage: { _ in })
+            let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let model = MenuStateModel(power: power, sleep: SleepStateController(),
+                                       limiter: ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults),
+                                       screenLock: ScreenLockController(), updateCheck: update)
+            update.checkNow()
+            checker.answer(answer)
+            await drainMain()
+            model.refresh()
+            #expect(model.updateCheckLastResult != nil, "vacuity: the check finished")
+            #expect(model.updateAvailableLine == line, "\(answer)")
+            #expect(model.settingsBadge == .nominal, "\(answer): the update state never raises the badge")
+            #expect(model.settingsBadge == Self.badgeOracle(model, now: 1_000_000))
+        }
+    }
+
     /// The session lane's own problems raise the gear badge, the lid half
     /// healthy: a refused session alert (an error — the status line and the
     /// History line both raise it), and an UNCONFIRMED one (a warning), whose

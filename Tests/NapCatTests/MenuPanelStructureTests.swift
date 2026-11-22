@@ -197,6 +197,137 @@ struct MenuPanelStructureTests {
         }
     }
 
+    // MARK: - Issue #111: the update line is NOMINAL under the iron rule
+
+    /// THE UPDATE LINE IS NOMINAL UNDER THE IRON RULE. The iron rule is about
+    /// PROBLEMS: a non-nominal Settings line must surface in the panel. An
+    /// available update is not a problem, and neither is a failed or stale
+    /// check, so the whole update state counts as NOMINAL here:
+    /// - the panel shows ONE line, "Update available — vX.Y.Z", only while a
+    ///   newer release is known, at `.info` — never `.warning` or `.error`,
+    ///   and never `.nominal` either (it has no Settings home to hide in);
+    /// - it is NOT a surfaced twin: no `SurfacedLine`, no
+    ///   `placement(ofSettingsLine:)`, and the Settings composition never
+    ///   names it (the Settings caption is a plain string, no severity);
+    /// - the gear badge never counts it, and the status item's icon never
+    ///   reads any update state;
+    /// - a failed or stale check has ZERO panel output: no panel view reads
+    ///   the check's result, attempt time, progress or caption;
+    /// - it renders once, outside the cards, after the problems and right
+    ///   above the footer.
+    static func updateLineFailures(model: String, views: String, layout: String, settings: String,
+                                   icon: String) -> [String] {
+        var failures: [String] = []
+        // 1. Info, never more.
+        let mapping = model.components(separatedBy:
+            "nonisolated static func updateAvailableLine(newer: ReleaseVersion?) -> PanelLine? {").dropFirst().first?
+            .components(separatedBy: "\n    }\n").first ?? ""
+        if mapping.isEmpty { failures.append("updateAvailableLine(newer:) not found — keep this lock updated") }
+        if occurrences(of: "PanelLine(", in: mapping) != 1 || occurrences(of: "severity: .info)", in: mapping) != 1 {
+            failures.append("the update line must be ONE PanelLine at severity .info — got: \(flat(mapping))")
+        }
+        for louder in [".warning", ".error", ".nominal"] where mapping.contains(louder) {
+            failures.append("'\(louder)' in the update line's mapping — it is info, never more (and never hidden)")
+        }
+        // 2. Never badge-counted.
+        for member in ["var settingsBadge: PanelSeverity {", "func settingsResidentSeverities(",
+                       "private var alertsResidentSeverities:", "nonisolated static func generalResidentSeverities("] {
+            guard let range = LidGuardStructureTests.memberRange(member, in: model) else {
+                failures.append("'\(member)' not found — keep this lock updated")
+                continue
+            }
+            for token in ["update", "Update", "ReleaseVersion"] where model[range].contains(token) {
+                failures.append("'\(token)' in \(member) — the gear badge never counts the update state")
+            }
+        }
+        // 3. Not a twin, not a Settings line, no failed-check output.
+        if occurrences(of: "model.updateAvailableLine", in: views) != 1 {
+            failures.append("model.updateAvailableLine must render exactly once in the panel")
+        }
+        let line = structChunk("UpdateAvailableLine", in: views) ?? ""
+        if !flat(line).contains("if let line = model.updateAvailableLine { PanelCaptionLine(line: line) }") {
+            failures.append("UpdateAvailableLine must render the line itself, as a plain caption line")
+        }
+        for token in ["SurfacedLine(", "placement(", "severity", "Button", "onTapGesture"] where line.contains(token) {
+            failures.append("'\(token)' in UpdateAvailableLine — it is not a surfaced twin and not a control")
+        }
+        if views.contains("SurfacedLine(line: model.update") { failures.append("the update line became a surfaced twin") }
+        if settings.contains("updateAvailableLine") {
+            failures.append("Settings names updateAvailableLine — the iron rule would then treat it as a Settings line")
+        }
+        for token in ["updateCheckLastResult", "updateCheckInFlight", "updateCheckLastAttempt", "updateCheckCaption",
+                      "updateCheckAutoEnabled", ".failed"] where views.contains(token) {
+            failures.append("'\(token)' in a panel view — a failed or stale check has no panel output")
+        }
+        // 4. Never icon-affecting.
+        for token in ["updateAvailableLine", "updateKnownNewer", "updateCheck", "UpdateCheck", "ReleaseVersion",
+                      "settingsBadge"] where icon.contains(token) {
+            failures.append("'\(token)' in the status item — the icon never reflects the update state")
+        }
+        // 5. Once, outside the cards, after the problems, above the footer.
+        let cards = cardBlocks(in: layout)
+        if occurrences(of: "UpdateAvailableLine(model: model)", in: layout) != 1 {
+            failures.append("UpdateAvailableLine must render exactly once in the layout")
+        } else if let at = layout.range(of: "UpdateAvailableLine(model: model)"),
+                  let footer = layout.range(of: "PanelFooterRow(model: model)"),
+                  let problems = layout.range(of: "SurfacedLaunchAtLogin(model: model)") {
+            if cards.contains(where: { $0.contains(at.lowerBound) }) { failures.append("the update line renders inside a card") }
+            if !(problems.upperBound <= at.lowerBound && at.upperBound <= footer.lowerBound) {
+                failures.append("the update line must sit after the surfaced problems and above the footer")
+            }
+        } else {
+            failures.append("the layout lost its surfaced lines or its footer — keep this lock updated")
+        }
+        return failures
+    }
+
+    static func updateLineSources() throws -> (model: String, views: String, layout: String, settings: String,
+                                              icon: String) {
+        (try code("MenuStateModel.swift"), try allViewCode(), try layoutBody(),
+         try SettingsWindowTests.settingsFiles.map(code).joined(separator: "\n"),
+         try ["StatusItemController.swift", "AnimationEngine.swift"].map(code).joined(separator: "\n"))
+    }
+
+    @Test func theUpdateLineIsNominalUnderTheIronRule() throws {
+        let (model, views, layout, settings, icon) = try Self.updateLineSources()
+        let clean = Self.updateLineFailures(model: model, views: views, layout: layout, settings: settings, icon: icon)
+        #expect(clean.isEmpty, "\(clean)")
+
+        // The mapping itself: info while newer, nothing otherwise.
+        let newer = try #require(ReleaseVersion(tag: "v1.7.0"))
+        #expect(MenuStateModel.updateAvailableLine(newer: newer)
+                == PanelLine(text: "Update available — v1.7.0", severity: .info))
+        #expect(MenuStateModel.updateAvailableLine(newer: nil) == nil)
+
+        func caught(_ name: String, model m: String = model, views v: String = views, layout l: String = layout,
+                    settings st: String = settings, icon i: String = icon) {
+            #expect(!Self.updateLineFailures(model: m, views: v, layout: l, settings: st, icon: i).isEmpty,
+                    "canary '\(name)' was NOT caught")
+        }
+        func swap(_ text: String, _ target: String, _ replacement: String) -> String {
+            #expect(text.contains(target), "canary setup: '\(target)' must exist")
+            return text.replacingOccurrences(of: target, with: replacement)
+        }
+        caught("a warning", model: swap(model, "severity: .info)\n", "severity: .warning)\n"))
+        caught("an error", model: swap(model, "severity: .info)\n", "severity: .error)\n"))
+        caught("the badge counts it", model: swap(model,
+            "Self.worstSeverity(settingsPanes.flatMap(settingsResidentSeverities))",
+            "Self.worstSeverity(settingsPanes.flatMap(settingsResidentSeverities) + [updateAvailableLine?.severity ?? .nominal])"))
+        caught("a surfaced twin", views: views + "\nstruct Canary: View { @ObservedObject var model: MenuStateModel\n"
+            + "    var body: some View { SurfacedLine(line: model.updateAvailableLine) } }")
+        caught("a failed check in the panel", views: views + "\nlet canary = model.updateCheckLastResult == .failed")
+        caught("Settings counts it", settings: settings + "\nlet canary = updateAvailableLine")
+        caught("the icon follows it", icon: icon + "\nlet canary = menuContent.model.$updateKnownNewer")
+        caught("inside the Power card", layout: swap(
+            swap(layout, "            UpdateAvailableLine(model: model)\n", ""),
+            "                BatteryHeader(model: model)\n",
+            "                BatteryHeader(model: model)\n                UpdateAvailableLine(model: model)\n"))
+        caught("below the footer", layout: swap(
+            swap(layout, "            UpdateAvailableLine(model: model)\n", ""),
+            "            PanelFooterRow(model: model)\n",
+            "            PanelFooterRow(model: model)\n            UpdateAvailableLine(model: model)\n"))
+    }
+
     /// Panel 2.0 slice P: the panel's LAST row sits OUTSIDE the cards — the
     /// Settings gear first, then the Claude status caption, the Spacer, then
     /// Quit on the right, and nothing else (no icon button beside Quit, where

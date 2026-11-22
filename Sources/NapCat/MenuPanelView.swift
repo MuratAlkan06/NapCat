@@ -342,6 +342,22 @@ struct SessionAlertsSurfacedLines: View {
     }
 }
 
+/// Issue #111: the panel's one update line — "Update available — vX.Y.Z",
+/// info severity, only while a newer release is known. NOT an iron-rule
+/// twin: the update state is nominal (never a problem), so it never goes
+/// through `placement(ofSettingsLine:)`, never counts toward the gear badge,
+/// and a failed check renders nothing. Not a control either: Settings ›
+/// General's "Check for Updates…" opens the release page.
+struct UpdateAvailableLine: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        if let line = model.updateAvailableLine {
+            PanelCaptionLine(line: line)
+        }
+    }
+}
+
 /// Launch at Login surfaces from Settings › General as a WHOLE row (checkbox
 /// + caption + System Settings link) while its status needs the user.
 struct SurfacedLaunchAtLogin: View {

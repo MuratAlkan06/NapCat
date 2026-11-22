@@ -558,6 +558,10 @@ final class MenuStateModel: ObservableObject {
                                    outcome: phoneLastOutcome, at: phoneLastOutcomeAt, now: now)
     }
 
+    /// Issue #111: the panel's ONE update line, only while a newer release
+    /// is known (nil without the update check).
+    var updateAvailableLine: PanelLine? { Self.updateAvailableLine(newer: updateKnownNewer) }
+
     /// Badge on the footer's Settings gear (slice W, issue #78): the worst
     /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
     /// is a pane of the Settings window — over the panes this wiring shows.
@@ -1379,6 +1383,19 @@ final class MenuStateModel: ObservableObject {
         let when = lastAttempt.map { ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - $0))) }
         if lastResult == .upToDate { return when.map { "Up to date — checked \($0)" } ?? "Up to date" }
         return when.map { "Checked \($0)" } ?? "Not checked yet"
+    }
+
+    /// "Update available — vX.Y.Z", only while a newer release is known.
+    ///
+    /// INFO, NEVER MORE. Under the iron rule the update state is NOMINAL: an
+    /// available update is not a problem, so this line is not a Settings
+    /// line's twin and never goes through `placement(ofSettingsLine:)`; it is
+    /// never a warning, never counted by the gear badge, never shown by the
+    /// status item's icon; and a failed or stale check has no panel output
+    /// at all (UpdateCheckStructureTests / MenuPanelStructureTests).
+    nonisolated static func updateAvailableLine(newer: ReleaseVersion?) -> PanelLine? {
+        guard let newer else { return nil }
+        return PanelLine(text: "Update available — \(newer.tag)", severity: .info)
     }
 
     /// The disclosure under "Check for updates automatically": what it
