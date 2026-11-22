@@ -67,3 +67,8 @@ struct ReceiverScreen: View {
 #Preview("Empty") {
     ReceiverScreen(alerts: [], connection: .connected)
 }
+
+/// A live launch's first frame (no fixture launch can show it).
+#Preview("Checking") {
+    ReceiverScreen(alerts: [], connection: .checking)
+}

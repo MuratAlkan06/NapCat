@@ -40,6 +40,25 @@ targets:
     dependencies:
       - package: NapCat
         product: NapCatWire
+    # The F3 receive path: CloudKit (the container the Mac writes, private
+    # database) plus APNs for the subscription's pushes. xcodegen writes this
+    # file from the properties below; commit it with the project. The
+    # unsigned simulator path (CODE_SIGNING_ALLOWED=NO) applies none of it,
+    # and simulator builds never build a CloudKit container (LiveCapability).
+    # No background modes (the frozen F3 ADR): the subscription's pushes are
+    # alerts the system renders, never silent wakes, and the list catches up
+    # on open.
+    entitlements:
+      path: NapCatPhone.entitlements
+      properties:
+        # Development for every dev-signed build; Xcode's App Store /
+        # TestFlight export rewrites it to production.
+        aps-environment: development
+        com.apple.developer.icloud-services: [CloudKit]
+        # Must equal AlertWire.containerIdentifier (Sources/NapCatWire).
+        com.apple.developer.icloud-container-identifiers: [iCloud.com.muratalkan.napcat]
+        # THE CLOUDKIT ENVIRONMENT DIAL — see NAPCAT_CLOUDKIT_ENVIRONMENT.
+        com.apple.developer.icloud-container-environment: $(NAPCAT_CLOUDKIT_ENVIRONMENT)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.muratalkan.napcat.phone
@@ -51,6 +70,16 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         ENABLE_PREVIEWS: YES
+        # Which CloudKit environment this build reads: Production, where the
+        # Mac writes (its Developer ID profile is Production-only). A
+        # dev-signed build would otherwise default to Development; a
+        # development profile permits either value. To bootstrap in
+        # Development once (Apple: create a subscription in Development and
+        # deploy the schema before Production accepts one), override it on
+        # the command line: NAPCAT_CLOUDKIT_ENVIRONMENT=Development.
+        # UNPROVEN until the device run: which environment a dev-signed build
+        # really reaches, and whether Production accepts the subscription.
+        NAPCAT_CLOUDKIT_ENVIRONMENT: Production
   # Unit tests (Swift Testing), hosted in the app, run on the simulator.
   NapCatPhoneTests:
     type: bundle.unit-test

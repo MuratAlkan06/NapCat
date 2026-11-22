@@ -1,15 +1,33 @@
 import SwiftUI
 
-/// NapCat Phone — the iOS receiver for the Mac's alerts (F3, part 1:
-/// fixture data only; nothing here talks to iCloud or the network).
+/// NapCat Phone — the iOS receiver for the Mac's alerts (F3). A device build
+/// shows the alerts the Mac writes to the owner's iCloud; simulator builds,
+/// previews and tests show fixtures (`AlertSourceKind`, `LiveCapability`).
 @main
 struct NapCatPhoneApp: App {
-    private let options = LaunchOptions.fromLaunchArguments()
-    private let launchedAt = Date()
+    @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
-            ReceiverScreen(alerts: options.fixture.alerts(now: launchedAt), connection: options.connection)
+            ReceiverRoot(feed: appDelegate.feed)
         }
+    }
+}
+
+/// The screen over the live feed: the first refresh at launch, another on
+/// every return to the foreground (the missed-alert reconciliation: whatever
+/// arrived while the app was away is fetched on open).
+struct ReceiverRoot: View {
+    let feed: AlertFeed
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        ReceiverScreen(alerts: feed.alerts, connection: feed.connection)
+            .task { await feed.start() }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await feed.refresh() }
+            }
     }
 }

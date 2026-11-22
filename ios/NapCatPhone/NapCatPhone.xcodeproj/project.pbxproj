@@ -296,6 +296,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = NapCatPhone.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -308,6 +309,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				NAPCAT_CLOUDKIT_ENVIRONMENT = Production;
 				PRODUCT_BUNDLE_IDENTIFIER = com.muratalkan.napcat.phone;
 				PRODUCT_NAME = NapCatPhone;
 				SDKROOT = iphoneos;
@@ -337,6 +339,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = NapCatPhone.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -349,6 +352,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				NAPCAT_CLOUDKIT_ENVIRONMENT = Production;
 				PRODUCT_BUNDLE_IDENTIFIER = com.muratalkan.napcat.phone;
 				PRODUCT_NAME = NapCatPhone;
 				SDKROOT = iphoneos;
