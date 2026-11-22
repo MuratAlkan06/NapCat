@@ -233,7 +233,7 @@ struct MenuStateModelTests {
 
         #expect(model.featureState == .controlUnavailable)
         #expect(!model.chargeLimitRowVisible)
-        #expect(model.generalPane.sections.contains(note), "the gated Mac's one note")
+        #expect(model.generalPane(now: 0).sections.contains(note), "the gated Mac's one note")
 
         simulator.chargeControlReadiness = .ready
         limiter.evaluate(reason: "menu open")
@@ -243,7 +243,7 @@ struct MenuStateModelTests {
         #expect(model.chargeLimitRowVisible, "the row is back")
         #expect(model.limitEnabled && model.limit == 85, "with the saved toggle and limit")
         #expect(model.chargeLimitCaption == PanelLine(text: "Charging — pauses at the limit", severity: .nominal))
-        let charge = model.generalPane.sections.filter { $0.title == "Charge Limit" }
+        let charge = model.generalPane(now: 0).sections.filter { $0.title == "Charge Limit" }
         #expect(charge == [SettingsSection(title: "Charge Limit", rows: [
             .chargeLimit(header: "Pause charging at 85%", isOn: true, switchEnabled: true, limit: 85, sliderEnabled: true,
                          caption: PanelLine(text: "Charging — pauses at the limit", severity: .nominal)),

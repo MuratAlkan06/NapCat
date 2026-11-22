@@ -236,6 +236,17 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var phoneLastOutcome: MessageSendOutcome?
     @Published private(set) var phoneLastOutcomeAt: Double?
 
+    // Issue #111 (update check) mirrors — stored state plus this session's
+    // last result. No controller (debugBattery mode) ⇒ no Updates group and
+    // never an update line.
+    @Published private(set) var updateCheckAutoEnabled = true
+    @Published private(set) var updateCheckInFlight = false
+    @Published private(set) var updateCheckLastResult: UpdateCheckResult?
+    @Published private(set) var updateCheckLastAttempt: Double?
+    /// The stored latest release, only while it is newer than the running
+    /// app (re-validated by the controller at every read).
+    @Published private(set) var updateKnownNewer: ReleaseVersion?
+
     /// Owner ruling (e): the Stay Awake turn-on feedback. In-memory UI state,
     /// held OUTSIDE the published mirrors on purpose (see
     /// `StayAwakeTurnOnFeedback`).
@@ -260,6 +271,8 @@ final class MenuStateModel: ObservableObject {
     /// Non-nil outside debugBattery mode — the composite sender, for the
     /// phone transport toggle and its line (F3 stage 1).
     private let phoneTransport: CompositeMessageSender?
+    /// Non-nil outside debugBattery mode — the update check (issue #111).
+    private let updateCheck: UpdateCheckController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -295,6 +308,8 @@ final class MenuStateModel: ObservableObject {
     /// The phone toggle lives with the alerts' delivery settings, so it needs
     /// the lid guard (Settings › Alerts) as well as the composite.
     var phoneTransportVisible: Bool { lidGuard != nil && phoneTransport != nil }
+    /// Settings › General's Updates group (issue #111).
+    var updateCheckVisible: Bool { updateCheck != nil }
 
     init(
         power: PowerInterface,
@@ -307,6 +322,7 @@ final class MenuStateModel: ObservableObject {
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
+        updateCheck: UpdateCheckController? = nil,
         stayAwakeTurnOn: StayAwakeTurnOnFeedback = StayAwakeTurnOnFeedback()
     ) {
         self.power = power
@@ -319,6 +335,7 @@ final class MenuStateModel: ObservableObject {
         self.lidGuard = lidGuard
         self.finishAlert = finishAlert
         self.phoneTransport = phoneTransport
+        self.updateCheck = updateCheck
         self.stayAwakeTurnOn = stayAwakeTurnOn
         refresh()
     }
@@ -371,6 +388,12 @@ final class MenuStateModel: ObservableObject {
         phoneTransportAvailable = phone?.available ?? false
         phoneLastOutcome = phone?.lastOutcome
         phoneLastOutcomeAt = phone?.lastOutcomeAt
+        // Issue #111 mirrors. Stored state only — reading never checks.
+        updateCheckAutoEnabled = updateCheck?.autoEnabled ?? true
+        updateCheckInFlight = updateCheck?.inFlight ?? false
+        updateCheckLastResult = updateCheck?.lastResult
+        updateCheckLastAttempt = updateCheck?.lastAttempt
+        updateKnownNewer = updateCheck?.knownNewer
     }
 
     // MARK: Actions (forwarded)
@@ -430,6 +453,20 @@ final class MenuStateModel: ObservableObject {
 
     func setPhoneTransportEnabled(_ enabled: Bool) {
         phoneTransport?.setPhoneTransportEnabled(enabled)
+        refresh()
+    }
+
+    // MARK: Issue #111 actions — the update check (no AppKit flow: a manual
+    // check that finds a newer release opens its page itself)
+
+    /// "Check for Updates…": always checks (one at a time).
+    func checkForUpdates() {
+        updateCheck?.checkNow()
+        refresh()
+    }
+
+    func setUpdateCheckAutoEnabled(_ enabled: Bool) {
+        updateCheck?.setAutoEnabled(enabled)
         refresh()
     }
 
@@ -520,6 +557,10 @@ final class MenuStateModel: ObservableObject {
         return Self.phoneAlertLine(enabled: phoneTransportEnabled, available: phoneTransportAvailable,
                                    outcome: phoneLastOutcome, at: phoneLastOutcomeAt, now: now)
     }
+
+    /// Issue #111: the panel's ONE update line, only while a newer release
+    /// is known (nil without the update check).
+    var updateAvailableLine: PanelLine? { Self.updateAvailableLine(newer: updateKnownNewer) }
 
     /// Badge on the footer's Settings gear (slice W, issue #78): the worst
     /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
@@ -1320,6 +1361,49 @@ final class MenuStateModel: ObservableObject {
         case .timedOutUnconfirmed?, .sendFailed?, .rejected?: return .warning
         }
     }
+
+    // MARK: - Issue #111 (update check) presentation
+
+    /// Settings › General › Updates: the passive caption beside "Check for
+    /// Updates…" — C2 fragments, state word first. Precedence: checking, a
+    /// failed check this session, a known newer release, up to date this
+    /// session, then the last attempt (from an earlier session — its outcome
+    /// is not kept), then never.
+    ///
+    /// A plain String, never a `PanelLine`: an available update — let alone a
+    /// failed check — is not a problem, so under the iron rule the whole
+    /// update state is NOMINAL. The caption carries no severity, never raises
+    /// the gear badge and needs no panel twin; a failed check produces no
+    /// panel output at all.
+    nonisolated static func updateCheckCaption(checking: Bool, lastResult: UpdateCheckResult?, newer: ReleaseVersion?,
+                                               lastAttempt: Double?, now: Double) -> String {
+        if checking { return "Checking…" }
+        if lastResult == .failed { return "Couldn’t check — try again later" }
+        if let newer { return "Update available — \(newer.tag); Check for Updates… opens its release page" }
+        let when = lastAttempt.map { ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - $0))) }
+        if lastResult == .upToDate { return when.map { "Up to date — checked \($0)" } ?? "Up to date" }
+        return when.map { "Checked \($0)" } ?? "Not checked yet"
+    }
+
+    /// "Update available — vX.Y.Z", only while a newer release is known.
+    ///
+    /// INFO, NEVER MORE. Under the iron rule the update state is NOMINAL: an
+    /// available update is not a problem, so this line is not a Settings
+    /// line's twin and never goes through `placement(ofSettingsLine:)`; it is
+    /// never a warning, never counted by the gear badge, never shown by the
+    /// status item's icon; and a failed or stale check has no panel output
+    /// at all (UpdateCheckStructureTests / MenuPanelStructureTests).
+    nonisolated static func updateAvailableLine(newer: ReleaseVersion?) -> PanelLine? {
+        guard let newer else { return nil }
+        return PanelLine(text: "Update available — \(newer.tag)", severity: .info)
+    }
+
+    /// The disclosure under "Check for updates automatically": what it
+    /// contacts, how often, and everything the request exposes.
+    nonisolated static let updateCheckDisclosure = "Contacts \(GitHubReleaseChecker.apiHost) about once a day, "
+        + "when you open the menu or Settings. The request exposes your IP address, the app name and version "
+        + "in the User-Agent, and standard macOS HTTPS headers; nothing else is sent. Nothing is downloaded "
+        + "or installed."
 
     // MARK: - Issue #34: the run-floor group of the ntfy settings editor
 

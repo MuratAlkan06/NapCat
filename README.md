@@ -68,6 +68,10 @@ are 18×18 pixel art.
   iPhone app through your own iCloud, with no topic to guard on that path;
   ntfy stays the fallback. Off by default — see
   [Phone alerts via iCloud](#phone-alerts-via-icloud-beta).
+- **Update check** — one quiet line in the menu when a newer NapCat release
+  is out, and **Check for Updates…** in Settings. It never downloads or
+  installs anything, sends no telemetry, and can be switched off — see
+  [Network use and privacy](#network-use-and-privacy).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
 - No Dock icon. The one window is Settings. Quit from the menu (⌘Q while it
@@ -90,20 +94,23 @@ message in Settings to check your phone gets it". A problem whose fix lives in
 Settings (a message that did not go out, an out-of-date busy hook, a login item
 waiting for approval) appears below the cards, right above the gear, and the
 gear carries a warning badge until it is fixed. A problem never hides in
-Settings alone.
+Settings alone. A newer NapCat release is not a problem: it gets one quiet
+line, **Update available — vX.Y.Z**, right above the footer, and never a
+badge.
 
 **Settings** opens from the gear, or with ⌘, while the menu is open or NapCat
 is active. It reopens on the pane you used last:
 
 | Pane | What lives there |
 |---|---|
-| **General** | Launch at Login · the charge limit (its switch, the 50–100% slider and its status) · whether Lock Screen is available on this macOS |
+| **General** | Launch at Login · the charge limit (its switch, the 50–100% slider and its status) · whether Lock Screen is available on this macOS · Updates: **Check for Updates…** and **Check for updates automatically** |
 | **Alerts** | the ntfy server and topic (the topic itself is never shown), **ntfy settings…** and **Send test message** · how long a Claude run must last before a session alert · History: the last lid alert, session alert and phone alert · Phone alerts (beta) |
 | **Claude** | the Claude status, when the busy hook last ran and whether its installed copy is current, whether Claude is holding the Mac awake · **Pause detection** · the command that installs the busy hook |
 
 The Alerts and Claude panes are absent in the
 [debug battery simulator](#debug-battery-simulator) mode, like the Alerts card
-and the Claude status in the menu.
+and the Claude status in the menu; so is General's Updates group, and that
+mode never checks for updates.
 
 ## Requirements
 
@@ -286,6 +293,54 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
   the Mac awake, or pause/resume battery charging. None of them read data,
   write files, or accept variable arguments. If that tradeoff is not
   acceptable to you, don't run setup.sh — NapCat degrades gracefully.
+
+## Network use and privacy
+
+NapCat has no telemetry and no account. It makes exactly three kinds of
+network request, and the code that may make them lives in three files
+(a structure test fails if a fourth file ever does):
+
+- **ntfy** — only for the alerts you switched on (the lid alert, session
+  alerts, and the catch-up summary after a dropped connection) and the test
+  message you send: each is one HTTPS `POST` of one of NapCat's fixed
+  sentences to the server and topic you configured. See
+  [Notify me if the Mac sleeps mid-task](#notify-me-if-the-mac-sleeps-mid-task).
+- **iCloud** — only with **Phone alerts (beta)** on, in the signed release
+  build: one record in your own private iCloud database. See
+  [Phone alerts via iCloud](#phone-alerts-via-icloud-beta).
+- **The update check** — one unauthenticated HTTPS `GET` to `api.github.com`
+  for this repository's latest release.
+
+**The update check.** NapCat compares its own version with the latest
+release's tag. When a newer release exists, the menu shows one line,
+**Update available — vX.Y.Z**. **Check for Updates…** in **Settings ›
+General** checks right away and, when it finds a newer release, opens that
+release's page on GitHub in your browser. NapCat never downloads or installs
+anything itself.
+
+- **When.** Only when you click **Check for Updates…**, or — while **Check
+  for updates automatically** is on (the default) — when you open the menu or
+  Settings and the last check is at least 24 hours old. There is no timer. A
+  failed check also waits 24 hours, and shows only as "Couldn’t check" in
+  Settings, never in the menu.
+- **What it exposes.** The request exposes your IP address, the app name and
+  version in the User-Agent, and standard macOS HTTPS headers; nothing else is
+  sent. No token, no cookies, no account or device identifier.
+- **What it reads back.** Only the release's `tag_name`, and only if it is a
+  plain `vX.Y.Z` tag. The response is capped at 256 KiB, redirects are
+  refused, and the release page it opens is built from a fixed
+  `https://github.com/MuratAlkan06/NapCat/releases/tag/` prefix plus that tag,
+  never from a link in the response.
+- **Turn it off** with **Settings › General → Check for updates
+  automatically**, or
+
+  ```sh
+  defaults write com.muratalkan.napcat updateCheckAutoEnabled -bool NO
+  ```
+
+  The button still works when you want it. NapCat stores three values for
+  this: the switch, the time of the last check (`updateCheckLastAttempt`) and
+  the latest tag it saw (`updateCheckLatestTag`).
 
 ## Crash-failsafe design
 

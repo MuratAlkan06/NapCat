@@ -72,6 +72,23 @@ enum DefaultsKey {
     /// not show reads as the first pane (`SettingsPane.restored`). UI state
     /// only: nothing else reads it.
     static let settingsSelectedPane = "settingsSelectedPane"
+
+    // MARK: Issue #111 — the update check (the only keys it adds; the 24 h
+    // interval, the host and the cap are code constants)
+
+    /// Whether opening the menu or the Settings window may check for a new
+    /// release at most once a day (Bool). Unset reads as ON; a non-Bool value
+    /// reads as OFF (`UpdateCadence.autoEnabled`). The "Check for Updates…"
+    /// button works either way.
+    static let updateCheckAutoEnabled = "updateCheckAutoEnabled"
+    /// Epoch seconds when the last check STARTED (Double) — written for
+    /// failed checks too, so the 24 h cadence holds offline as well.
+    static let updateCheckLastAttempt = "updateCheckLastAttempt"
+    /// The latest release's tag (String, `vX.Y.Z`) from the last successful
+    /// check, as its validated numbers render it. Re-validated against the
+    /// running version at every read: once the app is upgraded to it (or
+    /// past), it no longer counts as an update.
+    static let updateCheckLatestTag = "updateCheckLatestTag"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

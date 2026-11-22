@@ -79,6 +79,14 @@ enum SettingsRow: Equatable, Sendable {
     /// Where the busy hook comes from: the full installer command, the words
     /// around it, and the note for disk-image installs.
     case hookInstall(intro: String, command: String, note: String)
+    /// Issue #111: "Check for Updates…" (disabled while a check is out) and
+    /// the passive caption beside it. A plain string, like `.note`: the
+    /// update state is never a problem, so it carries no severity — no gear
+    /// badge, no panel twin.
+    case updateCheck(checking: Bool, caption: String)
+    /// The automatic-check checkbox and its disclosure of what the request
+    /// exposes.
+    case updateAuto(isOn: Bool, disclosure: String)
 }
 
 /// One titled group of rows.
@@ -110,7 +118,7 @@ extension MenuStateModel {
     /// `now` dates the History lines' relative times.
     func settingsContent(for pane: SettingsPane, now: Double) -> SettingsPaneContent {
         switch pane {
-        case .general: return generalPane
+        case .general: return generalPane(now: now)
         case .alerts: return alertsPane(now: now)
         case .claude: return claudePane
         }
@@ -118,22 +126,33 @@ extension MenuStateModel {
 
     // MARK: General
 
-    var generalPane: SettingsPaneContent {
+    /// `now` dates the Updates caption's "checked 2h ago".
+    func generalPane(now: Double) -> SettingsPaneContent {
         Self.generalPane(loginStatus: loginItemStatus, featureState: featureState, limit: limit,
-                         limitEnabled: limitEnabled, lockAvailable: lockScreenAvailable)
+                         limitEnabled: limitEnabled, lockAvailable: lockScreenAvailable,
+                         updates: updateCheckVisible ? (
+                             autoEnabled: updateCheckAutoEnabled, checking: updateCheckInFlight,
+                             caption: Self.updateCheckCaption(checking: updateCheckInFlight,
+                                                              lastResult: updateCheckLastResult,
+                                                              newer: updateKnownNewer,
+                                                              lastAttempt: updateCheckLastAttempt, now: now)) : nil)
     }
 
     /// Startup (Launch at Login, relocated from Details › General), Charge
     /// Limit (hidden entirely without a battery — ADR §12 — with the same
     /// enable rules as the panel's controls and every feature caption; one
     /// note in place of the controls while the firmware gates charge
-    /// control — #84), and Lock Screen availability.
+    /// control — #84), Lock Screen availability, and (issue #111) Updates —
+    /// the check button with its caption, then the automatic-check checkbox
+    /// with its disclosure — while the update check exists (nil in
+    /// debugBattery mode).
     nonisolated static func generalPane(
         loginStatus: SMAppService.Status,
         featureState: ChargeLimitFeatureState,
         limit: Int,
         limitEnabled: Bool,
-        lockAvailable: Bool
+        lockAvailable: Bool,
+        updates: (autoEnabled: Bool, checking: Bool, caption: String)? = nil
     ) -> SettingsPaneContent {
         let login = launchAtLoginPresentation(for: loginStatus)
         var sections = [SettingsSection(title: "Startup", rows: [
@@ -154,6 +173,12 @@ extension MenuStateModel {
             ]))
         }
         sections.append(SettingsSection(title: "Lock Screen", rows: [.line(lockScreenStatus(available: lockAvailable))]))
+        if let updates {
+            sections.append(SettingsSection(title: "Updates", rows: [
+                .updateCheck(checking: updates.checking, caption: updates.caption),
+                .updateAuto(isOn: updates.autoEnabled, disclosure: updateCheckDisclosure),
+            ]))
+        }
         return SettingsPaneContent(sections: sections, footnote: nil)
     }
 

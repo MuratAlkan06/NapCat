@@ -189,6 +189,30 @@ struct SettingsRowView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        case let .updateCheck(checking, caption):
+            // Issue #111: the caption is passive text; the button is the
+            // window's bezel button, disabled while a check is out.
+            HStack(spacing: PanelMetrics.regular) {
+                Text(caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Check for Updates…") { model.checkForUpdates() }
+                    .buttonStyle(SettingsPressButtonStyle(look: .bezel))
+                    .disabled(checking)
+            }
+        case let .updateAuto(isOn, disclosure):
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Toggle("Check for updates automatically", isOn: Binding(
+                    get: { isOn },
+                    set: { model.setUpdateCheckAutoEnabled($0) }
+                ))
+                .toggleStyle(.checkbox)
+                Text(disclosure)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case let .hookInstall(intro, command, note):
             VStack(alignment: .leading, spacing: PanelMetrics.tight) {
                 Text(intro)

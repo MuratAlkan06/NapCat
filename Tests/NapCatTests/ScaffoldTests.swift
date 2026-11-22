@@ -475,10 +475,15 @@ struct ScaffoldTests {
         }
     }
 
-    /// Menu-open must stay off the network: the panel renders stored config and
-    /// the last recorded outcome, never a live probe. (Before B4 this slot held
-    /// the silent Automation-permission probe; the ntfy channel has nothing to
-    /// probe, and a menu-open request would be a per-open network call.)
+    /// Menu-open sends nothing and probes nothing: the panel renders stored
+    /// config and the last recorded outcome, never a live probe. (Before B4
+    /// this slot held the silent Automation-permission probe; the ntfy channel
+    /// has nothing to probe, and a menu-open request would be a per-open
+    /// network call.) Issue #111 AMENDMENT (deliberate): the ONE request menu
+    /// open may start is the opportunistic update check, and only through its
+    /// cadence gate — `updateCheck?.checkIfDue()`, at most once a day, opt-out
+    /// (UpdateCheckStructureTests locks the call sites). Never the manual
+    /// check, never the client itself.
     @Test func menuOpenPerformsNoNetworkIO() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -487,8 +492,10 @@ struct ScaffoldTests {
             .appendingPathComponent("Sources/NapCat/MenuContentView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let body = try #require(Self.functionChunk(named: "menuWillOpen", in: source))
+        #expect(body.contains("updateCheck?.checkIfDue()"), "the update check runs only through its cadence gate")
         for token in ["sendTestMessage", "URLSession", "dataTask",
-                      "probeAutomationPermission", "refreshAutomationPermission"] {
+                      "probeAutomationPermission", "refreshAutomationPermission",
+                      "checkNow", "fetchLatest", "GitHubReleaseChecker"] {
             #expect(!body.contains(token), "'\(token)' in menuWillOpen — opening the menu must not send anything")
         }
     }

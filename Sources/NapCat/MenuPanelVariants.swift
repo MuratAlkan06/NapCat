@@ -10,7 +10,9 @@ import SwiftUI
 // `SurfacedLaunchAtLogin`) OUTSIDE the cards, so that a non-nominal Settings
 // line always has a top-level home, and must END with `PanelFooterRow` (the
 // Settings gear, the Claude status caption, then Quit), also outside the
-// cards (lint-locked in MenuPanelStructureTests).
+// cards (lint-locked in MenuPanelStructureTests). Issue #111 adds ONE info
+// line between them, `UpdateAvailableLine` — not a surfaced twin (an update
+// is never a problem), so it sits after the problems, right above the footer.
 
 // MARK: - Grouped Cards
 
@@ -108,6 +110,8 @@ struct GroupedCardsPanel: View {
             }
             GeneralSurfacedLines(model: model)
             SurfacedLaunchAtLogin(model: model)
+            // Issue #111: info only, while a newer release is known.
+            UpdateAvailableLine(model: model)
             PanelFooterRow(model: model)
         }
         .padding(.horizontal, 14)

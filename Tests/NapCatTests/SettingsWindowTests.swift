@@ -282,14 +282,14 @@ struct SettingsWindowTests {
     @Test @MainActor func theModelComposesTheGeneralPaneFromItsMirrors() {
         withModel { model, _ in
             #expect(model.settingsPanes == [.general], "no lid guard (debugBattery wiring): General only")
-            #expect(model.settingsContent(for: .general, now: 0) == model.generalPane)
-            #expect(model.generalPane == MenuStateModel.generalPane(
+            #expect(model.settingsContent(for: .general, now: 0) == model.generalPane(now: 0))
+            #expect(model.generalPane(now: 0) == MenuStateModel.generalPane(
                 loginStatus: model.loginItemStatus, featureState: model.featureState, limit: model.limit,
                 limitEnabled: model.limitEnabled, lockAvailable: model.lockScreenAvailable))
             model.setLimitEnabled(true)
             model.setLimit(75)
             model.refresh()
-            let rows = model.generalPane.sections.flatMap(\.rows)
+            let rows = model.generalPane(now: 0).sections.flatMap(\.rows)
             #expect(rows.contains { row in
                 if case let .chargeLimit(header, isOn, _, limit, sliderEnabled, _) = row {
                     return header == "Pause charging at 75%" && isOn && limit == 75 && sliderEnabled
@@ -297,6 +297,101 @@ struct SettingsWindowTests {
                 return false
             }, "\(rows)")
         }
+    }
+
+    // MARK: - Composition: General › Updates (issue #111)
+
+    static let updateDisclosure = "Contacts api.github.com about once a day, when you open the menu or Settings. "
+        + "The request exposes your IP address, the app name and version in the User-Agent, and standard macOS "
+        + "HTTPS headers; nothing else is sent. Nothing is downloaded or installed."
+
+    static func updates(_ isOn: Bool, checking: Bool = false, _ caption: String) -> SettingsSection {
+        SettingsSection(title: "Updates", rows: [
+            .updateCheck(checking: checking, caption: caption),
+            .updateAuto(isOn: isOn, disclosure: updateDisclosure),
+        ])
+    }
+
+    /// The passive caption, every state: C2 fragments, state word first.
+    @Test(arguments: [
+        ("checking wins", true, UpdateCheckResult.failed as UpdateCheckResult?, "v1.7.0" as String?, 0.0 as Double?,
+         "Checking…"),
+        ("a failed check, a newer one known", false, .failed, "v1.7.0", 0, "Couldn’t check — try again later"),
+        ("a failed check", false, .failed, nil, 0, "Couldn’t check — try again later"),
+        ("available this session", false, .available, "v1.7.0", 0,
+         "Update available — v1.7.0; Check for Updates… opens its release page"),
+        ("known from an earlier session", false, nil, "v2.0.1", 0,
+         "Update available — v2.0.1; Check for Updates… opens its release page"),
+        ("up to date, two hours ago", false, .upToDate, nil, 1_000_000 - 7_200, "Up to date — checked 2h ago"),
+        ("up to date, just now", false, .upToDate, nil, 1_000_000 - 5, "Up to date — checked just now"),
+        ("an earlier session's attempt", false, nil, nil, 1_000_000 - 3 * 86_400, "Checked 3d ago"),
+        ("never", false, nil, nil, nil, "Not checked yet"),
+    ] as [(String, Bool, UpdateCheckResult?, String?, Double?, String)])
+    func theUpdateCaption(name: String, checking: Bool, result: UpdateCheckResult?, newer: String?,
+                          lastAttempt: Double?, caption: String) {
+        #expect(MenuStateModel.updateCheckCaption(checking: checking, lastResult: result,
+                                                  newer: newer.flatMap(ReleaseVersion.init(tag:)),
+                                                  lastAttempt: lastAttempt, now: 1_000_000) == caption, "\(name)")
+    }
+
+    /// The disclosure names the host and everything the request exposes —
+    /// and the README's privacy note says the same, word for word.
+    @Test func theUpdateDisclosureIsPlainAboutTheRequest() throws {
+        #expect(MenuStateModel.updateCheckDisclosure == Self.updateDisclosure)
+        let readme = try String(contentsOf: LidGuardStructureTests.repoRoot().appendingPathComponent("README.md"),
+                                encoding: .utf8)
+        let flat = readme.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let exposes = "The request exposes your IP address, the app name and version in the User-Agent, "
+            + "and standard macOS HTTPS headers; nothing else is sent."
+        #expect(MenuStateModel.updateCheckDisclosure.contains(exposes))
+        #expect(flat.contains(exposes), "the README's privacy note must say exactly what Settings says")
+        #expect(flat.contains("defaults write com.muratalkan.napcat updateCheckAutoEnabled -bool NO"))
+        #expect(flat.contains("## Network use and privacy"))
+    }
+
+    /// Updates is General's last group, and only while the check exists.
+    @Test func theUpdatesGroupClosesTheGeneralPane() {
+        let base = MenuStateModel.generalPane(loginStatus: .enabled, featureState: .active, limit: 90,
+                                              limitEnabled: true, lockAvailable: true)
+        let with = MenuStateModel.generalPane(loginStatus: .enabled, featureState: .active, limit: 90,
+                                              limitEnabled: true, lockAvailable: true,
+                                              updates: (autoEnabled: true, checking: false, caption: "Not checked yet"))
+        #expect(with == SettingsPaneContent(sections: base.sections + [Self.updates(true, "Not checked yet")],
+                                            footnote: nil))
+        #expect(!base.sections.contains { $0.title == "Updates" }, "no update check (debugBattery mode): no group")
+        let off = MenuStateModel.generalPane(loginStatus: .enabled, featureState: .hidden, limit: 90,
+                                             limitEnabled: true, lockAvailable: false,
+                                             updates: (autoEnabled: false, checking: true, caption: "Checking…"))
+        #expect(off.sections.last == Self.updates(false, checking: true, "Checking…"))
+    }
+
+    /// Through the model: the group follows the controller — checking, then
+    /// the answer — and both controls reach it.
+    @Test @MainActor func theModelComposesTheUpdatesGroupFromItsController() async throws {
+        let suite = "com.muratalkan.napcat.tests.settings.update.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let checker = ScriptedReleaseChecker()
+        let running = try #require(ReleaseVersion(bundleVersion: "1.6.0"))
+        let update = UpdateCheckController(running: running, defaults: defaults, checker: checker,
+                                           now: { 1_000_000 }, openReleasePage: { _ in })
+        let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+        let model = MenuStateModel(power: power, sleep: SleepStateController(),
+                                   limiter: ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults),
+                                   screenLock: ScreenLockController(), updateCheck: update)
+        update.setChangeHandler { model.refresh() }
+        #expect(model.settingsPanes == [.general], "Updates is a group of General, not a pane")
+        #expect(model.settingsContent(for: .general, now: 1_000_000).sections.last == Self.updates(true, "Not checked yet"))
+
+        model.checkForUpdates()
+        #expect(model.generalPane(now: 1_000_000).sections.last == Self.updates(true, checking: true, "Checking…"))
+        checker.answer(.latest(try #require(ReleaseVersion(tag: "v1.6.0"))))
+        await drainMain()
+        #expect(model.generalPane(now: 1_000_000 + 120).sections.last == Self.updates(true, "Up to date — checked 2m ago"))
+
+        model.setUpdateCheckAutoEnabled(false)
+        #expect(model.generalPane(now: 1_000_000).sections.last?.rows.last
+                == .updateAuto(isOn: false, disclosure: Self.updateDisclosure))
     }
 
     // MARK: - Composition: the Alerts pane
@@ -785,7 +880,9 @@ struct SettingsWindowTests {
 
     /// The owner's refresh mirrors the menu-open reconciliation's READ steps,
     /// in the same order, and leaves out the panel-only ones — the healing
-    /// flush (a send attempt), the turn-on reset and the panel re-fit.
+    /// flush (a send attempt), the turn-on reset and the panel re-fit. Issue
+    /// #111: both also run the opportunistic update check through its cadence
+    /// gate (at most once a day, opt-out) — never the manual check.
     @Test func theSettingsRefreshMirrorsTheMenuOpenReads() throws {
         let owner = try Self.code("MenuContentView.swift")
         #expect(owner.contains("settingsWindow.onBecameKey = { [weak self] in self?.settingsWindowBecameKey() }"))
@@ -798,14 +895,15 @@ struct SettingsWindowTests {
         let settings = try body(of: "settingsWindowBecameKey")
         let reads = ["sleep.refreshObservedState()", "power.reprobeChargeControlIfNeeded()", "limiter.evaluate(reason: ",
                      "loginItem.refresh()", "detection?.sample()", "lidGuard?.refreshArming()",
-                     "finishAlert?.reconcile()", "model.refresh()"]
+                     "finishAlert?.reconcile()", "updateCheck?.checkIfDue()", "model.refresh()"]
         for (name, text) in [("menuWillOpen", menuOpen), ("settingsWindowBecameKey", settings)] {
             let positions = try reads.map { read in
                 try #require(text.range(of: read), "'\(read)' missing from \(name)").lowerBound
             }
             #expect(positions == positions.sorted(), "\(name) reads in a different order")
         }
-        for panelOnly in ["menuOpened", "panelOpened", "refitToContent", "sendTestMessage", ".send("] {
+        for panelOnly in ["menuOpened", "panelOpened", "refitToContent", "sendTestMessage", ".send(", "checkNow",
+                          "fetchLatest"] {
             #expect(!settings.contains(panelOnly), "'\(panelOnly)' — focusing the window must stay a pure read")
         }
     }
@@ -1087,6 +1185,41 @@ struct SettingsWindowTests {
         }
     }
 
+    /// Issue #111: the update state is NOMINAL under the iron rule. A known
+    /// newer release shows the panel's one INFO line and nothing else; a
+    /// failed check shows nothing at all — and neither ever raises the gear
+    /// badge (which still agrees with its oracle).
+    @Test @MainActor func theUpdateStateNeverRaisesTheGearBadge() async throws {
+        for (stored, answer, line) in [
+            ("v1.7.0" as String?, ReleaseCheckOutcome.failed(.transport),
+             PanelLine(text: "Update available — v1.7.0", severity: .info) as PanelLine?),
+            (nil, .failed(.httpStatus(403)), nil),
+            (nil, .latest(ReleaseVersion(tag: "v2.0.0")!), PanelLine(text: "Update available — v2.0.0", severity: .info)),
+            (nil, .latest(ReleaseVersion(tag: "v1.6.0")!), nil),
+        ] {
+            let suite = "com.muratalkan.napcat.tests.settings.updatebadge.\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            if let stored { defaults.set(stored, forKey: DefaultsKey.updateCheckLatestTag) }
+            let checker = ScriptedReleaseChecker()
+            let update = UpdateCheckController(running: try #require(ReleaseVersion(bundleVersion: "1.6.0")),
+                                               defaults: defaults, checker: checker, now: { 1_000_000 },
+                                               openReleasePage: { _ in })
+            let power = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let model = MenuStateModel(power: power, sleep: SleepStateController(),
+                                       limiter: ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults),
+                                       screenLock: ScreenLockController(), updateCheck: update)
+            update.checkNow()
+            checker.answer(answer)
+            await drainMain()
+            model.refresh()
+            #expect(model.updateCheckLastResult != nil, "vacuity: the check finished")
+            #expect(model.updateAvailableLine == line, "\(answer)")
+            #expect(model.settingsBadge == .nominal, "\(answer): the update state never raises the badge")
+            #expect(model.settingsBadge == Self.badgeOracle(model, now: 1_000_000))
+        }
+    }
+
     /// The session lane's own problems raise the gear badge, the lid half
     /// healthy: a refused session alert (an error — the status line and the
     /// History line both raise it), and an UNCONFIRMED one (a warning), whose
@@ -1203,9 +1336,13 @@ struct SettingsWindowTests {
                               + " SendFeedbackButton(model: model, controlSize: .regular) }"
                               + " .buttonStyle(SettingsPressButtonStyle(look: .bezel))"),
                 "the bordered pair — the test send included — presses on the bezel")
-        #expect(Self.occurrences(of: "Button(\"", in: views) == 2 && Self.occurrences(of: "SendFeedbackButton(", in: views) == 1
-                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these three")
-        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 2, "every button under the one style")
+        // Issue #111: "Check for Updates…" is the fourth, on the bezel too.
+        #expect(flat.contains("Button(\"Check for Updates…\") { model.checkForUpdates() }"
+                              + " .buttonStyle(SettingsPressButtonStyle(look: .bezel)) .disabled(checking)"),
+                "the update check presses on the bezel and rests while a check is out")
+        #expect(Self.occurrences(of: "Button(\"", in: views) == 3 && Self.occurrences(of: "SendFeedbackButton(", in: views) == 1
+                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these four")
+        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 3, "every button under the one style")
         for token in [".buttonStyle(.", "PanelPressFadeButtonStyle", "BorderedButtonStyle", "LinkButtonStyle",
                       "PlainButtonStyle", "onLongPressGesture", "DragGesture", ".gesture(", "NSTrackingArea"] {
             #expect(!views.contains(token), "'\(token)' — the press comes from configuration.isPressed alone")
@@ -1293,7 +1430,9 @@ struct SettingsWindowTests {
                         "Button(\"ntfy settings…\") { model.editLidGuardSettings() }",
                         "SendFeedbackButton(model: model, controlSize: .regular)",
                         "set: { model.setFinishAlertMinimumRunSeconds($0) }",
-                        "set: { model.setPhoneTransportEnabled($0) }", "set: { model.setDetectionPaused($0) }"] {
+                        "set: { model.setPhoneTransportEnabled($0) }", "set: { model.setDetectionPaused($0) }",
+                        "Button(\"Check for Updates…\") { model.checkForUpdates() }",
+                        "set: { model.setUpdateCheckAutoEnabled($0) }"] {
             #expect(Self.occurrences(of: forward, in: views) == 1, "'\(forward)' — exactly one Settings control")
         }
         for token in ["cancelTracking", "request", "lidGuard?.", "finishAlert?.", "detection?.", "UserDefaults",
