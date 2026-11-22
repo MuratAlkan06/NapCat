@@ -267,7 +267,7 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
   SHA-256 hashes ([PROVENANCE.md](third_party/smc/PROVENANCE.md)), so you
   can audit exactly what you are compiling — but the model is "the user
   builds and installs the helper", not "a signed binary from a trusted
-  distributor". If you don't want to extend that trust, read the ~1200
+  distributor". If you don't want to extend that trust, read the ~800
   lines of `smc.c` first, or skip setup entirely.
 - **Honest tradeoffs.** Anything running *as your user* can invoke the same
   eight commands once setup is installed — that is inherent to NOPASSWD
@@ -862,12 +862,13 @@ in [Security model](#security-model) above.
 
 - **NapCat itself** is licensed under the **MIT License** — see
   [LICENSE](LICENSE).
-- **`third_party/smc/`** (unchanged, not covered by NapCat's MIT license):
+- **`third_party/smc/`** (not covered by NapCat's MIT license):
   the SMC command-line tool is vendored from
   [hholtmann/smcFanControl](https://github.com/hholtmann/smcFanControl)
   (`smc-command/`, pinned at commit
-  `e1bd672bcd2d72eddff9b6da7b9cae38e35c4206`, unmodified) and is licensed
-  under **GPL-2.0** — see [third_party/smc/LICENSE](third_party/smc/LICENSE)
+  `e1bd672bcd2d72eddff9b6da7b9cae38e35c4206`; `smc.c` carries local
+  hardening changes, listed at the top of the file and in PROVENANCE.md)
+  and is licensed under **GPL-2.0** — see [third_party/smc/LICENSE](third_party/smc/LICENSE)
   and [third_party/smc/PROVENANCE.md](third_party/smc/PROVENANCE.md). The
   `smc` binary is built and installed as a separate standalone program
   invoked via `sudo`; it is not linked into NapCat.

@@ -18,6 +18,22 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
+/*
+ * Modified for NapCat on 2026-11-22 (NapCat issue #102). This file differs
+ * from upstream hholtmann/smcFanControl smc-command/smc.c at commit
+ * e1bd672bcd2d72eddff9b6da7b9cae38e35c4206 as follows:
+ * - The -w value is parsed by parseHexValue(): an even count of 2 to 64 hex
+ *   digits. The old loop ran past the value and past SMCVal_t.bytes[].
+ *   SMCWriteSimple() uses the same parser.
+ * - SMCReadKey2(), SMCWriteSimple() and main() copy the key with
+ *   snprintf("%s") instead of using it as a format string.
+ * - main() and SMCWriteSimple() zero val before use.
+ * - main() accepts only "-k <key> -r" and "-k <key> -w <value>", with a key
+ *   of exactly four printable ASCII characters. -l, -f, -t, -v and -h are
+ *   gone from the command line.
+ * third_party/smc/PROVENANCE.md lists the same changes.
+ */
+
 #include <ctype.h>
 #include <unistd.h>
 #include <stdio.h>
