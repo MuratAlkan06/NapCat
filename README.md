@@ -19,6 +19,13 @@ bars: the grooming cat is a hand-drawn 17-frame cycle (it licks its paw,
 settles into a sit, then raises the paw again); the running and sitting cats
 are 18×18 pixel art.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/menu-panel-dark.png">
+    <img src="docs/menu-panel-light.png" width="300" alt="The NapCat menu panel: Battery 80%, on AC power, not charging. Stay Awake is off. Charge Limit is on at 80%. Lid alert and Session alerts are on. Claude is idle.">
+  </picture>
+</p>
+
 ## Features
 
 - **Stay awake with the lid closed**, on demand, from the menu bar. Verified
@@ -49,14 +56,18 @@ are 18×18 pixel art.
 - **Launch at Login** via `SMAppService` — one checkbox in Settings, one entry
   in System Settings › General › Login Items.
 - **Claude Code awareness** (optional, opt-in): the menu shows whether a Claude
-  turn is running, and NapCat can push a notification to your phone (via ntfy)
-  if the Mac starts sleeping while one still is — see
+  turn is running, and NapCat can push a notification to your phone (via ntfy,
+  or through iCloud in beta) if the Mac starts sleeping while one still is — see
   [Claude busy detection](#claude-busy-detection-track-b--optional-read-only).
-- **Session alerts (ntfy)** — a push when a Claude Code session finishes (main
+- **Session alerts** — a push when a Claude Code session finishes (main
   turn plus any background subagents) or stops to wait for your input; same
   topic as the lid alert. If the connection drops, they are held and delivered
   once it returns — see
   [Session alerts](#session-alerts--finish-and-waiting-pushes).
+- **Phone alerts via iCloud (beta)** — both alerts can go to the NapCat Alerts
+  iPhone app through your own iCloud, with no topic to guard on that path;
+  ntfy stays the fallback. Off by default — see
+  [Phone alerts via iCloud](#phone-alerts-via-icloud-beta).
 - **Debug battery simulator** so the whole charge-limit state machine can be
   driven without hardware (and provably without privileged calls).
 - No Dock icon. The one window is Settings. Quit from the menu (⌘Q while it
@@ -518,7 +529,10 @@ The classic mistake this guards: you turn **Stay Awake** off, close the lid a
 minute later, and only discover hours afterwards that the long Claude run died
 with the machine. When it is armed, NapCat notices the sleep starting, checks
 that a Claude turn is actually in flight, and pushes one notification to your
-phone via [ntfy](https://ntfy.sh) before the Mac goes down.
+phone via [ntfy](https://ntfy.sh) before the Mac goes down. With **Phone
+alerts (beta)** on, it goes through iCloud first and ntfy is the fallback (see
+[Phone alerts via iCloud](#phone-alerts-via-icloud-beta)); the ntfy setup below
+is still what arms it.
 
 It is **notify-only**: it never controls Claude, never changes sleep or charging
 state, never arms itself, and never sends anything but its own fixed sentence.
@@ -612,7 +626,8 @@ server named — so a redirected publish is reported as a failure.
 
 ### Session alerts — finish and waiting pushes
 
-Two more pushes ride the same ntfy feed, behind one **Session alerts** toggle
+Two more pushes ride the same ntfy feed (or iCloud first, with
+[Phone alerts](#phone-alerts-via-icloud-beta) on), behind one **Session alerts** toggle
 (right under **Lid alert** in the menu). **Finished:** the busy hook keeps a
 session's marker until the main turn *and* every background subagent it started
 have ended, so the marker going away *is* the finish — NapCat pushes then.
@@ -679,6 +694,47 @@ silences both pushes, and the row says so.
   after its folder is deleted — the row says to install the Claude busy hook first.
   After the folder is created or recreated, the feature re-arms on the next
   menu open.
+
+### Phone alerts via iCloud (beta)
+
+The lid alert and session alerts can also reach your iPhone through iCloud.
+NapCat saves each alert as one small record in your own private iCloud
+database (CloudKit), and the companion iPhone app shows it as a notification.
+The record carries the same fixed sentence an ntfy message would, and nothing
+else: no topic, no server address, nothing from your Claude session. No server
+besides Apple's iCloud is involved, so on this path there is no topic to guard.
+
+It is a **beta** and it is **off by default**:
+
+- **The iPhone app, NapCat Alerts** (NapCat on the Home Screen), is a
+  TestFlight beta, version 0.1.0 (build 1), for iOS 18 or later. It is not on
+  the App Store. Your iPhone and your Mac must be signed in to the same Apple
+  Account.
+- **Switch it on** in **Settings › Alerts → Phone alerts (beta)**. NapCat then
+  tries iCloud first and **ntfy becomes the fallback**: an alert that provably
+  never reached iCloud (no connection, iCloud unreachable or refusing it, this
+  Mac not signed in to iCloud) goes out over ntfy instead. If iCloud may have
+  saved it (its answer never came back), it is not sent again over ntfy, so you
+  never get the same alert twice; you may occasionally miss one instead.
+  **Send test message** takes the same path, so the test should arrive in the
+  iPhone app.
+- **Your ntfy setup stays as it is.** The alerts still arm through it: a topic
+  and an accepted test message (see the setup steps above). Existing topics
+  keep working unchanged, and with Phone alerts off NapCat sends through ntfy
+  exactly as before.
+- **iCloud delivery needs the signed and notarized release build** (the
+  v1.6.0 disk image or later). A build you make yourself with `make` is ad-hoc
+  signed and cannot use iCloud. NapCat checks this at runtime and keeps sending
+  through ntfy; with Phone alerts on, the menu and **Settings › Alerts** say
+  "Phone alerts: unavailable in this build — it is not signed for iCloud, so
+  alerts go to ntfy".
+- **Install the iPhone app before you switch it on.** An alert that iCloud
+  accepts is not also sent over ntfy, so it reaches the iPhone app only.
+- **"Accepted by iCloud" is as far as NapCat can see**, like "accepted by
+  ntfy": the push to the phone happens after that. **Settings › Alerts** shows
+  the last phone alert under History; a failed or unconfirmed one also shows
+  in the menu, below the cards.
+- **The records stay in your iCloud database.** This beta never deletes them.
 
 ### Honest limitations
 
@@ -776,10 +832,14 @@ Notes:
   Gatekeeper warnings) plus the stabilized ntfy settings dialog,
   `v1.5.1` the "Night Groom" app icon and the hand-drawn 17-frame idle
   grooming animation in the menu bar, plus VoiceOver and first-run
-  polish, and `v1.5.2` thicker, readable detail lines on the idle cat,
+  polish, `v1.5.2` thicker, readable detail lines on the idle cat,
   the honest charge-limit unavailable state on systems whose firmware
   gates the control keys, and privileged-helper error output treated as
-  failure). Each
+  failure, and `v1.6.0` the grouped-cards menu panel with a Settings
+  window, quiet press feedback on the panel and Settings buttons, the
+  Charge Limit row hidden on Macs whose firmware gates it, and phone
+  alerts through iCloud (beta) to the NapCat Alerts iPhone app, a
+  TestFlight beta at 0.1.0 (1), with ntfy as the fallback). Each
   annotated tag carries its release notes (`git tag -n99`); the detailed
   build plan and verification matrix are maintained privately.
 - **v1.4.4 ships busy hook version 6 — refresh it.** On newer macOS (seen on

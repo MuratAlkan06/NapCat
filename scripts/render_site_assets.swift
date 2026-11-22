@@ -12,7 +12,7 @@
 //                            idle0@2x…idle16@2x) side by side, recoloured
 //                            white for a dark menu bar: the sprite sheet the
 //                            page steps through with CSS. Gray + alpha.
-//   menu-panel-light.png     600×640 the menu panel at 2x on the light and
+//   menu-panel-light.png     600×634 the menu panel at 2x on the light and
 //   menu-panel-dark.png              dark menu background (PANEL below). RGB.
 //   og-image.png             1200×630 social card: the menu bar with the cat,
 //                            the dark panel hanging from it, and the app icon.
@@ -30,19 +30,25 @@
 // back with ImageIO and must reproduce the exact source pixels.
 //
 // PANEL: docs/menu-panel-*.png are captures of the real menu panel
-// (MenuPanelView, 300 pt wide, Details collapsed), rendered OFFSCREEN at 2x —
+// (MenuPanelView — the grouped cards — 300 pt wide), rendered OFFSCREEN at 2x —
 // an NSHostingView in a borderless window that is never ordered front, drawn
 // with CALayer.render(in:) into an sRGB bitmap, once with the aqua and once
 // with the darkAqua appearance. They are never screenshots of a running app.
 // The state is SIMULATED end to end and reads nothing from the machine:
-// DebugPowerSimulator at 80 % on AC power; the charge limit on at 80 % (so
-// charging is paused at the limit); Stay Awake off (a simulated `pmset -g`
-// read); the unit tests' hermetic Claude detection stubs (hook installed and
-// current, no task running); the lid alert and session alerts on, with a
-// placeholder topic in a throwaway defaults suite (the collapsed panel never
-// shows a topic). The default blue accent is used, and the window reports
-// itself key and active in-process so the controls draw in the active style
-// of an open menu. A capture must be 600 px wide, 8-bit RGBA, sRGB, with a
+// DebugPowerSimulator at 80 % on AC power with charge control ready (not a
+// firmware-gated Mac, so the Charge Limit row shows); the charge limit on at
+// 80 % (so charging is paused at the limit); Stay Awake off (a simulated
+// `pmset -g` read); the unit tests' hermetic Claude detection stubs (hook
+// installed and current, no task running); the lid alert and session alerts
+// on, with a placeholder topic in a throwaway defaults suite (the panel never
+// shows a topic), behind the composite sender over recording fakes with
+// phone alerts on in an entitled build (nothing is sent, and a nominal phone
+// line does not render in the panel). The default blue accent is used, and
+// the window reports itself key and active in-process so the controls draw
+// in the active style of an open menu. The capture harness is a throwaway
+// Swift Testing test run in a scratch copy of the package — that copy makes
+// SleepStateController.applyObservedRead internal for the simulated read —
+// and is not committed. A capture must be 600 px wide, 8-bit RGBA, sRGB, with a
 // transparent background; this script flattens it onto the menu background
 // below, pads it like the menu's own content inset, and re-encodes it, which
 // drops every metadata chunk of the capture.
