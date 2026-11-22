@@ -168,7 +168,12 @@ once the device run measures it.
   `project.yml` too. Commit it with the project, and never edit it by hand.
   The app's Info.plist is generated from build settings (the
   `INFOPLIST_KEY_…` entries in `project.yml`). There is no Info.plist in the
-  source tree.
+  source tree. It declares `ITSAppUsesNonExemptEncryption` as NO, because
+  the app's only encryption is the system's HTTPS and CloudKit transport.
+- Versions: the app has its own version line, independent of the Mac app.
+  `MARKETING_VERSION` starts at 0.1.0, and `CURRENT_PROJECT_VERSION` (the
+  build number) goes up by 1 for every TestFlight upload. TestFlight builds
+  get no `vX.Y.Z` tag.
 - `NapCatPhone/` and `NapCatPhoneTests/` are synchronized folders. You can
   add or remove Swift files there without regenerating the project.
 - The repository root is a **local Swift package** dependency. The app links
