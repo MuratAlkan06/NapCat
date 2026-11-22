@@ -140,7 +140,9 @@ struct ChannelPolicyProbeTests {
         #expect(ChannelPolicyProbe.probe(directory: tier.path) == .unreadable, "a directory where the file belongs")
 
         let invalid = try Tier()
-        try invalid.write("managed-settings.json", Data([0x7B, 0xFF, 0x7D]))
+        // The invalid byte sits in a string: decoded leniently, the document
+        // would read as channels enabled.
+        try invalid.write("managed-settings.json", Data(#"{"channelsEnabled":true,"note":""#.utf8) + Data([0xFF]) + Data(#""}"#.utf8))
         #expect(ChannelPolicyProbe.probe(directory: invalid.path) == .unreadable, "invalid UTF-8")
 
         let large = try Tier()
