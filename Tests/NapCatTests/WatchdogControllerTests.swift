@@ -79,6 +79,76 @@ struct WatchdogControllerTests {
         )
     }
 
+    // MARK: - F-5 (issue #103): an explicit, pinned environment
+
+    private static var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)  // Tests/NapCatTests/<this file>
+            .deletingLastPathComponent() // Tests/NapCatTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // repo root
+    }
+
+    /// The watchdog gets exactly HOME and the pinned PATH — nothing inherited
+    /// from the app (no BASH_ENV, no exported functions, no user PATH entry).
+    @Test func theWatchdogGetsOnlyHomeAndThePinnedPath() {
+        #expect(WatchdogController.pinnedPath == "/usr/bin:/bin:/usr/sbin:/sbin")
+        #expect(WatchdogController.watchdogEnvironment(home: "/Users/someone")
+                == ["HOME": "/Users/someone", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+    }
+
+    /// Lint: the spawn sets that environment before it runs, with the real
+    /// home directory (the script's pidfile lives under it).
+    @Test func theSpawnSetsTheEnvironmentBeforeItRuns() throws {
+        let source = try String(contentsOf: Self.repoRoot.appendingPathComponent("Sources/NapCat/WatchdogController.swift"),
+                                encoding: .utf8)
+        let assignment = try #require(source.range(of: "watchdog.environment = Self.watchdogEnvironment(home: NSHomeDirectory())"),
+                                      "the watchdog's environment is no longer set explicitly")
+        let run = try #require(source.range(of: "try watchdog.run()"))
+        #expect(assignment.upperBound < run.lowerBound, "the environment must be set before the spawn")
+        #expect(source.components(separatedBy: ".environment =").count - 1 == 1)
+    }
+
+    /// Every violation of the script's PATH pin; empty == locked. `set -u`
+    /// first, then exactly the pin (byte-identical to the Swift constant),
+    /// and PATH assigned nowhere else.
+    static func scriptPathPinFailures(_ script: String) -> [String] {
+        let code = script.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        let pin = "PATH=\(WatchdogController.pinnedPath); export PATH"
+        var failures: [String] = []
+        if code.count < 2 || code[0] != "set -u" || code[1] != pin {
+            failures.append("the script must open with `set -u` then exactly '\(pin)': \(code.prefix(2))")
+        }
+        let assignments = code.filter { $0.range(of: #"(^|[;&|\s])(export\s+)?PATH="#, options: .regularExpression) != nil }
+        if assignments != [pin] {
+            failures.append("PATH must be assigned exactly once, by the pin: \(assignments)")
+        }
+        return failures
+    }
+
+    @Test func theWatchdogScriptPinsPathBeforeItsFirstCommand() throws {
+        let script = try String(contentsOf: Self.repoRoot.appendingPathComponent("Resources/napcat-watchdog.sh"), encoding: .utf8)
+        #expect(Self.scriptPathPinFailures(script).isEmpty, "\(Self.scriptPathPinFailures(script))")
+
+        let pin = "PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH"
+        let mutants: [(String, (String) -> String)] = [
+            ("pin dropped", { $0.replacingOccurrences(of: pin + "\n", with: "") }),
+            ("user dir prepended", { $0.replacingOccurrences(of: "PATH=/usr/bin:", with: "PATH=$HOME/bin:/usr/bin:") }),
+            ("inherited PATH appended", { $0.replacingOccurrences(of: "/sbin; export PATH", with: "/sbin:$PATH; export PATH") }),
+            ("pin moved after the first command", {
+                $0.replacingOccurrences(of: pin + "\n", with: "")
+                    .replacingOccurrences(of: "APP_PID=\"${1:-}\"\n", with: "APP_PID=\"${1:-}\"\n" + pin + "\n")
+            }),
+            ("PATH reassigned later", { $0.replacingOccurrences(of: "rm -f \"$PIDFILE\"", with: "PATH=/tmp\nrm -f \"$PIDFILE\"") }),
+        ]
+        for (name, transform) in mutants {
+            let mutant = transform(script)
+            #expect(mutant != script, "canary setup '\(name)': target text must exist")
+            #expect(!Self.scriptPathPinFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     /// Lint-style lock on the watchdog script's privileged surface
     /// (ADR §6b): every sudo invocation in Resources/napcat-watchdog.sh must
     /// byte-match one of the granted sudoers argv strings (PLAN.md §4, via

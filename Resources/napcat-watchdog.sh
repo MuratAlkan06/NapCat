@@ -13,6 +13,10 @@
 # before the revert would ever run.
 
 set -u
+# Pinned PATH (F-5): the app spawns this script with HOME and this same PATH
+# only, and the script pins it again itself, so a bare sleep/rm can never
+# resolve through a user-writable directory.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
 
 APP_PID="${1:-}"
 PIDFILE="$HOME/Library/Application Support/NapCat/watchdog.pid"
