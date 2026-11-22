@@ -1,18 +1,24 @@
-// NapCatWire — F4 remote approvals: the wire the channel server speaks with
-// Claude Code (slice S1). Design: design/remote-approvals.md.
+// NapCatWire — F4 remote approvals: the two wires the channel server speaks
+// (slice S1). Design: design/remote-approvals.md.
 //
-// PURE — no imports, no I/O, no clock. Every inbound line is read by the ONE
-// strict reader (ApprovalPreview.swift) and by nothing else: a line it
-// refuses has no effect, and there is no second parser. The prompt itself is
-// classified only by ApprovalGate (ApprovalClassification.swift), on NapCat's
-// side of the seam.
+// PURE — no imports, no I/O, no clock. Every inbound line on either wire is
+// read by the ONE strict reader (ApprovalPreview.swift) and by nothing else:
+// a line it refuses has no effect, and there is no second parser. The prompt
+// itself is classified only by ApprovalGate (ApprovalClassification.swift),
+// on NapCat's side of the seam.
 //
-// The wire is MCP JSON-RPC 2.0 over stdio, one message per line. The server
-// opts into the channel and permission-relay capabilities, answers
-// `initialize` and `ping`, refuses every other request, and reads exactly one
-// notification: the relay's permission request. The only message it ever
-// sends on its own is a verdict for a request it relayed. It never sends a
-// channel message into the session (replies are F4.1, out of the MVP).
+// Wire 1, Claude Code ↔ the server: MCP JSON-RPC 2.0 over stdio, one message
+// per line. The server opts into the channel and permission-relay
+// capabilities, answers `initialize` and `ping`, refuses every other request,
+// and reads exactly one notification: the relay's permission request. The
+// only message it ever sends on its own is a verdict for a request it
+// relayed. It never sends a channel message into the session (replies are
+// F4.1, out of the MVP).
+//
+// Wire 2, the server ↔ NapCat: the seam (NapCatSeam), one JSON object per
+// line over an authenticated Unix socket. The server sends `prompt` frames,
+// NapCat answers with `verdict` frames, and each side accepts only its own
+// inbound kind.
 
 /// The channel server's constants.
 public enum ApprovalChannel {
@@ -58,6 +64,28 @@ public enum ApprovalChannel {
     static let permissionRequestKeys = ["request_id", "tool_name", "description", "input_preview"]
     /// The longest string request ID echoed back.
     static let maxMessageIDBytes = 128
+
+    /// The seam's frame version: every frame carries it as `v`, and a frame
+    /// with any other value is refused.
+    public static let frameVersion = 1
+    /// The longest seam frame either side sends or reads.
+    public static let maxFrameBytes = 262_144
+    /// At most this many relayed requests wait for a verdict per server; a
+    /// prompt beyond them stays local.
+    public static let maxOpenRequests = 32
+    /// A prompt frame's members, exactly.
+    static let promptFrameKeys = ["frame", "v", "request", "tool", "preview"]
+    /// A verdict frame's members, exactly.
+    static let verdictFrameKeys = ["frame", "v", "request", "verdict"]
+}
+
+/// One seam frame. The server only ever reads `verdict` and NapCat only ever
+/// reads `prompt`; each side refuses the other kind.
+public enum SeamFrame: Equatable, Sendable {
+    /// Server → NapCat: a relayed permission prompt.
+    case prompt(ChannelPermissionRequest)
+    /// NapCat → server: the verdict for one relayed request.
+    case verdict(ChannelRequestID, ApprovalWire.Verdict)
 }
 
 /// A JSON-RPC request ID, echoed back exactly as it came: an integer (its
@@ -195,6 +223,39 @@ extension ApprovalChannel {
         return ApprovalPreview.parseObject(text)
     }
 
+    /// Reads one seam frame (without its newline): exactly the members of its
+    /// kind, the current frame version, a well-formed request ID and, for a
+    /// verdict, exactly `allow` or `deny`. Anything else is nil.
+    public static func frame(_ line: [UInt8]) -> SeamFrame? {
+        guard line.count <= maxFrameBytes, let members = object(line),
+              value("v", in: members) == .number(String(frameVersion)),
+              case .string(let kind)? = value("frame", in: members),
+              case .string(let rawRequestID)? = value("request", in: members),
+              let requestID = ChannelRequestID(rawRequestID) else {
+            return nil
+        }
+        switch kind {
+        case "prompt":
+            guard hasExactly(promptFrameKeys, members),
+                  case .string(let toolName)? = value("tool", in: members),
+                  case .string(let inputPreview)? = value("preview", in: members) else { return nil }
+            return .prompt(ChannelPermissionRequest(requestID: requestID, toolName: toolName, inputPreview: inputPreview))
+        case "verdict":
+            guard hasExactly(verdictFrameKeys, members),
+                  case .string(let rawVerdict)? = value("verdict", in: members),
+                  let verdict = ApprovalWire.Verdict(rawValue: rawVerdict) else { return nil }
+            return .verdict(requestID, verdict)
+        default:
+            return nil
+        }
+    }
+
+    /// Whether `members` are exactly `keys` (the reader already refused
+    /// duplicates).
+    static func hasExactly(_ keys: [String], _ members: [PreviewMember]) -> Bool {
+        members.count == keys.count && keys.allSatisfy { key in members.contains { $0.key == key } }
+    }
+
     static func value(_ key: String, in members: [PreviewMember]) -> PreviewValue? {
         members.first { $0.key == key }?.value
     }
@@ -235,6 +296,20 @@ extension ApprovalChannel {
     public static func verdictNotification(requestID: ChannelRequestID, verdict: ApprovalWire.Verdict) -> String {
         "{\"jsonrpc\":\"2.0\",\"method\":" + quoted(verdictMethod) + ",\"params\":{\"request_id\":" + quoted(requestID.text)
             + ",\"behavior\":" + quoted(verdict.rawValue) + "}}"
+    }
+
+    /// The prompt frame for one relayed request, or nil when it would be
+    /// longer than `maxFrameBytes` (the prompt then stays local).
+    public static func promptFrame(_ request: ChannelPermissionRequest) -> String? {
+        let line = "{\"frame\":\"prompt\",\"v\":" + String(frameVersion) + ",\"request\":" + quoted(request.requestID.text)
+            + ",\"tool\":" + quoted(request.toolName) + ",\"preview\":" + quoted(request.inputPreview) + "}"
+        return line.utf8.count <= maxFrameBytes ? line : nil
+    }
+
+    /// The verdict frame for one relayed request.
+    public static func verdictFrame(_ requestID: ChannelRequestID, _ verdict: ApprovalWire.Verdict) -> String {
+        "{\"frame\":\"verdict\",\"v\":" + String(frameVersion) + ",\"request\":" + quoted(requestID.text)
+            + ",\"verdict\":" + quoted(verdict.rawValue) + "}"
     }
 
     static func response(_ id: ChannelMessageID, result: String) -> String {

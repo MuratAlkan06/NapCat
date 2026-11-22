@@ -1,25 +1,38 @@
 import Darwin
 import Dispatch
+import NapCatSeam
 import NapCatWire
+import os
 
 /// F4 slice S1: `napcat-channel`, the channel server Claude Code spawns for a
 /// session wired for remote approvals. It speaks MCP over its stdin and
-/// stdout (one message per line) and exits when Claude Code closes its
-/// stdin. Everything it decides is in `ChannelRelay`; this file only moves
-/// bytes. Registration is the owner's own, by user-run rails (a later slice);
-/// nothing here reads or writes any Claude Code configuration.
+/// stdout (one message per line), reaches NapCat over the authenticated seam
+/// (only when a prompt opens; nothing is held while idle), and exits when
+/// Claude Code closes its stdin. Everything it decides is in `ChannelRelay`;
+/// this file only moves bytes. Registration is the owner's own, by user-run
+/// rails (a later slice); nothing here reads or writes any Claude Code
+/// configuration.
 @main
 enum ChannelServer {
+    private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "channel")
+
     static func main() {
         // A closed pipe must surface as a failed write, never kill the server.
         signal(SIGPIPE, SIG_IGN)
         let queue = DispatchQueue(label: "com.muratalkan.napcat.channel")
-        let relay = ChannelRelay(emit: StandardStreams.writeLine)
+        let socketPath = SeamPaths.homeDirectory().map(SeamPaths.socketPath(home:))
+        let relay = ChannelRelay(emit: StandardStreams.writeLine, connect: { onFrame, onClose in
+            guard let socketPath, let connection = SeamClient.connect(socketPath: socketPath, queue: queue) else { return nil }
+            connection.start(onLine: onFrame, onClose: onClose)
+            return connection
+        }, note: { logger.info("relay: \($0.rawValue, privacy: .public)") })
         let input = StandardInput(queue: queue) { relay.receive(stdinLine: $0) }
         input.start()
         dispatchMain()
     }
 }
+
+extension SeamConnection: ChannelLink {}
 
 /// Reads stdin on the server's queue and hands over complete lines.
 final class StandardInput: @unchecked Sendable {

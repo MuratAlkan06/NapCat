@@ -1,28 +1,80 @@
 import NapCatWire
 
+/// The server's link to NapCat (in production an authenticated
+/// `SeamConnection`; in tests a fake).
+protocol ChannelLink: AnyObject {
+    /// Sends one frame; false when the link failed (it is then closed).
+    func send(_ line: String) -> Bool
+    func close()
+}
+
+/// What the relay did, for the server's log: a closed vocabulary that never
+/// carries prompt text or a request ID.
+enum ChannelNote: String, CaseIterable, Sendable {
+    /// A permission request before `initialize` was answered.
+    case heldBeforeInitialize
+    /// Claude Code reused a request ID: its verdicts would be dropped.
+    case heldRepeatedID
+    /// `ApprovalChannel.maxOpenRequests` already wait for a verdict.
+    case heldTooManyOpen
+    /// The prompt frame would be longer than `ApprovalChannel.maxFrameBytes`.
+    case heldTooLarge
+    /// NapCat is not listening, or failed the peer check.
+    case heldNoSeam
+    /// The frame could not be sent.
+    case heldSendFailed
+    case relayed
+    /// A verdict for a request this server relayed and still holds open.
+    case verdictRelayed
+    /// A verdict for a request that is not open here: dropped.
+    case verdictIgnored
+    /// A frame the strict reader refused (or a prompt frame from NapCat): the
+    /// link is closed.
+    case frameRefused
+    /// The link closed; every open request stays local.
+    case seamClosed
+}
+
 /// F4 slice S1: everything `napcat-channel` does between Claude Code (its
-/// stdio) and NapCat. Its I/O is injected, so tests drive it line by line;
-/// `main.swift` wires the real descriptors. Design: design/remote-approvals.md.
+/// stdio) and NapCat (the seam). Its I/O is injected, so tests drive it line
+/// by line; `ChannelServer.swift` wires the real descriptors. Design:
+/// design/remote-approvals.md.
 ///
-/// It answers the MCP handshake and reads the relay's permission requests.
-/// Nothing it receives ever becomes a verdict on its own: the local dialog
-/// stays open and fully answerable whatever happens here.
+/// It answers the MCP handshake, relays each permission request to NapCat as
+/// a prompt frame, and relays NapCat's verdict back to Claude Code — but only
+/// for a request it relayed and that is still open, once. Nothing it
+/// receives ever becomes a verdict on its own, and a missing or failed seam
+/// only keeps prompts local: the terminal dialog stays open and fully
+/// answerable whatever happens here.
 ///
 /// Confined to the server's one serial queue (hence `@unchecked Sendable`).
 final class ChannelRelay: @unchecked Sendable {
+    /// Opens the link to NapCat, or nil. The relay hands over its own frame
+    /// and close handlers.
+    typealias Connector = (_ onFrame: @escaping ([UInt8]) -> Void, _ onClose: @escaping () -> Void) -> ChannelLink?
+
     private let emit: (String) -> Void
+    private let connect: Connector
+    private let note: (ChannelNote) -> Void
 
     /// Whether `initialize` was answered. A permission request before that is
-    /// dropped.
+    /// held local.
     private var initialized = false
     /// Every request ID seen this session. Claude Code drops any verdict for
     /// an ID it issued twice, so a repeated ID is never relayed.
     private var seen: Set<ChannelRequestID> = []
+    /// Relayed requests still waiting for a verdict.
+    private var open: Set<ChannelRequestID> = []
+    private var link: ChannelLink?
+    /// Tells a closing link from a later one.
+    private var linkGeneration = 0
 
     /// `emit` writes one MCP line to Claude Code (the newline is the
     /// writer's).
-    init(emit: @escaping (String) -> Void) {
+    init(emit: @escaping (String) -> Void, connect: @escaping Connector, note: @escaping (ChannelNote) -> Void = { _ in }) {
         self.emit = emit
+        self.connect = connect
+        self.note = note
     }
 
     /// One complete line from Claude Code.
@@ -42,9 +94,46 @@ final class ChannelRelay: @unchecked Sendable {
         }
     }
 
-    /// The skeleton keeps every prompt local: the seam to NapCat is the next
-    /// part of this slice.
+    /// One complete frame from NapCat. Only a verdict for an open request
+    /// does anything; anything the strict reader refuses closes the link.
+    func receive(seamLine line: [UInt8]) {
+        guard case .verdict(let requestID, let verdict)? = ApprovalChannel.frame(line) else {
+            note(.frameRefused)
+            link?.close()
+            return
+        }
+        guard open.remove(requestID) != nil else {
+            note(.verdictIgnored)
+            return
+        }
+        emit(ApprovalChannel.verdictNotification(requestID: requestID, verdict: verdict))
+        note(.verdictRelayed)
+    }
+
     private func relay(_ request: ChannelPermissionRequest) {
-        guard initialized, seen.insert(request.requestID).inserted else { return }
+        guard initialized else { return note(.heldBeforeInitialize) }
+        guard seen.insert(request.requestID).inserted else { return note(.heldRepeatedID) }
+        guard open.count < ApprovalChannel.maxOpenRequests else { return note(.heldTooManyOpen) }
+        guard let frame = ApprovalChannel.promptFrame(request) else { return note(.heldTooLarge) }
+        guard let link = link ?? openLink() else { return note(.heldNoSeam) }
+        guard link.send(frame) else { return note(.heldSendFailed) }
+        open.insert(request.requestID)
+        note(.relayed)
+    }
+
+    private func openLink() -> ChannelLink? {
+        linkGeneration += 1
+        let generation = linkGeneration
+        link = connect({ [weak self] in self?.receive(seamLine: $0) },
+                       { [weak self] in self?.linkClosed(generation) })
+        return link
+    }
+
+    /// Every open request stays local; the next prompt reconnects.
+    private func linkClosed(_ generation: Int) {
+        guard generation == linkGeneration, link != nil else { return }
+        link = nil
+        open.removeAll()
+        note(.seamClosed)
     }
 }

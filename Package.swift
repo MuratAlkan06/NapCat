@@ -46,14 +46,20 @@ let package = Package(
             name: "NapCat",
             dependencies: ["NapCatWire"]
         ),
+        // F4: the authenticated Unix-socket seam between the channel server
+        // and the app. macOS only, never linked by the phone app.
+        .target(
+            name: "NapCatSeam",
+            dependencies: ["NapCatWire"]
+        ),
         // macOS only, never linked by the phone app.
         .executableTarget(
             name: "NapCatChannel",
-            dependencies: ["NapCatWire"]
+            dependencies: ["NapCatSeam", "NapCatWire"]
         ),
         .testTarget(
             name: "NapCatTests",
-            dependencies: ["NapCat", "NapCatChannel", "NapCatWire"],
+            dependencies: ["NapCat", "NapCatChannel", "NapCatSeam", "NapCatWire"],
             swiftSettings: testSwiftSettings,
             linkerSettings: testLinkerSettings
         ),
