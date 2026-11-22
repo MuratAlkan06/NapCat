@@ -27,12 +27,14 @@ let package = Package(
         .iOS(.v18),
     ],
     products: [
-        // The shared wire contract (CloudKit container, record type, field
-        // keys, subscription ID) — the one source of truth both apps import.
+        // The shared wire contract (CloudKit container, record types, field
+        // keys, subscription IDs) and the pure F4 approval core (the gate
+        // tables) — the one source of truth both apps import.
         .library(name: "NapCatWire", targets: ["NapCatWire"]),
     ],
     targets: [
-        // Constants only: zero imports, no I/O — so it builds for iOS too.
+        // Constants and pure logic only: zero imports, no I/O — so it builds
+        // for iOS too (WireContractTests locks both).
         .target(
             name: "NapCatWire"
         ),
