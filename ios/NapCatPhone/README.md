@@ -68,6 +68,11 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 |---|---|---|
 | `-NapCatFixture` | `populated`, `empty` | `populated` |
 | `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff`, `pushNotSetUp` | `connected` |
+| `-palette` | `nightGroom`, `deepCream`, `neutral` | the stored choice |
+
+The chosen palette is kept in the app's defaults under the key `palette`.
+Passing `-palette` picks one for that launch only and leaves the stored
+choice alone.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it.
@@ -178,7 +183,8 @@ once the device run measures it.
   the app's only encryption is the system's HTTPS and CloudKit transport.
 - `NapCatPhone/PrivacyInfo.xcprivacy` is the app's privacy manifest: no
   tracking, no collected data, and the one required-reason API the app
-  uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments).
+  uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments
+  and keeps the chosen palette).
   A test scans the app's code and NapCatWire for every required-reason API
   category and fails if the manifest declares more or fewer than it finds.
 - Versions: the app has its own version line, independent of the Mac app.

@@ -4,6 +4,9 @@ import SwiftUI
 /// Pixel Nap's type, spacing, surfaces, icons, art and motion
 /// (`Theme.pixelNap(palette:)`), so switching palettes never moves or
 /// resizes anything.
+///
+/// The raw values are what the app's defaults store under `storageKey`, so
+/// they never change.
 enum PaletteID: String, CaseIterable, Identifiable, Sendable {
     /// The shipped colors: cream and warm charcoal, with a sepia (sand in
     /// dark mode) watermark.
@@ -15,6 +18,11 @@ enum PaletteID: String, CaseIterable, Identifiable, Sendable {
 
     /// The palette a fresh install uses.
     static let fallback: PaletteID = .nightGroom
+
+    /// The defaults key holding the chosen palette's raw value. As a launch
+    /// argument (`-palette deepCream`) it picks the palette for that launch
+    /// only, without changing the stored choice.
+    static let storageKey = "palette"
 
     var id: Self { self }
 
