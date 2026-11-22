@@ -52,6 +52,10 @@ enum LidGuardTuning {
     /// interpolated into anything but the request URL.
     static let maxTopicLength = 64
 
+    /// Below this many characters a usable topic gets the ntfy editor's soft
+    /// "short" caption (issue #103, F-3). Advice only — it never blocks Save.
+    static let recommendedMinTopicLength = 16
+
     /// Upper bound on a stored server origin (scheme + max DNS name + port);
     /// longer input is rejected rather than truncated.
     static let maxServerLength = 300

@@ -49,7 +49,8 @@ struct LidGuardStructureTests {
     /// CloudKit sender and the composite in front of both senders: they are
     /// delivery files like the ntfy one, so the same no-spawn / no-privilege /
     /// no-error-description / log rules apply to them. Issue #103 added the
-    /// topic's keychain store: it holds the secret, so it obeys them too.
+    /// topic's keychain store and its generator: they hold the secret, so
+    /// they obey them too.
     static let b2Files = [
         "LidGuardPolicy.swift",
         "LidGuardController.swift",
@@ -59,6 +60,7 @@ struct LidGuardStructureTests {
         "CloudKitMessageSender.swift",
         "CompositeMessageSender.swift",
         "KeychainTopicStore.swift",
+        "NtfyTopicGenerator.swift",
     ]
 
     /// Files scanned by the no-topic-in-logs lint: the B2 subsystem PLUS the

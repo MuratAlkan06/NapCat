@@ -536,6 +536,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         errorCaption.stringValue = error ?? ""
         // A blank band is no element: VoiceOver must never land on an empty row.
         errorCaption.setAccessibilityElement(!errorCaption.stringValue.isEmpty)
+        // Issue #103 (F-3): a pass with no error lends the band to the topic
+        // row's soft hints (short topic / just generated), live as the topic
+        // changes. Same reserved band, so the frame still never changes.
+        if error == nil { topicRow.showsHints(in: errorCaption) }
         let stack = NSView(frame: NSRect(x: 0, y: 0, width: stackWidth, height: errorBandY + errorBandHeight))
         stack.addSubview(errorCaption)
         topicRow.addSubviews(to: stack)
@@ -621,20 +625,25 @@ final class MenuContentView: NSObject, NSMenuDelegate {
 
 /// The topic row of the ntfy settings editor — the AppKit half of
 /// `TopicFieldVisibility` (see there for why it is two overlaid fields). Owns
-/// the masked field, its plain twin and the "Show" checkbox, and only maps the
-/// pure state onto them.
+/// the masked field, its plain twin, the "Show" checkbox and (issue #103,
+/// F-3) the "Generate" button, and only maps the pure state onto them.
 ///
-/// The fields keep the editor's full 300 pt width and the checkbox sits to
-/// their right. The placeholder's budget is its fitting width at the system
-/// font: at most 270 pt (the 300 pt frame minus the bezel's text insets and a
-/// margin), checked in TopicFieldVisibilityTests — so neither a longer
-/// placeholder nor a field narrowed to make room may clip it.
+/// The fields keep the editor's full 300 pt width; the checkbox and then the
+/// button sit to their right. The placeholder's budget is its fitting width
+/// at the system font: at most 270 pt (the 300 pt frame minus the bezel's
+/// text insets and a margin), checked in TopicFieldVisibilityTests — so
+/// neither a longer placeholder nor a field narrowed to make room may clip it.
 @MainActor
-private final class MaskedTopicRow: NSObject {
+private final class MaskedTopicRow: NSObject, NSTextFieldDelegate {
     let secureField: NSSecureTextField
     let plainField: NSTextField
     let showCheckbox: NSButton
+    let generateButton: NSButton
     private var visibility = TopicFieldVisibility.initial
+    /// What Generate last produced, so the hint can tell it from typed text.
+    private var generatedTopic: String?
+    /// The editor's caption band, lent to this row on a pass with no error.
+    private weak var hintBand: NSTextField?
 
     private static let checkboxGap: CGFloat = 8
 
@@ -642,6 +651,7 @@ private final class MaskedTopicRow: NSObject {
         secureField = NSSecureTextField(frame: fieldFrame)
         plainField = NSTextField(frame: fieldFrame)
         showCheckbox = NSButton(checkboxWithTitle: TopicFieldVisibility.checkboxTitle, target: nil, action: nil)
+        generateButton = NSButton(title: TopicFieldVisibility.generateButtonTitle, target: nil, action: nil)
         super.init()
         // Only the masked field is prefilled: the plain twin holds the topic only
         // while it is the visible field (each toggle blanks the one it hides).
@@ -662,6 +672,7 @@ private final class MaskedTopicRow: NSObject {
             // Deliberately NOT a paste-ready value (see the constant).
             field.placeholderString = TopicFieldVisibility.fieldPlaceholder
             field.setAccessibilityLabel(TopicFieldVisibility.fieldAccessibilityLabel)
+            field.delegate = self   // live hints (controlTextDidChange)
         }
         showCheckbox.target = self
         showCheckbox.action = #selector(toggleVisibility(_:))
@@ -673,11 +684,20 @@ private final class MaskedTopicRow: NSObject {
             x: fieldFrame.maxX + Self.checkboxGap,
             y: baseline + showCheckbox.firstBaselineOffsetFromTop - showCheckbox.frame.height
         ))
+        generateButton.target = self
+        generateButton.action = #selector(generateTopic(_:))
+        generateButton.setAccessibilityLabel(TopicFieldVisibility.generateAccessibilityLabel)
+        generateButton.sizeToFit()
+        // Right of the checkbox, its title on the same baseline again.
+        generateButton.setFrameOrigin(NSPoint(
+            x: showCheckbox.frame.maxX + Self.checkboxGap,
+            y: baseline + generateButton.firstBaselineOffsetFromTop - generateButton.frame.height
+        ))
         apply()
     }
 
     /// Right edge of the row, so the accessory view grows only as far as needed.
-    var maxX: CGFloat { showCheckbox.frame.maxX }
+    var maxX: CGFloat { generateButton.frame.maxX }
 
     /// The topic as Save returns it: the visible field's text, untouched.
     var topic: String {
@@ -688,6 +708,42 @@ private final class MaskedTopicRow: NSObject {
         container.addSubview(secureField)
         container.addSubview(plainField)
         container.addSubview(showCheckbox)
+        container.addSubview(generateButton)
+    }
+
+    /// Lends this row the editor's caption band for its soft hints, and shows
+    /// the hint for what the field holds right now (a short stored topic is
+    /// flagged as soon as the editor opens).
+    func showsHints(in band: NSTextField) {
+        hintBand = band
+        updateHint()
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        updateHint()
+    }
+
+    /// Fills the VISIBLE field with a fresh random topic (the hidden twin
+    /// stays blank) and leaves the mask as the user set it: ticking Show is
+    /// how they read it out to their phone.
+    @objc private func generateTopic(_ sender: NSButton) {
+        guard let generated = NtfyTopicGenerator.generate() else {
+            NSSound.beep()
+            return
+        }
+        generatedTopic = generated
+        let shown: NSTextField = visibility.isRevealed ? plainField : secureField
+        shown.stringValue = generated
+        if shown.window?.makeFirstResponder(shown) == true, let editor = shown.currentEditor() {
+            editor.selectedRange = NSRange(location: generated.utf16.count, length: 0)
+        }
+        updateHint()
+    }
+
+    private func updateHint() {
+        guard let hintBand else { return }
+        hintBand.stringValue = MenuStateModel.lidAlertTopicHint(topic, generated: generatedTopic) ?? ""
+        hintBand.setAccessibilityElement(!hintBand.stringValue.isEmpty)
     }
 
     @objc private func toggleVisibility(_ sender: NSButton) {
