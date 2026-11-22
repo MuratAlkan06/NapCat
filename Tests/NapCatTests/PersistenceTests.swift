@@ -32,8 +32,42 @@ struct PersistenceTests {
         #expect(DefaultsKey.phoneTransportEnabled == "phoneTransportEnabled")
         // Slice W (issue #78) — the Settings window's last pane (UI state).
         #expect(DefaultsKey.settingsSelectedPane == "settingsSelectedPane")
+        // Issue #111 — the update check's three keys (the interval, the host
+        // and the cap are code constants).
+        #expect(DefaultsKey.updateCheckAutoEnabled == "updateCheckAutoEnabled")
+        #expect(DefaultsKey.updateCheckLastAttempt == "updateCheckLastAttempt")
+        #expect(DefaultsKey.updateCheckLatestTag == "updateCheckLatestTag")
         // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
         // live key — retired at the design freeze (RetiredDefaultsKey).
+    }
+
+    /// Issue #111: the automatic-check toggle reads unset as ON without
+    /// writing it; what the controller writes reads back (an integer written
+    /// by hand reads as its seconds), and the choice survives a relaunch.
+    @Test func updateCheckKeysRoundTrip() {
+        withDefaults { defaults in
+            let running = ReleaseVersion(bundleVersion: "1.6.0")!
+            let first = UpdateCheckController(running: running, defaults: defaults, checker: ScriptedReleaseChecker())
+            #expect(first.autoEnabled)
+            #expect(defaults.object(forKey: DefaultsKey.updateCheckAutoEnabled) == nil, "the default is computed")
+            first.setAutoEnabled(false)
+            #expect(!UpdateCheckController(running: running, defaults: defaults, checker: ScriptedReleaseChecker())
+                .autoEnabled, "survives a relaunch")
+            first.setAutoEnabled(true)
+            #expect(defaults.bool(forKey: DefaultsKey.updateCheckAutoEnabled))
+
+            let key = DefaultsKey.updateCheckLastAttempt
+            #expect(first.lastAttempt == nil)
+            defaults.set(1_800_000_000.5, forKey: key)
+            #expect(first.lastAttempt == 1_800_000_000.5)
+            defaults.set(1_700_000_000, forKey: key)
+            #expect(first.lastAttempt == 1_700_000_000)
+            defaults.set("yesterday", forKey: key)
+            #expect(first.lastAttempt == nil, "junk reads as never — it can only make a check due")
+
+            defaults.set("v1.7.0", forKey: DefaultsKey.updateCheckLatestTag)
+            #expect(first.knownNewer?.tag == "v1.7.0")
+        }
     }
 
     /// Track C toggle: unset reads as OFF (the feature never auto-arms), the

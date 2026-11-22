@@ -50,6 +50,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// F3 stage 1 composite sender (phone toggle + its last outcome); nil in
     /// debugBattery mode.
     private let phoneTransport: CompositeMessageSender?
+    /// Issue #111 update check; nil in debugBattery mode. Checks only from a
+    /// user action — see `menuWillOpen` / `settingsWindowBecameKey`.
+    private let updateCheck: UpdateCheckController?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// The Settings window (slice W, issue #78) — built on first use, opened
     /// by ⌘, (`showSettings(_:)`), refreshed every time it becomes key.
@@ -73,6 +76,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
+        updateCheck: UpdateCheckController? = nil,
         defaults: UserDefaults = .standard,
         settingsHooks: SettingsWindowHooks = .live
     ) {
@@ -87,6 +91,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.lidGuard = lidGuard
         self.finishAlert = finishAlert
         self.phoneTransport = phoneTransport
+        self.updateCheck = updateCheck
         self.model = MenuStateModel(
             power: power,
             sleep: sleep,
@@ -97,7 +102,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             detection: detection,
             lidGuard: lidGuard,
             finishAlert: finishAlert,
-            phoneTransport: phoneTransport
+            phoneTransport: phoneTransport,
+            updateCheck: updateCheck
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -167,6 +173,10 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         phoneTransport?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
+        // Issue #111: a check starting or finishing republishes the same way.
+        updateCheck?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
         // A pause toggle (the DISABLED flag) re-gates the finish alert at
         // once: pausing disarms it, resuming re-arms it with a fresh baseline.
         model.onDetectionPausedChange = { [weak self] in self?.finishAlert?.reconcile() }
@@ -191,8 +201,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // Track B / B2: register or drop the IOKit sleep hook so it matches the
         // current config (the pmset refresh above has already primed the
         // stay-awake mirror the fire gate reads). Nothing is probed here — the
-        // ntfy channel has no permission to check, and menu-open must never
-        // touch the network.
+        // ntfy channel has no permission to check, and no alert is sent from
+        // menu-open.
         lidGuard?.refreshArming()
         // Track C: arm or disarm the marker-dir watcher to match the config,
         // the pause flag and the dir (a re-arm takes a fresh baseline — never
@@ -204,6 +214,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // Ruling (e): every panel session starts without a "Turning on…" —
         // a failed attempt was already reported by its own alert.
         model.stayAwakeTurnOn.panelOpened()
+        // Issue #111: menu-open's ONE network exception — an opportunistic
+        // update check, only while automatic checks are on and the last
+        // attempt is 24 h old (UpdateCadence). It never blocks the menu: the
+        // answer republishes through the change handler.
+        updateCheck?.checkIfDue()
         model.refresh()
         // Section visibility (charge limit, debug) and the surfaced lines can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's
@@ -609,8 +624,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// observed state — pmset, the smc helper, the limiter, the login item,
     /// Claude detection, both alerts' arming. Panel-only steps stay with the
     /// menu: the alert-healing flush trigger (a send attempt — focusing a
-    /// window must not touch the network), the Stay Awake turn-on reset and
-    /// the panel re-fit.
+    /// window never sends an alert), the Stay Awake turn-on reset and the
+    /// panel re-fit. The opportunistic update check (issue #111) runs here
+    /// too, under the same 24 h cadence as on menu open.
     private func settingsWindowBecameKey() {
         sleep.refreshObservedState()
         power.reprobeChargeControlIfNeeded()
@@ -619,6 +635,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         detection?.sample()
         lidGuard?.refreshArming()
         finishAlert?.reconcile()
+        updateCheck?.checkIfDue()
         model.refresh()
     }
 }

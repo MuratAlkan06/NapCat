@@ -19,9 +19,9 @@ import Testing
 /// `LidGuardStructureTests.urlLoadingIsConfinedToTheThreeSanctionedFiles`.)
 struct UpdateCheckStructureTests {
     static let checkerFile = "GitHubReleaseChecker.swift"
-    /// Every file of the feature (the controller and the UI wiring join in
-    /// later slices of the same issue).
-    static let updateFiles = ["UpdateVersion.swift", "UpdateCadence.swift", checkerFile]
+    static let controllerFile = "UpdateCheckController.swift"
+    /// Every file of the feature.
+    static let updateFiles = ["UpdateVersion.swift", "UpdateCadence.swift", checkerFile, controllerFile]
 
     static func raw(_ file: String) throws -> String {
         try String(contentsOf: LidGuardStructureTests.sourcesDir().appendingPathComponent(file), encoding: .utf8)
@@ -257,6 +257,106 @@ struct UpdateCheckStructureTests {
                 "a redirect is refused, never followed — got '\(body)'")
         #expect(code.contains("URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)"))
         #expect(code.components(separatedBy: "URLSession(").count - 1 == 1, "one session construction site")
+    }
+
+    // MARK: - One construction site, user actions only
+
+    static func occurrences(of token: String, in text: String) -> Int {
+        text.components(separatedBy: token).count - 1
+    }
+
+    /// The body of `func <name>(` up to the next function at the same depth.
+    static func functionBody(_ name: String, in code: String) -> String? {
+        guard let start = code.range(of: "func \(name)(") else { return nil }
+        let tail = code[start.upperBound...]
+        return String(tail[..<(tail.range(of: "\n    }\n")?.lowerBound ?? tail.endIndex)])
+    }
+
+    static func wiringFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        func sites(_ token: String) -> [String] {
+            sources.flatMap { Array(repeating: $0.name, count: occurrences(of: token, in: $0.text)) }.sorted()
+        }
+        // The real client is built once, in the gated factory; the
+        // controller only by its own factory; the app only through it.
+        if sites("GitHubReleaseChecker(") != [controllerFile] {
+            failures.append("GitHubReleaseChecker( at \(sites("GitHubReleaseChecker(")) — only makeIfEnabled builds it")
+        }
+        if sites("UpdateCheckController(") != [controllerFile] {
+            failures.append("UpdateCheckController( at \(sites("UpdateCheckController(")) — construct it via makeIfEnabled")
+        }
+        let controller = sources.first { $0.name == controllerFile }?.text ?? ""
+        let factory = functionBody("makeIfEnabled", in: controller) ?? ""
+        if !factory.contains("guard !debugBattery,") || !factory.contains("checker: GitHubReleaseChecker(running: version)") {
+            failures.append("makeIfEnabled must refuse debugBattery mode first and be the one place the client is built")
+        }
+        let app = sources.first { $0.name == "NapCatApp.swift" }?.text ?? ""
+        if !app.contains("UpdateCheckController.makeIfEnabled(\n            debugBattery: isDebugBattery,") {
+            failures.append("NapCatApp must build the update check through makeIfEnabled(debugBattery: isDebugBattery, …)")
+        }
+        // A check starts only from a user action: the two opportunistic
+        // sites (menu open, Settings becoming key) and the one button.
+        if sites("checkIfDue()") != ["MenuContentView.swift", "MenuContentView.swift", controllerFile].sorted() {
+            failures.append("checkIfDue() at \(sites("checkIfDue()")) — only menu open and Settings becoming key")
+        }
+        let owner = sources.first { $0.name == "MenuContentView.swift" }?.text ?? ""
+        for function in ["menuWillOpen", "settingsWindowBecameKey"] {
+            let body = functionBody(function, in: owner) ?? ""
+            if occurrences(of: "updateCheck?.checkIfDue()", in: body) != 1 {
+                failures.append("\(function) must run the cadence-gated check exactly once")
+            }
+            for token in ["checkNow", "fetchLatest", "GitHubReleaseChecker"] where body.contains(token) {
+                failures.append("'\(token)' in \(function) — opening only ever runs the cadence-gated check")
+            }
+        }
+        if sites("checkNow()") != ["MenuStateModel.swift", controllerFile].sorted() {
+            failures.append("checkNow() at \(sites("checkNow()")) — only the Check for Updates… button")
+        }
+        if sites(".fetchLatest") != [controllerFile] || occurrences(of: "checker.fetchLatest {", in: controller) != 1 {
+            failures.append(".fetchLatest at \(sites(".fetchLatest")) — the controller's start is the one caller")
+        }
+        // The browser opens only for a MANUAL check that found a newer release.
+        let opens = controller.components(separatedBy: "\n").filter { $0.contains("openReleasePage(") && !$0.contains("let ") }
+        if opens.map({ $0.trimmingCharacters(in: .whitespaces) }) != ["openReleasePage(page)"]
+            || !controller.contains("if manual, newer, let page = GitHubReleaseChecker.releasePageURL(for: latest) {\n"
+                                    + "                openReleasePage(page)") {
+            failures.append("openReleasePage must run once, only for a manual check that found a newer release — got \(opens)")
+        }
+        if sites("NSWorkspace.shared.open(") != [controllerFile] {
+            failures.append("NSWorkspace.shared.open( at \(sites("NSWorkspace.shared.open(")) — the release page is the only thing opened")
+        }
+        return failures
+    }
+
+    @Test func checksStartOnlyFromAUserActionAndOnlyTheFactoryBuildsTheClient() throws {
+        let sources = try LidGuardStructureTests.swiftSources()
+        #expect(Self.wiringFailures(sources).isEmpty, "\(Self.wiringFailures(sources))")
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("the app builds the client", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet canary = GitHubReleaseChecker(running: v)" }),
+            ("debug mode no longer refused", Self.mutate(sources, Self.controllerFile) {
+                $0.replacingOccurrences(of: "guard !debugBattery, let text", with: "guard let text") }),
+            ("a check at launch", Self.mutate(sources, "NapCatApp.swift") {
+                $0.replacingOccurrences(of: "        limiter.start()\n", with: "        limiter.start()\n        updateCheck?.checkIfDue()\n") }),
+            ("menu open forces a check", Self.mutate(sources, "MenuContentView.swift") { text in
+                var mutant = text
+                if let first = mutant.range(of: "updateCheck?.checkIfDue()") {
+                    mutant.replaceSubrange(first, with: "updateCheck?.checkNow()")
+                }
+                return mutant
+            }),
+            ("the model checks on refresh", Self.mutate(sources, "MenuStateModel.swift") {
+                $0.replacingOccurrences(of: "        updateKnownNewer = updateCheck?.knownNewer\n",
+                                        with: "        updateKnownNewer = updateCheck?.knownNewer\n        updateCheck?.checkNow()\n") }),
+            ("an opportunistic check opens the page", Self.mutate(sources, Self.controllerFile) {
+                $0.replacingOccurrences(of: "if manual, newer, let page", with: "if newer, let page") }),
+            ("the panel opens a URL", Self.mutate(sources, "MenuPanelView.swift") {
+                $0 + "\nlet canary = NSWorkspace.shared.open(u)" }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(mutant.map(\.text) != sources.map(\.text), "canary setup '\(name)': target text must exist")
+            #expect(!Self.wiringFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
     }
 
     // MARK: - No timers

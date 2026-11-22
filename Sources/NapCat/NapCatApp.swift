@@ -128,6 +128,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Issue #111 (update check). Same wiring-predicate gate: absent in
+        // debugBattery mode. Nothing is checked at launch — only on a user
+        // action (the Settings button, or opening the menu or Settings at
+        // most once a day).
+        let updateCheck = UpdateCheckController.makeIfEnabled(
+            debugBattery: isDebugBattery,
+            runningVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            defaults: defaults
+        )
+
         let menuContent = MenuContentView(
             sleep: sleepController,
             watchdog: watchdogController,
@@ -138,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lidGuard: lidGuard,
             finishAlert: finishAlert,
             phoneTransport: sender,
+            updateCheck: updateCheck,
             defaults: defaults
         )
         statusItemController = StatusItemController(menuContent: menuContent)

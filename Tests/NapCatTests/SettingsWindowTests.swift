@@ -785,7 +785,9 @@ struct SettingsWindowTests {
 
     /// The owner's refresh mirrors the menu-open reconciliation's READ steps,
     /// in the same order, and leaves out the panel-only ones — the healing
-    /// flush (a send attempt), the turn-on reset and the panel re-fit.
+    /// flush (a send attempt), the turn-on reset and the panel re-fit. Issue
+    /// #111: both also run the opportunistic update check through its cadence
+    /// gate (at most once a day, opt-out) — never the manual check.
     @Test func theSettingsRefreshMirrorsTheMenuOpenReads() throws {
         let owner = try Self.code("MenuContentView.swift")
         #expect(owner.contains("settingsWindow.onBecameKey = { [weak self] in self?.settingsWindowBecameKey() }"))
@@ -798,14 +800,15 @@ struct SettingsWindowTests {
         let settings = try body(of: "settingsWindowBecameKey")
         let reads = ["sleep.refreshObservedState()", "power.reprobeChargeControlIfNeeded()", "limiter.evaluate(reason: ",
                      "loginItem.refresh()", "detection?.sample()", "lidGuard?.refreshArming()",
-                     "finishAlert?.reconcile()", "model.refresh()"]
+                     "finishAlert?.reconcile()", "updateCheck?.checkIfDue()", "model.refresh()"]
         for (name, text) in [("menuWillOpen", menuOpen), ("settingsWindowBecameKey", settings)] {
             let positions = try reads.map { read in
                 try #require(text.range(of: read), "'\(read)' missing from \(name)").lowerBound
             }
             #expect(positions == positions.sorted(), "\(name) reads in a different order")
         }
-        for panelOnly in ["menuOpened", "panelOpened", "refitToContent", "sendTestMessage", ".send("] {
+        for panelOnly in ["menuOpened", "panelOpened", "refitToContent", "sendTestMessage", ".send(", "checkNow",
+                          "fetchLatest"] {
             #expect(!settings.contains(panelOnly), "'\(panelOnly)' — focusing the window must stay a pure read")
         }
     }

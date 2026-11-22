@@ -314,6 +314,8 @@ struct LidGuardStructureTests {
         let canaries: [(String, [(name: String, text: String)])] = [
             ("the menu owner opens a session", mutate("MenuContentView.swift") {
                 $0 + "\nlet canary = URLSession(configuration: .ephemeral)" }),
+            ("the update controller opens a session", mutate("UpdateCheckController.swift") {
+                $0 + "\nlet canary = URLSession(configuration: .ephemeral)" }),
             ("the model builds a request", mutate("MenuStateModel.swift") {
                 $0 + "\nlet canary = URLRequest(url: URL(fileURLWithPath: \"/\"))" }),
             ("the app starts a task", mutate("NapCatApp.swift") { $0 + "\nlet canary = s.dataTask(with: r)" }),

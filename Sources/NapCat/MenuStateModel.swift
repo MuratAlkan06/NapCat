@@ -236,6 +236,17 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var phoneLastOutcome: MessageSendOutcome?
     @Published private(set) var phoneLastOutcomeAt: Double?
 
+    // Issue #111 (update check) mirrors — stored state plus this session's
+    // last result. No controller (debugBattery mode) ⇒ no Updates group and
+    // never an update line.
+    @Published private(set) var updateCheckAutoEnabled = true
+    @Published private(set) var updateCheckInFlight = false
+    @Published private(set) var updateCheckLastResult: UpdateCheckResult?
+    @Published private(set) var updateCheckLastAttempt: Double?
+    /// The stored latest release, only while it is newer than the running
+    /// app (re-validated by the controller at every read).
+    @Published private(set) var updateKnownNewer: ReleaseVersion?
+
     /// Owner ruling (e): the Stay Awake turn-on feedback. In-memory UI state,
     /// held OUTSIDE the published mirrors on purpose (see
     /// `StayAwakeTurnOnFeedback`).
@@ -260,6 +271,8 @@ final class MenuStateModel: ObservableObject {
     /// Non-nil outside debugBattery mode — the composite sender, for the
     /// phone transport toggle and its line (F3 stage 1).
     private let phoneTransport: CompositeMessageSender?
+    /// Non-nil outside debugBattery mode — the update check (issue #111).
+    private let updateCheck: UpdateCheckController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -295,6 +308,8 @@ final class MenuStateModel: ObservableObject {
     /// The phone toggle lives with the alerts' delivery settings, so it needs
     /// the lid guard (Settings › Alerts) as well as the composite.
     var phoneTransportVisible: Bool { lidGuard != nil && phoneTransport != nil }
+    /// Settings › General's Updates group (issue #111).
+    var updateCheckVisible: Bool { updateCheck != nil }
 
     init(
         power: PowerInterface,
@@ -307,6 +322,7 @@ final class MenuStateModel: ObservableObject {
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
+        updateCheck: UpdateCheckController? = nil,
         stayAwakeTurnOn: StayAwakeTurnOnFeedback = StayAwakeTurnOnFeedback()
     ) {
         self.power = power
@@ -319,6 +335,7 @@ final class MenuStateModel: ObservableObject {
         self.lidGuard = lidGuard
         self.finishAlert = finishAlert
         self.phoneTransport = phoneTransport
+        self.updateCheck = updateCheck
         self.stayAwakeTurnOn = stayAwakeTurnOn
         refresh()
     }
@@ -371,6 +388,12 @@ final class MenuStateModel: ObservableObject {
         phoneTransportAvailable = phone?.available ?? false
         phoneLastOutcome = phone?.lastOutcome
         phoneLastOutcomeAt = phone?.lastOutcomeAt
+        // Issue #111 mirrors. Stored state only — reading never checks.
+        updateCheckAutoEnabled = updateCheck?.autoEnabled ?? true
+        updateCheckInFlight = updateCheck?.inFlight ?? false
+        updateCheckLastResult = updateCheck?.lastResult
+        updateCheckLastAttempt = updateCheck?.lastAttempt
+        updateKnownNewer = updateCheck?.knownNewer
     }
 
     // MARK: Actions (forwarded)
@@ -430,6 +453,20 @@ final class MenuStateModel: ObservableObject {
 
     func setPhoneTransportEnabled(_ enabled: Bool) {
         phoneTransport?.setPhoneTransportEnabled(enabled)
+        refresh()
+    }
+
+    // MARK: Issue #111 actions — the update check (no AppKit flow: a manual
+    // check that finds a newer release opens its page itself)
+
+    /// "Check for Updates…": always checks (one at a time).
+    func checkForUpdates() {
+        updateCheck?.checkNow()
+        refresh()
+    }
+
+    func setUpdateCheckAutoEnabled(_ enabled: Bool) {
+        updateCheck?.setAutoEnabled(enabled)
         refresh()
     }
 
