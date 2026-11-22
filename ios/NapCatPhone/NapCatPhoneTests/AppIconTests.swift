@@ -5,7 +5,7 @@ import Testing
 /// The app icon's upload rules (#96): ONE 1024×1024 PNG, 8-bit RGB with no
 /// alpha channel (App Store Connect rejects an icon that has one), sRGB.
 /// The file is full bleed: iOS cuts the rounded shape itself.
-/// scripts/render_ios_icon.swift renders the icon (`make iosicon`, variant a)
+/// scripts/render_ios_icon.swift renders the icon (`make iosicon`, variant b)
 /// and checks these rules on its own output. These tests hold the committed
 /// asset to them.
 @Suite struct AppIconTests {
@@ -144,14 +144,14 @@ import Testing
         #expect(primary?["CFBundleIconName"] as? String == "AppIcon")
     }
 
-    /// `make iosicon` regenerates exactly the committed file, from variant a
-    /// (the Night Groom composition the owner ruled for).
-    @Test func makeIosiconRegeneratesTheCommittedFileFromVariantA() throws {
+    /// `make iosicon` regenerates exactly the committed file, from variant b
+    /// (the tight crop on the Night Groom cat the owner ruled for).
+    @Test func makeIosiconRegeneratesTheCommittedFileFromVariantB() throws {
         let filename = try #require(try Self.filedImage()?["filename"] as? String)
         let makefile = try String(contentsOf: CloudKitStructureTests.repoRoot.appendingPathComponent("Makefile"),
                                   encoding: .utf8)
         #expect(makefile.contains(
-            "\niosicon:\n\tswift scripts/render_ios_icon.swift --variant a \(Self.iconSetDir)/\(filename)\n"
-        ), "the Makefile's iosicon target must render variant a into \(Self.iconSetDir)/\(filename)")
+            "\niosicon:\n\tswift scripts/render_ios_icon.swift --variant b \(Self.iconSetDir)/\(filename)\n"
+        ), "the Makefile's iosicon target must render variant b into \(Self.iconSetDir)/\(filename)")
     }
 }

@@ -102,12 +102,13 @@ appicon:
 	swift scripts/render_appicon.swift Resources/AppIcon.iconset
 
 # Regenerates the iPhone app's icon, ios/NapCatPhone/.../AppIcon.appiconset/
-# AppIcon.png: variant a of scripts/render_ios_icon.swift, the Night Groom
-# composition full bleed, one 1024x1024 8-bit RGB PNG with no alpha.
+# AppIcon.png: variant b of scripts/render_ios_icon.swift, the Night Groom
+# composition full bleed in a tight crop on the cat, one 1024x1024 8-bit RGB
+# PNG with no alpha.
 # Byte-deterministic like `frames`; the PNG is committed AND regenerable.
 # `make` never builds ios/ (Xcode's actool compiles the asset catalog).
 iosicon:
-	swift scripts/render_ios_icon.swift --variant a ios/NapCatPhone/NapCatPhone/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+	swift scripts/render_ios_icon.swift --variant b ios/NapCatPhone/NapCatPhone/Assets.xcassets/AppIcon.appiconset/AppIcon.png
 
 # Vendored GPL-2.0 smc CLI (third_party/smc/PROVENANCE.md). Native arch build;
 # NOT bundled into the .app and NOT installed anywhere — the user-run
