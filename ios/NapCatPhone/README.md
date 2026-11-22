@@ -170,6 +170,11 @@ once the device run measures it.
   `INFOPLIST_KEY_…` entries in `project.yml`). There is no Info.plist in the
   source tree. It declares `ITSAppUsesNonExemptEncryption` as NO, because
   the app's only encryption is the system's HTTPS and CloudKit transport.
+- `NapCatPhone/PrivacyInfo.xcprivacy` is the app's privacy manifest: no
+  tracking, no collected data, and the one required-reason API the app
+  uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments).
+  A test scans the app's code and NapCatWire for every required-reason API
+  category and fails if the manifest declares more or fewer than it finds.
 - Versions: the app has its own version line, independent of the Mac app.
   `MARKETING_VERSION` starts at 0.1.0, and `CURRENT_PROJECT_VERSION` (the
   build number) goes up by 1 for every TestFlight upload. TestFlight builds
