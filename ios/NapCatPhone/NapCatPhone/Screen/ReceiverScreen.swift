@@ -3,17 +3,24 @@ import SwiftUI
 
 /// The receiver's one screen: the connection pill, the notification-
 /// permission row (only while notifications are off), and the recent alerts.
-/// When there are no alerts, the empty state is the hero. Everything visual
-/// comes from the environment's `Theme`.
+/// When there are no alerts, the empty state is the hero, with the sentence
+/// the list state allows. Everything visual comes from the environment's
+/// `Theme`.
 struct ReceiverScreen: View {
     nonisolated static let title = "NapCat"
     nonisolated static let recentHeader = "Recent"
 
     let alerts: [PhoneAlert]
     let connection: ConnectionState
+    let fetch: FetchStatus
 
     @Environment(\.theme) private var theme
     @State private var revealed = false
+
+    /// What the screen says about its list (`ListState`).
+    var list: ListState {
+        ListState(connection: connection, fetch: fetch, hasAlerts: !alerts.isEmpty)
+    }
 
     /// Themed cards on the theme's own ground, in a plain vertical scroll
     /// (system scroll physics), with an in-content title.
@@ -31,16 +38,20 @@ struct ReceiverScreen: View {
                 if connection.showsPermissionRow {
                     PermissionRow().themedCard()
                 }
-                if alerts.isEmpty {
-                    EmptyStateView()
+                switch list {
+                case .empty(let hero):
+                    EmptyStateView(hero: hero)
                         .frame(maxWidth: .infinity)
                         .containerRelativeFrame(.vertical) { length, _ in length * 0.7 }
-                } else {
+                case .rows, .staleRows:
                     Text(Self.recentHeader)
                         .font(theme.sectionFont)
                         .textCase(.uppercase)
                         .foregroundStyle(theme.inkSecondary)
                         .accessibilityAddTraits(.isHeader)
+                    if list == .staleRows {
+                        CaptionLine(line: ListState.staleLine)
+                    }
                     LazyVStack(spacing: theme.rowGap) {
                         ForEach(Array(alerts.enumerated()), id: \.element.id) { index, alert in
                             AlertRow(alert: alert)
@@ -61,14 +72,24 @@ struct ReceiverScreen: View {
 }
 
 #Preview("Populated, notifications off") {
-    ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .notificationsOff)
+    ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .notificationsOff, fetch: .fetched)
 }
 
 #Preview("Empty") {
-    ReceiverScreen(alerts: [], connection: .connected)
+    ReceiverScreen(alerts: [], connection: .connected, fetch: .fetched)
 }
 
 /// A live launch's first frame (no fixture launch can show it).
 #Preview("Checking") {
-    ReceiverScreen(alerts: [], connection: .checking)
+    ReceiverScreen(alerts: [], connection: .checking, fetch: .pending)
+}
+
+/// The query failed with earlier rows on screen: the list stays, and says so.
+#Preview("Couldn't check, earlier alerts") {
+    ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .pushNotSetUp, fetch: .failed)
+}
+
+/// The query failed before anything was listed (no launch value shows it).
+#Preview("Couldn't check, nothing listed") {
+    ReceiverScreen(alerts: [], connection: .pushNotSetUp, fetch: .failed)
 }

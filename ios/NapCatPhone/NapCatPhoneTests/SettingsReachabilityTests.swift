@@ -20,7 +20,7 @@ import UIKit
         return try #require(app.first { $0.path == rootFile }).text
     }
 
-    static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection)"
+    static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)"
     static let gear = ".toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsGearButton { showsSettings = true } } }"
     static let sheet = ".sheet(isPresented: $showsSettings) { SettingsScreen(palette: $palette, notifications: feed.notificationPermission) }"
     static let palette = ".environment(\\.theme, ThemeID.fallback.theme(palette: palette))"

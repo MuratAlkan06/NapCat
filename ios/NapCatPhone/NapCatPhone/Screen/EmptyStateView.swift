@@ -1,10 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// The peak-end hero: no alerts is the good outcome, so the empty list ends
-/// on the cat and one calm sentence.
+/// The peak-end hero: the empty list ends on the cat and one sentence. No
+/// alerts is the good outcome, but the sentence claims it only when the
+/// list state allows (`EmptyHero`, `ListState`); otherwise it says what is
+/// known: checking, no iCloud, or couldn't check.
 struct EmptyStateView: View {
-    nonisolated static let message = "No alerts. Your Mac hasn't needed you."
+    let hero: EmptyHero
 
     @Environment(\.theme) private var theme
 
@@ -20,11 +22,11 @@ struct EmptyStateView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.message)
+        .accessibilityLabel(hero.message)
     }
 
     private var messageText: some View {
-        Text(Self.message)
+        Text(hero.message)
             .font(theme.emptyFont)
             .foregroundStyle(theme.ink)
             .multilineTextAlignment(.center)

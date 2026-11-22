@@ -77,7 +77,11 @@ choice alone. `-NapCatScreen settings` opens the launch on Settings (for
 screenshots). Neither forces fixtures on a device build.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
-probe answers it). The SwiftUI preview "Checking" shows it.
+probe answers it). The SwiftUI preview "Checking" shows it. Nor is a failed
+fetch; the previews "Couldn't check, …" show it. With
+`-NapCatConnection iCloudUnavailable` a fixture list reads as not checked,
+exactly as a live one would: the populated set shows the stale line and the
+empty set says iCloud is unavailable.
 
 ```sh
 xcrun simctl launch booted com.muratalkan.napcat.phone \
@@ -134,8 +138,12 @@ A live launch:
 
 1. Asks once for notification permission (alerts and sound) and registers
    for remote notifications. Until the first account check answers, the
-   pill reads **Checking…**.
-2. Checks the iCloud account. No usable account shows **iCloud unavailable**.
+   pill reads **Checking…**, and until the first fetch answers an empty
+   list reads **Checking for alerts…**. "No alerts. Your Mac hasn't needed
+   you." appears only once a fetch has come back empty.
+2. Checks the iCloud account. No usable account shows **iCloud unavailable**
+   (and, with nothing listed, "iCloud unavailable. Alerts can't arrive
+   without it.").
 3. Makes sure the one push subscription exists. It fetches the subscription
    by its fixed ID (`AlertWire.subscriptionID`) and creates it only when the
    server has none. A refusal is logged and retried on the next foreground.
@@ -149,7 +157,11 @@ A live launch:
    because the query's index can lag a record created moments ago. A push
    that names no usable record relies on the query alone. Rows are keyed
    by the record name the Mac wrote, so a record seen twice is one row.
-   Records with a missing or unknown field are skipped.
+   Records with a missing or unknown field are skipped. A fetch that fails
+   keeps the list and says so: with rows listed, one line under the header
+   reads "Couldn't check just now — showing earlier alerts."; with none,
+   the empty state reads "Couldn't check for alerts just now." The next
+   fetch that answers clears it.
 
 The notification itself is rendered by iOS from the subscription: title
 "NapCat", the record's body as the text, default sound. The app schedules no

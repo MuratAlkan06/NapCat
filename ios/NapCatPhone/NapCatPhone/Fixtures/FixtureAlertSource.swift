@@ -15,15 +15,20 @@ struct FixtureAlertSource: AlertSource {
         self.connection = connection
     }
 
-    /// Reproduces the fixture's pill (any `ConnectionState.probed` state).
-    /// `.checking` is no probe's answer and no launch option's; a source
-    /// built with it anyway answers as connected.
-    func connect() async -> AccountAvailability {
+    /// The account answer that reproduces the fixture's pill (any
+    /// `ConnectionState.probed` state). `.checking` is no probe's answer
+    /// and no launch option's; a source built with it anyway answers as
+    /// connected.
+    var availability: AccountAvailability {
         switch connection {
         case .iCloudUnavailable: return .unavailable
         case .pushNotSetUp: return .availableWithoutPush
         case .checking, .connected, .notificationsOff: return .available
         }
+    }
+
+    func connect() async -> AccountAvailability {
+        availability
     }
 
     func fetchRecent() async throws -> [PhoneAlert] {

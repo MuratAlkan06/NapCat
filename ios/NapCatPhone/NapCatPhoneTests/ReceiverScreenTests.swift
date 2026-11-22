@@ -6,8 +6,10 @@ import UIKit
 
 /// The screen's fixed copy, cadence and state mappings.
 @Suite struct ReceiverScreenTests {
+    /// The good outcome's sentence is unchanged; `ListStateTests` pins the
+    /// others and when each shows.
     @Test func theEmptyStateSaysExactlyThis() {
-        #expect(EmptyStateView.message == "No alerts. Your Mac hasn't needed you.")
+        #expect(EmptyHero.noAlerts.message == "No alerts. Your Mac hasn't needed you.")
     }
 
     // MARK: Stagger (charter: 40 ms per row, first eight rows)

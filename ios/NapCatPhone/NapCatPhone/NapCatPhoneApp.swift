@@ -40,7 +40,7 @@ struct ReceiverRoot: View {
 
     var body: some View {
         NavigationStack {
-            ReceiverScreen(alerts: feed.alerts, connection: feed.connection)
+            ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         SettingsGearButton { showsSettings = true }
