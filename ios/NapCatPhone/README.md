@@ -100,6 +100,23 @@ The fixtures are synthetic. Each alert carries exactly the wire record's
 three fields (body, lane, firedAt), and each body is written word for word as
 the Mac generates it. No topic, server, host or user name appears anywhere.
 
+## Settings
+
+Settings (`NapCatPhone/Settings/`) is one standard grouped form in the
+current palette:
+
+- **Appearance**: the palette. It changes colors only, applies at once (the
+  form included), and is kept across launches.
+- **Notifications**: whether this iPhone may buzz (**On**, **Off** or
+  **Checking…**), and a button to this app's page in the system's
+  notification settings. It shares its words and that button with the main
+  screen's permission row.
+- **About**: the version and build, read from the app's Info.plist, and a
+  link to the [project site](https://muratalkan06.github.io/NapCat/).
+
+Settings works only on what it is handed and on the Info.plist. It makes no
+iCloud or network calls, and a test scans its source to keep it that way.
+
 ## Live alerts (device builds)
 
 Where the list comes from is one seam, `AlertSource`. `FixtureAlertSource`

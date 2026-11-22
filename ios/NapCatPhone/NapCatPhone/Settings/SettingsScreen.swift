@@ -1,0 +1,159 @@
+import SwiftUI
+
+/// Settings: one standard grouped Form in the current palette.
+///
+/// - Appearance picks the palette. A palette changes colors only, and the
+///   whole app (this screen included) redraws in it at once.
+/// - Notifications shows whether the iPhone may buzz, with the way to this
+///   app's page in the system's notification settings.
+/// - About shows the running build, read from the bundle, and the project
+///   site.
+///
+/// It works only on what it is handed and on the bundle's Info.plist: no
+/// iCloud, no network. Every color and font is a theme token.
+struct SettingsScreen: View {
+    nonisolated static let title = "Settings"
+    nonisolated static let done = "Done"
+    nonisolated static let appearanceHeader = "Appearance"
+    nonisolated static let paletteLabel = "Palette"
+    nonisolated static let paletteFooter = "Changes colors only. Each palette follows your iPhone's light or dark appearance."
+    nonisolated static let notificationsHeader = "Notifications"
+    nonisolated static let statusLabel = "Status"
+    nonisolated static let aboutHeader = "About"
+    nonisolated static let versionLabel = "Version"
+    nonisolated static let siteLabel = "Website"
+    nonisolated static let siteURL = URL(string: "https://muratalkan06.github.io/NapCat/")
+
+    @Binding var palette: PaletteID
+    let notifications: NotificationPermission
+    var version = AppVersion(bundle: .main)
+
+    @Environment(\.theme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                appearance
+                notificationsSection
+                about
+            }
+            .scrollContentBackground(.hidden)
+            .background(theme.ground.ignoresSafeArea())
+            .font(theme.bodyFont)
+            .navigationTitle(Self.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(Self.done) { dismiss() }
+                }
+            }
+        }
+        .tint(theme.accent)
+    }
+
+    // MARK: Sections
+
+    private var appearance: some View {
+        Section {
+            Picker(Self.paletteLabel, selection: $palette) {
+                ForEach(PaletteID.allCases) { option in
+                    Text(option.displayName)
+                        .foregroundStyle(theme.ink)
+                        .tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } header: {
+            header(Self.appearanceHeader)
+        } footer: {
+            footer(Self.paletteFooter)
+        }
+        .listRowBackground(theme.surface)
+    }
+
+    private var notificationsSection: some View {
+        Section {
+            LabeledContent {
+                HStack(spacing: theme.innerGap) {
+                    if let glyph = notifications.line.severity.symbol {
+                        Image(systemName: glyph)
+                            .fontWeight(theme.symbolWeight)
+                            .foregroundStyle(theme.tint(for: notifications.line.severity))
+                    }
+                    Text(notifications.line.text)
+                        .foregroundStyle(theme.inkSecondary)
+                }
+            } label: {
+                Text(Self.statusLabel)
+                    .foregroundStyle(theme.ink)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.statusLabel)
+            .accessibilityValue(notifications.line.spoken)
+
+            NotificationSettingsButton(title: notifications.action)
+        } header: {
+            header(Self.notificationsHeader)
+        } footer: {
+            if let detail = notifications.detail {
+                footer(detail)
+            }
+        }
+        .listRowBackground(theme.surface)
+    }
+
+    private var about: some View {
+        Section {
+            LabeledContent {
+                Text(version.text)
+                    .foregroundStyle(theme.inkSecondary)
+            } label: {
+                Text(Self.versionLabel)
+                    .foregroundStyle(theme.ink)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Self.versionLabel)
+            .accessibilityValue(version.spoken)
+
+            if let site = Self.siteURL {
+                Link(destination: site) {
+                    LinkOutLabel(title: Self.siteLabel)
+                }
+            }
+        } header: {
+            header(Self.aboutHeader)
+        }
+        .listRowBackground(theme.surface)
+    }
+
+    // MARK: Type
+
+    /// A section header, as the main screen's "Recent".
+    private func header(_ text: String) -> some View {
+        Text(text)
+            .font(theme.sectionFont)
+            .textCase(.uppercase)
+            .foregroundStyle(theme.inkSecondary)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func footer(_ text: String) -> some View {
+        Text(text)
+            .font(theme.detailFont)
+            .foregroundStyle(theme.inkSecondary)
+    }
+}
+
+#Preview("Night Groom, notifications on") {
+    @Previewable @State var palette = PaletteID.nightGroom
+    SettingsScreen(palette: $palette, notifications: .on)
+        .environment(\.theme, ThemeID.fallback.theme(palette: palette))
+}
+
+#Preview("Deep Cream, notifications off") {
+    @Previewable @State var palette = PaletteID.deepCream
+    SettingsScreen(palette: $palette, notifications: .off)
+        .environment(\.theme, ThemeID.fallback.theme(palette: palette))
+}
