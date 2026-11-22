@@ -77,8 +77,10 @@ struct WireContractTests {
 
     /// The constants files: values only, no functions or state.
     static let constantsFiles = ["AlertWire.swift", "ApprovalWire.swift"]
-    /// The pure files: I/O-free logic over the constants.
-    static let pureFiles = ["ApprovalClassification.swift", "ApprovalPreview.swift", "ApprovalStateMachine.swift"]
+    /// The pure files: I/O-free logic over the constants. S1 added the
+    /// channel server's wire (`ApprovalChannel.swift`) under the same locks.
+    static let pureFiles = ["ApprovalChannel.swift", "ApprovalClassification.swift", "ApprovalPreview.swift",
+                            "ApprovalStateMachine.swift"]
 
     static func wireDirectory() -> URL {
         LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire")

@@ -241,3 +241,11 @@ code are normative, and the unit tests pin them.
 
 Networking, processes, UI, entitlements and CloudKit calls belong to later
 slices.
+
+## Slice S1: the channel server
+
+S1 adds `napcat-channel`, the channel server Claude Code spawns for a wired
+session. Its version stamp, which must match `ApprovalChannel.serverVersion`
+(parity-locked):
+
+napcat-channel-version: 1

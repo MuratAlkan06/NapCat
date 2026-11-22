@@ -29,9 +29,12 @@ let package = Package(
     products: [
         // The shared wire contract (CloudKit container, record types, field
         // keys, subscription IDs) and the pure F4 approval core (the gate
-        // tables, the prompt lifecycle) — the one source of truth both apps
-        // import.
+        // tables, the prompt lifecycle, the channel server's two wires) — the
+        // one source of truth both apps import.
         .library(name: "NapCatWire", targets: ["NapCatWire"]),
+        // F4: the channel server Claude Code spawns for a wired session
+        // (slice S1). Built by `make`; not part of the app bundle yet.
+        .executable(name: "napcat-channel", targets: ["NapCatChannel"]),
     ],
     targets: [
         // Constants and pure logic only: zero imports, no I/O — so it builds
@@ -43,9 +46,14 @@ let package = Package(
             name: "NapCat",
             dependencies: ["NapCatWire"]
         ),
+        // macOS only, never linked by the phone app.
+        .executableTarget(
+            name: "NapCatChannel",
+            dependencies: ["NapCatWire"]
+        ),
         .testTarget(
             name: "NapCatTests",
-            dependencies: ["NapCat", "NapCatWire"],
+            dependencies: ["NapCat", "NapCatChannel", "NapCatWire"],
             swiftSettings: testSwiftSettings,
             linkerSettings: testLinkerSettings
         ),
