@@ -398,6 +398,13 @@ pre {
   line-height: 1.5;
 }
 
+/* Focusable (tabindex="0" in the page) so keyboard users can scroll a wide
+   block; WebKit leaves overflow containers out of the Tab order. */
+pre:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 pre code {
   overflow-wrap: normal;
 }
