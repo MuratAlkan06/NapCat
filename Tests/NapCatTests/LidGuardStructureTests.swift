@@ -256,6 +256,83 @@ struct LidGuardStructureTests {
 
     // MARK: - Symbol confinement
 
+    /// THE NETWORKING ALLOWLIST (issue #111 amendment — explicit, three names):
+    /// the only Sources files that may reference the URL Loading System. The
+    /// ntfy sender (B2/Track C publishes), the CloudKit sender (F3 stage 1 —
+    /// it names CloudKit only and needs no URL loading at all, but is a
+    /// sanctioned networking file), and the update check's GitHub client
+    /// (one pinned, unauthenticated GET — `UpdateCheckStructureTests`). A
+    /// fourth networking file is a deliberate amendment of THIS list, never
+    /// a quiet addition. (The Network framework has its own one-file
+    /// confinement: ConnectivityStructureTests — a path monitor that opens no
+    /// connection — so none of these three may import it either.)
+    static let networkingFiles = ["NtfyMessageSender.swift", "CloudKitMessageSender.swift", "GitHubReleaseChecker.swift"]
+
+    /// What "references the URL Loading System" means: the session, the
+    /// request, and every task kind. Matched case-sensitively in
+    /// comment-stripped code (doc comments may name the boundary).
+    static let networkingTokens = ["URLSession", "URLRequest", "dataTask", "downloadTask", "uploadTask",
+                                   "webSocketTask", "streamTask", "NSURLConnection", "CFHTTPMessage", "CFReadStreamCreateForHTTPRequest"]
+
+    /// Banned EVERYWHERE, the allowlist included: the shared session (it
+    /// keeps cookies, a cache and credentials across the process) and the
+    /// task kinds no sanctioned file uses.
+    static let bannedEverywhereTokens = ["URLSession.shared", "downloadTask", "uploadTask", "webSocketTask",
+                                         "streamTask", "NSURLConnection", "CFHTTPMessage",
+                                         "CFReadStreamCreateForHTTPRequest"]
+
+    static func networkingConfinementFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (name, text) in sources {
+            let tokens = networkingFiles.contains(name) ? bannedEverywhereTokens : networkingTokens
+            for token in tokens where text.contains(token) {
+                failures.append("'\(token)' in \(name) — URL loading stays in the three sanctioned files \(networkingFiles)")
+            }
+        }
+        // Every allowlisted file is real, and the two HTTP clients really
+        // hold the session, the request and the data task (non-vacuous).
+        for file in networkingFiles where !sources.contains(where: { $0.name == file }) {
+            failures.append("\(file) is not in Sources/NapCat — update the networking allowlist")
+        }
+        for file in ["NtfyMessageSender.swift", "GitHubReleaseChecker.swift"] {
+            let text = sources.first { $0.name == file }?.text ?? ""
+            for token in ["URLSession", "URLRequest", "dataTask"] where !text.contains(token) {
+                failures.append("'\(token)' not found in \(file) — the allowlist lint would be vacuous")
+            }
+        }
+        return failures
+    }
+
+    @Test func urlLoadingIsConfinedToTheThreeSanctionedFiles() throws {
+        let sources = try Self.swiftSources()
+        #expect(Self.networkingConfinementFailures(sources).isEmpty, "\(Self.networkingConfinementFailures(sources))")
+        #expect(Self.networkingFiles.count == 3, "the allowlist is explicit: three names")
+
+        func mutate(_ name: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
+            sources.map { $0.name == name ? ($0.name, transform($0.text)) : $0 }
+        }
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("the menu owner opens a session", mutate("MenuContentView.swift") {
+                $0 + "\nlet canary = URLSession(configuration: .ephemeral)" }),
+            ("the model builds a request", mutate("MenuStateModel.swift") {
+                $0 + "\nlet canary = URLRequest(url: URL(fileURLWithPath: \"/\"))" }),
+            ("the app starts a task", mutate("NapCatApp.swift") { $0 + "\nlet canary = s.dataTask(with: r)" }),
+            ("a checker uses the shared session", mutate("GitHubReleaseChecker.swift") {
+                $0 + "\nlet canary = URLSession.shared" }),
+            ("the ntfy sender downloads", mutate("NtfyMessageSender.swift") { $0 + "\nlet canary = s.downloadTask(with: r)" }),
+            ("a fourth networking file", sources + [("ReleaseNotesFetcher.swift", "let canary = URLRequest(url: u)")]),
+            ("the checker loses its session", mutate("GitHubReleaseChecker.swift") {
+                $0.replacingOccurrences(of: "URLSession", with: "Session") }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.networkingConfinementFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Negative control: a doc comment may NAME URLSession anywhere.
+        #expect(Self.networkingConfinementFailures(mutate("MenuStateModel.swift") {
+            $0 + Self.codeOnly("\n/// never URLSession, never URLRequest")
+        }).isEmpty)
+    }
+
     /// Each externally-visible capability may appear in ONE file only, repo
     /// wide. Vacuity is guarded: the token must really be present there.
     /// `session(for:` (security review L4): the sender's internal per-lane
@@ -265,14 +342,17 @@ struct LidGuardStructureTests {
     ///
     /// F3 stage 1 AMENDMENT (deliberate, issue #64): CloudKitMessageSender.swift
     /// is the SECOND sanctioned networking file — for CloudKit symbols and the
-    /// entitlement probe ONLY. HTTP is unchanged: every URLSession-family
-    /// token above still has NtfyMessageSender.swift as its one owner, so the
-    /// CloudKit file cannot reach HTTP either.
+    /// entitlement probe ONLY.
+    ///
+    /// Issue #111 AMENDMENT (deliberate): `URLSession` / `URLRequest` /
+    /// `dataTask` moved from this one-owner table to the explicit three-file
+    /// networking allowlist above (`urlLoadingIsConfinedToTheThreeSanctionedFiles`).
+    /// The publish-only capabilities stay single-owner here: a request BODY
+    /// (`httpBody`), the per-header writer the ntfy headers use (`setValue` —
+    /// the GitHub client sets its two headers as one dictionary), and the
+    /// per-lane session accessor.
     @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
         let allowed: [String: String] = [
-            "URLSession": "NtfyMessageSender.swift",
-            "URLRequest": "NtfyMessageSender.swift",
-            "dataTask": "NtfyMessageSender.swift",
             "httpBody": "NtfyMessageSender.swift",
             "setValue": "NtfyMessageSender.swift",
             "session(for:": "NtfyMessageSender.swift",

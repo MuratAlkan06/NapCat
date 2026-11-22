@@ -2,10 +2,13 @@ import Foundation
 import os
 
 /// SENDER FILE (structural-isolation boundary): the ONLY file in the B2
-/// subsystem — and the only file anywhere in NapCat — that may name
-/// `URLSession`/`URLRequest` or perform HTTP I/O (`LidGuardStructureTests`
-/// enforces both). Since F3 stage 1 the one other networking file is
-/// CloudKitMessageSender.swift, and it is sanctioned for CloudKit only.
+/// subsystem that may name `URLSession`/`URLRequest` or perform HTTP I/O
+/// (`LidGuardStructureTests` enforces both). NapCat has exactly three
+/// networking files (`LidGuardStructureTests.networkingFiles`): this one,
+/// CloudKitMessageSender.swift (F3 stage 1, CloudKit only), and — since
+/// issue #111 — GitHubReleaseChecker.swift (the update check's one
+/// unauthenticated GET). The request body and the per-lane sessions stay
+/// this file's alone.
 ///
 /// It publishes one message to ntfy:
 ///
