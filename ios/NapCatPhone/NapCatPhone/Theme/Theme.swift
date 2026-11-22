@@ -4,16 +4,20 @@ import UIKit
 /// The receiver's style. The owner picked Pixel Nap (#71), with Night
 /// Groom's grooming-cat watermark as its empty state; the other variants
 /// were removed. The screen is written once against `Theme`, so a style is
-/// nothing but a `Theme` value.
+/// nothing but a `Theme` value. Its colors come from a palette (`PaletteID`).
 enum ThemeID: String, CaseIterable, Sendable {
     case pixelNap
 
     /// The style the screen uses.
     static let fallback: ThemeID = .pixelNap
 
-    var theme: Theme {
+    /// The style in the default palette.
+    var theme: Theme { theme(palette: .fallback) }
+
+    /// The style in `palette`.
+    func theme(palette: PaletteID) -> Theme {
         switch self {
-        case .pixelNap: return .pixelNap
+        case .pixelNap: return .pixelNap(palette: palette)
         }
     }
 }
@@ -36,6 +40,8 @@ struct Theme: Sendable {
 
     // MARK: Color (each adapts to light and dark)
 
+    /// The palette the colors below come from.
+    let palette: PaletteID
     /// The screen background.
     let ground: Color
     /// Card and pill fill.

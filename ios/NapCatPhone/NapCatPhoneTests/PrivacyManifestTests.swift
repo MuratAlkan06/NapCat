@@ -85,9 +85,10 @@ import Testing
         #expect((manifest["NSPrivacyCollectedDataTypes"] as? [Any])?.isEmpty == true)
     }
 
-    /// Exactly the touched categories are declared. UserDefaults is read
-    /// for the app's own launch arguments only (LaunchOptions), which is
-    /// reason CA92.1.
+    /// Exactly the touched categories are declared. UserDefaults holds only
+    /// the app's own information: it reads its launch arguments
+    /// (LaunchOptions) and keeps the chosen palette (`ReceiverRoot`'s
+    /// AppStorage), which is reason CA92.1.
     @Test func theManifestDeclaresExactlyTheTouchedCategories() throws {
         var sources: [CloudKitStructureTests.Source] = []
         for directory in Self.shippedSourceDirs {

@@ -10,15 +10,24 @@ import Foundation
 /// alerts it receives (`AlertSourceKind.select`). `-NapCatConnection` only
 /// applies to fixtures: a live pill is probed, never chosen. It takes the
 /// probed states only; `checking` is a live launch's pre-probe state and
-/// falls back like an unknown value.
+/// falls back like an unknown value. `-NapCatScreen settings` opens the
+/// launch on Settings (screenshots); it does not force fixtures.
 struct LaunchOptions: Equatable, Sendable {
     static let fixtureKey = "NapCatFixture"
     static let connectionKey = "NapCatConnection"
+    static let screenKey = "NapCatScreen"
+
+    /// The screen a launch opens on.
+    enum Screen: String, Sendable {
+        case receiver
+        case settings
+    }
 
     var fixture: FixtureSet = .populated
     var connection: ConnectionState = .connected
     /// Whether a recognised fixture value was passed.
     var fixtureRequested = false
+    var screen: Screen = .receiver
 
     init() {}
 
@@ -31,6 +40,9 @@ struct LaunchOptions: Equatable, Sendable {
         if let raw = value(Self.connectionKey), let connection = ConnectionState(rawValue: raw),
            ConnectionState.probed.contains(connection) {
             self.connection = connection
+        }
+        if let raw = value(Self.screenKey), let screen = Screen(rawValue: raw) {
+            self.screen = screen
         }
     }
 

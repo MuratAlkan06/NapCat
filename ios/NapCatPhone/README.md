@@ -54,7 +54,10 @@ xcrun simctl launch booted com.muratalkan.napcat.phone
 The style is **Pixel Nap**: cream grounds (warm charcoal in dark mode), ink
 borders with a hard shadow, square corners, monospaced labels and an 8 pt
 spacing rhythm. Its empty state shows the smooth grooming cat as a large,
-faint watermark behind the message.
+faint watermark behind the message. It comes in three palettes, which
+change colors only: **Night Groom** (the default), **Deep Cream** (deeper
+cream grounds and a warmer night) and **Neutral** (a gray watermark in
+light mode).
 
 Launch arguments choose what the screen shows. They are read from the
 `UserDefaults` argument domain, and unknown values fall back to the default.
@@ -65,6 +68,13 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 |---|---|---|
 | `-NapCatFixture` | `populated`, `empty` | `populated` |
 | `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff`, `pushNotSetUp` | `connected` |
+| `-palette` | `nightGroom`, `deepCream`, `neutral` | the stored choice |
+| `-NapCatScreen` | `receiver`, `settings` | `receiver` |
+
+The chosen palette is kept in the app's defaults under the key `palette`.
+Passing `-palette` picks one for that launch only and leaves the stored
+choice alone. `-NapCatScreen settings` opens the launch on Settings (for
+screenshots). Neither forces fixtures on a device build.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it.
@@ -82,12 +92,33 @@ settle.
 Every style decision lives in `NapCatPhone/Theme/`. `Theme.swift` defines
 the token set: colors, type, surfaces and spacing, the icon variant, the
 empty-state art treatment and the entrance curve. `PixelNapTheme.swift`
-holds the one `Theme` value. The views read only the `theme` environment
-value, so a color change is an edit to that one file.
+holds the one style, Pixel Nap, and takes its colors from a palette.
+`Palette.swift` holds the palettes: each is a set of color tokens (an sRGB
+value and alpha for light and for dark mode) and nothing else. The views
+read only the `theme` environment value, so a color change is an edit to
+`Palette.swift`.
 
 The fixtures are synthetic. Each alert carries exactly the wire record's
 three fields (body, lane, firedAt), and each body is written word for word as
 the Mac generates it. No topic, server, host or user name appears anywhere.
+
+## Settings
+
+The gear in the main screen's toolbar opens Settings
+(`NapCatPhone/Settings/`) as a sheet; **Done** or a swipe down closes it.
+It is one standard grouped form in the current palette:
+
+- **Appearance**: the palette. It changes colors only, applies at once (the
+  form included), and is kept across launches.
+- **Notifications**: whether this iPhone may buzz (**On**, **Off** or
+  **Checking…**), and a button to this app's page in the system's
+  notification settings. It shares its words and that button with the main
+  screen's permission row.
+- **About**: the version and build, read from the app's Info.plist, and a
+  link to the [project site](https://muratalkan06.github.io/NapCat/).
+
+Settings works only on what it is handed and on the Info.plist. It makes no
+iCloud or network calls, and a test scans its source to keep it that way.
 
 ## Live alerts (device builds)
 
@@ -172,7 +203,8 @@ once the device run measures it.
   the app's only encryption is the system's HTTPS and CloudKit transport.
 - `NapCatPhone/PrivacyInfo.xcprivacy` is the app's privacy manifest: no
   tracking, no collected data, and the one required-reason API the app
-  uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments).
+  uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments
+  and keeps the chosen palette).
   A test scans the app's code and NapCatWire for every required-reason API
   category and fails if the manifest declares more or fewer than it finds.
 - Versions: the app has its own version line, independent of the Mac app.

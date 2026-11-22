@@ -29,13 +29,16 @@ import Testing
         }
     }
 
-    /// A watermark stays faint in both schemes, so the message over it reads.
-    @Test(arguments: [ColorScheme.light, .dark])
-    func theWatermarkIsFaintInEachScheme(_ scheme: ColorScheme) {
+    /// A watermark stays faint in both schemes, in every palette, so the
+    /// message over it reads (`PaletteLint` rule 4, on the painted color).
+    @Test(arguments: PaletteID.allCases, [ColorScheme.light, .dark])
+    func theWatermarkIsFaintInEachScheme(_ palette: PaletteID, _ scheme: ColorScheme) {
+        let theme = ThemeID.fallback.theme(palette: palette)
         var environment = EnvironmentValues()
         environment.colorScheme = scheme
-        let opacity = Theme.pixelNap.artTint.resolve(in: environment).opacity
-        #expect(opacity > 0 && opacity <= 0.2, "\(scheme) watermark opacity \(opacity)")
+        let opacity = theme.artTint.resolve(in: environment).opacity
+        #expect(opacity > 0 && opacity <= 0.2, "\(palette) \(scheme) watermark opacity \(opacity)")
+        #expect(PaletteLint.faintnessFailures(palette.colors, scheme).isEmpty)
     }
 
     /// Pixel Nap keeps an 8 pt rhythm: every spacing token is a multiple of 8.
