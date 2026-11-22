@@ -1,18 +1,17 @@
 import SwiftUI
-import UIKit
 
 /// Shown only while notifications are off: what that means, plus the
-/// affordance to fix it, which opens this app's notification settings.
+/// affordance to fix it, which opens this app's notification settings. The
+/// words and the affordance are shared with Settings › Notifications
+/// (`NotificationPermission`, `NotificationSettingsButton`).
 struct PermissionRow: View {
-    nonisolated static let title = "Notifications are off"
-    nonisolated static let detail = "Alerts still show up here, but your iPhone won't buzz."
-    nonisolated static let action = "Turn On in Settings"
-    nonisolated static let actionSymbol = "arrow.up.forward.app"
-    /// The system's deep link to this app's page in Settings › Notifications.
-    nonisolated static let settingsURL = URL(string: UIApplication.openNotificationSettingsURLString)
+    nonisolated static let title = NotificationPermission.offTitle
+    nonisolated static let detail = NotificationPermission.offDetail
+    nonisolated static let action = NotificationPermission.turnOnAction
+    nonisolated static let actionSymbol = LinkOutLabel.symbol
+    nonisolated static let settingsURL = NotificationSettingsButton.settingsURL
 
     @Environment(\.theme) private var theme
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: theme.innerGap * 2) {
@@ -33,21 +32,10 @@ struct PermissionRow: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(PhoneLine(text: "\(Self.title). \(Self.detail)", severity: .warning).spoken)
 
-                Button {
-                    if let url = Self.settingsURL { openURL(url) }
-                } label: {
-                    // Text then a trailing link-out glyph (not a `Label`: inside
-                    // a List row a Label's icon takes the row's icon column).
-                    HStack(spacing: theme.innerGap) {
-                        Text(Self.action)
-                        Image(systemName: Self.actionSymbol)
-                            .symbolVariant(theme.symbolVariant)
-                            .accessibilityHidden(true)
-                    }
+                NotificationSettingsButton(title: Self.action)
                     .font(theme.metaFont)
-                }
-                .buttonStyle(.borderless)
-                .tint(theme.accent)
+                    .buttonStyle(.borderless)
+                    .tint(theme.accent)
             }
         }
     }

@@ -1,8 +1,9 @@
 import Foundation
 import Observation
 
-/// What the screen shows: the alert list and the connection pill, kept
-/// current from one `AlertSource` and one `NotificationGate`. It refreshes on
+/// What the screen shows: the alert list, the connection pill and the
+/// notification permission, kept current from one `AlertSource` and one
+/// `NotificationGate`. It refreshes on
 /// launch, on every foreground and on every push; overlapping requests fold
 /// into one follow-up pass, so a burst of pushes never queues a burst of
 /// fetches. A push that names its record also has that record fetched
@@ -15,6 +16,9 @@ final class AlertFeed {
 
     private(set) var alerts: [PhoneAlert]
     private(set) var connection: ConnectionState
+    /// Whether the iPhone may buzz, as last read. Unlike `connection`, it is
+    /// read even without an account (the pill then says iCloud first).
+    private(set) var notificationPermission: NotificationPermission
     /// Whether this feed reads iCloud (and so wants pushes).
     let isLive: Bool
 
@@ -27,20 +31,22 @@ final class AlertFeed {
     /// on the next pass.
     @ObservationIgnored private var pushedNames: Set<String> = []
 
-    /// A live feed starts `.checking`: the pill claims nothing until the
-    /// first account check is done.
+    /// A live feed starts `.checking`: the pill and the permission claim
+    /// nothing until the first probe is done.
     init(
         source: any AlertSource,
         notifications: any NotificationGate,
         isLive: Bool,
         alerts: [PhoneAlert] = [],
-        connection: ConnectionState = .checking
+        connection: ConnectionState = .checking,
+        notificationPermission: NotificationPermission = .checking
     ) {
         self.source = source
         self.notifications = notifications
         self.isLive = isLive
         self.alerts = alerts
         self.connection = connection
+        self.notificationPermission = notificationPermission
     }
 
     /// The launch's feed. Fixtures are shown from the first frame (exactly
@@ -54,12 +60,14 @@ final class AlertFeed {
             return AlertFeed(source: live, notifications: SystemNotificationGate(), isLive: true)
         }
         let fixtures = FixtureAlertSource(set: options.fixture, connection: options.connection, now: now)
+        let gate = FixedNotificationGate(connection: options.connection)
         return AlertFeed(
             source: fixtures,
-            notifications: FixedNotificationGate(connection: options.connection),
+            notifications: gate,
             isLive: false,
             alerts: fixtures.alerts,
-            connection: options.connection
+            connection: options.connection,
+            notificationPermission: NotificationPermission(alertsAllowed: gate.allowed)
         )
     }
 
@@ -111,6 +119,8 @@ final class AlertFeed {
     private func refreshOnce() async -> Bool {
         let account = await source.connect()
         let allowed = await notifications.alertsAllowed()
+        let permission = NotificationPermission(alertsAllowed: allowed)
+        if permission != notificationPermission { notificationPermission = permission }
         let state = ConnectionState(account: account, alertsAllowed: allowed)
         if state != connection { connection = state }
         // Without an account nothing can be fetched; the list stays, and
