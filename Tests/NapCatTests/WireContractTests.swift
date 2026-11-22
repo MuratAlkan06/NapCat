@@ -9,7 +9,8 @@ import Testing
 /// writer and the iOS receiver. A silent change to any of them would leave
 /// the two apps talking past each other (the phone subscribed to a record
 /// type nobody writes, or two subscriptions buzzing twice), so every value is
-/// byte-pinned here, and the target itself must stay import-free.
+/// byte-pinned here, and the target itself must stay import-free. F4 adds
+/// the approval constants (`ApprovalWire`) under the same rules.
 struct WireContractTests {
     @Test func theWireConstantsArePinned() {
         #expect(AlertWire.containerIdentifier == "iCloud.com.muratalkan.napcat")
@@ -27,22 +28,121 @@ struct WireContractTests {
         #expect(AlertWire.Lane.allCases.map(\.rawValue) == ["lid", "session"])
     }
 
-    /// Constants only: no import statement at all (so it builds for iOS and
-    /// cannot reach I/O), and no other source file in the target.
-    @Test func theWireTargetIsImportFreeConstants() throws {
-        let dir = LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire")
-        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".swift") }
-        #expect(files == ["AlertWire.swift"], "NapCatWire holds one constants file, found \(files)")
-        let code = LidGuardStructureTests.codeOnly(
-            try String(contentsOf: dir.appendingPathComponent("AlertWire.swift"), encoding: .utf8))
-        for line in code.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            #expect(!trimmed.hasPrefix("import ") && !trimmed.hasPrefix("@_exported"),
-                    "NapCatWire must stay import-free: \(trimmed)")
+    // MARK: - F4 remote approvals (ApprovalWire)
+
+    /// The approval records share the alert container but never its zone or
+    /// subscription: a mix-up would make the phone buzz for the wrong record.
+    @Test func theApprovalConstantsArePinned() {
+        #expect(ApprovalWire.containerIdentifier == AlertWire.containerIdentifier)
+        #expect(ApprovalWire.zoneName == "napcat-approvals-v1")
+        #expect(ApprovalWire.promptSubscriptionID == "napcat-prompt-created-v1")
+        #expect(ApprovalWire.promptSubscriptionID != AlertWire.subscriptionID)
+        #expect(ApprovalWire.wireVersion == 1)
+        #expect(ApprovalWire.promptTimeToLiveSeconds == 600, "the ruled 10-minute TTL")
+        #expect(ApprovalWire.promptIDByteCount == 16, "128-bit prompt IDs")
+        #expect(ApprovalWire.promptIDHexDigits == 2 * ApprovalWire.promptIDByteCount)
+    }
+
+    @Test func theApprovalRecordTypesAreExactlyPromptAndDecision() {
+        #expect(ApprovalWire.RecordType.allCases.map(\.rawValue) == ["PromptRequest", "PromptDecision"])
+        #expect(!ApprovalWire.RecordType.allCases.map(\.rawValue).contains(AlertWire.recordType))
+    }
+
+    /// The field sets are exact. A prompt never carries the description (the
+    /// display relies on the tool name and the preview), a session id or the
+    /// Claude Code request id; a decision carries the CL-1 signature.
+    @Test func theApprovalFieldSetsArePinned() {
+        #expect(ApprovalWire.PromptField.allCases.map(\.rawValue)
+            == ["wireVersion", "toolName", "inputPreview", "projectLabel", "createdAt", "expiresAt"])
+        #expect(ApprovalWire.DecisionField.allCases.map(\.rawValue)
+            == ["wireVersion", "promptID", "verdict", "decidedAt", "signature"])
+        let names = (ApprovalWire.PromptField.allCases.map(\.rawValue)
+            + ApprovalWire.DecisionField.allCases.map(\.rawValue)).map { $0.lowercased() }
+        for leak in ["description", "session", "request", "topic", "cwd"] {
+            #expect(!names.contains { $0.contains(leak) }, "an approval field names '\(leak)'")
         }
-        for token in ["func ", "var ", "class ", "Process", "URLSession", "FileManager", "UserDefaults"] {
-            #expect(!code.contains(token), "'\(token)' in NapCatWire — it holds constants only")
+    }
+
+    /// Every human-readable field is encrypted; the version and dates are not.
+    @Test func theEncryptedFieldsArePinned() {
+        #expect(ApprovalWire.encryptedPromptFields == [.toolName, .inputPreview, .projectLabel])
+        #expect(ApprovalWire.encryptedDecisionFields == [.promptID, .verdict, .signature])
+    }
+
+    @Test func theVerdictsAreExactlyAllowAndDeny() {
+        #expect(ApprovalWire.Verdict.allCases.map(\.rawValue) == ["allow", "deny"])
+    }
+
+    // MARK: - Structure locks
+
+    /// The constants files: values only, no functions or state.
+    static let constantsFiles = ["AlertWire.swift", "ApprovalWire.swift"]
+    /// The pure files: I/O-free logic over the constants.
+    static let pureFiles = ["ApprovalClassification.swift", "ApprovalPreview.swift", "ApprovalStateMachine.swift"]
+
+    static func wireDirectory() -> URL {
+        LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire")
+    }
+
+    static func wireCode(_ file: String) throws -> String {
+        LidGuardStructureTests.codeOnly(
+            try String(contentsOf: wireDirectory().appendingPathComponent(file), encoding: .utf8))
+    }
+
+    /// Tokens that reach outside the process (files, network, processes,
+    /// defaults, keychain, CloudKit) or read a clock or a random source. A
+    /// NapCatWire file needs none of them. (The keychain token is split so
+    /// this file never names a Security item call itself.)
+    static let ioTokens = [
+        "Foundation", "Darwin", "Glibc", "Dispatch", "Process", "NSTask", "posix_spawn", "popen",
+        "system(", "fopen", "FileHandle", "FileManager", "URLSession", "URLRequest", "NWConnection",
+        "socket(", "UserDefaults", "CloudKit", "CKContainer", "CKRecord", "Sec" + "Item", "getenv",
+        "Date(", "Clock", "Timer", "Thread", "RandomNumberGenerator", ".random(",
+    ]
+
+    /// Lines that import anything (the standard library needs no import).
+    static func importLines(_ code: String) -> [String] {
+        code.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("import ") || $0.hasPrefix("@_exported") || $0.hasPrefix("@testable") }
+    }
+
+    /// Exactly the known files: a new one must join a list (and its locks).
+    @Test func theWireTargetHoldsExactlyTheKnownFiles() throws {
+        let files = try FileManager.default.contentsOfDirectory(atPath: Self.wireDirectory().path)
+            .filter { $0.hasSuffix(".swift") }.sorted()
+        #expect(files == (Self.constantsFiles + Self.pureFiles).sorted(), "NapCatWire holds \(files)")
+    }
+
+    /// No import statement at all (so it builds for iOS and cannot reach
+    /// I/O), and no I/O, clock or randomness token, in every file.
+    @Test func theWireTargetIsImportFreeAndIOFree() throws {
+        for file in Self.constantsFiles + Self.pureFiles {
+            let code = try Self.wireCode(file)
+            #expect(Self.importLines(code).isEmpty, "\(file) must stay import-free: \(Self.importLines(code))")
+            for token in Self.ioTokens {
+                #expect(!code.contains(token), "'\(token)' in \(file) — NapCatWire performs no I/O")
+            }
         }
-        #expect(code.contains("public enum AlertWire"), "vacuity: the wire enum is the scanned file")
+    }
+
+    /// The constants files hold constants only.
+    @Test func theConstantsFilesHoldConstantsOnly() throws {
+        for file in Self.constantsFiles {
+            let code = try Self.wireCode(file)
+            for token in ["func ", "var ", "class ", "init("] {
+                #expect(!code.contains(token), "'\(token)' in \(file) — it holds constants only")
+            }
+        }
+        #expect(try Self.wireCode("AlertWire.swift").contains("public enum AlertWire"), "vacuity: the scanned file")
+        #expect(try Self.wireCode("ApprovalWire.swift").contains("public enum ApprovalWire"), "vacuity: the scanned file")
+    }
+
+    /// The locks themselves can fail: each catches a planted line.
+    @Test func theStructureLocksCatchAPlantedLine() {
+        #expect(Self.importLines("import Foundation\nlet x = 1") == ["import Foundation"])
+        #expect(Self.importLines("  @testable import NapCat") == ["@testable import NapCat"])
+        #expect(Self.importLines("let important = 1").isEmpty)
+        let planted = "let t = Process()\nlet s = URLSession.shared\nlet now = Date()"
+        #expect(Self.ioTokens.filter { planted.contains($0) } == ["Process", "URLSession", "Date("])
     }
 }

@@ -23,8 +23,9 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
-  # The repository root. Only its `NapCatWire` product (the wire contract,
-  # constants only) is linked; the Mac app's targets are never built here.
+  # The repository root. Only its `NapCatWire` product (the wire contract
+  # and the pure approval core: zero imports, no I/O) is linked; the Mac
+  # app's targets are never built here.
   NapCat:
     path: ../..
 targets:
