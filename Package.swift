@@ -29,7 +29,8 @@ let package = Package(
     products: [
         // The shared wire contract (CloudKit container, record types, field
         // keys, subscription IDs) and the pure F4 approval core (the gate
-        // tables) — the one source of truth both apps import.
+        // tables, the prompt lifecycle) — the one source of truth both apps
+        // import.
         .library(name: "NapCatWire", targets: ["NapCatWire"]),
     ],
     targets: [
