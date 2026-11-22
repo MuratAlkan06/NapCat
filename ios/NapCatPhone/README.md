@@ -69,10 +69,12 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 | `-NapCatFixture` | `populated`, `empty` | `populated` |
 | `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff`, `pushNotSetUp` | `connected` |
 | `-palette` | `nightGroom`, `deepCream`, `neutral` | the stored choice |
+| `-NapCatScreen` | `receiver`, `settings` | `receiver` |
 
 The chosen palette is kept in the app's defaults under the key `palette`.
 Passing `-palette` picks one for that launch only and leaves the stored
-choice alone.
+choice alone. `-NapCatScreen settings` opens the launch on Settings (for
+screenshots). Neither forces fixtures on a device build.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it.
@@ -102,8 +104,9 @@ the Mac generates it. No topic, server, host or user name appears anywhere.
 
 ## Settings
 
-Settings (`NapCatPhone/Settings/`) is one standard grouped form in the
-current palette:
+The gear in the main screen's toolbar opens Settings
+(`NapCatPhone/Settings/`) as a sheet; **Done** or a swipe down closes it.
+It is one standard grouped form in the current palette:
 
 - **Appearance**: the palette. It changes colors only, applies at once (the
   form included), and is kept across launches.
