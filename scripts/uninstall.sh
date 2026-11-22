@@ -6,9 +6,10 @@
 #
 # Idempotent — safe to run any number of times, including when setup.sh was
 # never run. Restores stock power behavior (sleep + charging), removes the
-# sudoers entries, /usr/local/napcat, the com.napcat.failsafe LaunchAgent, and
-# the app's own settings (the com.muratalkan.napcat defaults domain — which
-# holds the ntfy topic, a bearer credential for the alert feed).
+# sudoers entries, /usr/local/napcat, the com.napcat.failsafe LaunchAgent, the
+# app's own settings (the com.muratalkan.napcat defaults domain) and the ntfy
+# topic — a bearer credential for the alert feed — from the login keychain
+# (older NapCat versions kept it in the defaults domain instead).
 #
 # Structure (P2 security-review carryover): steps COLLECT errors instead of
 # aborting — the sudoers file, /usr/local/napcat, and the LaunchAgent are
@@ -29,6 +30,10 @@ SMC_DIR="/usr/local/napcat"
 SMC_BIN="$SMC_DIR/smc"
 AGENT_LABEL="com.napcat.failsafe"
 DEFAULTS_DOMAIN="com.muratalkan.napcat"
+# The ntfy topic's keychain item — byte-identical to KeychainItemName.ntfyTopic
+# in the app (parity-locked by KeychainTopicStoreTests).
+KEYCHAIN_SERVICE="com.muratalkan.napcat"
+KEYCHAIN_ACCOUNT="ntfy-topic"
 FAILURES=()
 REVERTED=()
 
@@ -169,20 +174,21 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
     fi
 
     # 6. Remove the app's own settings (per-user defaults domain).
-    #    WHY THIS IS A SECURITY STEP, not just tidiness: the lid-alert setting
-    #    `lidGuardNtfyTopic` is a BEARER CREDENTIAL — on ntfy there are no
-    #    accounts, so whoever knows the topic name can read and post to that
-    #    feed. Leaving it behind after an uninstall leaves a live credential in
-    #    the preferences plist. The value is never printed here (every read is
-    #    redirected to /dev/null); it is deleted, not inspected.
+    #    WHY THIS IS A SECURITY STEP, not just tidiness: before issue #103 the
+    #    lid-alert setting `lidGuardNtfyTopic` lived here, and it is a BEARER
+    #    CREDENTIAL — on ntfy there are no accounts, so whoever knows the topic
+    #    name can read and post to that feed. An install that never ran a
+    #    keychain-era NapCat still has it in the preferences plist. The value
+    #    is never printed here (every read is redirected to /dev/null); it is
+    #    deleted, not inspected. Step 7 removes the keychain copy.
     #    Run in the user's own context via `launchctl asuser`, because defaults
     #    talk to that user's cfprefsd — root's own domain is a different one.
     if /bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \
         /usr/bin/defaults read "$DEFAULTS_DOMAIN" >/dev/null 2>&1; then
         if /bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \
             /usr/bin/defaults delete "$DEFAULTS_DOMAIN" >/dev/null 2>&1; then
-            echo "removed: $DEFAULTS_DOMAIN settings (including the ntfy topic)"
-            REVERTED+=("NapCat settings removed (defaults domain $DEFAULTS_DOMAIN, including the ntfy topic)")
+            echo "removed: $DEFAULTS_DOMAIN settings (including any pre-keychain ntfy topic)"
+            REVERTED+=("NapCat settings removed (defaults domain $DEFAULTS_DOMAIN, including any pre-keychain ntfy topic)")
         else
             FAILURES+=("could not remove the $DEFAULTS_DOMAIN defaults domain — as '$TARGET_USER' run: defaults delete $DEFAULTS_DOMAIN")
         fi
@@ -195,8 +201,31 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
     if [ -n "$TARGET_HOME" ] && [ -f "$DEFAULTS_PLIST" ]; then
         /usr/bin/sudo -u "$TARGET_USER" /bin/rm -f "$DEFAULTS_PLIST" || FAILURES+=("could not remove $DEFAULTS_PLIST")
     fi
+
+    # 7. Remove the ntfy topic from the user's login keychain (issue #103 —
+    #    NapCat keeps the topic there now; the defaults step above covers an
+    #    older install). Same user context as step 6: AS the user, in their
+    #    session, so `security` reaches their keychain, not root's.
+    #    VALUE-SILENT: only the delete form is used — never -g/-w, never a
+    #    find- command — and its output (it names the deleted item) goes to
+    #    /dev/null. Exit 44 is errSecItemNotFound: nothing to remove.
+    /bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \
+        /usr/bin/security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" >/dev/null 2>&1
+    KEYCHAIN_STATUS=$?
+    case "$KEYCHAIN_STATUS" in
+        0)
+            echo "removed: the ntfy topic from the login keychain"
+            REVERTED+=("ntfy topic removed from the login keychain")
+            ;;
+        44)
+            echo "ok: no NapCat ntfy topic in the keychain — nothing to remove"
+            ;;
+        *)
+            FAILURES+=("could not remove the ntfy topic from the keychain (exit status $KEYCHAIN_STATUS) — as '$TARGET_USER', delete the \"NapCat ntfy topic\" item in Keychain Access")
+            ;;
+    esac
 else
-    FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist and run 'defaults delete $DEFAULTS_DOMAIN' manually")
+    FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist, run 'defaults delete $DEFAULTS_DOMAIN' manually, and delete the \"NapCat ntfy topic\" item in Keychain Access")
 fi
 
 echo ""

@@ -306,6 +306,112 @@ struct KeychainTopicStoreTests {
         }
     }
 
+    // MARK: - uninstall.sh deletes the item, value-silently
+
+    private static func uninstallScript() throws -> String {
+        try String(contentsOf: LidGuardStructureTests.repoRoot().appendingPathComponent("scripts/uninstall.sh"),
+                   encoding: .utf8)
+    }
+
+    /// The two item-name literals in uninstall.sh must be the app's own
+    /// (`KeychainItemName.ntfyTopic`) — the hookVersion-style parity lock.
+    static func keychainParityFailures(_ script: String) -> [String] {
+        let lines = script.split(separator: "\n").map(String.init)
+        var failures: [String] = []
+        for (variable, value) in [("KEYCHAIN_SERVICE", KeychainItemName.ntfyTopic.service),
+                                  ("KEYCHAIN_ACCOUNT", KeychainItemName.ntfyTopic.account)] {
+            let definitions = lines.filter { $0.hasPrefix(variable + "=") }
+            if definitions != ["\(variable)=\"\(value)\""] {
+                failures.append("uninstall.sh must define \(variable)=\"\(value)\" exactly once, found \(definitions)")
+            }
+        }
+        return failures
+    }
+
+    /// The exact keychain step: run AS the invoking user in their session,
+    /// the delete form only, all output discarded.
+    static let keychainDeleteCall = #"/usr/bin/security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" >/dev/null 2>&1"#
+    static let keychainDeleteUser = #"/bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \"#
+
+    /// Every value-silence / user-context violation of the keychain step in
+    /// an uninstall.sh text; empty == locked.
+    static func keychainDeleteFailures(_ script: String) -> [String] {
+        let code = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        var failures: [String] = []
+        let calls = code.indices.filter { code[$0].contains("security ") }
+        guard calls.count == 1, let call = calls.first else {
+            return ["uninstall.sh must invoke `security` exactly once (the item delete), found \(calls.count)"]
+        }
+        if code[call] != keychainDeleteCall {
+            failures.append("the keychain step must be exactly '\(keychainDeleteCall)', got '\(code[call])'")
+        }
+        if call == 0 || code[call - 1] != keychainDeleteUser {
+            failures.append("the keychain step must run as the user: '\(keychainDeleteUser)' on the line before")
+        }
+        for token in [" -g", " -w", "find-", "dump-keychain", "export"] where code[call].contains(token) {
+            failures.append("'\(token)' in the keychain step could print the topic")
+        }
+        // Outcome: 0 is reported, 44 (errSecItemNotFound) is nothing to do,
+        // anything else is a collected failure — and no line prints a value.
+        let tail = code[(call + 1)...].prefix(12)
+        let expected = [#"KEYCHAIN_STATUS=$?"#, #"case "$KEYCHAIN_STATUS" in"#, "0)",
+                        #"echo "removed: the ntfy topic from the login keychain""#,
+                        #"REVERTED+=("ntfy topic removed from the login keychain")"#, ";;", "44)",
+                        #"echo "ok: no NapCat ntfy topic in the keychain — nothing to remove""#, ";;", "*)"]
+        if Array(tail.prefix(expected.count)) != expected {
+            failures.append("the keychain step's outcome must be: 0 reported, 44 nothing to do, else a failure")
+        }
+        if !tail.contains(where: { $0.hasPrefix("FAILURES+=(\"could not remove the ntfy topic from the keychain") }) {
+            failures.append("any other exit must be a collected failure")
+        }
+        // Inside the invoking-user block, after the defaults step.
+        if let defaultsDelete = code.firstIndex(where: { $0.contains(#"/usr/bin/defaults delete "$DEFAULTS_DOMAIN""#) }),
+           defaultsDelete > call {
+            failures.append("the keychain step must follow the defaults step")
+        }
+        return failures
+    }
+
+    @Test func theUninstallerDeletesTheSameItemValueSilently() throws {
+        let script = try Self.uninstallScript()
+        #expect(Self.keychainParityFailures(script).isEmpty, "\(Self.keychainParityFailures(script))")
+        #expect(Self.keychainDeleteFailures(script).isEmpty, "\(Self.keychainDeleteFailures(script))")
+    }
+
+    /// Canary: a drifted name, a printing flag, a find- form, kept output, a
+    /// root-context run, or "not found" counted as a failure must each trip.
+    @Test func theUninstallerKeychainLockCatchesMutants() throws {
+        let script = try Self.uninstallScript()
+        try #require(Self.keychainParityFailures(script).isEmpty && Self.keychainDeleteFailures(script).isEmpty,
+                     "canary baseline must be clean")
+        let parityMutants: [(String, String, String)] = [
+            ("service drifted", #"KEYCHAIN_SERVICE="com.muratalkan.napcat""#, #"KEYCHAIN_SERVICE="com.muratalkan.NapCat""#),
+            ("account drifted", #"KEYCHAIN_ACCOUNT="ntfy-topic""#, #"KEYCHAIN_ACCOUNT="ntfyTopic""#),
+        ]
+        for (name, target, replacement) in parityMutants {
+            let mutant = script.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != script, "canary setup '\(name)'")
+            #expect(!Self.keychainParityFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        let call = "delete-generic-password -s \"$KEYCHAIN_SERVICE\" -a \"$KEYCHAIN_ACCOUNT\" >/dev/null 2>&1"
+        let deleteMutants: [(String, String, String)] = [
+            ("password printed (-g)", call, call.replacingOccurrences(of: " -a", with: " -g -a")),
+            ("find- form", "delete-generic-password -s", "find-generic-password -w -s"),
+            ("stdout kept", " >/dev/null 2>&1\n    KEYCHAIN_STATUS", " 2>/dev/null\n    KEYCHAIN_STATUS"),
+            ("run as root", #"/bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \"# + "\n        /usr/bin/security",
+             "/usr/bin/security"),
+            ("not found counted as a failure", "        44)\n", "        4)\n"),
+            ("second security call", "    KEYCHAIN_STATUS=$?\n",
+             "    KEYCHAIN_STATUS=$?\n    /usr/bin/security find-generic-password -s x\n"),
+        ]
+        for (name, target, replacement) in deleteMutants {
+            let mutant = script.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != script, "canary setup '\(name)'")
+            #expect(!Self.keychainDeleteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - Structure lints
 
     /// The Security item calls, spelled so this file does not contain them.
