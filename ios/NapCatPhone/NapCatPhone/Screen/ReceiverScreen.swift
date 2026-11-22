@@ -4,8 +4,10 @@ import SwiftUI
 /// The receiver's one screen: the connection pill, the notification-
 /// permission row (only while notifications are off), and the recent alerts.
 /// When there are no alerts, the empty state is the hero, with the sentence
-/// the list state allows. Everything visual comes from the environment's
-/// `Theme`.
+/// the list state allows. A full list ends on its cap, said. Rows that
+/// arrive while the list is on screen come in on the theme's entrance curve
+/// (`ListMotion`; nothing moves under Reduce Motion). Everything visual
+/// comes from the environment's `Theme`.
 struct ReceiverScreen: View {
     nonisolated static let title = "NapCat"
     nonisolated static let recentHeader = "Recent"
@@ -15,11 +17,20 @@ struct ReceiverScreen: View {
     let fetch: FetchStatus
 
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var revealed = false
 
     /// What the screen says about its list (`ListState`).
     var list: ListState {
         ListState(connection: connection, fetch: fetch, hasAlerts: !alerts.isEmpty)
+    }
+
+    /// The full list's last line: the cap, said, state word first. Only
+    /// once the list holds `AlertFeed.listLimit` rows, the most it keeps;
+    /// VoiceOver reads it like any other line.
+    nonisolated static func capLine(rowCount: Int) -> PhoneLine? {
+        guard rowCount >= AlertFeed.listLimit else { return nil }
+        return PhoneLine(text: "Last \(AlertFeed.listLimit) alerts — older ones aren't shown.", severity: .nominal)
     }
 
     /// Themed cards on the theme's own ground, in a plain vertical scroll
@@ -57,10 +68,15 @@ struct ReceiverScreen: View {
                             AlertRow(alert: alert)
                                 .themedCard()
                                 .staggeredEntrance(index: index, revealed: revealed)
+                                .transition(ListMotion.transition(theme, reduceMotion: reduceMotion))
                         }
+                    }
+                    if let cap = Self.capLine(rowCount: alerts.count) {
+                        CaptionLine(line: cap)
                     }
                 }
             }
+            .animation(ListMotion.animation(theme, reduceMotion: reduceMotion), value: alerts)
             .padding(.horizontal, theme.margin)
             .padding(.bottom, theme.rowGap * 2)
         }
@@ -92,4 +108,13 @@ struct ReceiverScreen: View {
 /// The query failed before anything was listed (no launch value shows it).
 #Preview("Couldn't check, nothing listed") {
     ReceiverScreen(alerts: [], connection: .pushNotSetUp, fetch: .failed)
+}
+
+/// A full list: it ends on the cap line (scroll to the bottom).
+#Preview("Full list") {
+    let alerts = (0..<AlertFeed.listLimit).map { step in
+        PhoneAlert(body: "A Claude session finished after 8 min — none still working", lane: .session,
+                   firedAt: Date.now.addingTimeInterval(Double(-step) * 600))
+    }
+    ReceiverScreen(alerts: alerts, connection: .connected, fetch: .fetched)
 }

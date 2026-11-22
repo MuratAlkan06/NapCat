@@ -38,6 +38,31 @@ import UIKit
         #expect(StaggerTiming.delay(forIndex: .max) + id.theme.entranceDuration <= 0.6)
     }
 
+    // MARK: The cap
+
+    /// The cap is said once the list is full, and only then, in words
+    /// built from the limit. A nominal line: VoiceOver reads it as written.
+    @Test func theCapIsSaidOnceTheListIsFull() throws {
+        for count in [0, 1, AlertFeed.listLimit - 1] {
+            #expect(ReceiverScreen.capLine(rowCount: count) == nil, "\(count) rows")
+        }
+        let line = try #require(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit))
+        #expect(AlertFeed.listLimit == 50)
+        #expect(line == PhoneLine(text: "Last 50 alerts — older ones aren't shown.", severity: .nominal))
+        #expect(line.spoken == line.text)
+        #expect(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit + 1) == line)
+    }
+
+    /// A feed that fills up ends on the cap: 60 records fetched, 50 listed.
+    @Test @MainActor func aFullFeedEndsOnTheCapLine() async {
+        let many = (0..<60).map { AlertFeedTests.alert("session-\($0)", minutesAgo: Double($0)) }
+        let feed = AlertFeed(source: ScriptedSource(account: .available, alerts: many),
+                             notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.refresh()
+        #expect(feed.alerts.count == AlertFeed.listLimit)
+        #expect(ReceiverScreen.capLine(rowCount: feed.alerts.count) != nil)
+    }
+
     // MARK: Pull to refresh
 
     static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch) "

@@ -165,12 +165,16 @@ A live launch:
    keeps the list and says so: with rows listed, one line under the header
    reads "Couldn't check just now — showing earlier alerts."; with none,
    the empty state reads "Couldn't check for alerts just now. Pull down to
-   try again." The next fetch that answers clears it.
+   try again." The next fetch that answers clears it. The list keeps at
+   most 50 rows; a full list ends with "Last 50 alerts — older ones aren't
+   shown."
 
 The notification itself is rendered by iOS from the subscription: title
 "NapCat", the record's body as the text, default sound. The app schedules no
-notification of its own. A push that arrives while the app is open updates
-the list without a banner. The app declares no background modes, so it is
+notification of its own. A push that arrives while the app is open still
+shows its banner and plays its sound, and its row comes into the list on
+the entrance curve (under Reduce Motion it is simply there). The app
+declares no background modes, so it is
 never woken in the background. Whatever arrived while it was closed is
 fetched when it opens.
 
