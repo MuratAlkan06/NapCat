@@ -334,9 +334,19 @@ struct SettingsWindowTests {
                                                   lastAttempt: lastAttempt, now: 1_000_000) == caption, "\(name)")
     }
 
-    /// The disclosure names the host and everything the request exposes.
-    @Test func theUpdateDisclosureIsPlainAboutTheRequest() {
+    /// The disclosure names the host and everything the request exposes —
+    /// and the README's privacy note says the same, word for word.
+    @Test func theUpdateDisclosureIsPlainAboutTheRequest() throws {
         #expect(MenuStateModel.updateCheckDisclosure == Self.updateDisclosure)
+        let readme = try String(contentsOf: LidGuardStructureTests.repoRoot().appendingPathComponent("README.md"),
+                                encoding: .utf8)
+        let flat = readme.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let exposes = "The request exposes your IP address, the app name and version in the User-Agent, "
+            + "and standard macOS HTTPS headers; nothing else is sent."
+        #expect(MenuStateModel.updateCheckDisclosure.contains(exposes))
+        #expect(flat.contains(exposes), "the README's privacy note must say exactly what Settings says")
+        #expect(flat.contains("defaults write com.muratalkan.napcat updateCheckAutoEnabled -bool NO"))
+        #expect(flat.contains("## Network use and privacy"))
     }
 
     /// Updates is General's last group, and only while the check exists.
