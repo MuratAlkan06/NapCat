@@ -1358,6 +1358,36 @@ final class MenuStateModel: ObservableObject {
         }
     }
 
+    // MARK: - Issue #111 (update check) presentation
+
+    /// Settings › General › Updates: the passive caption beside "Check for
+    /// Updates…" — C2 fragments, state word first. Precedence: checking, a
+    /// failed check this session, a known newer release, up to date this
+    /// session, then the last attempt (from an earlier session — its outcome
+    /// is not kept), then never.
+    ///
+    /// A plain String, never a `PanelLine`: an available update — let alone a
+    /// failed check — is not a problem, so under the iron rule the whole
+    /// update state is NOMINAL. The caption carries no severity, never raises
+    /// the gear badge and needs no panel twin; a failed check produces no
+    /// panel output at all.
+    nonisolated static func updateCheckCaption(checking: Bool, lastResult: UpdateCheckResult?, newer: ReleaseVersion?,
+                                               lastAttempt: Double?, now: Double) -> String {
+        if checking { return "Checking…" }
+        if lastResult == .failed { return "Couldn’t check — try again later" }
+        if let newer { return "Update available — \(newer.tag); Check for Updates… opens its release page" }
+        let when = lastAttempt.map { ClaudeActivityPolicy.relativeTime(seconds: Int(max(0, now - $0))) }
+        if lastResult == .upToDate { return when.map { "Up to date — checked \($0)" } ?? "Up to date" }
+        return when.map { "Checked \($0)" } ?? "Not checked yet"
+    }
+
+    /// The disclosure under "Check for updates automatically": what it
+    /// contacts, how often, and everything the request exposes.
+    nonisolated static let updateCheckDisclosure = "Contacts \(GitHubReleaseChecker.apiHost) about once a day, "
+        + "when you open the menu or Settings. The request exposes your IP address, the app name and version "
+        + "in the User-Agent, and standard macOS HTTPS headers; nothing else is sent. Nothing is downloaded "
+        + "or installed."
+
     // MARK: - Issue #34: the run-floor group of the ntfy settings editor
 
     /// The "Session alerts" group's title in the "ntfy settings…" editor —
