@@ -44,7 +44,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "NapCat",
-            dependencies: ["NapCatWire"]
+            dependencies: ["NapCatSeam", "NapCatWire"]
         ),
         // F4: the authenticated Unix-socket seam between the channel server
         // and the app. macOS only, never linked by the phone app.
