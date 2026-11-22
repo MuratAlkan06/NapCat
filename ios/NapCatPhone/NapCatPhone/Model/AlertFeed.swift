@@ -3,11 +3,11 @@ import Observation
 
 /// What the screen shows: the alert list, how its last fetch went, the
 /// connection pill and the notification permission, kept current from one
-/// `AlertSource` and one `NotificationGate`. It refreshes on
-/// launch, on every foreground and on every push; overlapping requests fold
-/// into one follow-up pass, so a burst of pushes never queues a burst of
-/// fetches. A push that names its record also has that record fetched
-/// directly, so the newest alert never waits on the query's index.
+/// `AlertSource` and one `NotificationGate`. It refreshes on launch, on
+/// every foreground, on every push and on a pull to refresh; overlapping
+/// requests fold into one follow-up pass, so a burst of pushes never queues
+/// a burst of fetches. A push that names its record also has that record
+/// fetched directly, so the newest alert never waits on the query's index.
 @MainActor
 @Observable
 final class AlertFeed {
@@ -34,6 +34,8 @@ final class AlertFeed {
     /// Record names pushes have named since the last fetch, fetched directly
     /// on the next pass.
     @ObservationIgnored private var pushedNames: Set<String> = []
+    /// Pulls waiting for the running refresh's follow-up pass.
+    @ObservationIgnored private var pullWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// A live feed starts `.checking` and `.pending`: the pill, the list and
     /// the permission claim nothing until the first probe is done.
@@ -98,14 +100,37 @@ final class AlertFeed {
             return false
         }
         refreshing = true
-        defer { refreshing = false }
         var changed = false
         repeat {
             refreshAgain = false
             if await refreshOnce() { changed = true }
         } while refreshAgain
+        refreshing = false
+        // Each waiting pull asked before the last pass began, so that pass
+        // answered it.
+        let answered = pullWaiters
+        pullWaiters.removeAll()
+        for pull in answered { pull.resume() }
         return changed
     }
+
+    /// Pull to refresh: a refresh that returns only once a pass begun after
+    /// the pull has finished, so the system's spinner stays up exactly that
+    /// long. During a running pass it waits for that pass's follow-up
+    /// instead of returning at once. Like every pass, it re-probes the
+    /// account and, while it is unconfirmed ("Connected — no push"), the
+    /// push subscription.
+    func pullToRefresh() async {
+        guard refreshing else {
+            await refresh()
+            return
+        }
+        refreshAgain = true
+        await withCheckedContinuation { pullWaiters.append($0) }
+    }
+
+    /// How many pulls are waiting on the running pass (for tests).
+    var waitingPulls: Int { pullWaiters.count }
 
     /// The record name a push carries, read by the source (only it knows
     /// its payload). Nonisolated so a notification delegate can read it

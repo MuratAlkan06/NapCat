@@ -146,13 +146,17 @@ A live launch:
    without it.").
 3. Makes sure the one push subscription exists. It fetches the subscription
    by its fixed ID (`AlertWire.subscriptionID`) and creates it only when the
-   server has none. A refusal is logged and retried on the next foreground.
-   Until the subscription is confirmed, the pill reads **Connected — no
-   push**: alerts still load whenever the app opens, but none is pushed.
+   server has none. A refusal is logged and retried on the next foreground
+   or pull to refresh. Until the subscription is confirmed, the pill reads
+   **Connected — no push**: alerts still load whenever the app opens, but
+   none is pushed.
    (**Notifications off** takes precedence, because the owner can fix that in
    Settings.)
 4. Fetches the newest `Alert` records (newest first, up to 50). It does this
-   again on every return to the foreground and on every push. A push also
+   again on every return to the foreground, on every push, and when you
+   pull the list down. A pull runs the whole pass (the account check, the
+   subscription retry while it is unconfirmed, the fetch), and its spinner
+   stays up until a pass begun after the pull has finished. A push also
    names the record it announces, and that record is fetched directly by ID,
    because the query's index can lag a record created moments ago. A push
    that names no usable record relies on the query alone. Rows are keyed
@@ -160,8 +164,8 @@ A live launch:
    Records with a missing or unknown field are skipped. A fetch that fails
    keeps the list and says so: with rows listed, one line under the header
    reads "Couldn't check just now — showing earlier alerts."; with none,
-   the empty state reads "Couldn't check for alerts just now." The next
-   fetch that answers clears it.
+   the empty state reads "Couldn't check for alerts just now. Pull down to
+   try again." The next fetch that answers clears it.
 
 The notification itself is rendered by iOS from the subscription: title
 "NapCat", the record's body as the text, default sound. The app schedules no

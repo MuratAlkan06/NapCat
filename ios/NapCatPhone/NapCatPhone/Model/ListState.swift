@@ -28,7 +28,7 @@ enum EmptyHero: CaseIterable, Sendable {
         switch self {
         case .checking: return "Checking for alerts…"
         case .iCloudUnavailable: return "iCloud unavailable. Alerts can't arrive without it."
-        case .couldNotCheck: return "Couldn't check for alerts just now."
+        case .couldNotCheck: return "Couldn't check for alerts just now. Pull down to try again."
         case .noAlerts: return "No alerts. Your Mac hasn't needed you."
         }
     }

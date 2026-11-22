@@ -38,6 +38,28 @@ import UIKit
         #expect(StaggerTiming.delay(forIndex: .max) + id.theme.entranceDuration <= 0.6)
     }
 
+    // MARK: Pull to refresh
+
+    static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch) "
+        + ".refreshable { await feed.pullToRefresh() }"
+
+    /// The list pulls down to refresh, through the feed's waiting pull (a
+    /// plain refresh can return before anything is checked, ending the
+    /// system's spinner early). SwiftUI composition cannot be driven
+    /// headlessly, so this locks the source, and runs against mutants.
+    @Test func theListPullsToRefreshThroughTheFeed() throws {
+        let root = try SettingsReachabilityTests.rootCode()
+        #expect(SettingsReachabilityTests.flat(root).contains(Self.pull))
+        let mutants = [
+            root.replacingOccurrences(of: "                .refreshable { await feed.pullToRefresh() }\n", with: ""),
+            root.replacingOccurrences(of: "await feed.pullToRefresh()", with: "await feed.refresh()"),
+        ]
+        for mutant in mutants {
+            #expect(mutant != root, "a mutation did not apply")
+            #expect(!SettingsReachabilityTests.flat(mutant).contains(Self.pull))
+        }
+    }
+
     // MARK: Connection pill
 
     @Test func theConnectionStatesReadAsTheirSeverity() {

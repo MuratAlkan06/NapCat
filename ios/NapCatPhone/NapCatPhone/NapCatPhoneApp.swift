@@ -17,8 +17,9 @@ struct NapCatPhoneApp: App {
 
 /// The screen over the live feed: the first refresh at launch, another on
 /// every return to the foreground (the missed-alert reconciliation: whatever
-/// arrived while the app was away is fetched on open). Everything below it,
-/// Settings included, is drawn in the owner's palette.
+/// arrived while the app was away is fetched on open), and one whenever the
+/// owner pulls the list down. Everything below it, Settings included, is
+/// drawn in the owner's palette.
 ///
 /// Settings opens from the gear in the main screen's toolbar as a sheet: a
 /// self-contained task beside the alert list (which has no hierarchy for a
@@ -41,6 +42,7 @@ struct ReceiverRoot: View {
     var body: some View {
         NavigationStack {
             ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)
+                .refreshable { await feed.pullToRefresh() }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         SettingsGearButton { showsSettings = true }

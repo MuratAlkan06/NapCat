@@ -231,6 +231,45 @@ import Testing
         #expect(Self.shown(listed) == .staleRows)
     }
 
+    // MARK: Pull to refresh
+
+    /// An idle pull runs one pass of its own: the probe and the query.
+    @Test func aPullWhileIdleRunsOnePass() async {
+        let fresh = [Self.alert("session-1", minutesAgo: 1)]
+        let source = ScriptedSource(account: .available, alerts: fresh)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.pullToRefresh()
+        #expect(await source.connects == 1)
+        #expect(await source.fetches == 1)
+        #expect(feed.alerts == fresh)
+    }
+
+    /// A pull during a running pass does not return at once (the spinner
+    /// would end before anything was checked): it returns after the
+    /// follow-up pass, which re-probes, and its answer is on screen.
+    @Test func aPullDuringARunningPassWaitsForTheFollowUp() async {
+        let source = ScriptedSource(account: .availableWithoutPush, alerts: [], holdFirstConnect: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let first = Task { await feed.refresh() }
+        while await !source.isHolding { await Task.yield() }
+        let pull = Task {
+            await feed.pullToRefresh()
+            return (await source.connects, feed.connection)
+        }
+        for _ in 0..<10_000 {
+            if feed.waitingPulls > 0 { break }
+            await Task.yield()
+        }
+        #expect(feed.waitingPulls == 1)
+        await source.setAccount(.available)
+        await source.release()
+        _ = await first.value
+        let (connectsWhenDone, connectionWhenDone) = await pull.value
+        #expect(connectsWhenDone == 2)
+        #expect(connectionWhenDone == .connected)
+        #expect(feed.waitingPulls == 0)
+    }
+
     // MARK: Pushes
 
     /// The record a push names is fetched directly, so it is listed even
