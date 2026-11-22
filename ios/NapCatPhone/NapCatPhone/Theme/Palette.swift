@@ -8,6 +8,10 @@ enum PaletteID: String, CaseIterable, Identifiable, Sendable {
     /// The shipped colors: cream and warm charcoal, with a sepia (sand in
     /// dark mode) watermark.
     case nightGroom
+    /// Deeper cream grounds and a warmer night.
+    case deepCream
+    /// Night Groom with a gray watermark in light mode.
+    case neutral
 
     /// The palette a fresh install uses.
     static let fallback: PaletteID = .nightGroom
@@ -18,12 +22,16 @@ enum PaletteID: String, CaseIterable, Identifiable, Sendable {
     var displayName: String {
         switch self {
         case .nightGroom: return "Night Groom"
+        case .deepCream: return "Deep Cream"
+        case .neutral: return "Neutral"
         }
     }
 
     var colors: Palette {
         switch self {
         case .nightGroom: return .nightGroom
+        case .deepCream: return .deepCream
+        case .neutral: return .neutral
         }
     }
 }
@@ -72,4 +80,27 @@ extension Palette {
         warning: ColorToken(light: 0x8F5300, dark: 0xF2B35D),
         error: ColorToken(light: 0xB3261E, dark: 0xF2877C)
     )
+
+    /// Deep Cream: Night Groom on a deeper cream (light) and a warmer night
+    /// (dark). The ground-to-card step is kept in both modes, the watermark
+    /// is re-balanced to the new grounds, and the secondary ink is a shade
+    /// darker in light mode so it keeps its contrast on the deeper card
+    /// (4.91:1). Every other token is Night Groom's.
+    static let deepCream: Palette = {
+        var palette = Palette.nightGroom
+        palette.ground = ColorToken(light: 0xF7F2E8, dark: 0x1D1A15)
+        palette.surface = ColorToken(light: 0xEDE7DA, dark: 0x2A2620)
+        palette.pillFill = ColorToken(light: 0xEDE7DA, dark: 0x2A2620)
+        palette.inkSecondary = ColorToken(light: 0x67625A, dark: 0xADA79C)
+        palette.artTint = ColorToken(light: 0x7D5631, dark: 0xD8C3A0, lightAlpha: 0.095, darkAlpha: 0.08)
+        return palette
+    }()
+
+    /// Neutral: Night Groom with a gray watermark in light mode. Dark mode
+    /// is Night Groom's.
+    static let neutral: Palette = {
+        var palette = Palette.nightGroom
+        palette.artTint = ColorToken(light: 0x606060, dark: 0xD8C3A0, lightAlpha: 0.09, darkAlpha: 0.08)
+        return palette
+    }()
 }

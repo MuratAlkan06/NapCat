@@ -54,7 +54,10 @@ xcrun simctl launch booted com.muratalkan.napcat.phone
 The style is **Pixel Nap**: cream grounds (warm charcoal in dark mode), ink
 borders with a hard shadow, square corners, monospaced labels and an 8 pt
 spacing rhythm. Its empty state shows the smooth grooming cat as a large,
-faint watermark behind the message.
+faint watermark behind the message. It comes in three palettes, which
+change colors only: **Night Groom** (the default), **Deep Cream** (deeper
+cream grounds and a warmer night) and **Neutral** (a gray watermark in
+light mode).
 
 Launch arguments choose what the screen shows. They are read from the
 `UserDefaults` argument domain, and unknown values fall back to the default.
