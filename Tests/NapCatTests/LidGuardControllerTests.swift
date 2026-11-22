@@ -168,9 +168,11 @@ final class BusySampleStub: @unchecked Sendable {
 
 /// Everything one controller test needs, wired to fakes only. No IOKit
 /// registration, no network, no real publish — `make test` can never reach
-/// ntfy.sh or any other host.
+/// ntfy.sh or any other host — and no keychain: the topic lives in a
+/// `FakeTopicStore` (pass the same one to a second harness to "relaunch").
 final class LidGuardHarness {
     let defaults: UserDefaults
+    let topicStore: FakeTopicStore
     let source = RecordingSystemSleepSource()
     let mirror = ObservedStayAwakeMirror()
     let busy = BusySampleStub()
@@ -178,12 +180,14 @@ final class LidGuardHarness {
     let sender: MessageSender
     let controller: LidGuardController
 
-    init(defaults: UserDefaults, sender: MessageSender) {
+    init(defaults: UserDefaults, sender: MessageSender, topicStore: FakeTopicStore = FakeTopicStore()) {
         self.defaults = defaults
         self.sender = sender
+        self.topicStore = topicStore
         mirror.set(false)
         controller = LidGuardController(
             defaults: defaults,
+            topicStore: topicStore,
             sleepSource: source,
             sender: sender,
             stayAwakeMirror: mirror,
@@ -192,10 +196,12 @@ final class LidGuardHarness {
         )
     }
 
-    /// enabled ∧ usable topic ∧ primed, then register.
+    /// enabled ∧ usable topic ∧ primed, then register. The topic goes in
+    /// through `setTopic` — the app's only way to change it (keychain, then
+    /// memory) — and THEN the priming, which a changed topic clears.
     func arm(topic: String = "napcat-lid-8f3k2p") {
         defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
-        defaults.set(topic, forKey: DefaultsKey.lidGuardNtfyTopic)
+        controller.setTopic(topic)
         defaults.set(clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
         controller.refreshArming()
     }
@@ -203,12 +209,13 @@ final class LidGuardHarness {
 
 func withLidGuardHarness(
     sender: MessageSender = RecordingMessageSender(),
+    topicStore: FakeTopicStore = FakeTopicStore(),
     _ body: (LidGuardHarness) -> Void
 ) {
     let suite = "com.muratalkan.napcat.tests.lidguard.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
-    body(LidGuardHarness(defaults: defaults, sender: sender))
+    body(LidGuardHarness(defaults: defaults, sender: sender, topicStore: topicStore))
 }
 
 // MARK: - Tests
@@ -644,9 +651,16 @@ struct LidGuardControllerTests {
             harness.arm()
             #expect(harness.controller.setTopic("bad/topic") == .invalid)
             #expect(harness.controller.storedTopic == "napcat-lid-8f3k2p", "the previous value is kept")
-
-            // And an unusable STORED value keeps the feature inert.
-            harness.defaults.set("bad/topic", forKey: DefaultsKey.lidGuardNtfyTopic)
+            #expect(harness.topicStore.storedValue == "napcat-lid-8f3k2p", "nor is the keychain touched")
+            #expect(sender.sends.isEmpty)
+        }
+        // And an unusable STORED value (a hand edit in Keychain Access) keeps
+        // the feature inert from launch on.
+        withLidGuardHarness(topicStore: FakeTopicStore("bad/topic")) { harness in
+            let sender = harness.sender as! RecordingMessageSender
+            harness.defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
+            harness.defaults.set(harness.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
+            #expect(harness.controller.storedTopic == "bad/topic", "read raw, so the menu can say it is unusable")
             #expect(harness.controller.armingState == .needsTopic)
             harness.controller.sendTestMessage()
             #expect(sender.sends.isEmpty)
@@ -668,6 +682,95 @@ struct LidGuardControllerTests {
         }
     }
 
+    // MARK: Issue #103 — the topic is in the keychain, read once, kept in memory
+
+    /// Saving goes keychain first, memory second: a new topic is written to
+    /// the store, an unchanged one touches nothing, a cleared one deletes the
+    /// item. Each CHANGE clears the priming, as before.
+    @Test func savingTheTopicWritesTheKeychainOnlyWhenItChanges() {
+        withLidGuardHarness { harness in
+            let store = harness.topicStore
+            harness.arm()
+            #expect(store.storedValue == "napcat-lid-8f3k2p")
+            #expect(store.writeCount == 1)
+
+            harness.controller.setTopic("  napcat-lid-8f3k2p  ")
+            #expect(store.writeCount == 1, "an unchanged topic is not rewritten")
+            #expect(harness.controller.armingState == .armed)
+
+            harness.controller.setTopic("napcat-other-topic")
+            #expect(store.storedValue == "napcat-other-topic" && store.writeCount == 2)
+            #expect(harness.controller.primedAt == 0)
+
+            #expect(harness.controller.setTopic("") == .empty)
+            #expect(store.storedValue == nil && store.deleteCount == 1, "clearing the topic deletes the item")
+            #expect(harness.controller.storedTopic == "")
+            harness.controller.setTopic("")
+            #expect(store.deleteCount == 1, "an already-empty topic deletes nothing")
+            #expect(!harness.controller.topicSaveFailed)
+        }
+    }
+
+    /// If the keychain refuses the save, NOTHING changes: the previous topic
+    /// stays in memory and in the keychain, still primed and armed — and the
+    /// controller says so, so the editor can come back instead of closing.
+    @Test func aRefusedKeychainSaveKeepsThePreviousTopicAndItsPriming() {
+        withLidGuardHarness { harness in
+            let store = harness.topicStore
+            harness.arm()
+            let primed = harness.controller.primedAt
+            store.setFailWrites(true)
+            store.setFailDeletes(true)
+
+            #expect(harness.controller.setTopic("napcat-new-5r2t8y") == .valid("napcat-new-5r2t8y"))
+            #expect(harness.controller.topicSaveFailed)
+            #expect(harness.controller.storedTopic == "napcat-lid-8f3k2p")
+            #expect(harness.controller.primedAt == primed)
+            #expect(harness.controller.armingState == .armed)
+            #expect(harness.source.isRunning)
+
+            harness.controller.setTopic("")
+            #expect(harness.controller.topicSaveFailed, "a refused delete is a refused save too")
+            #expect(harness.controller.storedTopic == "napcat-lid-8f3k2p")
+
+            #expect(harness.controller.setTopic("bad/topic") == .invalid)
+            #expect(!harness.controller.topicSaveFailed, "each save reports for itself")
+
+            store.setFailWrites(false)
+            harness.controller.setTopic("napcat-new-5r2t8y")
+            #expect(!harness.controller.topicSaveFailed)
+            #expect(harness.controller.storedTopic == "napcat-new-5r2t8y")
+            #expect(harness.controller.primedAt == 0)
+        }
+    }
+
+    /// The runtime half of LidGuardStructureTests' sleep-path lint: after the
+    /// ONE startup read, no number of sleeps, polls or wakes touches the
+    /// store again, and a change made behind the app's back is invisible to
+    /// the alert — the sleep path publishes to the in-memory topic.
+    @Test func theSleepPathReadsTheInMemoryTopicNeverTheStore() {
+        let store = FakeTopicStore("napcat-lid-8f3k2p")
+        withLidGuardHarness(topicStore: store) { harness in
+            let sender = harness.sender as! RecordingMessageSender
+            #expect(store.readCount == 1, "one read, at construction")
+            harness.arm()
+            #expect(store.writeCount == 0, "arming with the same topic writes nothing")
+
+            store.replaceValue("napcat-changed-elsewhere")
+            for _ in 0..<3 {
+                harness.source.deliver(.canSystemSleep)
+                harness.source.deliver(.systemWillSleep)
+                harness.source.deliver(.systemWillPowerOn)
+                harness.source.deliver(.systemHasPoweredOn)
+                harness.clock.advance(LidGuardTuning.cooldownSeconds + 1)
+            }
+            #expect(sender.sends.count == 3)
+            #expect(sender.sends.allSatisfy { $0.destination.topic == "napcat-lid-8f3k2p" })
+            #expect(store.readCount == 1 && store.writeCount == 0 && store.deleteCount == 0,
+                    "the sleep path never reaches the store")
+        }
+    }
+
     // MARK: Track C finish alert — own toggle, SHARED destination + priming
 
     /// The two toggles are independent: lid OFF + finish ON with a valid,
@@ -675,7 +778,7 @@ struct LidGuardControllerTests {
     /// never registers the lid guard's IOKit sleep hook.
     @Test func theFinishAlertArmsOnItsOwnToggleWithTheLidGuardOff() {
         withLidGuardHarness { harness in
-            harness.defaults.set("napcat-lid-8f3k2p", forKey: DefaultsKey.lidGuardNtfyTopic)
+            harness.controller.setTopic("napcat-lid-8f3k2p")
             harness.defaults.set(harness.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
             harness.controller.setFinishAlertEnabled(true)
 
@@ -705,7 +808,7 @@ struct LidGuardControllerTests {
             harness.controller.setFinishAlertEnabled(true)
             #expect(harness.controller.finishAlertArmingState == .needsTopic)
             // An unusable stored server is "no destination" for both features.
-            harness.defaults.set("napcat-lid-8f3k2p", forKey: DefaultsKey.lidGuardNtfyTopic)
+            harness.controller.setTopic("napcat-lid-8f3k2p")
             harness.defaults.set(harness.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
             harness.defaults.set("http://ntfy.sh", forKey: DefaultsKey.lidGuardNtfyServer)
             #expect(harness.controller.finishAlertArmingState == .needsTopic)
@@ -799,26 +902,26 @@ struct LidGuardControllerTests {
 
             harness.controller.refreshArming()                    // not armed
             #expect(counter.count == 1)
-            harness.arm()                                         // registers
-            #expect(counter.count == 2)
-            #expect(counter.registrations.last == true, "the hook runs AFTER the registration change")
-            harness.controller.refreshArming()                    // already registered (early return)
+            harness.arm()                                         // setTopic (not primed yet), then registers
             #expect(counter.count == 3)
-            harness.controller.setFinishAlertEnabled(true)
+            #expect(counter.registrations == [false, false, true], "the hook runs AFTER the registration change")
+            harness.controller.refreshArming()                    // already registered (early return)
             #expect(counter.count == 4)
-            harness.controller.setTopic("napcat-other-topic")     // clears priming
+            harness.controller.setFinishAlertEnabled(true)
             #expect(counter.count == 5)
-            harness.controller.sendTestMessage()                  // primes (inline completion)
+            harness.controller.setTopic("napcat-other-topic")     // clears priming
             #expect(counter.count == 6)
-            harness.controller.setServer("https://ntfy.example.com") // clears priming → deregisters
+            harness.controller.sendTestMessage()                  // primes (inline completion)
             #expect(counter.count == 7)
+            harness.controller.setServer("https://ntfy.example.com") // clears priming → deregisters
+            #expect(counter.count == 8)
             #expect(counter.registrations.last == false)
             harness.controller.setEnabled(false)                  // already deregistered (early return)
-            #expect(counter.count == 8)
+            #expect(counter.count == 9)
 
             harness.controller.setArmingRefreshHook(nil)
             harness.controller.refreshArming()
-            #expect(counter.count == 8, "a cleared hook is never called")
+            #expect(counter.count == 9, "a cleared hook is never called")
         }
     }
 }

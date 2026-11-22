@@ -20,7 +20,7 @@ final class FakeTopicStore: TopicStore, @unchecked Sendable {
     private var failWrites = false
     private var failDeletes = false
     private var readAnswerOverride: TopicStoreRead?
-    private var observer: (@Sendable (String) -> Void)?
+    private var observer: ((String) -> Void)?
 
     init(_ value: String? = nil) { self.value = value }
 
@@ -36,8 +36,9 @@ final class FakeTopicStore: TopicStore, @unchecked Sendable {
     func setFailDeletes(_ fail: Bool) { locked { failDeletes = fail } }
     /// Every later read answers this instead of the stored value (nil: stop).
     func setReadAnswer(_ answer: TopicStoreRead?) { locked { readAnswerOverride = answer } }
-    /// Called with "read" / "write" / "delete" at the start of each call.
-    func setObserver(_ handler: (@Sendable (String) -> Void)?) { locked { observer = handler } }
+    /// Called with "read" / "write" / "delete" at the start of each call, on
+    /// the caller's thread (the migration tests run on one thread).
+    func setObserver(_ handler: ((String) -> Void)?) { locked { observer = handler } }
 
     func read() -> TopicStoreRead {
         notify("read")

@@ -37,7 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the redesign's curation-only variant picker (retired at the design
         // freeze). Nothing reads either any more, so they are deleted rather
         // than left sitting in the preferences plist. Names only are logged —
-        // never the value.
+        // never the value. The retired ntfy-topic key is NOT in this sweep:
+        // it is deleted only by its keychain move, after a verified write,
+        // when the lid guard is built below — after the crash-failsafe
+        // reconciliation, because a keychain call can wait on a dialog.
         let removedKeys = DefaultsMigration.removeRetiredKeys(in: defaults)
         if !removedKeys.isEmpty {
             Self.logger.notice("startup migration: removed \(removedKeys.joined(separator: ", "), privacy: .public) — retired key(s), value not read")
@@ -81,6 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (refreshArming below and on every menu open). The ntfy sender is
         // built ONCE behind the same gate and injected, so the lid guard and
         // the Track C finish alert share one instance (per-kind lanes inside).
+        // The topic lives in the login keychain (issue #103): the lid guard's
+        // construction moves a plaintext one there and reads it once; in
+        // debugBattery mode nothing here is built, so the keychain is never
+        // touched.
         let ntfy = LidGuardController.makeSharedSender(debugBattery: isDebugBattery)
         ntfySender = ntfy
         // F3 stage 1: that one instance is wrapped by the composite, which is
@@ -93,7 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults: defaults,
             stayAwakeMirror: sleepController.observedMirror,
             detection: detection,
-            sender: sender
+            sender: sender,
+            topicStore: KeychainTopicStore.loginKeychain
         )
         self.lidGuard = lidGuard
 

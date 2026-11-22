@@ -747,6 +747,8 @@ struct MenuPanelStructureTests {
             "",   // a nominal pass: the band is reserved but empty
             try #require(MenuStateModel.lidAlertSettingsError(topic: .invalid, server: .empty)),
             try #require(MenuStateModel.lidAlertSettingsError(topic: .empty, server: .invalid)),
+            // Issue #103: the keychain refused the topic — the same band.
+            MenuStateModel.lidAlertTopicNotSavedError,
         ]
         func height(_ text: String, width: CGFloat) -> CGFloat {
             let label = NSTextField(wrappingLabelWithString: text)

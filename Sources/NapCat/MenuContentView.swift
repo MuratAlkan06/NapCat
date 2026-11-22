@@ -458,6 +458,13 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             // own arming check below sees the final configuration.
             lidGuard.setServer(entered.server)
             lidGuard.setTopic(entered.topic)
+            // Issue #103: the topic saves to the keychain, which can refuse.
+            // The controller then keeps the previous topic, so the editor
+            // comes back with the reason rather than closing as if it saved.
+            if lidGuard.topicSaveFailed {
+                error = MenuStateModel.lidAlertTopicNotSavedError
+                continue
+            }
             if let seconds = entered.minimumRunSeconds {
                 saveSessionAlertsFloor(seconds)
             }

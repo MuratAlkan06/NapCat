@@ -1000,6 +1000,13 @@ final class MenuStateModel: ObservableObject {
         return (["Nothing was saved."] + problems).joined(separator: " ")
     }
 
+    /// The editor's caption when both fields were usable but the keychain
+    /// refused the topic (issue #103): the controller kept the previous
+    /// topic, so the editor comes back instead of closing as if it saved.
+    /// Fits the editor's reserved error band (MenuPanelStructureTests).
+    nonisolated static let lidAlertTopicNotSavedError =
+        "The topic was not saved — the keychain refused it, so NapCat kept the previous one. Save again to retry."
+
     /// Standing security note: on ntfy there is no account, so the topic name
     /// is the whole access-control story. Settings › Alerts' footnote, under
     /// "ntfy settings…" (kept, not removed — the user has not signed off on

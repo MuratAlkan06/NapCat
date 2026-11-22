@@ -193,8 +193,8 @@ struct PhoneTransportStructureTests {
             ("debug gate dropped", Self.mutate(sources, Self.compositeFile) {
                 $0.replacingOccurrences(of: "guard let ntfy else { return nil }", with: "let ntfy = ntfy!") }),
             ("lid guard gets the bare ntfy sender", Self.mutate(sources, "NapCatApp.swift") {
-                $0.replacingOccurrences(of: "sender: sender\n        )\n        self.lidGuard",
-                                        with: "sender: ntfy\n        )\n        self.lidGuard") }),
+                $0.replacingOccurrences(of: "            sender: sender,\n            topicStore:",
+                                        with: "            sender: ntfy,\n            topicStore:") }),
             ("wrap removed", Self.mutate(sources, "NapCatApp.swift") {
                 $0.replacingOccurrences(of: Self.appWrap, with: "let sender = ntfy") }),
         ]

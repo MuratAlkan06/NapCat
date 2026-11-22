@@ -2,7 +2,8 @@ import Foundation
 
 /// Tunables for the Track B lid guard (slice B2, ntfy delivery since B4).
 /// These are CODE CONSTANTS, not UserDefaults keys — PLAN.md §11 gains exactly
-/// four persisted lid-guard keys (enable / topic / server / primed-at) plus,
+/// three persisted lid-guard keys (enable / server / primed-at — the topic
+/// itself is a keychain item since issue #103) plus,
 /// since Track C, ONE finish-alert toggle (`claudeFinishAlertEnabled`), which
 /// reuses that same destination and priming; nothing else.
 enum LidGuardTuning {
