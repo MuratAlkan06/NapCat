@@ -5,16 +5,14 @@ import Testing
 /// The app icon's upload rules (#96): ONE 1024×1024 PNG, 8-bit RGB with no
 /// alpha channel (App Store Connect rejects an icon that has one), sRGB.
 /// The file is full bleed: iOS cuts the rounded shape itself.
-/// scripts/render_ios_icon.swift renders the icon and checks these rules on
-/// its own output. These tests hold the committed asset to them.
+/// scripts/render_ios_icon.swift renders the icon (`make iosicon`, variant a)
+/// and checks these rules on its own output. These tests hold the committed
+/// asset to them.
 @Suite struct AppIconTests {
     static let iconSetDir = "ios/NapCatPhone/NapCatPhone/Assets.xcassets/AppIcon.appiconset"
     static let side = 1024
 
     static var iconSet: URL { CloudKitStructureTests.repoRoot.appendingPathComponent(iconSetDir) }
-    static var iconSetExists: Bool {
-        FileManager.default.fileExists(atPath: iconSet.appendingPathComponent("Contents.json").path)
-    }
 
     /// What is wrong with `data` as the app icon; empty when nothing is.
     /// The chunk walk is the ground truth for "has an alpha channel" (colour
@@ -121,17 +119,18 @@ import Testing
         #expect(problems(Data("not an image".utf8)) == "not a PNG")
     }
 
-    /// Binding once the icon set is committed with the owner's pick: the
-    /// set holds one 1024 image for the default appearance, nothing else,
-    /// and the built app names it as its icon.
-    @Test(.enabled(if: AppIconTests.iconSetExists, "the icon set is committed after the owner picks a variant"))
-    func theCommittedIconSetIsOneUploadableSquare() throws {
-        let contents = try #require(try JSONSerialization.jsonObject(
-            with: Data(contentsOf: Self.iconSet.appendingPathComponent("Contents.json"))) as? [String: Any])
-        let images = try #require(contents["images"] as? [[String: Any]])
-        let filed = images.filter { $0["filename"] != nil }
-        try #require(filed.count == 1)
-        let entry = filed[0]
+    /// The one image the committed set files (nil unless exactly one).
+    static func filedImage() throws -> [String: Any]? {
+        let contents = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: iconSet.appendingPathComponent("Contents.json"))) as? [String: Any]
+        let filed = (contents?["images"] as? [[String: Any]] ?? []).filter { $0["filename"] != nil }
+        return filed.count == 1 ? filed[0] : nil
+    }
+
+    /// The committed set holds one 1024 image for the default appearance,
+    /// nothing else, and the built app names it as its icon.
+    @Test func theCommittedIconSetIsOneUploadableSquare() throws {
+        let entry = try #require(try Self.filedImage(), "the icon set must file exactly one image")
         #expect(entry["idiom"] as? String == "universal")
         #expect(entry["platform"] as? String == "ios")
         #expect(entry["size"] as? String == "1024x1024")
@@ -143,5 +142,16 @@ import Testing
         let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any]
         let primary = icons?["CFBundlePrimaryIcon"] as? [String: Any]
         #expect(primary?["CFBundleIconName"] as? String == "AppIcon")
+    }
+
+    /// `make iosicon` regenerates exactly the committed file, from variant a
+    /// (the Night Groom composition the owner ruled for).
+    @Test func makeIosiconRegeneratesTheCommittedFileFromVariantA() throws {
+        let filename = try #require(try Self.filedImage()?["filename"] as? String)
+        let makefile = try String(contentsOf: CloudKitStructureTests.repoRoot.appendingPathComponent("Makefile"),
+                                  encoding: .utf8)
+        #expect(makefile.contains(
+            "\niosicon:\n\tswift scripts/render_ios_icon.swift --variant a \(Self.iconSetDir)/\(filename)\n"
+        ), "the Makefile's iosicon target must render variant a into \(Self.iconSetDir)/\(filename)")
     }
 }

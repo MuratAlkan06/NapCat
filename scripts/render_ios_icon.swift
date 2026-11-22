@@ -24,6 +24,7 @@
 //       b  a tighter crop on the cat (the scene zoomed 1024/760 ≈ 1.35×)
 //       c  a's framing on the brand accent blue 2C4896 (NapCat Phone's
 //          accent and the site's link blue) instead of the night navy
+//     The committed icon is a (`make iosicon`); b and c stay as explored.
 //
 // DETERMINISM: as in render_frames.swift and render_appicon.swift — pure
 // integer/float math over a fixed committed source and a self-contained PNG
