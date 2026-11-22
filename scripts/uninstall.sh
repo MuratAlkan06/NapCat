@@ -127,12 +127,25 @@ else
     echo "ok: $SMC_DIR not present — nothing to remove"
 fi
 
+# A valid macOS short user name, checked as ONE whole string (audit F-6). A
+# newline or CR is refused outright first: the old `printf | grep -Eq '^…$'`
+# matched line by line, so "alice<newline>root" passed. Then a full-string
+# anchored match, in the C locale so [a-z] means a-z and nothing else. The
+# same function, byte for byte, is in setup.sh and uninstall.sh.
+is_valid_short_name() {
+    case "$1" in
+        *$'\n'* | *$'\r'*) return 1 ;;
+    esac
+    local LC_ALL=C
+    [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]
+}
+
 # 5. Remove the failsafe LaunchAgent (installed per-user by setup.sh v1.0).
 #    Best-effort bootout first — the agent is usually not loaded (it is a
 #    RunAtLoad one-shot), and the gui domain may not exist in this context.
 TARGET_USER="${SUDO_USER:-}"
 if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
-    && printf '%s' "$TARGET_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$' \
+    && is_valid_short_name "$TARGET_USER" \
     && id -u "$TARGET_USER" >/dev/null 2>&1; then
     TARGET_UID="$(id -u "$TARGET_USER")"
     TARGET_HOME="$(/usr/bin/dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //')"
