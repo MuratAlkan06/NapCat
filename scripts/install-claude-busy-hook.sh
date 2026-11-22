@@ -26,10 +26,32 @@ HOOK_DIR="$HOME/.claude/hooks"
 HOOK_DEST="$HOOK_DIR/napcat-busy-hook.sh"
 MARKER_DIR="$HOME/Library/Application Support/NapCat/claude-busy"
 
+# $1 as a JSON string literal, quotes included (audit F-7): backslash and
+# double quote are escaped, and a control character is refused (status 1)
+# instead of being printed into JSON you paste into settings.json by hand.
+json_string() {
+    case "$1" in
+        *[[:cntrl:]]*) return 1 ;;
+    esac
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '"%s"' "$value"
+}
+
 if [ ! -f "$SRC" ]; then
     echo "error: $SRC not found — run this from the NapCat checkout." >&2
     exit 1
 fi
+
+# The exec-form command object, with this user's absolute paths as JSON
+# string literals (F-7): never interpolated raw, so a quote or backslash in
+# $HOME cannot break — or add to — the registration you paste.
+if ! HOME_ARG_JSON="$(json_string "HOME=$HOME")" || ! HOOK_DEST_JSON="$(json_string "$HOOK_DEST")"; then
+    echo "error: your home directory path contains a control character — nothing was installed." >&2
+    exit 1
+fi
+EXEC_CMD='{"type":"command","command":"/usr/bin/env","args":["-i",'"$HOME_ARG_JSON"',"/bin/bash",'"$HOOK_DEST_JSON"'],"timeout":5}'
 
 mkdir -p "$HOOK_DIR" || { echo "error: could not create $HOOK_DIR" >&2; exit 1; }
 if ! /usr/bin/install -m 755 "$SRC" "$HOOK_DEST"; then
@@ -43,9 +65,6 @@ echo "installed: $HOOK_DEST (755, hook version ${HOOK_VERSION:-unknown})"
 
 mkdir -p "$MARKER_DIR" && chmod 700 "$MARKER_DIR"
 echo "ready:     $MARKER_DIR (700)"
-
-# The exec-form command object, verbatim, with this user's absolute paths.
-EXEC_CMD='{"type":"command","command":"/usr/bin/env","args":["-i","HOME='"$HOME"'","/bin/bash","'"$HOOK_DEST"'"],"timeout":5}'
 
 cat <<JSON
 
