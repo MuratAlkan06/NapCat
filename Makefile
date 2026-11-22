@@ -112,9 +112,11 @@ iosicon:
 
 # Vendored GPL-2.0 smc CLI (third_party/smc/PROVENANCE.md). Native arch build;
 # NOT bundled into the .app and NOT installed anywhere — the user-run
-# scripts/setup.sh copies it to /usr/local/napcat/smc (P3b).
+# scripts/setup.sh copies it to /usr/local/napcat/smc (P3b). It runs as root
+# via sudoers, so it is built with warnings on, format-security as an error
+# (no user text as a format string) and FORTIFY_SOURCE bounds checks.
 smc: $(DIST)/smc
 
 $(DIST)/smc: third_party/smc/smc.c third_party/smc/smc.h
 	mkdir -p $(DIST)
-	cc -DCMD_TOOL_BUILD third_party/smc/smc.c -framework IOKit -framework CoreFoundation -o $(DIST)/smc
+	cc -Wall -Wformat-security -Werror=format-security -O2 -D_FORTIFY_SOURCE=2 -DCMD_TOOL_BUILD third_party/smc/smc.c -framework IOKit -framework CoreFoundation -o $(DIST)/smc
