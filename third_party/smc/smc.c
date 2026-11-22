@@ -642,16 +642,24 @@ void usage(char* prog)
 {
     printf("Apple System Management Control (SMC) tool %s\n", VERSION);
     printf("Usage:\n");
-    printf("%s [options]\n", prog);
-    printf("    -f         : fan info decoded\n");
-    printf("    -t         : list all temperatures\n");
-    printf("    -h         : help\n");
-    printf("    -k <key>   : key to manipulate\n");
-    printf("    -l         : list all keys and values\n");
-    printf("    -r         : read the value of a key\n");
-    printf("    -w <value> : write the specified value to a key\n");
-    printf("    -v         : version\n");
+    printf("    %s -k <key> -r         : read the value of a key\n", prog);
+    printf("    %s -k <key> -w <value> : write the specified hex value to a key\n", prog);
     printf("\n");
+}
+
+// An SMC key is exactly four printable ASCII characters.
+static int isValidKey(const char *key)
+{
+    size_t i;
+
+    if (strlen(key) != 4)
+        return 0;
+    for (i = 0; i < 4; i++)
+    {
+        if (key[i] < 0x20 || key[i] > 0x7e)
+            return 0;
+    }
+    return 1;
 }
 
 // Parses a write value: an even number of hex digits, 2 to
@@ -700,106 +708,57 @@ kern_return_t SMCWriteSimple(UInt32Char_t key, char *wvalue, io_connect_t conn)
 
 int main(int argc, char *argv[])
 {
-    int c;
-    extern char   *optarg;
-    
     kern_return_t result;
     int           op = OP_NONE;
     UInt32Char_t  key = { 0 };
     SMCVal_t      val;
 
     memset(&val, 0, sizeof(val));
-    
-    while ((c = getopt(argc, argv, "fthk:lrw:v")) != -1)
-    {
-        switch(c)
-        {
-            case 'f':
-                op = OP_READ_FAN;
-                break;
-            case 't':
-                op = OP_READ_TEMPS;
-                break;
-            case 'k':
-                strncpy(key, optarg, sizeof(key));   //fix for buffer overflow
-                key[sizeof(key) - 1] = '\0';
-                break;
-            case 'l':
-                op = OP_LIST;
-                break;
-            case 'r':
-                op = OP_READ;
-                break;
-            case 'v':
-                printf("%s\n", VERSION);
-                return 0;
-                break;
-            case 'w':
-                op = OP_WRITE;
-                if (parseHexValue(optarg, &val) != 0)
-                {
-                    printf("Error: value is not valid\n");
-                    return 1;
-                }
-                break;
-            case 'h':
-            case '?':
-                op = OP_NONE;
-                break;
-        }
-    }
-    
+
+    // Only the two argv shapes NapCat's sudoers entries and its read-back
+    // probe use are accepted, in exactly this order:
+    //     smc -k <key> -r
+    //     smc -k <key> -w <value>
+    // Any other flag, order, repetition or extra argument is refused.
+    if (argc == 4 && strcmp(argv[1], "-k") == 0 && strcmp(argv[3], "-r") == 0)
+        op = OP_READ;
+    else if (argc == 5 && strcmp(argv[1], "-k") == 0 && strcmp(argv[3], "-w") == 0)
+        op = OP_WRITE;
+
     if (op == OP_NONE)
     {
-        usage(argv[0]);
+        printf("Error: unsupported arguments\n");
+        usage(argc > 0 ? argv[0] : "smc");
         return 1;
     }
-    
+    if (!isValidKey(argv[2]))
+    {
+        printf("Error: key is not valid\n");
+        return 1;
+    }
+    snprintf(key, sizeof(key), "%s", argv[2]);
+    if (op == OP_WRITE && parseHexValue(argv[4], &val) != 0)
+    {
+        printf("Error: value is not valid\n");
+        return 1;
+    }
+
     smc_init();
-    
+
     switch(op)
     {
-        case OP_LIST:
-            result = SMCPrintAll();
-            if (result != kIOReturnSuccess)
-                printf("Error: SMCPrintAll() = %08x\n", result);
-            break;
         case OP_READ:
-            if (strlen(key) > 0)
-            {
-                result = SMCReadKey(key, &val);
-                if (result != kIOReturnSuccess)
-                    printf("Error: SMCReadKey() = %08x\n", result);
-                else
-                    printVal(val);
-            }
+            result = SMCReadKey(key, &val);
+            if (result != kIOReturnSuccess)
+                printf("Error: SMCReadKey() = %08x\n", result);
             else
-            {
-                printf("Error: specify a key to read\n");
-            }
-            break;
-        case OP_READ_FAN:
-            result = SMCPrintFans();
-            if (result != kIOReturnSuccess)
-                printf("Error: SMCPrintFans() = %08x\n", result);
-            break;
-        case OP_READ_TEMPS:
-            result = SMCPrintTemps();
-            if (result != kIOReturnSuccess)
-                printf("Error: SMCPrintFans() = %08x\n", result);
+                printVal(val);
             break;
         case OP_WRITE:
-            if (strlen(key) > 0)
-            {
-                snprintf(val.key, sizeof(val.key), "%s", key);
-                result = SMCWriteKey(val);
-                if (result != kIOReturnSuccess)
-                    printf("Error: SMCWriteKey() = %08x\n", result);
-            }
-            else
-            {
-                printf("Error: specify a key to write\n");
-            }
+            snprintf(val.key, sizeof(val.key), "%s", key);
+            result = SMCWriteKey(val);
+            if (result != kIOReturnSuccess)
+                printf("Error: SMCWriteKey() = %08x\n", result);
             break;
     }
     
