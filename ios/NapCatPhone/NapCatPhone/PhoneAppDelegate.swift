@@ -44,7 +44,8 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
 
     // MARK: UNUserNotificationCenterDelegate
 
-    /// Foreground: the list updates itself, no banner.
+    /// Foreground: fetch so the list updates, and still present the alert
+    /// (banner, sound, Notification Center) per `ForegroundPresentation`.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
@@ -69,8 +70,12 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     }
 }
 
-/// A push that arrives while the app is open updates the list in place, so
-/// no banner, no sound and no badge: the iOS default for a foreground app.
+/// A push that arrives while the app is open presents as it would in the
+/// background: a banner, its sound and a Notification Center entry, on top
+/// of the list updating in place. This is an attention app, so being on
+/// screen is no reason to go quiet: a list that changes silently is easy
+/// to miss (owner ruling 2026-11-22, after a finish alert reached the open
+/// app and buzzed nothing). Badges are not used, so no `.badge`.
 enum ForegroundPresentation {
-    static let options: UNNotificationPresentationOptions = []
+    static let options: UNNotificationPresentationOptions = [.banner, .list, .sound]
 }
