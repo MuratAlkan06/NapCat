@@ -4,10 +4,11 @@ import SwiftUI
 /// The receiver's one screen: the connection pill, the notification-
 /// permission row (only while notifications are off), and the recent alerts.
 /// When there are no alerts, the empty state is the hero, with the sentence
-/// the list state allows. A full list ends on its cap, said. Rows that
-/// arrive while the list is on screen come in on the theme's entrance curve
-/// (`ListMotion`; nothing moves under Reduce Motion). Everything visual
-/// comes from the environment's `Theme`.
+/// the list state allows. A full list ends on its cap, said. A row that
+/// arrives while the list is on screen comes in on the theme's entrance
+/// curve, and nothing else moves with it (`ListMotion`; nothing moves at
+/// all under Reduce Motion). Everything visual comes from the
+/// environment's `Theme`.
 struct ReceiverScreen: View {
     nonisolated static let title = "NapCat"
     nonisolated static let recentHeader = "Recent"
@@ -65,9 +66,13 @@ struct ReceiverScreen: View {
                     }
                     LazyVStack(spacing: theme.rowGap) {
                         ForEach(Array(alerts.enumerated()), id: \.element.id) { index, alert in
+                            // One flattened card, so a fade never shows the
+                            // shadow through the fill.
                             AlertRow(alert: alert)
                                 .themedCard()
+                                .compositingGroup()
                                 .staggeredEntrance(index: index, revealed: revealed)
+                                .zIndex(ListMotion.stacking(index: index))
                                 .transition(ListMotion.transition(theme, reduceMotion: reduceMotion))
                         }
                     }
@@ -76,7 +81,6 @@ struct ReceiverScreen: View {
                     }
                 }
             }
-            .animation(ListMotion.animation(theme, reduceMotion: reduceMotion), value: alerts)
             .padding(.horizontal, theme.margin)
             .padding(.bottom, theme.rowGap * 2)
         }

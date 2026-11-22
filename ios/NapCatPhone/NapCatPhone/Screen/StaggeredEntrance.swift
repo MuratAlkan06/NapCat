@@ -45,12 +45,15 @@ extension View {
 }
 
 /// How the rows change once the list is on screen (a push while the app is
-/// open, a refresh): a new row fades in and rises by the theme's entrance
-/// offset, on the theme's entrance curve, like the first entrance without
-/// the stagger. Under Reduce Motion nothing moves: no animation and the
-/// identity transition, so a new row is simply there.
+/// open, a refresh): only the arriving row moves. It fades in and rises by
+/// the theme's entrance offset, on the theme's entrance curve, like the
+/// first entrance without the stagger. The curve rides on the row's own
+/// transition, so nothing else in that update animates: rows already
+/// listed step to their new places whole, and their text never
+/// cross-fades. Under Reduce Motion nothing moves: the identity transition
+/// and no curve, so a new row is simply there.
 enum ListMotion {
-    /// The animation a change to the rows runs with; nil under Reduce Motion.
+    /// The curve an arriving row moves on; nil under Reduce Motion.
     static func animation(_ theme: Theme, reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : theme.entrance
     }
@@ -60,9 +63,31 @@ enum ListMotion {
         reduceMotion ? nil : theme.entranceOffset
     }
 
-    /// A row's insertion (and removal, its reverse).
-    static func transition(_ theme: Theme, reduceMotion: Bool) -> AnyTransition {
+    /// A row's insertion (and removal, its reverse), carrying its own curve.
+    @MainActor static func transition(_ theme: Theme, reduceMotion: Bool) -> AnyTransition {
         guard let rise = rise(theme, reduceMotion: reduceMotion) else { return .identity }
-        return .opacity.combined(with: .offset(y: rise))
+        return AnyTransition(ArrivingRow(rise: rise).animation(animation(theme, reduceMotion: reduceMotion)))
+    }
+
+    /// The arriving row: transparent and `rise` lower until it is in place.
+    /// The rise is a drawing offset, not a layout one: with no animation in
+    /// the update itself, a layout `.offset` in a transition does not follow
+    /// the transition's own curve (the row faded in but never rose, iOS
+    /// 27.2 simulator), while a drawing offset does, as opacity does.
+    struct ArrivingRow: Transition {
+        let rise: CGFloat
+
+        func body(content: Content, phase: TransitionPhase) -> some View {
+            let lowered = phase.isIdentity ? 0 : rise
+            return content
+                .opacity(phase.isIdentity ? 1 : 0)
+                .visualEffect { effect, _ in effect.offset(y: lowered) }
+        }
+    }
+
+    /// A row's stacking order: each row draws over the rows below it, so a
+    /// row rising into its place passes over its lower neighbor, not under.
+    static func stacking(index: Int) -> Double {
+        -Double(index)
     }
 }
