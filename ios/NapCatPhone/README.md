@@ -82,8 +82,11 @@ settle.
 Every style decision lives in `NapCatPhone/Theme/`. `Theme.swift` defines
 the token set: colors, type, surfaces and spacing, the icon variant, the
 empty-state art treatment and the entrance curve. `PixelNapTheme.swift`
-holds the one `Theme` value. The views read only the `theme` environment
-value, so a color change is an edit to that one file.
+holds the one style, Pixel Nap, and takes its colors from a palette.
+`Palette.swift` holds the palettes: each is a set of color tokens (an sRGB
+value and alpha for light and for dark mode) and nothing else. The views
+read only the `theme` environment value, so a color change is an edit to
+`Palette.swift`.
 
 The fixtures are synthetic. Each alert carries exactly the wire record's
 three fields (body, lane, firedAt), and each body is written word for word as
