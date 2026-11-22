@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
+#include <ctype.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -392,7 +393,7 @@ kern_return_t SMCReadKey2(UInt32Char_t key, SMCVal_t *val,io_connect_t conn)
     memset(val, 0, sizeof(SMCVal_t));
     
     inputStructure.key = _strtoul(key, 4, 16);
-    sprintf(val->key, key);
+    snprintf(val->key, sizeof(val->key), "%s", key);
     
     result = SMCGetKeyInfo(inputStructure.key, &outputStructure.keyInfo, conn);
     if (result != kIOReturnSuccess)
@@ -653,19 +654,42 @@ void usage(char* prog)
     printf("\n");
 }
 
+// Parses a write value: an even number of hex digits, 2 to
+// 2 * sizeof(SMCBytes_t), one byte per digit pair. Returns 0 and fills
+// val->bytes / val->dataSize, or -1 (val untouched) for anything else.
+static int parseHexValue(const char *hex, SMCVal_t *val)
+{
+    size_t len = strlen(hex);
+    size_t i;
+
+    if (len == 0 || len % 2 != 0 || len > 2 * sizeof(SMCBytes_t))
+        return -1;
+    for (i = 0; i < len; i++)
+    {
+        if (!isxdigit((unsigned char) hex[i]))
+            return -1;
+    }
+    for (i = 0; i < len / 2; i++)
+    {
+        char c[3] = { hex[i * 2], hex[(i * 2) + 1], '\0' };
+        val->bytes[i] = (unsigned char) strtol(c, NULL, 16);
+    }
+    val->dataSize = (UInt32) (len / 2);
+    return 0;
+}
+
 kern_return_t SMCWriteSimple(UInt32Char_t key, char *wvalue, io_connect_t conn)
 {
     kern_return_t result;
     SMCVal_t   val;
-    int i;
-    char c[3];
-    for (i = 0; i < strlen(wvalue); i++)
+
+    memset(&val, 0, sizeof(val));
+    if (parseHexValue(wvalue, &val) != 0)
     {
-        sprintf(c, "%c%c", wvalue[i * 2], wvalue[(i * 2) + 1]);
-        val.bytes[i] = (int) strtol(c, NULL, 16);
+        printf("Error: value is not valid\n");
+        return kIOReturnBadArgument;
     }
-    val.dataSize = i / 2;
-    sprintf(val.key, key);
+    snprintf(val.key, sizeof(val.key), "%s", key);
     result = SMCWriteKey2(val, conn);
     if (result != kIOReturnSuccess)
         printf("Error: SMCWriteKey() = %08x\n", result);
@@ -683,6 +707,8 @@ int main(int argc, char *argv[])
     int           op = OP_NONE;
     UInt32Char_t  key = { 0 };
     SMCVal_t      val;
+
+    memset(&val, 0, sizeof(val));
     
     while ((c = getopt(argc, argv, "fthk:lrw:v")) != -1)
     {
@@ -710,21 +736,11 @@ int main(int argc, char *argv[])
                 break;
             case 'w':
                 op = OP_WRITE;
-            {
-                int i;
-                char c[3];
-                for (i = 0; i < strlen(optarg); i++)
-                {
-                    sprintf(c, "%c%c", optarg[i * 2], optarg[(i * 2) + 1]);
-                    val.bytes[i] = (int) strtol(c, NULL, 16);
-                }
-                val.dataSize = i / 2;
-                if ((val.dataSize * 2) != strlen(optarg))
+                if (parseHexValue(optarg, &val) != 0)
                 {
                     printf("Error: value is not valid\n");
                     return 1;
                 }
-            }
                 break;
             case 'h':
             case '?':
@@ -775,7 +791,7 @@ int main(int argc, char *argv[])
         case OP_WRITE:
             if (strlen(key) > 0)
             {
-                sprintf(val.key, key);
+                snprintf(val.key, sizeof(val.key), "%s", key);
                 result = SMCWriteKey(val);
                 if (result != kIOReturnSuccess)
                     printf("Error: SMCWriteKey() = %08x\n", result);
