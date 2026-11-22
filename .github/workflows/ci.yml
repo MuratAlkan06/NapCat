@@ -32,3 +32,71 @@ jobs:
         run: make test
       - name: Build release bundle
         run: make
+
+  ios-tests:
+    # A separate job, not a matrix leg: the leg names above are status-check
+    # contexts the ruleset matches. Builds the committed NapCatPhone.xcodeproj
+    # unsigned and runs its unit tests on a simulator picked at run time.
+    name: iOS tests
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Print runner inventory
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devices available
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve simulator destination
+        id: sim
+        run: |
+          set -euo pipefail
+          pbxproj=ios/NapCatPhone/NapCatPhone.xcodeproj/project.pbxproj
+          # Eligible runtimes: from the project's iOS deployment target up to
+          # the selected Xcode's own simulator SDK (it cannot run newer ones).
+          min=$(sed -n 's/.*IPHONEOS_DEPLOYMENT_TARGET = \([0-9][0-9.]*\);.*/\1/p' "$pbxproj" \
+            | sort -t. -k1,1n -k2,2n | tail -n 1)
+          max=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          xcode=$(xcodebuild -version | sed -n 1p)
+          if [ -z "$min" ] || [ -z "$max" ]; then
+            echo "::error title=iOS destination::could not read the iOS deployment target from $pbxproj or the iphonesimulator SDK version of $xcode"
+            exit 1
+          fi
+          echo "NapCatPhone deployment target: iOS $min; $xcode simulator SDK: iOS $max"
+          # First available iPhone on the newest eligible iOS runtime (plain
+          # runtimes before device-specific ones), in simctl's listing order.
+          pick=$(xcrun simctl list devices available -j | jq -r --arg min "$min" --arg max "$max" '
+            def ver: split(".") | map(tonumber) | (. + [0])[0:2];
+            ($min | ver) as $lo | ($max | ver) as $hi
+            | [ .devices | to_entries[]
+                | (.key | capture("SimRuntime\\.iOS-(?<a>[0-9]+)-(?<b>[0-9]+)(?<rest>.*)$")) as $m
+                | [($m.a | tonumber), ($m.b | tonumber)] as $v
+                | select($v >= $lo and $v <= $hi)
+                | .value[]
+                | select(.isAvailable and (.name | startswith("iPhone")))
+                | {udid, name, v: $v, plain: ($m.rest == "")} ]
+            | sort_by(-.v[0], -.v[1], (if .plain then 0 else 1 end))
+            | first // empty
+            | "\(.udid)\t\(.name)\tiOS \(.v | map(tostring) | join("."))"')
+          if [ -z "$pick" ]; then
+            runtimes=$(xcrun simctl list runtimes available | grep -E '^iOS' | paste -s -d ';' - || true)
+            echo "::error title=No usable iPhone simulator::no available iPhone simulator on an iOS runtime between $min (NapCatPhone deployment target) and $max ($xcode simulator SDK). Installed iOS runtimes: ${runtimes:-none}. See the inventory step."
+            exit 1
+          fi
+          IFS=$'\t' read -r udid name runtime <<< "$pick"
+          echo "Destination: $name ($runtime) id=$udid"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      - name: Run iOS unit tests
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          xcodebuild \
+            -project ios/NapCatPhone/NapCatPhone.xcodeproj \
+            -scheme NapCatPhone \
+            -configuration Debug \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
