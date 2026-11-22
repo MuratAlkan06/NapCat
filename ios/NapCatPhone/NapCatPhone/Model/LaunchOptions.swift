@@ -8,7 +8,9 @@ import Foundation
 /// A recognised `-NapCatFixture` value also forces the fixture source on a
 /// device build (screenshots, demos); without one, a device build shows the
 /// alerts it receives (`AlertSourceKind.select`). `-NapCatConnection` only
-/// applies to fixtures: a live pill is probed, never chosen.
+/// applies to fixtures: a live pill is probed, never chosen. It takes the
+/// probed states only; `checking` is a live launch's pre-probe state and
+/// falls back like an unknown value.
 struct LaunchOptions: Equatable, Sendable {
     static let fixtureKey = "NapCatFixture"
     static let connectionKey = "NapCatConnection"
@@ -26,7 +28,8 @@ struct LaunchOptions: Equatable, Sendable {
             self.fixture = fixture
             self.fixtureRequested = true
         }
-        if let raw = value(Self.connectionKey), let connection = ConnectionState(rawValue: raw) {
+        if let raw = value(Self.connectionKey), let connection = ConnectionState(rawValue: raw),
+           ConnectionState.probed.contains(connection) {
             self.connection = connection
         }
     }

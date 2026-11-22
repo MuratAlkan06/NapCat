@@ -38,8 +38,14 @@ import Testing
         #expect(spec.contains("\n        NAPCAT_CLOUDKIT_ENVIRONMENT: Production\n"))
     }
 
-    @Test func pushesMayReachTheApp() throws {
-        let info = try Self.plist("NapCatPhone-Info.plist")
-        #expect(info["UIBackgroundModes"] as? [String] == ["remote-notification"])
+    /// No background modes (the frozen F3 ADR): the subscription's pushes
+    /// are alerts the system renders, never silent wakes. Read from the
+    /// built app hosting these tests, so any route that adds one fails.
+    @Test func theAppDeclaresNoBackgroundModes() throws {
+        let info = try #require(Bundle.main.infoDictionary)
+        #expect(Bundle.main.bundleIdentifier == "com.muratalkan.napcat.phone")
+        #expect(info["UIBackgroundModes"] == nil)
+        let spec = try String(contentsOf: Self.projectDir.appendingPathComponent("project.yml"), encoding: .utf8)
+        #expect(!spec.contains("UIBackgroundModes"))
     }
 }

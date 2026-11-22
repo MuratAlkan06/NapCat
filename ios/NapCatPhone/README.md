@@ -64,7 +64,10 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 | Argument | Values | Default |
 |---|---|---|
 | `-NapCatFixture` | `populated`, `empty` | `populated` |
-| `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff` | `connected` |
+| `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff`, `pushNotSetUp` | `connected` |
+
+A live launch's first pill, **Checking…**, is not a launch value (no
+probe answers it). The SwiftUI preview "Checking" shows it.
 
 ```sh
 xcrun simctl launch booted com.muratalkan.napcat.phone \
@@ -99,20 +102,30 @@ environment anyway.
 A live launch:
 
 1. Asks once for notification permission (alerts and sound) and registers
-   for remote notifications.
+   for remote notifications. Until the first account check answers, the
+   pill reads **Checking…**.
 2. Checks the iCloud account. No usable account shows **iCloud unavailable**.
 3. Makes sure the one push subscription exists. It fetches the subscription
    by its fixed ID (`AlertWire.subscriptionID`) and creates it only when the
    server has none. A refusal is logged and retried on the next foreground.
+   Until the subscription is confirmed, the pill reads **Connected — no
+   push**: alerts still load whenever the app opens, but none is pushed.
+   (**Notifications off** takes precedence, because the owner can fix that in
+   Settings.)
 4. Fetches the newest `Alert` records (newest first, up to 50). It does this
-   again on every return to the foreground and on every push. Rows are keyed
+   again on every return to the foreground and on every push. A push also
+   names the record it announces, and that record is fetched directly by ID,
+   because the query's index can lag a record created moments ago. A push
+   that names no usable record relies on the query alone. Rows are keyed
    by the record name the Mac wrote, so a record seen twice is one row.
    Records with a missing or unknown field are skipped.
 
 The notification itself is rendered by iOS from the subscription: title
 "NapCat", the record's body as the text, default sound. The app schedules no
 notification of its own. A push that arrives while the app is open updates
-the list without a banner.
+the list without a banner. The app declares no background modes, so it is
+never woken in the background. Whatever arrived while it was closed is
+fetched when it opens.
 
 Logs (codes and counts only):
 `log stream --predicate 'subsystem == "com.muratalkan.napcat.phone"'`.
@@ -142,11 +155,6 @@ device run shows `push subscription not created (code 12)`, do this:
 Which environment a dev-signed build actually reaches is recorded in #94
 once the device run measures it.
 
-The `remote-notification` background mode is declared in
-`NapCatPhone-Info.plist`. The subscription asks iOS to show each alert
-(there is no silent-push flag), so the mode backs only the in-app push
-callback today.
-
 ## How the project is put together
 
 - `project.yml` is the [XcodeGen](https://github.com/yonaskolb/XcodeGen)
@@ -156,10 +164,11 @@ callback today.
   this directory and commit both. The local-package entry in the project is
   labelled with the name of the checkout's directory, so regenerate from a
   checkout named `NapCat` to keep that label unchanged.
-- `NapCatPhone.entitlements` and `NapCatPhone-Info.plist` are written by
-  `xcodegen generate` from `project.yml` too. Commit them with the project,
-  and never edit them by hand. The Info.plist holds only the keys the
-  generated one can't hold. Xcode merges it into the generated Info.plist.
+- `NapCatPhone.entitlements` is written by `xcodegen generate` from
+  `project.yml` too. Commit it with the project, and never edit it by hand.
+  The app's Info.plist is generated from build settings (the
+  `INFOPLIST_KEY_…` entries in `project.yml`). There is no Info.plist in the
+  source tree.
 - `NapCatPhone/` and `NapCatPhoneTests/` are synchronized folders. You can
   add or remove Swift files there without regenerating the project.
 - The repository root is a **local Swift package** dependency. The app links

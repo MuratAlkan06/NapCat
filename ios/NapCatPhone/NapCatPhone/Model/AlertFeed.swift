@@ -5,7 +5,8 @@ import Observation
 /// current from one `AlertSource` and one `NotificationGate`. It refreshes on
 /// launch, on every foreground and on every push; overlapping requests fold
 /// into one follow-up pass, so a burst of pushes never queues a burst of
-/// fetches.
+/// fetches. A push that names its record also has that record fetched
+/// directly, so the newest alert never waits on the query's index.
 @MainActor
 @Observable
 final class AlertFeed {
@@ -17,18 +18,23 @@ final class AlertFeed {
     /// Whether this feed reads iCloud (and so wants pushes).
     let isLive: Bool
 
-    private let source: any AlertSource
+    nonisolated private let source: any AlertSource
     private let notifications: any NotificationGate
     @ObservationIgnored private var started = false
     @ObservationIgnored private var refreshing = false
     @ObservationIgnored private var refreshAgain = false
+    /// Record names pushes have named since the last fetch, fetched directly
+    /// on the next pass.
+    @ObservationIgnored private var pushedNames: Set<String> = []
 
+    /// A live feed starts `.checking`: the pill claims nothing until the
+    /// first account check is done.
     init(
         source: any AlertSource,
         notifications: any NotificationGate,
         isLive: Bool,
         alerts: [PhoneAlert] = [],
-        connection: ConnectionState = .connected
+        connection: ConnectionState = .checking
     ) {
         self.source = source
         self.notifications = notifications
@@ -85,13 +91,40 @@ final class AlertFeed {
         return changed
     }
 
+    /// The record name a push carries, read by the source (only it knows
+    /// its payload). Nonisolated so a notification delegate can read it
+    /// where the payload is, then hand over just the name.
+    nonisolated func pushedRecordName(in userInfo: [AnyHashable: Any]) -> String? {
+        source.pushedRecordName(in: userInfo)
+    }
+
+    /// A push: the record it names, if any, is fetched directly on top of
+    /// the usual refresh (in the same pass, or the follow-up one when a
+    /// refresh is already running). Without a name the query alone catches
+    /// up. Returns whether the list changed.
+    @discardableResult
+    func receivePush(recordName: String?) async -> Bool {
+        if let recordName { pushedNames.insert(recordName) }
+        return await refresh()
+    }
+
     private func refreshOnce() async -> Bool {
         let account = await source.connect()
         let allowed = await notifications.alertsAllowed()
         let state = ConnectionState(account: account, alertsAllowed: allowed)
         if state != connection { connection = state }
-        // Without an account nothing can be fetched; the list stays.
-        guard account == .available, let fresh = try? await source.fetchRecent() else { return false }
+        // Without an account nothing can be fetched; the list stays, and
+        // pushed names wait for a pass that can fetch.
+        guard account.canFetch else { return false }
+        var fresh: [PhoneAlert] = []
+        // A record once listed never changes, so only new names are fetched.
+        // A failed direct fetch is dropped: the query below is the fallback.
+        let pushed = pushedNames.subtracting(alerts.map(\.id)).sorted()
+        pushedNames.removeAll()
+        for name in pushed {
+            if let alert = try? await source.fetchAlert(named: name) { fresh.append(alert) }
+        }
+        if let recent = try? await source.fetchRecent() { fresh += recent }
         let merged = Self.merge(alerts, with: fresh, limit: Self.listLimit)
         guard merged != alerts else { return false }
         alerts = merged

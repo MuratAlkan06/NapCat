@@ -4,8 +4,10 @@ import UserNotifications
 
 /// Owns the launch's `AlertFeed` and routes the system's push callbacks to
 /// it. Every remote notification this app can receive is the alert
-/// subscription's, and each one means the same thing: fetch again (records
-/// are deduped by name, so a repeat costs nothing).
+/// subscription's, and each one means the same thing: fetch the record it
+/// names, then fetch again (records are deduped by name, so a repeat costs
+/// nothing). The app declares no background modes, so these run only while
+/// the app is open or being opened from an alert.
 final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     private static let logger = Logger(subsystem: "com.muratalkan.napcat.phone", category: "push")
 
@@ -28,15 +30,16 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         Self.logger.error("remote notification registration failed (code \((error as NSError).code))")
     }
 
-    /// A push while the app runs (or a background wake, should the
-    /// subscription ever ask for one): fetch, and say whether it found
-    /// anything new.
+    /// A push the system hands the app delegate while the app runs (per
+    /// CloudKit's docs, only a push without an alert comes here; the
+    /// subscription's alerts arrive through the notification-center
+    /// delegate below): fetch, and say whether it found anything new.
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any]
     ) async -> UIBackgroundFetchResult {
         guard feed.isLive else { return .noData }
-        return await feed.refresh() ? .newData : .noData
+        return await feed.receivePush(recordName: feed.pushedRecordName(in: userInfo)) ? .newData : .noData
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -46,7 +49,7 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        await refreshFeed()
+        await receivePush(named: feed.pushedRecordName(in: notification.request.content.userInfo))
         return ForegroundPresentation.options
     }
 
@@ -55,12 +58,14 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        await refreshFeed()
+        await receivePush(named: feed.pushedRecordName(in: response.notification.request.content.userInfo))
     }
 
+    /// The payload is read where it arrives; only the record name (a
+    /// `String`) crosses to the main actor.
     @MainActor
-    private func refreshFeed() async {
-        await feed.refresh()
+    private func receivePush(named recordName: String?) async {
+        await feed.receivePush(recordName: recordName)
     }
 }
 

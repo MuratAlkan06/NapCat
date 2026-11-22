@@ -39,22 +39,34 @@ import UIKit
     // MARK: Connection pill
 
     @Test func theConnectionStatesReadAsTheirSeverity() {
+        #expect(ConnectionState.checking.line == PhoneLine(text: "Checking…", severity: .nominal))
         #expect(ConnectionState.connected.line == PhoneLine(text: "Connected", severity: .nominal))
         #expect(ConnectionState.iCloudUnavailable.line == PhoneLine(text: "iCloud unavailable", severity: .error))
         #expect(ConnectionState.notificationsOff.line == PhoneLine(text: "Notifications off", severity: .warning))
+        #expect(ConnectionState.pushNotSetUp.line == PhoneLine(text: "Connected — no push", severity: .warning))
+        #expect(ConnectionState.checking.line.spoken == "Checking…")
         #expect(ConnectionState.notificationsOff.line.spoken == "Warning: Notifications off")
         #expect(ConnectionState.iCloudUnavailable.line.spoken == "Error: iCloud unavailable")
+        #expect(ConnectionState.pushNotSetUp.line.spoken == "Warning: Connected — no push")
     }
 
-    /// Never color alone: a non-nominal pill shows its severity's glyph.
+    /// Never color alone: a non-nominal pill shows its severity's glyph. A
+    /// nominal pill shows the iCloud check only once something is confirmed.
     @Test(arguments: ConnectionState.allCases)
     func thePillGlyphIsTheSeverityGlyphAndResolves(_ state: ConnectionState) {
         if let severityGlyph = state.line.severity.symbol {
             #expect(state.symbol == severityGlyph)
         } else {
-            #expect(state.symbol == "checkmark.icloud")
+            #expect(state.symbol == (state == .checking ? "icloud" : "checkmark.icloud"))
         }
         #expect(UIImage(systemName: state.symbol) != nil)
+    }
+
+    /// Only a confirmed state reads "Connected" on its own: never while
+    /// checking, and never while nothing would be pushed.
+    @Test func onlyTheConfirmedStateReadsPlainlyConnected() {
+        #expect(ConnectionState.allCases.filter { $0.line.text == "Connected" } == [.connected])
+        #expect(ConnectionState.allCases.filter { $0.symbol == "checkmark.icloud" } == [.connected])
     }
 
     @Test func onlyNotificationsOffShowsThePermissionRow() {
@@ -95,5 +107,15 @@ import UIKit
     @Test func unknownLaunchArgumentsFallBack() {
         let values = ["NapCatFixture": "lots", "NapCatConnection": "maybe"]
         #expect(LaunchOptions { values[$0] } == LaunchOptions())
+    }
+
+    /// Every probed state can be asked for; `checking` (no probe's answer)
+    /// falls back like an unknown value.
+    @Test func theConnectionArgumentTakesTheProbedStatesOnly() {
+        for state in ConnectionState.probed {
+            #expect(LaunchOptions { $0 == "NapCatConnection" ? state.rawValue : nil }.connection == state)
+        }
+        #expect(LaunchOptions { $0 == "NapCatConnection" ? "pushNotSetUp" : nil }.connection == .pushNotSetUp)
+        #expect(LaunchOptions { $0 == "NapCatConnection" ? "checking" : nil } == LaunchOptions())
     }
 }

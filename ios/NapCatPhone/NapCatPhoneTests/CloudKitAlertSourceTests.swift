@@ -74,28 +74,46 @@ import Testing
     /// The F3 spike's Production refusal (CKError 12, "attempting to create
     /// a subscription in a production container"): logged, not fatal, and
     /// tried again on the next connect, fetching first again.
+    /// Until it is created, the account works but nothing is pushed.
     @Test func aRefusedCreationIsRetriedOnTheNextConnect() async {
         let database = FixtureDatabase(saveError: CKError(.invalidArguments))
         let source = CloudKitAlertSource(database: database)
-        #expect(await source.connect() == .available)
-        #expect(await source.connect() == .available)
+        #expect(await source.connect() == .availableWithoutPush)
+        #expect(await source.connect() == .availableWithoutPush)
         #expect(await database.saved.isEmpty)
         #expect(await database.saveAttempts == 2)
         #expect(await database.subscriptionFetches.count == 2)
         await database.clearSaveError()
-        _ = await source.connect()
-        _ = await source.connect()
+        #expect(await source.connect() == .available)
+        #expect(await source.connect() == .available)
         #expect(await database.saved.count == 1)
         #expect(await database.subscriptionFetches.count == 3)
     }
 
     /// A failed CHECK (not "missing") never creates: that could make a
-    /// second subscription if the first is merely unreachable.
+    /// second subscription if the first is merely unreachable. Unconfirmed
+    /// is not "set up" either.
     @Test func aFailedCheckDoesNotCreate() async {
         let database = FixtureDatabase(fetchError: CKError(.networkUnavailable))
         let source = CloudKitAlertSource(database: database)
-        #expect(await source.connect() == .available)
+        #expect(await source.connect() == .availableWithoutPush)
         #expect(await database.saveAttempts == 0)
+    }
+
+    /// The F3 spike's error-12 refusal reaches the pill: never "Connected"
+    /// while nothing would be pushed, yet the alerts still load.
+    @Test @MainActor func aRefusedSubscriptionShowsInThePillAndAlertsStillLoad() async {
+        #expect(CKError.Code.invalidArguments.rawValue == 12)
+        let database = FixtureDatabase(saveError: CKError(.invalidArguments), records: [Self.macRecord()])
+        let feed = AlertFeed(source: CloudKitAlertSource(database: database),
+                             notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        #expect(feed.connection == .checking)
+        await feed.refresh()
+        #expect(feed.connection == .pushNotSetUp)
+        #expect(feed.alerts.map(\.id) == ["session-1790000000123"])
+        await database.clearSaveError()
+        await feed.refresh()
+        #expect(feed.connection == .connected)
     }
 
     @Test func missingMeansUnknownItemOnly() {
@@ -207,6 +225,106 @@ import Testing
         await feed.refresh()
         #expect(feed.alerts.map(\.id) == ["session-1790000000123"])
     }
+
+    // MARK: The push payload
+
+    /// A push payload as CloudKit delivers the alert subscription's: the
+    /// system-rendered `aps` part plus CloudKit's `ck` part, whose query
+    /// notification names the subscription and the created record.
+    static func pushPayload(
+        recordName: String? = "session-1790000000124",
+        subscriptionID: String = AlertWire.subscriptionID,
+        zoneName: String = CKRecordZone.ID.defaultZoneName
+    ) -> [AnyHashable: Any] {
+        var query: [String: Any] = [
+            "dbs": CKDatabase.Scope.private.rawValue,
+            "fo": CKQuerySubscription.Options.firesOnRecordCreation.rawValue,
+            "sid": subscriptionID,
+            "zid": zoneName,
+            "zoid": CKCurrentUserDefaultName,
+        ]
+        query["rid"] = recordName
+        return [
+            "aps": ["alert": ["title": "NapCat", "body": body], "sound": "default"],
+            "ck": ["ce": 2, "cid": AlertWire.containerIdentifier, "nid": UUID().uuidString, "qry": query],
+        ]
+    }
+
+    /// The payload shape above is one CloudKit itself parses as the alert
+    /// subscription's query notification (so the name tests below are not
+    /// testing a made-up shape).
+    @Test func cloudKitParsesThePayloadAsTheSubscriptionsQueryNotification() throws {
+        let notification = try #require(
+            CKNotification(fromRemoteNotificationDictionary: Self.pushPayload()) as? CKQueryNotification)
+        #expect(notification.subscriptionID == AlertWire.subscriptionID)
+        #expect(notification.queryNotificationReason == .recordCreated)
+        #expect(notification.recordID?.recordName == "session-1790000000124")
+        #expect(notification.recordID?.zoneID.zoneName == CKRecordZone.ID.defaultZoneName)
+    }
+
+    @Test func theAlertSubscriptionsPushNamesItsRecord() {
+        #expect(CloudKitAlertSource.pushedRecordName(in: Self.pushPayload()) == "session-1790000000124")
+    }
+
+    /// Anything but the alert subscription's push for a default-zone record
+    /// names nothing, and the query alone catches up.
+    @Test func otherPushesNameNoRecord() {
+        #expect(CloudKitAlertSource.pushedRecordName(in: Self.pushPayload(subscriptionID: "another-subscription")) == nil)
+        #expect(CloudKitAlertSource.pushedRecordName(in: Self.pushPayload(recordName: nil)) == nil)
+        #expect(CloudKitAlertSource.pushedRecordName(in: Self.pushPayload(zoneName: "Elsewhere")) == nil)
+        #expect(CloudKitAlertSource.pushedRecordName(in: ["aps": ["alert": "not CloudKit"]]) == nil)
+        #expect(CloudKitAlertSource.pushedRecordName(in: [:]) == nil)
+    }
+
+    /// The pushed record is fetched BY ID in the default zone and mapped
+    /// like any other; a malformed one is skipped.
+    @Test func aPushedRecordIsFetchedByIDInTheDefaultZone() async throws {
+        let pushed = Self.macRecord(name: "session-1790000000124")
+        let spike = Self.macRecord(name: "spike-1", lane: "spike" as NSString)
+        let database = FixtureDatabase(stored: [pushed, spike])
+        let source = CloudKitAlertSource(database: database)
+        #expect(try await source.fetchAlert(named: "session-1790000000124")?.id == "session-1790000000124")
+        #expect(try await source.fetchAlert(named: "spike-1") == nil)
+        #expect(await database.recordFetches == [
+            CKRecord.ID(recordName: "session-1790000000124", zoneID: .default),
+            CKRecord.ID(recordName: "spike-1", zoneID: .default),
+        ])
+        await #expect(throws: (any Error).self) { _ = try await source.fetchAlert(named: "session-0") }
+    }
+
+    /// THE race the direct fetch closes: the push names a record the query
+    /// (its index lagging) does not return yet, and the row still appears.
+    @Test @MainActor func aPushedRecordAppearsEvenWhenTheQueryOmitsIt() async throws {
+        let older = Self.macRecord(name: "session-1790000000100")
+        let newest = Self.macRecord(name: "session-1790000000124")
+        let database = FixtureDatabase(existing: CloudKitAlertSource.makeSubscription(),
+                                       records: [older], stored: [older, newest])
+        let feed = AlertFeed(source: CloudKitAlertSource(database: database),
+                             notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.refresh()
+        #expect(feed.alerts.map(\.id) == ["session-1790000000100"])
+
+        let name = feed.pushedRecordName(in: Self.pushPayload(recordName: "session-1790000000124"))
+        #expect(await feed.receivePush(recordName: name))
+        #expect(Set(feed.alerts.map(\.id)) == ["session-1790000000100", "session-1790000000124"])
+        #expect(await database.recordFetches == [CKRecord.ID(recordName: "session-1790000000124", zoneID: .default)])
+        #expect(await database.queries.count == 2)
+    }
+
+    /// Without a usable ID the push falls back to the query alone: no
+    /// direct fetch, and a record the query omits stays out until it shows.
+    @Test @MainActor func aPushWithoutAUsableIDFallsBackToTheQuery() async throws {
+        let newest = Self.macRecord(name: "session-1790000000124")
+        let database = FixtureDatabase(existing: CloudKitAlertSource.makeSubscription(), records: [], stored: [newest])
+        let feed = AlertFeed(source: CloudKitAlertSource(database: database),
+                             notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let name = feed.pushedRecordName(in: Self.pushPayload(subscriptionID: "another-subscription"))
+        #expect(name == nil)
+        #expect(await feed.receivePush(recordName: name) == false)
+        #expect(feed.alerts.isEmpty)
+        #expect(await database.recordFetches.isEmpty)
+        #expect(await database.queries.count == 1)
+    }
 }
 
 /// A fixture `CloudKitAlertDatabase`: scripted answers and recorded calls.
@@ -218,11 +336,14 @@ actor FixtureDatabase: CloudKitAlertDatabase {
     private var saveError: CKError?
     private let records: [CKRecord]
     private let queryError: CKError?
+    /// What a fetch by ID finds; the query (`records`) may lag it.
+    private let stored: [CKRecord]
 
     private(set) var subscriptionFetches: [CKSubscription.ID] = []
     private(set) var saveAttempts = 0
     private(set) var saved: [CKSubscription] = []
     private(set) var queries: [(CKQuery, Int)] = []
+    private(set) var recordFetches: [CKRecord.ID] = []
 
     init(
         status: CKAccountStatus = .available,
@@ -231,7 +352,8 @@ actor FixtureDatabase: CloudKitAlertDatabase {
         fetchError: CKError? = nil,
         saveError: CKError? = nil,
         records: [CKRecord] = [],
-        queryError: CKError? = nil
+        queryError: CKError? = nil,
+        stored: [CKRecord] = []
     ) {
         self.status = status
         self.statusError = statusError
@@ -240,6 +362,7 @@ actor FixtureDatabase: CloudKitAlertDatabase {
         self.saveError = saveError
         self.records = records
         self.queryError = queryError
+        self.stored = stored
     }
 
     func clearSaveError() { saveError = nil }
@@ -267,5 +390,11 @@ actor FixtureDatabase: CloudKitAlertDatabase {
         queries.append((query, resultsLimit))
         if let queryError { throw queryError }
         return records
+    }
+
+    func record(for recordID: CKRecord.ID) async throws -> CKRecord {
+        recordFetches.append(recordID)
+        guard let record = stored.first(where: { $0.recordID == recordID }) else { throw CKError(.unknownItem) }
+        return record
     }
 }

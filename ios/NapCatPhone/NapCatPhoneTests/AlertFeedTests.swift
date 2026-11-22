@@ -121,29 +121,168 @@ import Testing
         #expect(gate.prepares == 1)
         #expect(await source.connects == 1)
     }
+
+    // MARK: The pill is honest
+
+    /// A live feed claims nothing until its first account check answers.
+    @Test func aLiveFeedReadsCheckingUntilTheFirstProbeAnswers() async {
+        let source = ScriptedSource(account: .available, alerts: [], holdFirstConnect: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        #expect(feed.connection == .checking)
+        let first = Task { await feed.refresh() }
+        while await !source.isHolding { await Task.yield() }
+        #expect(feed.connection == .checking)
+        await source.release()
+        _ = await first.value
+        #expect(feed.connection == .connected)
+    }
+
+    /// No subscription: never "Connected", but alerts still load.
+    @Test func withoutThePushSubscriptionThePillSaysSoAndAlertsStillLoad() async {
+        let fresh = [Self.alert("session-1", minutesAgo: 1)]
+        let source = ScriptedSource(account: .availableWithoutPush, alerts: fresh)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        #expect(await feed.refresh())
+        #expect(feed.connection == .pushNotSetUp)
+        #expect(feed.alerts == fresh)
+    }
+
+    // MARK: Pushes
+
+    /// The record a push names is fetched directly, so it is listed even
+    /// while the query (its index lagging) does not return it yet.
+    @Test func aPushedRecordIsListedEvenWhenTheQueryLags() async {
+        let listed = Self.alert("session-1", minutesAgo: 10)
+        let pushed = Self.alert("session-2", minutesAgo: 0)
+        let source = ScriptedSource(account: .available, alerts: [listed], stored: [listed, pushed])
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let name = feed.pushedRecordName(in: ScriptedSource.push(naming: pushed.id))
+        #expect(name == pushed.id)
+        #expect(await feed.receivePush(recordName: name))
+        #expect(feed.alerts == [pushed, listed])
+        #expect(await source.directFetches == [pushed.id])
+        // The query still runs: it catches anything a coalesced push missed.
+        #expect(await source.fetches == 1)
+    }
+
+    /// A push without a usable record name falls back to the query alone.
+    @Test func aPushWithoutARecordNameFallsBackToTheQuery() async {
+        let fresh = [Self.alert("session-1", minutesAgo: 1)]
+        let source = ScriptedSource(account: .available, alerts: fresh)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let name = feed.pushedRecordName(in: ["aps": ["alert": "x"]])
+        #expect(name == nil)
+        #expect(await feed.receivePush(recordName: name))
+        #expect(feed.alerts == fresh)
+        #expect(await source.directFetches.isEmpty)
+        #expect(await source.fetches == 1)
+    }
+
+    /// A record already listed never changes, so it is not fetched again.
+    @Test func aPushedRecordAlreadyListedIsNotFetchedAgain() async {
+        let listed = Self.alert("session-1", minutesAgo: 1)
+        let source = ScriptedSource(account: .available, alerts: [listed], stored: [listed])
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true,
+                             alerts: [listed])
+        #expect(await feed.receivePush(recordName: listed.id) == false)
+        #expect(await source.directFetches.isEmpty)
+    }
+
+    /// A failed direct fetch is not fatal: the query's answer still lands.
+    @Test func aFailedDirectFetchStillLeavesTheQuery() async {
+        let queried = [Self.alert("session-2", minutesAgo: 0)]
+        let source = ScriptedSource(account: .available, alerts: queried, directFails: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        #expect(await feed.receivePush(recordName: "session-2"))
+        #expect(await source.directFetches == ["session-2"])
+        #expect(feed.alerts == queried)
+    }
+
+    /// A push that lands during a running refresh is fetched in the one
+    /// follow-up pass, by name.
+    @Test func aPushDuringARefreshIsFetchedInTheFollowUpPass() async {
+        let pushed = Self.alert("session-2", minutesAgo: 0)
+        let source = ScriptedSource(account: .available, alerts: [], stored: [pushed], holdFirstConnect: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let first = Task { await feed.refresh() }
+        while await !source.isHolding { await Task.yield() }
+        #expect(await feed.receivePush(recordName: pushed.id) == false)
+        await source.release()
+        #expect(await first.value)
+        #expect(feed.alerts == [pushed])
+        #expect(await source.directFetches == [pushed.id])
+        #expect(await source.connects == 2)
+    }
+
+    /// Without an account nothing is fetched, and the pushed name waits for
+    /// the next pass that can fetch.
+    @Test func aPushWithoutAnAccountWaitsForOneThatCanFetch() async {
+        let pushed = Self.alert("session-2", minutesAgo: 0)
+        let source = ScriptedSource(account: .unavailable, alerts: [], stored: [pushed])
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        #expect(await feed.receivePush(recordName: pushed.id) == false)
+        #expect(await source.directFetches.isEmpty)
+        #expect(await source.fetches == 0)
+        #expect(feed.alerts.isEmpty)
+        await source.setAccount(.available)
+        #expect(await feed.refresh())
+        #expect(feed.alerts == [pushed])
+        #expect(await source.directFetches == [pushed.id])
+    }
 }
 
 /// A scripted `AlertSource`: a fixed account answer and list, call counts,
-/// and optionally a first `connect()` that waits until released.
+/// and optionally a first `connect()` that waits until released. `stored`
+/// is what a direct fetch by name finds (the query's `alerts` may lag it);
+/// a push payload names a record under `pushKey`.
 actor ScriptedSource: AlertSource {
     struct Failure: Error {}
+    static let pushKey = "scripted-record"
 
-    let account: AccountAvailability
+    private(set) var account: AccountAvailability
     let alerts: [PhoneAlert]
+    let stored: [PhoneAlert]
     let fails: Bool
+    let directFails: Bool
     private var holdFirstConnect: Bool
     private var held: CheckedContinuation<Void, Never>?
     private(set) var connects = 0
     private(set) var fetches = 0
+    private(set) var directFetches: [String] = []
 
-    init(account: AccountAvailability, alerts: [PhoneAlert], fails: Bool = false, holdFirstConnect: Bool = false) {
+    init(
+        account: AccountAvailability,
+        alerts: [PhoneAlert],
+        stored: [PhoneAlert] = [],
+        fails: Bool = false,
+        directFails: Bool = false,
+        holdFirstConnect: Bool = false
+    ) {
         self.account = account
         self.alerts = alerts
+        self.stored = stored
         self.fails = fails
+        self.directFails = directFails
         self.holdFirstConnect = holdFirstConnect
     }
 
+    static func push(naming recordName: String) -> [AnyHashable: Any] {
+        [pushKey: recordName]
+    }
+
+    nonisolated func pushedRecordName(in userInfo: [AnyHashable: Any]) -> String? {
+        userInfo[Self.pushKey] as? String
+    }
+
+    func fetchAlert(named recordName: String) async throws -> PhoneAlert? {
+        directFetches.append(recordName)
+        if directFails { throw Failure() }
+        return stored.first { $0.id == recordName }
+    }
+
     var isHolding: Bool { held != nil }
+
+    func setAccount(_ account: AccountAvailability) { self.account = account }
 
     func release() {
         held?.resume()

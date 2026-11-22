@@ -51,7 +51,7 @@ import UserNotifications
 
     /// A fixture feed shows its list and pill from the first frame, exactly
     /// as before there was a live source.
-    @Test(arguments: FixtureSet.allCases, ConnectionState.allCases)
+    @Test(arguments: FixtureSet.allCases, ConnectionState.probed)
     @MainActor
     func aFixtureFeedStartsOnItsFixtures(_ set: FixtureSet, _ connection: ConnectionState) {
         let values = [LaunchOptions.fixtureKey: set.rawValue, LaunchOptions.connectionKey: connection.rawValue]
@@ -64,7 +64,7 @@ import UserNotifications
     // MARK: The fixture conformance
 
     /// The fixture source and gate reproduce the fixture's pill exactly.
-    @Test(arguments: ConnectionState.allCases)
+    @Test(arguments: ConnectionState.probed)
     func theFixtureProbeRoundTripsTheConnectionState(_ connection: ConnectionState) async {
         let source = FixtureAlertSource(set: .populated, connection: connection, now: Self.now)
         let gate = await FixedNotificationGate(connection: connection)
@@ -81,6 +81,15 @@ import UserNotifications
         #expect(first == FixtureSet.populated.alerts(now: Self.now))
     }
 
+    /// Fixtures get no pushes, and a direct fetch finds only their own rows.
+    @Test func theFixtureSourceNamesNoPushAndFetchesItsOwnRows() async throws {
+        let source = FixtureAlertSource(set: .populated, connection: .connected, now: Self.now)
+        let first = try #require(source.alerts.first)
+        #expect(source.pushedRecordName(in: ["aps": ["alert": "x"]]) == nil)
+        #expect(try await source.fetchAlert(named: first.id) == first)
+        #expect(try await source.fetchAlert(named: "session-0") == nil)
+    }
+
     // MARK: The pill, probed
 
     @Test func theProbedPillPutsTheAccountFirst() {
@@ -88,6 +97,24 @@ import UserNotifications
         #expect(ConnectionState(account: .unavailable, alertsAllowed: false) == .iCloudUnavailable)
         #expect(ConnectionState(account: .available, alertsAllowed: false) == .notificationsOff)
         #expect(ConnectionState(account: .available, alertsAllowed: true) == .connected)
+        // Notifications off (the owner can fix it in Settings) shows first;
+        // with them on, a missing subscription is never "Connected".
+        #expect(ConnectionState(account: .availableWithoutPush, alertsAllowed: false) == .notificationsOff)
+        #expect(ConnectionState(account: .availableWithoutPush, alertsAllowed: true) == .pushNotSetUp)
+    }
+
+    /// `checking` is the live pre-probe state only: no probe answers it, and
+    /// every other state is some probe's answer.
+    @Test func everyStateButCheckingIsAProbesAnswer() {
+        let answers = Set(AccountAvailability.allCases.flatMap { account in
+            [true, false].map { ConnectionState(account: account, alertsAllowed: $0) }
+        })
+        #expect(answers == Set(ConnectionState.probed))
+        #expect(ConnectionState.probed == ConnectionState.allCases.filter { $0 != .checking })
+    }
+
+    @Test func onlyAnUnavailableAccountCannotFetch() {
+        #expect(AccountAvailability.allCases.filter { !$0.canFetch } == [.unavailable])
     }
 
     /// Only full authorization buzzes; anything else reads "Notifications off".

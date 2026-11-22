@@ -12,12 +12,31 @@ protocol AlertSource: Sendable {
 
     /// The newest alerts, newest first. A failure leaves the list as it was.
     func fetchRecent() async throws -> [PhoneAlert]
+
+    /// The record name a push's payload carries, when the push is this
+    /// source's and names one; nil otherwise (the query alone then catches
+    /// up). Synchronous and pure: it reads the payload, nothing else.
+    func pushedRecordName(in userInfo: [AnyHashable: Any]) -> String?
+
+    /// One alert by its record name, fetched directly rather than through
+    /// the query, whose index can lag a record created moments ago. nil when
+    /// the record is not a well-formed alert.
+    func fetchAlert(named recordName: String) async throws -> PhoneAlert?
 }
 
-/// Whether this iPhone has an iCloud account alerts can arrive through.
-enum AccountAvailability: Equatable, Sendable {
+/// Whether alerts can reach this iPhone through iCloud: the account, and
+/// whether new alerts are pushed.
+enum AccountAvailability: Equatable, CaseIterable, Sendable {
+    /// The account works and the push subscription exists.
     case available
+    /// The account works, so alerts can be fetched, but the push
+    /// subscription is not confirmed on the server, so none is pushed.
+    case availableWithoutPush
+    /// No usable account: nothing can be fetched or pushed.
     case unavailable
+
+    /// Whether alerts can be fetched at all.
+    var canFetch: Bool { self != .unavailable }
 }
 
 /// The notification side of "can alerts reach me": whether the iPhone may

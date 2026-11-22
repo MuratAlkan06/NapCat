@@ -53,6 +53,9 @@ actor CloudKitAlertSource: AlertSource {
 
     // MARK: - AlertSource
 
+    /// `.availableWithoutPush` until the subscription is confirmed on the
+    /// server (created now, or found), so the pill never says "Connected"
+    /// while nothing would be pushed.
     func connect() async -> AccountAvailability {
         let availability: AccountAvailability
         do {
@@ -61,10 +64,11 @@ actor CloudKitAlertSource: AlertSource {
             Self.logger.error("account check failed (code \(Self.code(of: error)))")
             availability = .unavailable
         }
-        if availability == .available, !subscriptionReady {
+        guard availability == .available else { return availability }
+        if !subscriptionReady {
             subscriptionReady = await ensureSubscription()
         }
-        return availability
+        return subscriptionReady ? .available : .availableWithoutPush
     }
 
     func fetchRecent() async throws -> [PhoneAlert] {
@@ -74,6 +78,37 @@ actor CloudKitAlertSource: AlertSource {
             Self.logger.info("skipped \(records.count - alerts.count) malformed record(s)")
         }
         return alerts
+    }
+
+    nonisolated func pushedRecordName(in userInfo: [AnyHashable: Any]) -> String? {
+        Self.pushedRecordName(in: userInfo)
+    }
+
+    /// The pushed record, by ID, in the default zone (where the Mac writes
+    /// and the only zone the subscription watches).
+    func fetchAlert(named recordName: String) async throws -> PhoneAlert? {
+        let record = try await database.record(for: CKRecord.ID(recordName: recordName, zoneID: .default))
+        guard let alert = Self.alert(from: record) else {
+            Self.logger.info("skipped 1 malformed pushed record")
+            return nil
+        }
+        return alert
+    }
+
+    // MARK: - The push payload (pure, fixture-tested)
+
+    /// The record name the alert subscription's push carries: only a query
+    /// notification from `AlertWire.subscriptionID` for a default-zone
+    /// record counts. Anything else (another subscription, a payload that
+    /// is not CloudKit's, or one pruned of its record ID) is nil, and the
+    /// query alone catches up.
+    static func pushedRecordName(in userInfo: [AnyHashable: Any]) -> String? {
+        guard let notification = CKNotification(fromRemoteNotificationDictionary: userInfo) as? CKQueryNotification,
+              notification.subscriptionID == AlertWire.subscriptionID,
+              let recordID = notification.recordID,
+              recordID.zoneID.zoneName == CKRecordZone.ID.defaultZoneName,
+              !recordID.recordName.isEmpty else { return nil }
+        return recordID.recordName
     }
 
     // MARK: - The subscription (idempotent, fetch first)
@@ -168,8 +203,9 @@ actor CloudKitAlertSource: AlertSource {
 // MARK: - The CloudKit seam
 
 /// THE seam over CloudKit I/O: the account check, the subscription fetch and
-/// save, and the alert query. Production is `LiveCloudKitAlertDatabase`
-/// (built only by `CloudKitAlertSource.makeLive()`); tests inject a fixture.
+/// save, the alert query and the fetch of one pushed record. Production is
+/// `LiveCloudKitAlertDatabase` (built only by `CloudKitAlertSource.makeLive()`);
+/// tests inject a fixture.
 protocol CloudKitAlertDatabase: Sendable {
     func accountStatus() async throws -> CKAccountStatus
     /// Throws `unknownItem` when the server has no subscription with that ID.
@@ -178,6 +214,8 @@ protocol CloudKitAlertDatabase: Sendable {
     /// The matching records; a record that failed to load individually is
     /// left out.
     func records(matching query: CKQuery, resultsLimit: Int) async throws -> [CKRecord]
+    /// One record by ID; throws `unknownItem` when the server has none.
+    func record(for recordID: CKRecord.ID) async throws -> CKRecord
 }
 
 /// The real database: the owner's private database, user-initiated (a
@@ -214,6 +252,12 @@ private struct LiveCloudKitAlertDatabase: CloudKitAlertDatabase {
             // `inZoneWith: nil` is the default zone, where the Mac writes.
             let (matches, _) = try await database.records(matching: query, inZoneWith: nil, resultsLimit: resultsLimit)
             return matches.compactMap { try? $0.1.get() }
+        }
+    }
+
+    func record(for recordID: CKRecord.ID) async throws -> CKRecord {
+        try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in
+            try await database.record(for: recordID)
         }
     }
 }

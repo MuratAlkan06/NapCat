@@ -45,21 +45,9 @@ targets:
     # file from the properties below; commit it with the project. The
     # unsigned simulator path (CODE_SIGNING_ALLOWED=NO) applies none of it,
     # and simulator builds never build a CloudKit container (LiveCapability).
-    # Keys the generated Info.plist cannot carry (there is no INFOPLIST_KEY_
-    # for them); Xcode merges this file into the generated one. Written by
-    # xcodegen like the entitlements; kept outside the synchronized folder.
-    info:
-      path: NapCatPhone-Info.plist
-      properties:
-        # xcodegen seeds fixed version strings; point them back at the
-        # build settings so the versions above stay the only source.
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        # remote-notification: push callbacks may wake the app. The frozen
-        # subscription asks the system to RENDER each alert (no
-        # content-available flag), so today this only backs the foreground
-        # didReceiveRemoteNotification path; the list catches up on open.
-        UIBackgroundModes: [remote-notification]
+    # No background modes (the frozen F3 ADR): the subscription's pushes are
+    # alerts the system renders, never silent wakes, and the list catches up
+    # on open.
     entitlements:
       path: NapCatPhone.entitlements
       properties:
