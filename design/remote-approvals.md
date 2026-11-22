@@ -3,7 +3,8 @@
 Status: design FROZEN 2026-11-22 with three ratified amendments (CL-1, CL-2,
 CL-3). Spike S-4 passed the same day. This document is the in-repo record of
 the design tracked on issue #98; slice S0 (issue #122) lands it together with
-the pure core described at the end.
+the pure core described at the end, and slice S1 (issue #125) adds the server
+side.
 
 ## Problem
 
@@ -244,8 +245,86 @@ slices.
 
 ## Slice S1: the channel server
 
-S1 adds `napcat-channel`, the channel server Claude Code spawns for a wired
-session. Its version stamp, which must match `ApprovalChannel.serverVersion`
-(parity-locked):
+S1 adds the server side: `napcat-channel`, the channel server Claude Code
+spawns for a wired session; the authenticated socket seam between it and
+NapCat; NapCat's intake behind the seam, where the S0 gate and lifecycle run;
+and a read-only probe of the managed-settings channel allowlist. Every
+inbound line on every path is read by the S0 strict reader and by nothing
+else. The server's version stamp, which must match
+`ApprovalChannel.serverVersion` (parity-locked, like the busy hook's):
 
 napcat-channel-version: 1
+
+- **The server** (`Sources/NapCatChannel`, the wire in
+  `NapCatWire/ApprovalChannel.swift`). MCP over stdio, one message per line,
+  written unbuffered. It declares exactly the `claude/channel` and
+  `claude/channel/permission` experimental capabilities: no tools and no
+  instructions, so it puts nothing in front of Claude. It negotiates only the
+  `initialize`-based revisions (newest 2025-11-25), never 2026-07-28, on which
+  Claude Code does not register a channel; every other request, the
+  2026-07-28 `server/discover` probe included, gets "method not found", so a
+  client that speaks both falls back to `initialize`. It reads one
+  notification, the permission request: exactly its four string fields, with
+  a request ID of five letters from a to z without l. The description is
+  checked for type and dropped right there; it never crosses the seam. A
+  prompt is relayed only after the handshake, once per request ID (Claude
+  Code drops any verdict for a repeated ID), and at most 32 wait at once. A
+  verdict goes back only for a request the server relayed and still holds
+  open, and only once. The server never sends a channel message into the
+  session, reads no Claude Code configuration and no environment, and
+  connects to NapCat only when a prompt opens, so it holds nothing while
+  idle. Every failure keeps the prompt local.
+- **The seam** (`Sources/NapCatSeam`). A Unix socket,
+  `~/Library/Application Support/NapCat/approvals/seam.sock`, in a 0700
+  directory (the socket itself 0600). NapCat listens and each server
+  connects. Both ends check the peer before reading a byte: it must run as
+  this user by its socket credentials and by its audit token alike, and
+  unreadable credentials are a refusal. The listener replaces only a stale
+  socket of its own, never another kind of file, another user's socket or a
+  live listener; the server connects only to a socket of its own user inside
+  a directory nobody else can enter. Writes time out after 2 seconds, so a
+  stuck peer cannot hold either side. Frames are one JSON object per line, at
+  most 256 KiB, frame version 1: `prompt` (frame, v, request, tool, preview)
+  from the server, `verdict` (frame, v, request, verdict) from NapCat, each
+  with exactly those members. Each side refuses the other's kind, and any
+  refused frame closes the connection.
+- **The intake** (`ApprovalIntake`, behind `ApprovalSeamHost`). For every
+  prompt frame: the strict read, then the gate (with the alert topic as a
+  secret), then the lifecycle opens with the gate's answer. A record is saved
+  only when the gate forwards the prompt and the feature is armed. The one
+  verdict frame is the lifecycle's acceptance of a valid signed decision
+  inside the TTL, sent to the server the prompt came from. A server going
+  away (its session ended), the kill switch and the TTL only withdraw. The
+  audit trail is the `approvals` log category: the random prompt ID and a
+  closed code, never prompt text, a request ID, a session ID or the topic.
+- **Dark by default.** Nothing constructs the host or runs the probe yet
+  (lint-locked); the toggle and settings slices wire them deliberately. Until
+  then no socket exists, a server finds nothing to connect to, and every
+  prompt stays local.
+- **The allowlist probe** (`ChannelPolicyProbe`, the reading in
+  `NapCatWire/ApprovalChannelPolicy.swift`). It reads the file tier of the
+  managed settings (`managed-settings.json`, then the `managed-settings.d`
+  drop-ins by name, in `/Library/Application Support/ClaudeCode`) and
+  reports one finding. Only an organization allowlist naming NapCat's plugin,
+  with channels enabled, removes the per-session development flag. It cannot
+  see remote settings (claude.ai or a Claude apps gateway) or an MDM profile,
+  which rank above the file tier, and on a personal plan Claude Code skips
+  these checks entirely, so the flag stays needed there. The plugin and
+  marketplace names it looks for are provisional until the install slice
+  packages the server.
+- **Tests and locks.** The wire, the relay and the seam are tested line by
+  line and over real sockets in a scratch directory, and end to end with only
+  Claude Code's stdio, CloudKit and the phone faked; no test spawns a
+  process, registers a channel or touches a real home, socket or system
+  path. Structure locks keep the socket calls in one file, the peer check on
+  every connection, one verdict site on each side, the gate ahead of every
+  lifecycle, the strict reader as the only parser, and the seam and probe
+  unwired. The refusal catalogue the gate and the seam are tested against is
+  in [remote-approvals-catalogue.md](remote-approvals-catalogue.md).
+
+Later slices own the rest: bundling and signing the server, the user-run
+registration rails and the per-session flag, a code-signing check on the
+seam's peer (the audit token is already read for it), the project label,
+CloudKit, the phone, pairing and the toggles. The relay carries no signal
+that a dialog was answered at the Mac; a remote verdict that arrives after a
+local answer is dropped by Claude Code, and the TTL withdraws the record.
