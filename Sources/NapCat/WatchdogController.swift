@@ -17,6 +17,19 @@ final class WatchdogController {
             .appendingPathComponent("Library/Application Support/NapCat/watchdog.pid")
     }
 
+    /// The watchdog's PATH: stock system directories only, the same pin
+    /// setup.sh / uninstall.sh use. Must stay byte-identical to the PATH line
+    /// in Resources/napcat-watchdog.sh (locked by a unit test).
+    nonisolated static let pinnedPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+    /// F-5 (issue #103): the watchdog's WHOLE environment — HOME (it locates
+    /// the pidfile) and the pinned PATH — instead of inheriting NapCat's, so
+    /// nothing in the app's environment (a PATH entry, BASH_ENV, an exported
+    /// function) reaches the script that runs `sudo -n` after a crash.
+    nonisolated static func watchdogEnvironment(home: String) -> [String: String] {
+        ["HOME": home, "PATH": pinnedPath]
+    }
+
     private var process: Process?
 
     /// Spawns the watchdog for the given app PID and records its PID in the
@@ -30,6 +43,7 @@ final class WatchdogController {
         let watchdog = Process()
         watchdog.executableURL = URL(fileURLWithPath: "/bin/bash")
         watchdog.arguments = [script.path, String(appPID)]
+        watchdog.environment = Self.watchdogEnvironment(home: NSHomeDirectory())
         watchdog.standardInput = FileHandle.nullDevice
         watchdog.standardOutput = FileHandle.nullDevice
         watchdog.standardError = FileHandle.nullDevice

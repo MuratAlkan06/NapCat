@@ -30,6 +30,10 @@ final class LidGuardController: @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "lidguard")
 
     private let defaults: UserDefaults
+    /// Where the ntfy topic persists (the keychain, issue #103). Touched at
+    /// construction — the ONE startup read — and when `setTopic` saves; the
+    /// sleep path never reaches it (lint-locked in LidGuardStructureTests).
+    private let topicStore: TopicStore
     private let sleepSource: SystemSleepSource
     private let sender: MessageSender
     /// Sendable atomic mirror of the OBSERVED stay-awake state, written
@@ -46,6 +50,12 @@ final class LidGuardController: @unchecked Sendable {
     private let ackQueue = DispatchQueue(label: "com.muratalkan.napcat.lidguard.ack")
 
     private let lock = NSLock()
+    /// The ntfy topic — A SECRET. The in-memory copy every reader uses: set
+    /// once at construction from the store, then only by a successful save.
+    private var topic: String
+    /// Whether the last `setTopic` could not save to the store (it then kept
+    /// the previous topic). In-memory; the editor reads it right after Save.
+    private var lastTopicSaveFailed = false
     /// In-memory ONLY. Persisting it would cache intent across relaunches.
     private var lastFiredAt: Double?
     private var sendInFlight = false
@@ -62,6 +72,7 @@ final class LidGuardController: @unchecked Sendable {
 
     init(
         defaults: UserDefaults,
+        topicStore: TopicStore,
         sleepSource: SystemSleepSource,
         sender: MessageSender,
         stayAwakeMirror: ObservedStayAwakeMirror,
@@ -69,11 +80,44 @@ final class LidGuardController: @unchecked Sendable {
         now: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 }
     ) {
         self.defaults = defaults
+        self.topicStore = topicStore
         self.sleepSource = sleepSource
         self.sender = sender
         self.stayAwakeMirror = stayAwakeMirror
         self.busyProvider = busyProvider
         self.now = now
+        topic = Self.startupTopic(defaults: defaults, store: topicStore)
+    }
+
+    /// The ONE startup read of the topic (issue #103). First the one-time
+    /// move out of plaintext UserDefaults (`TopicKeychainMigration`: write,
+    /// verify, then delete the old key); its verified read-back doubles as
+    /// this read. Otherwise one keychain read — which, on the first launch
+    /// of an ad-hoc rebuild, waits for the user's answer to the keychain's
+    /// Allow dialog. An unreadable item starts the session with no topic;
+    /// nothing is deleted or rewritten because of it.
+    private static func startupTopic(defaults: UserDefaults, store: TopicStore) -> String {
+        switch TopicKeychainMigration.run(defaults: defaults, store: store) {
+        case .moved(let value):
+            Self.logger.notice("startup: moved the ntfy setting into the keychain and deleted the plaintext copy")
+            return value
+        case .kept(let value):
+            Self.logger.error("startup: could not move the ntfy setting into the keychain — kept in place, retrying next launch")
+            return value
+        case .discardedJunk:
+            Self.logger.notice("startup: deleted an unusable legacy ntfy value (not a string)")
+        case .nothingToMove:
+            break
+        }
+        switch store.read() {
+        case .found(let value):
+            return value
+        case .notFound:
+            return ""
+        case .failed(let status):
+            Self.logger.error("startup: the keychain did not return the ntfy setting (OSStatus \(status, privacy: .public)) — starting without it")
+            return ""
+        }
     }
 
     /// The ONE construction site of the real ntfy sender, gated by the same
@@ -99,12 +143,14 @@ final class LidGuardController: @unchecked Sendable {
         defaults: UserDefaults = .standard,
         stayAwakeMirror: ObservedStayAwakeMirror,
         detection: ClaudeActivityController?,
-        sender: MessageSender?
+        sender: MessageSender?,
+        topicStore: TopicStore
     ) -> LidGuardController? {
         guard LidGuardPolicy.lidGuardMayBeConstructed(debugBattery: debugBattery) else { return nil }
         guard let detection, let sender else { return nil }
         return LidGuardController(
             defaults: defaults,
+            topicStore: topicStore,
             sleepSource: IOKitSystemSleepSource(),
             sender: sender,
             stayAwakeMirror: stayAwakeMirror,
@@ -150,14 +196,30 @@ final class LidGuardController: @unchecked Sendable {
         lock.unlock()
     }
 
-    // MARK: - Persistence (PLAN.md §11 — four lid-guard keys + the Track C
-    // finish-alert toggle, nothing else)
+    // MARK: - Persistence (PLAN.md §11 — the lid-guard keys + the Track C
+    // finish-alert toggle, nothing else; the topic itself is in the keychain)
 
     var isEnabled: Bool { defaults.bool(forKey: DefaultsKey.lidGuardEnabled) }
-    /// The ntfy topic — A SECRET (it is the only password on the feed). Stored
-    /// raw so the menu can render an "unusable" caption for a hand-edited
-    /// value; every consumer goes through `LidGuardPolicy.validateTopic`.
-    var storedTopic: String { defaults.string(forKey: DefaultsKey.lidGuardNtfyTopic) ?? "" }
+    /// The ntfy topic — A SECRET (it is the only password on the feed). The
+    /// IN-MEMORY copy (read from the keychain once, at construction): the
+    /// sleep path, the menu and the finish alert all read this, never the
+    /// store. Kept raw so the menu can render an "unusable" caption for a
+    /// hand-edited value; every consumer goes through
+    /// `LidGuardPolicy.validateTopic`.
+    var storedTopic: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return topic
+    }
+
+    /// True when the last `setTopic` could not save the topic to the keychain
+    /// and kept the previous one — the editor reports it instead of closing.
+    var topicSaveFailed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastTopicSaveFailed
+    }
+
     /// The ntfy server origin. Unset (or a junk non-string value) reads back as
     /// the public instance, so the feature has a working default.
     var storedServer: String {
@@ -183,25 +245,42 @@ final class LidGuardController: @unchecked Sendable {
 
     /// Stores a validated topic. A CHANGED topic always clears the primed flag:
     /// the test send must be repeated against the new topic, so the first
-    /// message to it is never the lid-close one.
+    /// message to it is never the lid-close one. An unchanged one (the
+    /// editor saves both fields on every Save) touches nothing — not even the
+    /// keychain. If the keychain refuses the save, the previous topic stays,
+    /// still primed, and `topicSaveFailed` says so.
     @discardableResult
     func setTopic(_ raw: String) -> TopicValidation {
         let validation = LidGuardPolicy.validateTopic(raw)
+        lock.lock()
+        lastTopicSaveFailed = false
+        lock.unlock()
         switch validation {
-        case .valid(let topic):
-            if topic != storedTopic {
-                defaults.set(topic, forKey: DefaultsKey.lidGuardNtfyTopic)
-                defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
-            }
+        case .valid(let newTopic):
+            if newTopic != storedTopic { commitTopic(newTopic) }
         case .empty:
-            defaults.set("", forKey: DefaultsKey.lidGuardNtfyTopic)
-            defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
+            if !storedTopic.isEmpty { commitTopic("") }
         case .invalid:
             // Keep the previous value; the caller renders the inline caption.
             break
         }
         refreshArming()
         return validation
+    }
+
+    /// Saves first, then adopts: the in-memory topic changes only once the
+    /// keychain holds the new value (an empty topic deletes the item).
+    private func commitTopic(_ newTopic: String) {
+        let saved = newTopic.isEmpty ? topicStore.delete() : topicStore.write(newTopic)
+        lock.lock()
+        if saved { topic = newTopic }
+        lastTopicSaveFailed = !saved
+        lock.unlock()
+        guard saved else {
+            Self.logger.error("lid guard: the keychain refused the new ntfy setting — keeping the previous one")
+            return
+        }
+        defaults.set(0.0, forKey: DefaultsKey.lidGuardPrimedAt)
     }
 
     /// Stores a validated server. Like the topic, a CHANGED server clears the

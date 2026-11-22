@@ -137,6 +137,16 @@ make            # swift build + assemble dist/NapCat.app (ad-hoc signed)
 open dist/NapCat.app
 ```
 
+**One keychain prompt per rebuild.** If you use the ntfy alerts, NapCat keeps
+your topic in the login keychain (the **NapCat ntfy topic** item). A plain
+`make` signs the app ad hoc, so macOS treats every rebuild as a different app,
+and the first launch of each rebuild asks once whether NapCat may use that
+item. Click **Always Allow** (**Allow** works too, but asks again at the next
+launch). The menu-bar cat appears after you answer. If you click **Deny**, NapCat
+runs that session without a topic; nothing is deleted, and the next launch
+asks again. The signed release from the disk image keeps the same identity
+across updates, so updating it does not ask.
+
 ### One-time privileged setup
 
 The app runs immediately, but both power features need a **one-time
@@ -373,9 +383,9 @@ re-enables charging (before deleting the helper it needs to do so — and only
 after re-checking that `/usr/local`, `/usr/local/napcat` and the helper are
 still root-owned and not writable by anyone else; if they are not, that one
 step is skipped and reported, and everything else still runs), then
-removes the sudoers file, `/usr/local/napcat`, the failsafe LaunchAgent, and
-NapCat's saved settings (including the ntfy topic), and prints a summary of
-everything it reverted. Then delete the app (`/Applications/NapCat.app` if
+removes the sudoers file, `/usr/local/napcat`, the failsafe LaunchAgent,
+NapCat's saved settings and the ntfy topic's keychain item (without printing
+either), and prints a summary of everything it reverted. Then delete the app (`/Applications/NapCat.app` if
 you installed the disk image) and the repo / `dist/NapCat.app` and, if you
 enabled Launch at Login, remove the NapCat
 entry in System Settings › General › Login Items (or untick it in NapCat's
@@ -405,10 +415,12 @@ sudo rm -rf /usr/local/napcat
 launchctl bootout gui/$UID/com.napcat.failsafe 2>/dev/null
 rm -f ~/Library/LaunchAgents/com.napcat.failsafe.plist
 defaults delete com.muratalkan.napcat             # as yourself, not with sudo
+security delete-generic-password -s com.muratalkan.napcat -a ntfy-topic >/dev/null   # as yourself
 ```
 
-Don't skip the last line: NapCat's settings include the ntfy topic, which is a
-bearer credential (anyone who has it can read and post to your feed).
+Don't skip the last two lines. The keychain item is the ntfy topic, a bearer
+credential (anyone who has it can read and post to your feed), and an older
+install's settings may still hold a plaintext copy.
 
 ## Debug battery simulator
 
@@ -555,11 +567,15 @@ state, never arms itself, and never sends anything but its own fixed sentence.
    rather than typing one you thought of (`openssl rand -hex 8` is enough), and
    **do not copy any example from this README or from the app**: an example
    everybody can read is a feed everybody can read. Allowed: letters, digits,
-   `_` and `-`, up to 64 characters.
+   `_` and `-`, up to 64 characters. Or let NapCat make one: **Generate** in
+   step 3 fills in `napcat-` plus 22 random characters. Tick **Show**, then
+   subscribe your phone to exactly that.
 3. Open **Settings › Alerts** (the gear in the menu, or ⌘,) and click
    **ntfy settings…**, paste the topic,
    and leave the server as `https://ntfy.sh` unless you run your own instance.
    The topic field is masked like a password; tick **Show** to proofread it.
+   **Generate** (next to **Show**) fills in a long random topic. A topic under
+   16 characters gets a gentle "Short" note, but it still saves.
    If a password suggestion ever appears over the topic field, press **Esc**
    instead of clicking it, and check the topic with **Show** before **Save**.
    A custom server must be an `https://` origin and nothing more — no path,
@@ -601,11 +617,13 @@ curl -d "hello from the terminal" https://ntfy.sh/<your-topic>
 - **Your topic is a shared secret with a public server.** Treat it like a
   password: do not paste it into screenshots, issues, or logs. NapCat never
   writes it to the unified log, and the menu never renders it. It is stored in
-  NapCat's own preferences (`com.muratalkan.napcat`) in cleartext, like any
-  other setting — anyone with access to your logged-in account can read it, and
-  `sudo ./scripts/uninstall.sh` deletes it along with the rest of NapCat's
-  settings. The operator of whichever ntfy server you use also sees the topic
-  and the message text, and holds it for 12 hours.
+  your login keychain (the **NapCat ntfy topic** item), never synced through
+  iCloud Keychain. An older install's plaintext copy in NapCat's preferences
+  is moved there at first launch and then deleted. Other apps have to ask
+  you before they can read it, but that is not a wall against software already
+  running as you. `sudo ./scripts/uninstall.sh` deletes the item. The operator
+  of whichever ntfy server you use also sees the topic and the message text,
+  and holds it for 12 hours.
 
 **How it works, briefly.** NapCat registers for system power notifications
 (`IORegisterForSystemPower`) *only while armed* — switched off, it has no

@@ -22,6 +22,10 @@ import Testing
 /// F2 — root must never write through a path the invoking user controls: the
 /// symlink refusal and the `sudo -u` home writes in setup.sh (and the matching
 /// guard in uninstall.sh) are lint-locked.
+///
+/// F-6 (issue #103) — the SUDO_USER check. Its one pure function is the only
+/// script text ever RUN here: extracted from both scripts and fed synthetic
+/// names (multi-line ones included) in a bare `bash -c`.
 struct SetupScriptTests {
     // MARK: Paths + text helpers
 
@@ -660,6 +664,119 @@ struct SetupScriptTests {
             #expect(mutant != original, "canary setup '\(name)': target text must exist")
             #expect(!Self.smcTrustLintFailures(mutant).isEmpty, "canary '\(name)' was NOT caught by the S2 lock")
         }
+    }
+
+    // MARK: - F-6: SUDO_USER is checked as one whole string
+
+    static let shortNameFunctionHead = "is_valid_short_name() {"
+
+    /// The validator's text, from its `name() {` line through the `}` that
+    /// closes it at column 0 — or nil when the script has none.
+    static func shortNameFunction(_ script: String) -> String? {
+        let all = lines(script)
+        guard let start = all.firstIndex(of: shortNameFunctionHead),
+              let end = all[start...].firstIndex(of: "}") else { return nil }
+        return all[start...end].joined(separator: "\n")
+    }
+
+    /// Runs `function` in a bare bash (the scripts' own /bin/bash) on ONE
+    /// synthetic name, passed as an argument — nothing else of either script
+    /// executes. Exit status 0 = accepted.
+    static func shortNameCheckStatus(_ function: String, _ name: String, locale: String = "C") throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", function + "\nis_valid_short_name \"$1\"", "is_valid_short_name", name]
+        process.environment = ["PATH": "/usr/bin:/bin", "LC_ALL": locale]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    static let acceptedNames = ["alice", "a", "_svc", "bob-2", "x_y9"]
+    /// Multi-line and CR values first: the old `printf | grep -Eq '^…$'`
+    /// matched line by line and let "alice<newline>root" through.
+    static let rejectedNames = ["alice\nroot", "alice\n", "\nalice", "root\nalice", "alice\r", "alice\r\nroot",
+                                "", "Alice", "1abc", "-x", "al ice", "alice;id", "../x", "é", "alicé", "ALICE"]
+
+    /// Every F-6 violation across both scripts; empty == locked. Both carry
+    /// the SAME validator, it refuses `\n`/`\r` before its full-string
+    /// anchored `=~` (C locale), both gate SUDO_USER through it, and the old
+    /// line-based grep is gone.
+    static func shortNameLintFailures(setup: String, uninstall: String) -> [String] {
+        var failures: [String] = []
+        guard let function = shortNameFunction(setup), let twin = shortNameFunction(uninstall) else {
+            return ["\(shortNameFunctionHead) is missing from setup.sh or uninstall.sh"]
+        }
+        if function != twin { failures.append("setup.sh and uninstall.sh carry different is_valid_short_name bodies") }
+        let body = lines(function).map { $0.trimmingCharacters(in: .whitespaces) }
+        let newlineCase = body.firstIndex(of: #"*$'\n'* | *$'\r'*) return 1 ;;"#)
+        let match = body.firstIndex(of: #"[[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]"#)
+        if let newlineCase, let match {
+            if newlineCase > match { failures.append("the newline/CR refusal must come before the regex match") }
+        } else {
+            failures.append("is_valid_short_name must refuse \\n/\\r, then match `^[a-z_][a-z0-9_-]*$` with [[ =~ ]]")
+        }
+        if !body.contains("local LC_ALL=C") { failures.append("is_valid_short_name must match in the C locale") }
+        if let setupCall = codeLines(setup).firstIndex(of: #"if ! is_valid_short_name "$TARGET_USER"; then"#) {
+            if let firstUse = codeLines(setup).firstIndex(where: { $0.contains(#"id -u "$TARGET_USER""#) }),
+               firstUse < setupCall {
+                failures.append("setup.sh uses SUDO_USER before validating it")
+            }
+        } else {
+            failures.append("setup.sh must refuse a SUDO_USER that fails is_valid_short_name")
+        }
+        if !codeLines(uninstall).contains(#"&& is_valid_short_name "$TARGET_USER" \"#) {
+            failures.append("uninstall.sh must gate SUDO_USER through is_valid_short_name")
+        }
+        for (name, script) in [("setup.sh", setup), ("uninstall.sh", uninstall)]
+        where codeLines(script).contains(where: { $0.contains("grep -Eq '^[a-z_]") }) {
+            failures.append("\(name) still validates SUDO_USER with a line-based grep")
+        }
+        return failures
+    }
+
+    @Test func sudoUserIsValidatedAsOneWholeString() throws {
+        let setup = try Self.read(Self.setupURL)
+        let uninstall = try Self.read(Self.uninstallURL)
+        let failures = Self.shortNameLintFailures(setup: setup, uninstall: uninstall)
+        #expect(failures.isEmpty, "F-6 violations: \(failures)")
+
+        let mutants: [(String, String, String)] = [
+            ("newline refusal dropped", #"*$'\n'* | *$'\r'*) return 1 ;;"#, "*__never__*) return 1 ;;"),
+            ("anchor dropped", #"=~ ^[a-z_][a-z0-9_-]*$ ]]"#, #"=~ [a-z_][a-z0-9_-]* ]]"#),
+            ("locale pin dropped", "    local LC_ALL=C\n", ""),
+            ("old grep restored", #"if ! is_valid_short_name "$TARGET_USER"; then"#,
+             #"if ! printf '%s' "$TARGET_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$'; then"#),
+        ]
+        for (name, target, replacement) in mutants {
+            let mutant = setup.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != setup, "canary setup '\(name)': target text must exist")
+            #expect(!Self.shortNameLintFailures(setup: mutant, uninstall: uninstall).isEmpty,
+                    "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// Behavior: the extracted validator accepts plain short names and
+    /// refuses every multi-line, CR, upper-case, non-ASCII or punctuated one —
+    /// in the C locale and in a UTF-8 one.
+    @Test func sudoUserCheckRefusesMultiLineAndForeignNames() throws {
+        let function = try #require(Self.shortNameFunction(try Self.read(Self.setupURL)))
+        for locale in ["C", "en_US.UTF-8"] {
+            for name in Self.acceptedNames {
+                #expect(try Self.shortNameCheckStatus(function, name, locale: locale) == 0, "\(locale): '\(name)' refused")
+            }
+            for name in Self.rejectedNames {
+                #expect(try Self.shortNameCheckStatus(function, name, locale: locale) != 0,
+                        "\(locale): \(String(reflecting: name)) accepted")
+            }
+        }
+        // Teeth: the check it replaced lets a multi-line value through.
+        let oldCheck = "is_valid_short_name() {\n    printf '%s' \"$1\" | grep -Eq '^[a-z_][a-z0-9_-]*$'\n}"
+        #expect(try Self.shortNameCheckStatus(oldCheck, "alice\nroot") == 0, "vacuity: the old grep accepted it")
+        #expect(try Self.shortNameCheckStatus(oldCheck, "alice\nroot") != Self.shortNameCheckStatus(function, "alice\nroot"))
     }
 
     // MARK: - S3: an identical installed helper still gets owner + mode re-asserted

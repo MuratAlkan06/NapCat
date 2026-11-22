@@ -50,6 +50,19 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# A valid macOS short user name, checked as ONE whole string (audit F-6). A
+# newline or CR is refused outright first: the old `printf | grep -Eq '^…$'`
+# matched line by line, so "alice<newline>root" passed. Then a full-string
+# anchored match, in the C locale so [a-z] means a-z and nothing else. The
+# same function, byte for byte, is in setup.sh and uninstall.sh.
+is_valid_short_name() {
+    case "$1" in
+        *$'\n'* | *$'\r'*) return 1 ;;
+    esac
+    local LC_ALL=C
+    [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]
+}
+
 TARGET_USER="${SUDO_USER:-}"
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
     echo "error: could not determine the invoking user (SUDO_USER unset or root)." >&2
@@ -57,9 +70,10 @@ if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
     exit 1
 fi
 # Security hardening (P2 review carryover): the value lands inside a sudoers
-# rule, so it must look like a real macOS short name AND actually exist.
-if ! printf '%s' "$TARGET_USER" | grep -Eq '^[a-z_][a-z0-9_-]*$'; then
-    echo "error: SUDO_USER '$TARGET_USER' is not a valid macOS short user name — refusing." >&2
+# rule, so it must look like a real macOS short name AND actually exist. The
+# rejected value is not echoed back: it may hold control characters.
+if ! is_valid_short_name "$TARGET_USER"; then
+    echo "error: SUDO_USER is not a valid macOS short user name — refusing." >&2
     exit 1
 fi
 if ! id -u "$TARGET_USER" >/dev/null 2>&1; then

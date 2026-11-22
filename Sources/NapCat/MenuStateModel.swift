@@ -1000,6 +1000,32 @@ final class MenuStateModel: ObservableObject {
         return (["Nothing was saved."] + problems).joined(separator: " ")
     }
 
+    /// Issue #103 (F-3): the soft caption the ntfy editor shows in its
+    /// caption band while the topic field holds a USABLE topic that is short
+    /// (under `LidGuardTuning.recommendedMinTopicLength`), or the one the
+    /// Generate button just produced. A fragment (canon C2), its state word
+    /// first; advice only, never a reason Save fails. Nil otherwise — empty,
+    /// unusable (Save names that) or long enough. Never echoes the topic.
+    nonisolated static func lidAlertTopicHint(_ topic: String, generated: String?) -> String? {
+        guard case .valid(let value) = LidGuardPolicy.validateTopic(topic) else { return nil }
+        if let generated, value == generated { return lidAlertGeneratedTopicHint }
+        return value.unicodeScalars.count < LidGuardTuning.recommendedMinTopicLength ? lidAlertShortTopicHint : nil
+    }
+
+    nonisolated static let lidAlertShortTopicHint =
+        "Short — a topic under \(LidGuardTuning.recommendedMinTopicLength) characters is easier to guess. "
+        + "\(TopicFieldVisibility.generateButtonTitle) makes a long random one."
+
+    nonisolated static let lidAlertGeneratedTopicHint =
+        "Generated — tick \(TopicFieldVisibility.checkboxTitle) to copy it into the ntfy app on your phone, then Save."
+
+    /// The editor's caption when both fields were usable but the keychain
+    /// refused the topic (issue #103): the controller kept the previous
+    /// topic, so the editor comes back instead of closing as if it saved.
+    /// Fits the editor's reserved error band (MenuPanelStructureTests).
+    nonisolated static let lidAlertTopicNotSavedError =
+        "The topic was not saved — the keychain refused it, so NapCat kept the previous one. Save again to retry."
+
     /// Standing security note: on ntfy there is no account, so the topic name
     /// is the whole access-control story. Settings › Alerts' footnote, under
     /// "ntfy settings…" (kept, not removed — the user has not signed off on

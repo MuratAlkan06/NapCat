@@ -23,13 +23,11 @@ enum DefaultsKey {
     // settings). Track C below shares the topic / server / primed-at keys.
 
     /// Whether the lid-close alert feature is switched on. Armed additionally
-    /// requires a usable ntfy topic AND a successful test send.
+    /// requires a usable ntfy topic AND a successful test send. The topic
+    /// itself is NOT a defaults key any more: it is a bearer credential, so
+    /// it lives in the keychain (`KeychainItemName.ntfyTopic`, issue #103) —
+    /// its old key is in `RetiredDefaultsKey`.
     static let lidGuardEnabled = "lidGuardEnabled"
-    /// The user's ntfy topic — SECRET: on ntfy the topic name is the only
-    /// password on the feed, so it is never logged and never rendered into a
-    /// menu caption. Validated against `^[A-Za-z0-9_-]{1,64}$` before use; an
-    /// invalid value leaves the feature inert.
-    static let lidGuardNtfyTopic = "lidGuardNtfyTopic"
     /// The ntfy server origin (https only). Unset reads back as
     /// `LidGuardTuning.defaultNtfyServer` — the public instance.
     static let lidGuardNtfyServer = "lidGuardNtfyServer"
@@ -93,14 +91,26 @@ enum RetiredDefaultsKey {
     /// dead key does not linger in the plist.
     static let menuPanelStyle = "menuPanelStyle"
 
-    /// Everything `DefaultsMigration.removeRetiredKeys` cleans up.
+    /// The ntfy topic's plaintext home until issue #103 (audit F-2) moved it
+    /// to the keychain. Retired — nothing reads it as a setting any more —
+    /// but deliberately NOT in `all`: its value is the user's only copy of
+    /// the topic until the move has succeeded, so an unconditional startup
+    /// delete could lose it. `TopicKeychainMigration` is the one place that
+    /// deletes it, and only after a verified keychain write.
+    static let lidGuardNtfyTopic = "lidGuardNtfyTopic"
+
+    /// Everything `DefaultsMigration.removeRetiredKeys` deletes outright.
+    /// Never add `lidGuardNtfyTopic` here (lint-locked in PersistenceTests).
     static let all = [lidGuardRecipient, menuPanelStyle]
 }
 
 /// One-time startup cleanup of retired keys (PLAN.md §11).
 enum DefaultsMigration {
-    /// Deletes every retired key that is still present. Idempotent — a second
-    /// run finds nothing and removes nothing.
+    /// Deletes every key in `RetiredDefaultsKey.all` that is still present.
+    /// Idempotent — a second run finds nothing and removes nothing. It never
+    /// touches `RetiredDefaultsKey.lidGuardNtfyTopic` (not in `all`), so it
+    /// is safe to run before the topic's keychain move — it does, first thing
+    /// at launch.
     ///
     /// The values are NEVER read, compared, or logged: this runs in-process
     /// under the user's own identity purely to stop a retired identifier from
@@ -115,5 +125,52 @@ enum DefaultsMigration {
             removed.append(key)
         }
         return removed
+    }
+}
+
+/// Issue #103 (audit F-2): moves the ntfy topic out of plaintext UserDefaults
+/// into the keychain. Runs once per launch, inside the lid guard's
+/// construction (`LidGuardController.startupTopic`), after the retired-key
+/// cleanup and the crash-failsafe reconciliation.
+///
+/// ORDER: write to the keychain → read it back and compare → only then
+/// delete the defaults key. Any failure keeps the key, so the next launch
+/// retries and the topic is never lost. A value found under the key is
+/// always the newest one the user saved there (an older NapCat build writes
+/// nothing else), so it replaces whatever the keychain holds; an empty one —
+/// a topic the user cleared — deletes the item.
+///
+/// The value is never logged; outcomes carry it only so the caller can use
+/// it as this session's topic.
+enum TopicKeychainMigration {
+    enum Outcome: Equatable, Sendable {
+        /// No legacy key — every launch after the first.
+        case nothingToMove
+        /// Written, read back identical, key deleted. Carries the verified
+        /// value: that read-back IS the startup read.
+        case moved(String)
+        /// The key held no string value (a hand edit that already read as "no
+        /// topic"): there is nothing to move, so it is just deleted.
+        case discardedJunk
+        /// The write failed or the read-back differed: the key is KEPT and the
+        /// move is retried at the next launch. Carries the legacy value so the
+        /// alerts keep working this session.
+        case kept(String)
+    }
+
+    static func run(defaults: UserDefaults, store: TopicStore) -> Outcome {
+        let key = RetiredDefaultsKey.lidGuardNtfyTopic
+        guard defaults.object(forKey: key) != nil else { return .nothingToMove }
+        guard let legacy = defaults.string(forKey: key) else {
+            defaults.removeObject(forKey: key)
+            return .discardedJunk
+        }
+        // 1. Write (a cleared topic is a delete) …
+        guard legacy.isEmpty ? store.delete() : store.write(legacy) else { return .kept(legacy) }
+        // 2. … verify by reading it back …
+        guard store.read() == (legacy.isEmpty ? .notFound : .found(legacy)) else { return .kept(legacy) }
+        // 3. … and only then delete the plaintext copy.
+        defaults.removeObject(forKey: key)
+        return .moved(legacy)
     }
 }

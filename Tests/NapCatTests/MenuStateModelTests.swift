@@ -663,8 +663,7 @@ struct MenuStateModelTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let sender = RecordingMessageSender()
-        let lid = LidGuardHarness(defaults: defaults, sender: sender)
-        if let topic { defaults.set(topic, forKey: DefaultsKey.lidGuardNtfyTopic) }
+        let lid = LidGuardHarness(defaults: defaults, sender: sender, topicStore: FakeTopicStore(topic))
         let factory = WatcherFactory()
         let finish = FinishAlertController(
             store: FakeMarkerStore(),

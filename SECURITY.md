@@ -44,8 +44,15 @@ helper cannot be swapped without already being root. sudo matches an entry's
 arguments as one space-joined string, which is why the entries are never
 widened with wildcards. The optional lid-close and session alerts share an
 ntfy topic that is a bearer credential: anyone who knows it can read and post
-to the feed. It is stored only in NapCat's user defaults
-(`com.muratalkan.napcat`), is never written to the log or shown in the menu
-(the settings dialog masks it unless you tick Show), and is deleted by
-`scripts/uninstall.sh`. The full rationale and the honest trade-offs are in
-the README's [Security model](README.md#security-model) section.
+to the feed. It is stored as one generic-password item in your login keychain
+(service `com.muratalkan.napcat`, account `ntfy-topic`) and is never synced
+through iCloud Keychain. An older NapCat kept it in its user defaults
+(`com.muratalkan.napcat`); the first launch of a keychain-era build moves it
+across and deletes the plaintext copy only after the keychain copy reads back
+identical, keeping it (and retrying at the next launch) if that fails. NapCat
+reads the item once at startup and keeps the topic in memory. It is never
+written to the log or shown in the menu (the settings dialog masks it unless
+you tick Show), and `scripts/uninstall.sh` deletes the keychain item and the
+user defaults without printing either. The full rationale and the honest
+trade-offs are in the README's [Security model](README.md#security-model)
+section.

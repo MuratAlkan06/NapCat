@@ -52,4 +52,9 @@ enum TopicFieldVisibility {
     /// fitting width at the system font must stay within 270 pt — the 300 pt
     /// field minus its bezel insets and a margin — or it clips (unit-tested).
     static let fieldPlaceholder = "Topic — e.g. napcat-<random-suffix>"
+
+    /// Issue #103 (F-3): the button right of the checkbox that fills the
+    /// visible field with `NtfyTopicGenerator.generate()`.
+    static let generateButtonTitle = "Generate"
+    static let generateAccessibilityLabel = "Generate a random topic"
 }

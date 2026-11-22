@@ -1186,9 +1186,9 @@ struct MenuPanelPresentationTests {
             let defaults = UserDefaults(suiteName: suite)!
             defer { defaults.removePersistentDomain(forName: suite) }
             let sender = RecordingMessageSender()
-            let lid = LidGuardHarness(defaults: defaults, sender: sender)
+            let lid = LidGuardHarness(defaults: defaults, sender: sender,
+                                      topicStore: FakeTopicStore(lidAlert || sessionAlerts ? "napcat-fresh-7q2m9x" : nil))
             if lidAlert || sessionAlerts {
-                defaults.set("napcat-fresh-7q2m9x", forKey: DefaultsKey.lidGuardNtfyTopic)
                 defaults.set(lid.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
             }
             defaults.set(lidAlert, forKey: DefaultsKey.lidGuardEnabled)

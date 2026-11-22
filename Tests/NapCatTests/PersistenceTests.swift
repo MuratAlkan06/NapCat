@@ -16,11 +16,11 @@ struct PersistenceTests {
         #expect(DefaultsKey.stayAwakeIntent == "stayAwakeIntent")
         #expect(DefaultsKey.heatWarningAcknowledged == "heatWarningAcknowledged")
         #expect(DefaultsKey.debugBattery == "debugBattery")
-        // Track B / B2 (lid-close alert) — the only four keys the lid-guard
-        // feature adds; cooldown, budgets, and paths stay code constants. The topic and
-        // server keys replaced `lidGuardRecipient` in the B4 ntfy swap.
+        // Track B / B2 (lid-close alert) — the keys the lid-guard feature
+        // adds; cooldown, budgets, and paths stay code constants. The topic and
+        // server keys replaced `lidGuardRecipient` in the B4 ntfy swap; since
+        // issue #103 the topic is in the keychain and its key is retired.
         #expect(DefaultsKey.lidGuardEnabled == "lidGuardEnabled")
-        #expect(DefaultsKey.lidGuardNtfyTopic == "lidGuardNtfyTopic")
         #expect(DefaultsKey.lidGuardNtfyServer == "lidGuardNtfyServer")
         #expect(DefaultsKey.lidGuardPrimedAt == "lidGuardPrimedAt")
         // Track C (Claude finish alert) — ONE toggle; it shares the lid-guard
@@ -109,7 +109,7 @@ struct PersistenceTests {
             let relaunched = CompositeMessageSender(ntfy: RecordingMessageSender(), phone: RecordingMessageSender(),
                                                     defaults: defaults, isEntitled: { false })
             #expect(relaunched.phoneTransportEnabled, "survives a relaunch")
-            for key in [DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic, DefaultsKey.lidGuardNtfyServer,
+            for key in [DefaultsKey.lidGuardEnabled, RetiredDefaultsKey.lidGuardNtfyTopic, DefaultsKey.lidGuardNtfyServer,
                         DefaultsKey.lidGuardPrimedAt, DefaultsKey.claudeFinishAlertEnabled] {
                 #expect(defaults.object(forKey: key) == nil, "'\(key)' was touched by the phone toggle")
             }
@@ -191,10 +191,12 @@ struct PersistenceTests {
             #expect(harness.controller.primedAt == 0)
             #expect(harness.controller.armingState == .off)
             #expect(!harness.controller.isObservingSleep)
-            for key in [DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
+            for key in [DefaultsKey.lidGuardEnabled, RetiredDefaultsKey.lidGuardNtfyTopic,
                         DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt] {
                 #expect(harness.defaults.object(forKey: key) == nil, "defaults are computed, not eagerly written")
             }
+            #expect(harness.topicStore.storedValue == nil, "nor is anything written to the keychain")
+            #expect(harness.topicStore.writeCount == 0 && harness.topicStore.deleteCount == 0)
         }
     }
 
@@ -203,18 +205,22 @@ struct PersistenceTests {
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
+        // One "keychain" across both instances, as on a real relaunch.
+        let keychain = FakeTopicStore()
 
-        let first = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+        let first = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender(), topicStore: keychain)
         first.controller.setEnabled(true)
         first.controller.setServer("  https://ntfy.example.com/  ")
         first.controller.setTopic("  napcat-lid-8f3k2p  ")
         first.controller.sendTestMessage()
         #expect(first.controller.armingState == .armed)
 
-        // A second controller on the same defaults = an app relaunch.
-        let second = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender())
+        // A second controller on the same defaults + keychain = an app relaunch.
+        let second = LidGuardHarness(defaults: defaults, sender: RecordingMessageSender(), topicStore: keychain)
         #expect(second.controller.isEnabled)
         #expect(second.controller.storedTopic == "napcat-lid-8f3k2p", "stored trimmed, not raw")
+        #expect(keychain.storedValue == "napcat-lid-8f3k2p", "the topic persists in the keychain…")
+        #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == nil, "…and never in defaults")
         #expect(second.controller.storedServer == "https://ntfy.example.com", "stored normalized")
         #expect(second.controller.primedAt == first.controller.primedAt)
         #expect(second.controller.armingState == .armed)
@@ -223,18 +229,23 @@ struct PersistenceTests {
     /// Hand-edited or corrupted values must read back safely and leave the
     /// feature inert rather than crashing or half-arming.
     @Test func junkLidGuardValuesReadBackSane() {
-        withLidGuardHarness { harness in
+        // A keychain item that is not text reads as no topic…
+        let unreadable = FakeTopicStore()
+        unreadable.setReadAnswer(.failed(status: errSecDecode))
+        withLidGuardHarness(topicStore: unreadable) { harness in
+            harness.defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
+            #expect(harness.controller.storedTopic == "", "an unreadable item reads as no topic")
+            #expect(harness.controller.armingState == .needsTopic)
+        }
+        // …and a hand-edited, unusable one never arms.
+        withLidGuardHarness(topicStore: FakeTopicStore("has/slash")) { harness in
+            harness.defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
+            harness.defaults.set(harness.clock.now, forKey: DefaultsKey.lidGuardPrimedAt)
+            #expect(harness.controller.armingState == .needsTopic, "an unusable topic never arms")
+        }
+        withLidGuardHarness(topicStore: FakeTopicStore("napcat-lid-8f3k2p")) { harness in
             let controller = harness.controller
             harness.defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
-
-            harness.defaults.set([1, 2], forKey: DefaultsKey.lidGuardNtfyTopic)
-            #expect(controller.storedTopic == "", "a non-string value reads as no topic")
-            #expect(controller.armingState == .needsTopic)
-
-            harness.defaults.set("has/slash", forKey: DefaultsKey.lidGuardNtfyTopic)
-            #expect(controller.armingState == .needsTopic, "an unusable topic never arms")
-
-            harness.defaults.set("napcat-lid-8f3k2p", forKey: DefaultsKey.lidGuardNtfyTopic)
             harness.defaults.set([1, 2], forKey: DefaultsKey.lidGuardNtfyServer)
             #expect(controller.storedServer == LidGuardTuning.defaultNtfyServer,
                     "a non-string server falls back to the public instance")
@@ -252,6 +263,209 @@ struct PersistenceTests {
         }
     }
 
+    // MARK: - Issue #103: the topic's one-time move into the keychain
+
+    /// Thread-safe append-only log for store observers.
+    private final class LockedLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [String] = []
+        func append(_ entry: String) {
+            lock.lock()
+            items.append(entry)
+            lock.unlock()
+        }
+        var entries: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return items
+        }
+    }
+
+    /// A lid guard built on `defaults` + `store` — what a launch does.
+    private func launch(_ defaults: UserDefaults, _ store: FakeTopicStore) -> LidGuardController {
+        LidGuardHarness(defaults: defaults, sender: RecordingMessageSender(), topicStore: store).controller
+    }
+
+    /// The order is write → verified read-back → delete: the plaintext key is
+    /// still there while the keychain is written AND while it is read back,
+    /// and gone only afterwards. The verified value is the session's topic —
+    /// no second read.
+    @Test func aPlaintextTopicMovesToTheKeychainThenTheKeyIsDeleted() {
+        withDefaults { defaults in
+            defaults.set("napcat-legacy-4k8q2z", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            defaults.set(1_700_000_000.0, forKey: DefaultsKey.lidGuardPrimedAt)
+            let store = FakeTopicStore()
+            let seen = LockedLog()
+            store.setObserver { operation in
+                let present = defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) != nil
+                seen.append("\(operation):\(present ? "key present" : "key gone")")
+            }
+
+            let controller = launch(defaults, store)
+            #expect(seen.entries == ["write:key present", "read:key present"],
+                    "the key must outlive the write AND the verifying read")
+            #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == nil, "then it is deleted")
+            #expect(store.storedValue == "napcat-legacy-4k8q2z")
+            #expect(store.readCount == 1, "the verifying read doubles as the startup read")
+            #expect(controller.storedTopic == "napcat-legacy-4k8q2z")
+            #expect(controller.primedAt == 1_700_000_000, "the same topic, so it stays primed")
+
+            // The next launch finds nothing to move and just reads.
+            let next = FakeTopicStore("napcat-legacy-4k8q2z")
+            #expect(launch(defaults, next).storedTopic == "napcat-legacy-4k8q2z")
+            #expect(next.readCount == 1 && next.writeCount == 0 && next.deleteCount == 0)
+        }
+    }
+
+    /// A refused write keeps the plaintext key (the topic is never lost),
+    /// still serves as this session's topic so the alerts keep working, and
+    /// is retried at the next launch — where it then moves.
+    @Test func aRefusedWriteKeepsTheKeyAndTheNextLaunchRetries() {
+        withDefaults { defaults in
+            defaults.set("napcat-legacy-4k8q2z", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            let store = FakeTopicStore()
+            store.setFailWrites(true)
+
+            #expect(TopicKeychainMigration.run(defaults: defaults, store: store) == .kept("napcat-legacy-4k8q2z"))
+            #expect(defaults.string(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == "napcat-legacy-4k8q2z")
+            #expect(store.storedValue == nil)
+            #expect(store.readCount == 0, "no read-back after a refused write")
+            #expect(launch(defaults, store).storedTopic == "napcat-legacy-4k8q2z", "this session still has its topic")
+            #expect(defaults.string(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == "napcat-legacy-4k8q2z")
+
+            // The unconditional retired-key sweep never takes it either.
+            DefaultsMigration.removeRetiredKeys(in: defaults)
+            #expect(defaults.string(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == "napcat-legacy-4k8q2z")
+
+            store.setFailWrites(false)
+            #expect(launch(defaults, store).storedTopic == "napcat-legacy-4k8q2z")
+            #expect(store.storedValue == "napcat-legacy-4k8q2z")
+            #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == nil, "moved on the retry")
+        }
+    }
+
+    /// A write that "succeeds" but does not read back identically — or not
+    /// at all — is not trusted: the key stays.
+    @Test func anUnverifiedWriteKeepsTheKey() {
+        for answer in [TopicStoreRead.found("napcat-something-else"), .notFound, .failed(status: errSecUserCanceled)] {
+            withDefaults { defaults in
+                defaults.set("napcat-legacy-4k8q2z", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+                let store = FakeTopicStore()
+                store.setReadAnswer(answer)
+                #expect(TopicKeychainMigration.run(defaults: defaults, store: store) == .kept("napcat-legacy-4k8q2z"),
+                        "read-back \(answer)")
+                #expect(defaults.string(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == "napcat-legacy-4k8q2z")
+            }
+        }
+    }
+
+    /// The plaintext value is the newest one the user saved (only an older
+    /// NapCat writes it), so it replaces an older keychain item; an empty one
+    /// — a cleared topic — deletes the item, verified gone before the key is.
+    @Test func theLegacyValueWinsOverAnOlderKeychainItem() {
+        withDefaults { defaults in
+            defaults.set("napcat-newer-9d3k1m", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            let store = FakeTopicStore("napcat-older-2b7x5c")
+            #expect(launch(defaults, store).storedTopic == "napcat-newer-9d3k1m")
+            #expect(store.storedValue == "napcat-newer-9d3k1m")
+        }
+        withDefaults { defaults in
+            defaults.set("", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            let store = FakeTopicStore("napcat-older-2b7x5c")
+            #expect(TopicKeychainMigration.run(defaults: defaults, store: store) == .moved(""))
+            #expect(store.storedValue == nil && store.deleteCount == 1 && store.writeCount == 0)
+            #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == nil)
+
+            defaults.set("", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            store.replaceValue("napcat-older-2b7x5c")
+            store.setFailDeletes(true)
+            #expect(TopicKeychainMigration.run(defaults: defaults, store: store) == .kept(""))
+            #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) != nil, "a refused delete keeps the key")
+        }
+    }
+
+    /// A non-string value under the key never was a usable topic (it read as
+    /// none): it is deleted without touching the keychain, and the session's
+    /// topic is whatever the keychain holds.
+    @Test func aNonStringLegacyValueIsDiscarded() {
+        withDefaults { defaults in
+            defaults.set([1, 2], forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            let store = FakeTopicStore("napcat-kept-6h1v8n")
+            #expect(launch(defaults, store).storedTopic == "napcat-kept-6h1v8n")
+            #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == nil)
+            #expect(store.writeCount == 0 && store.deleteCount == 0 && store.readCount == 1)
+        }
+    }
+
+    /// An item the keychain will not return (Deny on the Allow dialog, a
+    /// locked keychain) starts the session with no topic — and nothing about
+    /// it is rewritten: saving the editor's (empty) prefill unchanged must not
+    /// delete the item the user could not read this time.
+    @Test func anUnreadableItemIsNeverDeletedOrRewritten() {
+        withDefaults { defaults in
+            let store = FakeTopicStore("napcat-real-3n6p9w")
+            store.setReadAnswer(.failed(status: errSecUserCanceled))
+            let controller = launch(defaults, store)
+            #expect(controller.storedTopic == "")
+            #expect(controller.setTopic("") == .empty)
+            #expect(store.storedValue == "napcat-real-3n6p9w")
+            #expect(store.writeCount == 0 && store.deleteCount == 0)
+        }
+    }
+
+    /// The ordering, made structural: the retired topic key is NOT in the
+    /// unconditional sweep (which runs first at launch), it is deleted in
+    /// exactly one place — the migration, after the verified write — and no
+    /// live code can read it as a setting, so a stray value under it can only
+    /// ever be moved into the keychain, never used from the plist.
+    @Test func theRetiredTopicKeyIsDeletedOnlyByTheVerifiedMove() throws {
+        #expect(!RetiredDefaultsKey.all.contains(RetiredDefaultsKey.lidGuardNtfyTopic))
+        withDefaults { defaults in
+            for key in RetiredDefaultsKey.all { defaults.set("x", forKey: key) }
+            defaults.set("napcat-legacy-4k8q2z", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
+            #expect(DefaultsMigration.removeRetiredKeys(in: defaults) == RetiredDefaultsKey.all)
+            #expect(defaults.string(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == "napcat-legacy-4k8q2z",
+                    "the sweep must never delete the not-yet-moved topic")
+        }
+
+        let sources = try LidGuardStructureTests.swiftSources()
+        for (name, text) in sources where text.contains("RetiredDefaultsKey.lidGuardNtfyTopic") || text.contains("\"lidGuardNtfyTopic\"") {
+            #expect(name == "DefaultsKeys.swift", "\(name) reads the retired plaintext topic key")
+        }
+        let keys = try #require(sources.first { $0.name == "DefaultsKeys.swift" }).text
+        let migration = try #require(LidGuardStructureTests.memberRange("static func run(defaults: UserDefaults, store: TopicStore)", in: keys))
+        let body = keys[migration]
+        #expect(body.components(separatedBy: "defaults.removeObject(forKey: key)").count - 1 == 2,
+                "the migration deletes the key in two places only: junk, and after the verified move")
+        let write = try #require(body.range(of: "store.write(legacy)"))
+        let verify = try #require(body.range(of: "store.read() =="))
+        let delete = try #require(body.range(of: "defaults.removeObject(forKey: key)\n        return .moved(legacy)"))
+        #expect(write.lowerBound < verify.lowerBound && verify.lowerBound < delete.lowerBound,
+                "write, then verify, then delete")
+    }
+
+    /// Launch order (NapCatApp): the unconditional retired-key sweep, then
+    /// the crash-failsafe reconciliation, THEN the lid guard — whose
+    /// construction moves and reads the topic, the only keychain access at
+    /// launch (it can wait on the Allow dialog, so it must not delay the
+    /// failsafe). The real store is handed in there and nowhere else.
+    @Test func theKeychainMoveRunsAfterTheSweepAndTheFailsafeReconciliation() throws {
+        let sources = try LidGuardStructureTests.swiftSources()
+        let app = try #require(sources.first { $0.name == "NapCatApp.swift" }).text
+        let realStore = "KeychainTopicStore." + "login" + "Keychain"
+        let sweep = try #require(app.range(of: "DefaultsMigration.removeRetiredKeys(in: defaults)"))
+        let reconcile = try #require(app.range(of: "        reconcileAtLaunch()\n"))
+        let lidGuard = try #require(app.range(of: "LidGuardController.makeIfEnabled("))
+        let handOff = try #require(app.range(of: "topicStore: \(realStore)\n"))
+        #expect(sweep.lowerBound < reconcile.lowerBound && reconcile.lowerBound < lidGuard.lowerBound
+                && lidGuard.lowerBound < handOff.lowerBound)
+        for (name, text) in sources where text.contains(realStore) {
+            #expect(name == "NapCatApp.swift" || name == "KeychainTopicStore.swift",
+                    "\(name) uses the real keychain store — only the app wiring may")
+        }
+        #expect(app.components(separatedBy: realStore).count - 1 == 1, "handed in exactly once")
+    }
+
     // MARK: - Retired keys (one-time startup migration)
 
     /// `lidGuardRecipient` held the user's own phone number / Apple ID before
@@ -264,13 +478,13 @@ struct PersistenceTests {
             // An obviously invented stand-in — no real address is involved.
             defaults.set("+15550000000", forKey: RetiredDefaultsKey.lidGuardRecipient)
             defaults.set(true, forKey: DefaultsKey.lidGuardEnabled)
-            defaults.set("napcat-lid-8f3k2p", forKey: DefaultsKey.lidGuardNtfyTopic)
+            defaults.set("napcat-lid-8f3k2p", forKey: RetiredDefaultsKey.lidGuardNtfyTopic)
 
             #expect(DefaultsMigration.removeRetiredKeys(in: defaults) == ["lidGuardRecipient"])
             #expect(defaults.object(forKey: RetiredDefaultsKey.lidGuardRecipient) == nil)
-            // Live settings are untouched.
+            // Live settings are untouched — and so is the not-yet-moved topic.
             #expect(defaults.bool(forKey: DefaultsKey.lidGuardEnabled))
-            #expect(defaults.string(forKey: DefaultsKey.lidGuardNtfyTopic) == "napcat-lid-8f3k2p")
+            #expect(defaults.string(forKey: RetiredDefaultsKey.lidGuardNtfyTopic) == "napcat-lid-8f3k2p")
         }
     }
 
@@ -313,14 +527,15 @@ struct PersistenceTests {
     @Test func retiredKeyStringsAreLockedAndDisjointFromTheLiveSet() throws {
         #expect(RetiredDefaultsKey.lidGuardRecipient == "lidGuardRecipient")
         #expect(RetiredDefaultsKey.menuPanelStyle == "menuPanelStyle")
+        #expect(RetiredDefaultsKey.lidGuardNtfyTopic == "lidGuardNtfyTopic")
         #expect(RetiredDefaultsKey.all == ["lidGuardRecipient", "menuPanelStyle"])
         let live = [DefaultsKey.limit, DefaultsKey.limitEnabled, DefaultsKey.stayAwakeIntent,
                     DefaultsKey.heatWarningAcknowledged, DefaultsKey.debugBattery,
-                    DefaultsKey.lidGuardEnabled, DefaultsKey.lidGuardNtfyTopic,
+                    DefaultsKey.lidGuardEnabled,
                     DefaultsKey.lidGuardNtfyServer, DefaultsKey.lidGuardPrimedAt,
                     DefaultsKey.claudeFinishAlertEnabled, DefaultsKey.finishAlertMinimumRunSeconds,
                     DefaultsKey.phoneTransportEnabled, DefaultsKey.settingsSelectedPane]
-        for key in RetiredDefaultsKey.all {
+        for key in RetiredDefaultsKey.all + [RetiredDefaultsKey.lidGuardNtfyTopic] {
             #expect(!live.contains(key), "'\(key)' is still in use — it must not be deleted at startup")
         }
 

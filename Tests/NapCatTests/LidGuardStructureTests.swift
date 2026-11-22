@@ -48,7 +48,9 @@ struct LidGuardStructureTests {
     /// The files that make up the B2 subsystem. F3 stage 1 added the
     /// CloudKit sender and the composite in front of both senders: they are
     /// delivery files like the ntfy one, so the same no-spawn / no-privilege /
-    /// no-error-description / log rules apply to them.
+    /// no-error-description / log rules apply to them. Issue #103 added the
+    /// topic's keychain store and its generator: they hold the secret, so
+    /// they obey them too.
     static let b2Files = [
         "LidGuardPolicy.swift",
         "LidGuardController.swift",
@@ -57,6 +59,8 @@ struct LidGuardStructureTests {
         "SystemSleepSource.swift",
         "CloudKitMessageSender.swift",
         "CompositeMessageSender.swift",
+        "KeychainTopicStore.swift",
+        "NtfyTopicGenerator.swift",
     ]
 
     /// Files scanned by the no-topic-in-logs lint: the B2 subsystem PLUS the
@@ -69,6 +73,7 @@ struct LidGuardStructureTests {
     /// then trip over MenuContentView's legitimate "sudo ./scripts/setup.sh"
     /// instruction text.
     static let logScannedFiles = b2Files + [
+        "DefaultsKeys.swift",          // the topic's one-time keychain move reads the legacy value (#103)
         "MenuStateModel.swift",
         "MenuPanelView.swift",
         "MenuPanelVariants.swift",
@@ -362,6 +367,160 @@ struct LidGuardStructureTests {
         #expect(policy.text.contains("NtfyDestination("), "lint would be vacuous")
     }
 
+    // MARK: - The sleep path reads the in-memory topic (issue #103)
+
+    /// The `{ … }` body of the first member whose declaration starts with
+    /// `declaration` (matched at the start of a line, after indentation), as
+    /// a range from the declaration's first character through the closing
+    /// brace. The body is the first `{` OUTSIDE the parameter list (a default
+    /// argument may be a closure), and string literals are skipped, so a
+    /// brace in a message cannot end it early.
+    static func memberRange(_ declaration: String, in code: String) -> Range<String.Index>? {
+        var lineStart = code.startIndex
+        var found: String.Index?
+        while lineStart < code.endIndex {
+            let lineEnd = code[lineStart...].firstIndex(of: "\n") ?? code.endIndex
+            let line = code[lineStart..<lineEnd]
+            let indent = line.prefix { $0 == " " }
+            if line.dropFirst(indent.count).hasPrefix(declaration) {
+                found = line.index(lineStart, offsetBy: indent.count)
+                break
+            }
+            lineStart = lineEnd < code.endIndex ? code.index(after: lineEnd) : code.endIndex
+        }
+        guard let start = found else { return nil }
+        var parens = 0
+        var opening: String.Index?
+        for index in code[start...].indices {
+            let char = code[index]
+            if char == "(" { parens += 1 } else if char == ")" { parens -= 1 }
+            if char == "{" && parens == 0 {
+                opening = index
+                break
+            }
+        }
+        guard let open = opening else { return nil }
+        var depth = 0
+        var inString = false
+        var index = open
+        while index < code.endIndex {
+            let char = code[index]
+            if inString {
+                if char == "\\" {
+                    index = code.index(after: index)
+                } else if char == "\"" {
+                    inString = false
+                }
+            } else if char == "\"" {
+                inString = true
+            } else if char == "{" {
+                depth += 1
+            } else if char == "}" {
+                depth -= 1
+                if depth == 0 { return start..<code.index(after: index) }
+            }
+            if index < code.endIndex { index = code.index(after: index) }
+        }
+        return nil
+    }
+
+    /// Everything in LidGuardController.swift that reaches the topic's
+    /// persistent store rather than its in-memory copy.
+    static let topicStoreTokens = ["topicStore", "TopicStore", "TopicKeychainMigration", "startupTopic", ".read()"]
+
+    /// The ONLY members that may: construction (the one startup read, and the
+    /// factory that forwards the store to it) and the save path.
+    static let topicStoreMembers = ["init(", "static func makeIfEnabled(", "private static func startupTopic(",
+                                    "private func commitTopic("]
+    static let topicStoreDeclaration = "private let topicStore: TopicStore"
+
+    /// What the WillSleep path runs: the power message table, the sleep and
+    /// wake handlers, the snapshot, and every config read the snapshot makes.
+    static let sleepPathMembers = ["func handle(", "private func handleWillSleep(", "private func handleWake(",
+                                   "private func snapshot(busy:", "var storedDestination:", "var storedTopic:",
+                                   "var storedServer:", "var isEnabled:", "var primedAt:"]
+
+    static func sleepPathLintFailures(_ code: String) -> [String] {
+        var failures: [String] = []
+        var allowed: [Range<String.Index>] = []
+        for member in topicStoreMembers {
+            guard let range = memberRange(member, in: code) else {
+                failures.append("'\(member)' not found — keep the lint's member list in sync")
+                continue
+            }
+            allowed.append(range)
+        }
+        let declarations = code.ranges(of: topicStoreDeclaration)
+        if declarations.count != 1 { failures.append("expected exactly one '\(topicStoreDeclaration)'") }
+        allowed += declarations
+        for token in topicStoreTokens {
+            for occurrence in code.ranges(of: token)
+            where !allowed.contains(where: { $0.contains(occurrence.lowerBound) }) {
+                let line = code[..<occurrence.lowerBound].filter { $0 == "\n" }.count + 1
+                failures.append("line \(line): '\(token)' outside construction and the save path — "
+                    + "the topic is read once at startup and kept in memory")
+            }
+        }
+        for member in sleepPathMembers {
+            guard let range = memberRange(member, in: code) else {
+                failures.append("sleep-path member '\(member)' not found — this lint would be vacuous")
+                continue
+            }
+            for token in topicStoreTokens where code[range].contains(token) {
+                failures.append("'\(token)' in sleep-path member '\(member)'")
+            }
+        }
+        if let topic = memberRange("var storedTopic:", in: code), !code[topic].contains("return topic") {
+            failures.append("storedTopic must return the in-memory copy")
+        }
+        return failures
+    }
+
+    /// Issue #103: the WillSleep path touches only the in-memory topic. The
+    /// keychain is read once, at construction (`startupTopic`), and written
+    /// only when a new topic is saved; every sleep-path member reads memory.
+    /// LidGuardControllerTests proves the same at runtime (read count).
+    @Test func theSleepPathTouchesOnlyTheInMemoryTopic() throws {
+        let controller = try #require(try Self.swiftSources().first { $0.name == "LidGuardController.swift" })
+        let failures = Self.sleepPathLintFailures(controller.text)
+        #expect(failures.isEmpty, "\(failures)")
+        // The store is reached at all (non-vacuous): one startup read, one
+        // save path, and the migration only from the startup read.
+        let text = controller.text
+        #expect(text.components(separatedBy: "store.read()").count - 1 == 1, "exactly one startup read")
+        #expect(text.contains("topicStore.write(") && text.contains("topicStore.delete()"))
+        #expect(text.components(separatedBy: "TopicKeychainMigration.run(").count - 1 == 1)
+    }
+
+    /// Canary: a store read in the sleep handler, in the snapshot, in the
+    /// topic getter, or in a NEW member must each be caught.
+    @Test func theSleepPathLintCatchesMutants() throws {
+        let original = try #require(try Self.swiftSources().first { $0.name == "LidGuardController.swift" }).text
+        try #require(Self.sleepPathLintFailures(original).isEmpty, "canary baseline must be clean")
+        let mutants: [(String, String, String)] = [
+            ("store read in the WillSleep handler",
+             "        guard let busy = busyProvider() else {",
+             "        _ = topicStore.read()\n        guard let busy = busyProvider() else {"),
+            ("migration re-run in the snapshot",
+             "        let destination = storedDestination\n",
+             "        _ = TopicKeychainMigration.run(defaults: defaults, store: topicStore)\n"
+                + "        let destination = storedDestination\n"),
+            ("topic getter reads the store",
+             "        return topic\n    }",
+             "        if case .found(let fresh) = topicStore.read() { return fresh }\n        return topic\n    }"),
+            ("a new member reloads the store",
+             "    private func handleWake(",
+             "    func reloadTopic() { if case .found(let t) = topicStore.read() { _ = t } }\n\n    private func handleWake("),
+            ("getter no longer returns memory",
+             "        return topic\n    }", "        return \"\"\n    }"),
+        ]
+        for (name, target, replacement) in mutants {
+            let mutant = original.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != original, "canary setup '\(name)': target text must exist")
+            #expect(!Self.sleepPathLintFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - Debug-simulator absence
 
     @Test @MainActor func theSubsystemIsAbsentInDebugSimulatorMode() {
@@ -376,6 +535,7 @@ struct LidGuardStructureTests {
                 "debugBattery mode must not construct the ntfy sender")
 
         let detection = ClaudeActivityController.makeIfEnabled(debugBattery: false)
+        let keychain = FakeTopicStore("napcat-structure")
         // The predicate is checked FIRST: even an injected sender cannot
         // bring the lid guard into debugBattery mode.
         #expect(LidGuardController.makeIfEnabled(
@@ -383,14 +543,16 @@ struct LidGuardStructureTests {
             defaults: defaults,
             stayAwakeMirror: ObservedStayAwakeMirror(),
             detection: detection,
-            sender: RecordingMessageSender()
+            sender: RecordingMessageSender(),
+            topicStore: keychain
         ) == nil, "debugBattery mode must not construct the lid guard")
         #expect(LidGuardController.makeIfEnabled(
             debugBattery: true,
             defaults: defaults,
             stayAwakeMirror: ObservedStayAwakeMirror(),
             detection: detection,
-            sender: LidGuardController.makeSharedSender(debugBattery: true)
+            sender: LidGuardController.makeSharedSender(debugBattery: true),
+            topicStore: keychain
         ) == nil)
 
         // Without the B1 detection stack there is nothing to notify about.
@@ -399,7 +561,8 @@ struct LidGuardStructureTests {
             defaults: defaults,
             stayAwakeMirror: ObservedStayAwakeMirror(),
             detection: nil,
-            sender: RecordingMessageSender()
+            sender: RecordingMessageSender(),
+            topicStore: keychain
         ) == nil)
 
         // Without a sender there is nothing to deliver with.
@@ -408,8 +571,11 @@ struct LidGuardStructureTests {
             defaults: defaults,
             stayAwakeMirror: ObservedStayAwakeMirror(),
             detection: detection,
-            sender: nil
+            sender: nil,
+            topicStore: keychain
         ) == nil)
+        // No construction, so no keychain: the store was never touched.
+        #expect(keychain.readCount == 0 && keychain.writeCount == 0 && keychain.deleteCount == 0)
 
         // Outside debugBattery mode the shared sender IS built (two idle
         // URLSessions — no task is created, nothing touches the network).
