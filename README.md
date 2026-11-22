@@ -912,7 +912,10 @@ Notes:
   window, quiet press feedback on the panel and Settings buttons, the
   Charge Limit row hidden on Macs whose firmware gates it, and phone
   alerts through iCloud (beta) to the NapCat Alerts iPhone app, a
-  TestFlight beta at 0.1.0 (1), with ntfy as the fallback). Each
+  TestFlight beta at 0.1.0 (1), with ntfy as the fallback, and `v1.7.0`
+  the built-in update check, the keychain-stored ntfy topic with a
+  Generate button, the hardened helper and setup scripts, and iPhone-app
+  Settings with selectable palettes). Each
   annotated tag carries its release notes (`git tag -n99`); the detailed
   build plan and verification matrix are maintained privately.
 - **v1.4.4 ships busy hook version 6 — refresh it.** On newer macOS (seen on
