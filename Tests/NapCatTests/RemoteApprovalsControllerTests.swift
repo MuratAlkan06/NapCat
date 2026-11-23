@@ -107,6 +107,11 @@ final class ApprovalsWorld {
     private(set) var controller: RemoteApprovalsController!
     private(set) var relay: ChannelRelay!
     private(set) var changes = 0
+    /// Every host the toggle had its factory build (its own `host` is
+    /// private), oldest first.
+    private(set) var builtHosts: [ApprovalSeamHost] = []
+    /// The host the toggle holds: the one its factory built last.
+    var host: ApprovalSeamHost? { builtHosts.last }
 
     /// `makeHost` nil ⇒ the production fail-dark factory, over the scratch
     /// socket and a recording audit.
@@ -114,9 +119,11 @@ final class ApprovalsWorld {
         scratch = try ApprovalsScratch()
         let audits = self.audits
         let record: @Sendable (ApprovalAuditEvent) -> Void = { audits.put($0.code) }
-        let factory: RemoteApprovalsController.HostFactory = { path in
-            makeHost?(path, record)
+        let factory: RemoteApprovalsController.HostFactory = { [unowned self] path in
+            let host = makeHost?(path, record)
                 ?? RemoteApprovalsController.failDarkHost(socketPath: path, secrets: { @Sendable in [] }, audit: record)
+            builtHosts.append(host)
+            return host
         }
         controller = RemoteApprovalsController(
             socketPath: scratch.socketPath,
@@ -167,7 +174,7 @@ final class ApprovalsWorld {
     /// A phone decision reaching the toggle's host, as a later slice will
     /// deliver one (signature already checked).
     func decide(_ id: PromptID, _ verdict: ApprovalWire.Verdict = .allow) {
-        controller.host?.withIntake {
+        host?.withIntake {
             $0.decide(ApprovalDecision(promptID: id, verdict: verdict, wireVersion: ApprovalWire.wireVersion,
                                        signatureVerified: true))
         }
@@ -195,7 +202,7 @@ struct RemoteApprovalsControllerTests {
         world.controller.refresh()
         world.controller.refresh()
         #expect(world.controller.phase == .off)
-        #expect(world.controller.host == nil, "the host is never built while off")
+        #expect(world.builtHosts.isEmpty, "the host is never built while off")
         #expect(world.probes == 0, "the probe never runs while off")
         #expect(!world.scratch.exists(world.scratch.directoryPath), "not even the socket's directory exists")
         #expect(world.controller.finding == nil)
@@ -290,8 +297,8 @@ struct RemoteApprovalsControllerTests {
         world.controller.setEnabled(true)
         world.prompt("abcde")
         let id = try #require(sink.saved.next(), "armed, the forwardable prompt is saved")
-        world.controller.host?.withIntake { $0.apply(.saveAccepted, to: id) }
-        #expect(world.controller.host?.withIntake { $0.prompts[id]?.lifecycle.phase } == .forwarded, "pending on the phone")
+        world.host?.withIntake { $0.apply(.saveAccepted, to: id) }
+        #expect(world.host?.withIntake { $0.prompts[id]?.lifecycle.phase } == .forwarded, "pending on the phone")
 
         world.controller.setEnabled(false)
         #expect(sink.retracted.next() == id, "the kill switch retracts the pending record")
@@ -311,10 +318,10 @@ struct RemoteApprovalsControllerTests {
     @Test func onAgainListensWithTheSameHost() throws {
         let world = try ApprovalsWorld()
         world.controller.setEnabled(true)
-        let first = try #require(world.controller.host)
+        let first = try #require(world.host)
         world.controller.setEnabled(false)
         world.controller.setEnabled(true)
-        #expect(world.controller.host === first)
+        #expect(world.builtHosts.count == 1 && world.host === first, "built once, and listening again")
         #expect(world.controller.phase == .listening)
         #expect(world.socketExists)
         world.prompt("abcde")

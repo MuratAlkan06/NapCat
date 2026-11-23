@@ -224,7 +224,7 @@ struct WaitingPromptContextTests {
     @Test func theToggleCountsOnlyWhileListening() throws {
         let world = try ApprovalsWorld()
         #expect(world.controller.waitingPrompts() == .none)
-        #expect(world.controller.host == nil, "off: the seam is never even reached")
+        #expect(world.builtHosts.isEmpty, "off: the seam is never even reached")
 
         world.controller.setEnabled(true)
         world.prompt("abcde", preview: #"{"command":"git status"}"#)

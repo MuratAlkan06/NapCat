@@ -64,8 +64,10 @@ final class RemoteApprovalsController {
     /// Built on the first switch-on, never before. Kept after the kill switch
     /// (stopped: no socket, no listener, no connection), so a decision that
     /// arrives for a prompt the kill switch withdrew is still answered by
-    /// that prompt's own lifecycle — and logged as ignored.
-    private(set) var host: ApprovalSeamHost?
+    /// that prompt's own lifecycle — and logged as ignored. Private, so
+    /// nothing outside this file can start it again behind the switch
+    /// (lint-locked; tests see the host through their own factory).
+    private var host: ApprovalSeamHost?
 
     /// `readStored` / `writeStored` are the stored toggle
     /// (`DefaultsKey.remoteApprovalsEnabled` in the app).
