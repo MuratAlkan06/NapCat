@@ -141,9 +141,11 @@ struct ApprovalIntakeTests {
         GateRow(tool: "WebFetch", preview: #"{"url":"https://example.com"}"#, code: "unclassifiable.unknownTool"),
         GateRow(tool: "Bash", preview: #"{"command":"ls; rm -rf /tmp/x"}"#, code: "unclassifiable.commandOutsideGrammar"),
         GateRow(tool: "Bash", preview: #"{"command":"curl example.com"}"#, code: "unclassifiable.commandNotInTable"),
-        GateRow(tool: "Bash", preview: #"{"command": "ls" ⋯ 12 code points elided ⋯}"#, code: "unclassifiable.previewNotStrictJSON"),
-        GateRow(tool: "Write", preview: #"{"file_path":"/tmp/x","content":"(value unserializable)","mode":1}"#,
-                code: "unclassifiable.unknownArgument"),
+        // A relay marker sits INSIDE a value, in a preview that is otherwise
+        // well formed: each row is kept for the reason the gate gives it.
+        GateRow(tool: "Bash", preview: #"{"command":"ls ⋯ 12 code points elided ⋯"}"#,
+                code: "unclassifiable.commandOutsideGrammar"),
+        GateRow(tool: "Bash", preview: #"{"command":"cat (value unserializable)"}"#, code: "unclassifiable.commandOutsideGrammar"),
     ]
 
     @Test(arguments: keptLocal)
