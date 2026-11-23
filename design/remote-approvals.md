@@ -4,7 +4,8 @@ Status: design FROZEN 2026-11-22 with three ratified amendments (CL-1, CL-2,
 CL-3). Spike S-4 passed the same day. This document is the in-repo record of
 the design tracked on issue #98; slice S0 (issue #122) lands it together with
 the pure core described at the end, slice S1 (issue #125) adds the server
-side, and slice S2 (issue #134) the Mac's control surface.
+side, slice S2 (issue #134) the Mac's control surface, and slice S3 (issue
+#146) the CloudKit record path and the phone's request screen.
 
 ## Problem
 
@@ -382,3 +383,52 @@ It builds controls only: nothing can be forwarded yet.
 - **Tests.** Real sockets in scratch directories, injected clocks and short
   limits, the toggle over an in-memory setting: no test reads the real
   defaults, keychain or home, registers a channel or starts a process.
+
+## Slice S3: the record path and the phone
+
+S3 adds the CloudKit record path on both devices and the phone's request
+screen, fail-dark: the Mac stays never armed, nothing in either app builds
+the record path's CloudKit half, and no decision reaches the channel
+server, because signed decisions (CL-1, pairing) come first. The path runs
+in tests and fakes only. Mechanism and rules live in the code and its tests;
+this section points at them.
+
+- **The Mac** (`Sources/NapCat/CloudKitApprovalRecords.swift`). The writer
+  saves one PromptRequest record per prompt the gate already forwarded
+  (`GateApprovedPrompt`: it never classifies) and retracts it together with
+  the decisions read for it. The reader parses PromptDecision records
+  strictly and logs them in the `approvals` category. Every reading is a
+  claim, unsigned or unverifiable, never a verdict. Each record's own
+  result decides an operation's outcome (issue #139). The file may name
+  CloudKit's record vocabulary only (a deliberate lint amendment); it holds
+  no container or database, and only test fakes conform to its database
+  seam.
+- **The phone** (`ios/NapCatPhone`). `RequestInbox` holds each request's
+  window: until the Mac's expiry, and never longer than the TTL after the
+  phone first saw it. Expired and withdrawn are terminal. The request screen
+  shows the tool, the project and the input verbatim. Allow asks for a
+  biometric match every time (CL-3: biometrics only, no passcode fallback);
+  Deny never asks; both re-check the window right before the one write. A
+  saved answer reads "Sent", never "Allowed". The decision record is named
+  after its prompt (one per prompt: a second save is refused as already
+  answered) and carries no signature. Only a `-NapCatRequest` launch shows
+  a request (a fixture, answered in memory); no app source builds the
+  CloudKit decision writer.
+- **The records.** Both types live in the approvals zone, with the readable
+  fields encrypted as `ApprovalWire` lists them. The readers on both sides
+  refuse a record whose type, zone, field set, encryption or version
+  differs.
+- **Locks.** `ApprovalRecordPathStructureTests` (Mac) and
+  `RecordPathStructureTests` (phone), each with planted canaries: the record
+  path names nothing of the verdict API and nothing reaches it; `armed: {
+  false }` is the approval files' one armed literal; no source on either
+  device builds the S0 decision type or names its signature flag; neither
+  record path can reach iCloud on its own; the records are written only
+  through the wire's keys and encryption table; Allow's order (check,
+  match, send) and its one write site; the S3 tests touch nothing live.
+- **Owner-owed.** The Production schema deploy for PromptRequest and
+  PromptDecision, in the CloudKit Console, before any forwarding slice. No
+  operation of this slice ran against either CloudKit environment.
+- **Next.** Routing the intake's forwarded prompts through the writer waits
+  for the revised gate (S-GATE, issue #145); signed decisions (CL-1) come
+  before any decision counts.
