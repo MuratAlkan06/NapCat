@@ -790,11 +790,17 @@ It is a **beta** and it is **off by default**:
   the App Store. Your iPhone and your Mac must be signed in to the same Apple
   Account.
 - **Switch it on** in **Settings › Alerts → Phone alerts (beta)**. NapCat then
-  tries iCloud first and **ntfy becomes the fallback**: an alert that provably
-  never reached iCloud (no connection, iCloud unreachable or refusing it, this
-  Mac not signed in to iCloud) goes out over ntfy instead. If iCloud may have
-  saved it (its answer never came back), it is not sent again over ntfy, so you
-  never get the same alert twice; you may occasionally miss one instead.
+  tries iCloud first and **ntfy becomes the fallback**. An alert goes out over
+  ntfy instead when it never reached iCloud (no connection, iCloud unreachable,
+  this Mac not signed in to iCloud), when iCloud refuses it for any reason
+  (your iCloud storage is full, for example), and when iCloud reports the
+  request done but never confirms the alert itself was saved. Rarely, that
+  means the same alert arrives twice, in the iPhone app and over ntfy; NapCat
+  prefers that to sending nothing. The exception is when the answer never comes
+  back (the request times out or the connection drops), or iCloud reports an
+  error NapCat does not recognize for the request as a whole: the alert may
+  already be in iCloud, so it is not sent again over ntfy, and you may
+  occasionally miss one this way.
   **Send test message** takes the same path, so the test should arrive in the
   iPhone app.
 - **Your ntfy setup stays as it is.** The alerts still arm through it: a topic
