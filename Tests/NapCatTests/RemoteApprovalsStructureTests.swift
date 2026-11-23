@@ -198,13 +198,64 @@ struct RemoteApprovalsStructureTests {
         }
     }
 
+    // MARK: - The host's lifetime
+
+    /// Nothing the host hands out holds it (`[weak self]` only), the calls
+    /// that wait on its queue refuse to run ON it (a deadlock otherwise), a
+    /// host released without `stop()` cancels its timers, and a listener
+    /// released while listening stops.
+    static func lifetimeFailures(host: String, toggle: String, seam: String) -> [String] {
+        func flat(_ text: String) -> String { MenuPanelStructureTests.flat(text) }
+        var failures: [String] = []
+        for (name, text) in [("ApprovalSeamHost.swift", host), ("RemoteApprovalsController.swift", toggle)]
+        where text.contains("unowned") {
+            failures.append("'unowned' in \(name) — a closure that outlives the host would crash")
+        }
+        for function in ["func start() -> Bool {", "func stop() {", "func withIntake<Result>(_ body: (ApprovalIntake) -> Result) -> Result? {"] {
+            if !flat(host).contains(function + " dispatchPrecondition(condition: .notOnQueue(queue))") {
+                failures.append("'\(function)' must refuse to run on the host's own queue")
+            }
+        }
+        if !flat(host).contains("deinit { for timer in idleTimers.values { timer.cancel() } }") {
+            failures.append("a released host must cancel its timers")
+        }
+        if !flat(seam).contains("public var isListening: Bool { source != nil } deinit { stop() }") {
+            failures.append("a released listener must stop")
+        }
+        return failures
+    }
+
+    @Test func theHostLeavesNothingBehind() throws {
+        let host = try MenuPanelStructureTests.code("ApprovalSeamHost.swift")
+        let toggle = try MenuPanelStructureTests.code("RemoteApprovalsController.swift")
+        let seam = LidGuardStructureTests.codeOnly(try String(
+            contentsOf: LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatSeam/SeamSocket.swift"),
+            encoding: .utf8))
+        #expect(Self.lifetimeFailures(host: host, toggle: toggle, seam: seam).isEmpty,
+                "\(Self.lifetimeFailures(host: host, toggle: toggle, seam: seam))")
+        let mutants: [(String, String, String, String)] = [
+            ("an unowned capture", host.replacingOccurrences(of: "{ [weak self] in self?.accept($0) }",
+                                                             with: "{ [unowned self] in accept($0) }"), toggle, seam),
+            ("start on its own queue", host.replacingOccurrences(of: "func start() -> Bool {\n        dispatchPrecondition(condition: .notOnQueue(queue))",
+                                                                 with: "func start() -> Bool {"), toggle, seam),
+            ("timers outlive the host", host.replacingOccurrences(of: "for timer in idleTimers.values { timer.cancel() }\n    }",
+                                                                  with: "}"), toggle, seam),
+            ("a listener left listening", host, toggle, seam.replacingOccurrences(of: "deinit {\n        stop()\n    }",
+                                                                                 with: "deinit {}")),
+        ]
+        for (name, host, toggle, seam) in mutants {
+            #expect(!Self.lifetimeFailures(host: host, toggle: toggle, seam: seam).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - The S2 tests touch nothing live
 
     /// The S2 test files that run anything (this file only reads sources).
     static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift",
                               "RemoteApprovalsPresentationTests.swift", "WaitingPromptContextTests.swift",
                               "ApprovalSecretsFailClosedTests.swift", "ApprovalSeamLimitsTests.swift",
-                              "ApprovalSeamDeadlineTests.swift", "ChannelPolicyProbeBoundsTests.swift"]
+                              "ApprovalSeamDeadlineTests.swift", "ChannelPolicyProbeBoundsTests.swift",
+                              "ApprovalSeamHostLifetimeTests.swift"]
 
     /// S1's list (it bans any defaults store at all), plus what S2 could
     /// reach: the toggle's production factory (it resolves the real socket

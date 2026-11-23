@@ -365,6 +365,13 @@ public final class SeamListener: @unchecked Sendable {
 
     public var isListening: Bool { source != nil }
 
+    /// A listener released while listening stops: its source is cancelled
+    /// (closing the socket) and its socket file removed — never left for a
+    /// server to find with nobody behind it.
+    deinit {
+        stop()
+    }
+
     /// Starts listening. False (and nothing listening) when the directory is
     /// not this user's own, something other than a stale socket of this
     /// user's is at the path, another listener is live there, or a socket

@@ -77,23 +77,27 @@ final class ApprovalSeamHost: @unchecked Sendable {
         self.audit = audit
         self.limits = limits
         intake = ApprovalIntake(armed: armed, secrets: secrets, newPromptID: newPromptID, now: now, records: records,
-                                sendFrame: { [unowned self] key, line in connections[key]?.send(line) },
-                                closeConnection: { [unowned self] key in connections[key]?.close() },
+                                sendFrame: { [weak self] key, line in self?.connections[key]?.send(line) },
+                                closeConnection: { [weak self] key in self?.connections[key]?.close() },
                                 audit: audit)
     }
 
-    /// Starts listening (from any queue). False when the seam's directory or
-    /// socket path is unusable; nothing then listens.
+    /// Starts listening (from any queue but the host's own: it waits on
+    /// it). False when the seam's directory or socket path is unusable;
+    /// nothing then listens.
     func start() -> Bool {
-        queue.sync {
-            listener.start(onConnection: { [unowned self] in accept($0) },
-                           onRefused: { [unowned self] in audit(.peerRefused) })
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync {
+            listener.start(onConnection: { [weak self] in self?.accept($0) },
+                           onRefused: { [weak self] in self?.audit(.peerRefused) })
         }
     }
 
-    /// The kill switch (from any queue): every open prompt is withdrawn,
-    /// every server is disconnected, and the socket is removed.
+    /// The kill switch (from any queue but the host's own): every open
+    /// prompt is withdrawn, every server is disconnected, and the socket is
+    /// removed.
     func stop() {
+        dispatchPrecondition(condition: .notOnQueue(queue))
         queue.sync {
             intake?.killSwitch()
             let open = Array(connections.values)
@@ -108,7 +112,16 @@ final class ApprovalSeamHost: @unchecked Sendable {
     /// Runs `body` with the intake on the seam's queue (how the later slices
     /// deliver CloudKit's answers and the phone's decisions).
     func withIntake<Result>(_ body: (ApprovalIntake) -> Result) -> Result? {
-        queue.sync { intake.map(body) }
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync { intake.map(body) }
+    }
+
+    /// A host released without `stop()` leaves nothing running: its timers
+    /// are cancelled here, its connections close as they are released, and
+    /// its listener removes the socket as it goes. (Every closure the host
+    /// hands out holds it weakly, so none can outlive it.)
+    deinit {
+        for timer in idleTimers.values { timer.cancel() }
     }
 
     private func accept(_ connection: SeamConnection) {
