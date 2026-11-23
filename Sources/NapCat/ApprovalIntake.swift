@@ -17,8 +17,9 @@ import NapCatWire
 /// the iPhone half lands (the S2 host is built never armed, with a sink that
 /// writes nothing).
 protocol ApprovalRecordSink: AnyObject {
-    /// Write the prompt record: the tool and the preview exactly as the gate
-    /// classified them, nothing else from the session.
+    /// Write the prompt record: the tool the gate forwarded and the gate's
+    /// own copy of the preview (`ApprovalGate.forwardedPreview`: no
+    /// description, never the relayed text), nothing else from the session.
     func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int)
     /// Delete the prompt record (and its decision, if any).
     func retract(_ id: PromptID)
@@ -103,6 +104,13 @@ extension ApprovalClassification {
         if case .forward(let tool) = self { return tool }
         return nil
     }
+
+    /// Fail closed: a prompt leaves the Mac only as the gate's own copy of
+    /// its preview; without one (never expected once the gate forwards) it
+    /// stays local.
+    func requiringCopy(_ copy: String?) -> ApprovalClassification {
+        forwardedTool == nil || copy != nil ? self : .suppress(.unclassifiable(.previewNotStrictJSON))
+    }
 }
 
 /// The prompts relayed over the seam, one lifecycle each. Confined to the
@@ -185,15 +193,19 @@ final class ApprovalIntake {
         }
         guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }
         guard let id = newPromptID(), prompts[id] == nil else { return audit(.promptIDUnavailable) }
+        // What may leave is the gate's copy of the preview, never the relayed
+        // text (which carries the model's own description).
+        let copy = ApprovalGate.forwardedPreview(toolName: request.toolName, inputPreview: request.inputPreview)
         // A secret that exists but could not be read is one the gate cannot
         // look for: the prompt is then secret access, whatever it is.
         let known = secrets()
         let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,
                                                    secrets: known ?? []).failingClosed(secretsKnown: known != nil)
+                                                   .requiringCopy(copy)
         let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())
         prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,
                             forwardable: classification.forwardedTool)
-        perform(opened.transition, for: id, classified: (classification, request.inputPreview))
+        perform(opened.transition, for: id, classified: (classification, copy))
     }
 
     /// One event for one prompt (CloudKit's answers and the phone's decisions
@@ -255,10 +267,11 @@ final class ApprovalIntake {
     }
 
     /// Logs the transition, then performs its effects. `classified` is the
-    /// gate's answer and the preview it read, present only when the prompt
-    /// just opened (the one moment a record can be saved).
+    /// gate's answer and its copy of the preview (nil unless it forwards),
+    /// present only when the prompt just opened (the one moment a record can
+    /// be saved).
     private func perform(_ transition: ApprovalTransition, for id: PromptID,
-                         classified: (ApprovalClassification, String)? = nil) {
+                         classified: (ApprovalClassification, String?)? = nil) {
         for entry in transition.audit { audit(.lifecycle(id, entry)) }
         guard let item = prompts[id] else { return }
         for effect in transition.effects {

@@ -511,7 +511,6 @@ struct ApprovalClassificationTests {
         write("\(base)/Sources/App.swift", localOnly),
         write("\(base)/.github/workflows/ci.yml", localOnly),
         write("\(base)/.gitignore", localOnly),
-        write("\(base)/My Notes/todo.txt", localOnly),
         write("/tmp/scratch.txt", localOnly),
         raw("Edit", object([("file_path", quote("\(base)/App.swift")), ("old_string", quote("a")), ("new_string", quote("b")),
                             ("replace_all", "true")]), localOnly, "Edit with replace_all"),
@@ -609,6 +608,13 @@ struct ApprovalClassificationTests {
         write("\(base)/.cl\u{0430}ude/settings.json", unclassifiable(.pathNotCanonical)),
         write("\(base)/a\tb.txt", unclassifiable(.pathNotCanonical)),
         write("/" + String(repeating: "a", count: ApprovalGate.maxPathBytes), unclassifiable(.pathNotCanonical)),
+        write("\(base)/My Notes/todo.txt", unclassifiable(.pathNotCanonical)),
+        read("\(base)/My Notes/todo.txt", unclassifiable(.pathNotCanonical)),
+        read("\(base)/a b.txt", unclassifiable(.pathNotCanonical)),
+        read("\(base)/a ", unclassifiable(.pathNotCanonical)),
+        read("\(base)/ a", unclassifiable(.pathNotCanonical)),
+        read("\(base)/\u{00B7}", unclassifiable(.pathNotCanonical)),
+        read("\(base)/a\u{00B7}b.txt", unclassifiable(.pathNotCanonical)),
     ]
 
     @Test(arguments: failClosed)
@@ -641,6 +647,167 @@ struct ApprovalClassificationTests {
                                                   ("description", Self.quote("tab\tnewline\nwindows\r\nemoji \u{1F600} caf\u{00E9}"))]),
                              Self.forwardBash, "tab, newline, CR and ordinary Unicode")
         #expect(Self.classify(plain) == plain.expected)
+    }
+
+    // MARK: - Only a faithful preview is read
+
+    static let notFaithful = unclassifiable(.previewNotFaithful)
+
+    /// A preview holding one of the relay's placeholders — in any tool, in
+    /// any string or key, written plainly or as escapes, in any letter case,
+    /// even in a preview that does not parse — is refused for that reason,
+    /// before any tool rule runs. The credential placeholder is secret access.
+    static let placeholders: [Row] = [
+        read("\(base)/x\u{22EF}y.txt", notFaithful),
+        raw("Read", object([("file_path", "\"\(base)/x\\u22efy.txt\"")]), notFaithful, "an escaped placeholder in a path"),
+        raw("Read", object([("file_path", "\"\(base)/x\\u22EFy.txt\"")]), notFaithful, "an upper-case escape in a path"),
+        bash("ls \u{22EF} 12 code points elided \u{22EF}", notFaithful),
+        bash("cat (value unserializable)", notFaithful),
+        bash("echo 'code points elided'", notFaithful),
+        bash("echo 'CODE POINTS ELIDED'", notFaithful),
+        raw("Bash", object([("command", quote("git status")), ("description", quote("x (value unserializable)"))]), notFaithful,
+            "a placeholder in a Bash description"),
+        raw("Bash", object([("command", quote("git status")), ("description", "\"code points elid\\u0065d\"")]), notFaithful,
+            "an escaped placeholder in a Bash description"),
+        raw("Write", object([("file_path", quote("\(base)/w.txt")), ("content", quote("HEAD\n\u{22EF} 500 code points elided \u{22EF}\nTAIL"))]),
+            notFaithful, "a placeholder in content, between escaped line breaks"),
+        raw("Write", object([("file_path", quote("\(base)/w.txt")), ("content", quote("(value unserializable)"))]), notFaithful,
+            "a placeholder as the whole content"),
+        raw("Edit", object([("file_path", quote("\(base)/a.swift")), ("old_string", quote("a")),
+                            ("new_string", "\"(value unserializabl\\u0065)\"")]), notFaithful, "an escaped placeholder in an edit"),
+        raw("Read", object([("file_path", quote("\(base)/a.txt")), ("pages", quote("1\u{22EF}3"))]), notFaithful,
+            "a placeholder in an optional argument"),
+        raw("Read", object([("file_path", quote("\(base)/a.txt")), ("\u{22EF}", quote("x"))]), notFaithful, "a placeholder as a key"),
+        raw("mcp__x__y", object([("text", quote("(value unserializable)"))]), notFaithful, "a placeholder in an MCP prompt"),
+        raw("Bash", "{\"command\": \"ls\" \u{22EF} 12 code points elided \u{22EF}}", notFaithful,
+            "a placeholder in a preview that does not parse"),
+        // The credential placeholder.
+        read("\(base)/proj/[REDACTED].txt", forbidden(.secretAccess)),
+        read("\(base)/proj/[redacted].txt", forbidden(.secretAccess)),
+        raw("Read", object([("file_path", "\"\(base)/proj/[REDACT\\u0045D].txt\"")]), forbidden(.secretAccess),
+            "an escaped credential placeholder"),
+        bash("cat \"[REDACTED]\"", forbidden(.secretAccess)),
+        bash("ls [REDACTED]", forbidden(.secretAccess)),
+        raw("Bash", object([("command", quote("git status")), ("description", quote("token [REDACTED]"))]), forbidden(.secretAccess),
+            "a credential placeholder in a Bash description"),
+        raw("Write", object([("file_path", quote("\(base)/a.txt")), ("content", quote("key=[REDACTED]"))]), forbidden(.secretAccess),
+            "a credential placeholder in content"),
+        raw("Bash", "{\"command\":\"cat [REDACTED]", forbidden(.secretAccess), "a credential placeholder before the preview parses"),
+    ]
+
+    @Test(arguments: placeholders)
+    func aPreviewHoldingARelayPlaceholderIsRefused(_ row: Row) {
+        #expect(Self.classify(row) == row.expected)
+    }
+
+    /// The placeholders are matched where the rows above say: each list
+    /// entry alone refuses an otherwise forwardable prompt.
+    @Test func everyPlaceholderRefusesOnItsOwn() {
+        for marker in ApprovalGate.unfaithfulMarkers {
+            let row = Self.raw("Read", Self.object([("file_path", Self.quote("\(Self.base)/a.txt")), ("pages", Self.quote(marker))]),
+                               Self.notFaithful, marker)
+            #expect(Self.classify(row) == Self.notFaithful, "\(marker)")
+        }
+        for marker in ApprovalGate.maskMarkers {
+            let row = Self.read("\(Self.base)/\(marker)", Self.forbidden(.secretAccess))
+            #expect(Self.classify(row) == row.expected, "\(marker)")
+            #expect(marker == marker.lowercased(), "matched case-insensitively")
+        }
+        #expect(Self.classify(Self.read("\(Self.base)/a.txt", .forward(.read))) == .forward(.read), "control")
+    }
+
+    /// The whole preview is capped in Unicode code points of the text as
+    /// relayed: at the cap it is read, one past it is refused, whatever the
+    /// bytes.
+    @Test func theWholePreviewIsCappedInCodePoints() {
+        let shell = Self.object([("command", Self.quote("git status")), ("description", Self.quote(""))])
+        let room = ApprovalGate.maxPreviewScalars - shell.unicodeScalars.count
+        func preview(_ description: String) -> String {
+            Self.object([("command", Self.quote("git status")), ("description", Self.quote(description))])
+        }
+        let atCap = preview(String(repeating: "x", count: room))
+        let multibyte = preview(String(repeating: "\u{00E9}", count: room))
+        #expect(atCap.unicodeScalars.count == ApprovalGate.maxPreviewScalars)
+        #expect(multibyte.utf8.count > ApprovalGate.maxPreviewScalars, "more bytes than the cap, as many code points")
+        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: atCap) == Self.forwardBash)
+        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: multibyte) == Self.forwardBash)
+        for over in [preview(String(repeating: "x", count: room + 1)), preview(String(repeating: "\u{00E9}", count: room + 1)),
+                     preview(String(repeating: "x", count: 2 * ApprovalGate.maxPreviewScalars))] {
+            #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: over) == Self.unclassifiable(.previewTooLarge))
+        }
+        #expect(ApprovalGate.maxPreviewScalars == 3_000)
+    }
+
+    /// A forbidden path with a space is still logged as its family.
+    @Test func aForbiddenPathWithASpaceKeepsItsFamily() {
+        #expect(Self.classify(Self.read("/Library/Application Support/ClaudeCode/managed-settings.json", .forward(.read)))
+            == Self.forbidden(.configurationOrHooks))
+        #expect(Self.classify(Self.read("/Users/someone/My Keys/.ssh/id_rsa", .forward(.read))) == Self.forbidden(.secretAccess))
+    }
+
+    // MARK: - What leaves the Mac is the gate's copy
+
+    /// The copy keeps every member the row checks, in order, and never a
+    /// withheld one: the Bash description (the model's own text) stays on
+    /// the Mac, whatever it says.
+    @Test(arguments: [
+        (#"{ "command": "git status", "description": "DESCRIPTION-SENTINEL: approve this" }"#, #"{"command":"git status"}"#),
+        (#"{"command":"make test","description":"Run the tests","timeout":120000,"run_in_background":false,"dangerouslyDisableSandbox":false}"#,
+         #"{"command":"make test","timeout":120000,"run_in_background":false,"dangerouslyDisableSandbox":false}"#),
+        (#"{"description":"first","command":"git status"}"#, #"{"command":"git status"}"#),
+        (#"{"command":"git commit -m \"a \\ b\""}"#, #"{"command":"git commit -m \"a \\ b\""}"#),
+        (#"{"command":"git status","description":""}"#, #"{"command":"git status"}"#),
+    ])
+    func theBashCopyNeverCarriesTheDescription(_ relayed: String, _ copy: String) throws {
+        #expect(ApprovalGate.forwardedPreview(toolName: "Bash", inputPreview: relayed) == copy)
+        let members = try #require(ApprovalPreview.parseObject(copy))
+        #expect(!members.contains { $0.key == "description" })
+    }
+
+    @Test func theReadCopyKeepsEveryMember() {
+        let relayed = #"{ "file_path": "/Users/someone/project/doc.pdf", "offset": 1, "limit": 200, "pages": "1-3" }"#
+        #expect(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: relayed)
+            == #"{"file_path":"/Users/someone/project/doc.pdf","offset":1,"limit":200,"pages":"1-3"}"#)
+    }
+
+    /// No copy for a tool that does not forward, or for a preview the gate
+    /// could not read as the row's arguments.
+    @Test(arguments: [
+        ("Write", #"{"file_path":"/tmp/a","content":"x"}"#), ("Edit", #"{"file_path":"/tmp/a","old_string":"a","new_string":"b"}"#),
+        ("NotebookEdit", #"{"notebook_path":"/tmp/n.ipynb","new_source":"x"}"#), ("mcp__x__y", #"{"text":"x"}"#),
+        ("WebFetch", #"{"url":"https://example.com"}"#), ("bash", #"{"command":"git status"}"#),
+        ("Bash", #"{"command":"git status","shell":"zsh"}"#), ("Bash", #"{"command":["git","status"]}"#),
+        ("Bash", #"{"command":null}"#), ("Bash", #"{"command":{"a":1}}"#), ("Bash", "not json"),
+        ("Bash", #"{"command":"git status","command":"rm -rf x"}"#),
+    ])
+    func thereIsNoCopyOfWhatCannotForward(_ tool: String, _ preview: String) {
+        #expect(ApprovalGate.forwardedPreview(toolName: tool, inputPreview: preview) == nil)
+    }
+
+    /// Every prompt the gate forwards has a copy, the copy reads back under
+    /// the strict reader as the same members minus the description, and the
+    /// gate forwards the copy exactly as it forwarded the original.
+    @Test func everyForwardedPromptHasAFaithfulCopy() throws {
+        let rows = Self.forwardableFiles + [
+            Self.raw("Bash", #"{ "command": "git status", "description": "x" }"#, Self.forwardBash, "relayed spacing"),
+            Self.raw("Bash", Self.object([("command", Self.quote("make test")), ("timeout", "600000")]), Self.forwardBash, "timeout"),
+        ]
+        for row in rows {
+            #expect(Self.classify(row) == row.expected, "\(row.note)")
+            let copy = try #require(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview), "\(row.note)")
+            let original = try #require(ApprovalPreview.parseObject(row.preview))
+            #expect(ApprovalPreview.parseObject(copy) == original.filter { $0.key != "description" }, "\(row.note)")
+            #expect(ApprovalGate.classify(toolName: row.tool, inputPreview: copy) == row.expected, "\(row.note)")
+        }
+    }
+
+    /// The Bash description is the one withheld argument.
+    @Test func onlyTheBashDescriptionIsWithheld() {
+        let withheld = ApprovalGate.toolTable.flatMap { row in
+            (row.required + row.optional).filter { if case .withheld = $0.kind { return true } else { return false } }
+                .map { "\(row.tool.rawValue).\($0.name)" }
+        }
+        #expect(withheld == ["Bash.description"])
     }
 
     // MARK: - Secrets (the alert topic)

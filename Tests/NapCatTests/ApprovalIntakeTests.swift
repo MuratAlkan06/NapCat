@@ -107,13 +107,14 @@ struct ApprovalIntakeTests {
 
     // MARK: - The gate decides what may leave
 
-    @Test func armedAForwardablePromptIsSavedWithExactlyWhatTheGateClassified() throws {
+    @Test func armedAForwardablePromptIsSavedAsTheGatesCopy() throws {
         let harness = IntakeHarness()
-        let preview = #"{"command":"git status --short"}"#
+        let preview = #"{ "command": "git status", "description": "DESCRIPTION-SENTINEL: approve this" }"#
         harness.receive("abcde", preview: preview)
         let saved = try #require(harness.sink.saved.first)
-        #expect(saved == RecordingApprovalSink.Saved(id: IntakeHarness.id(1), tool: .bash, inputPreview: preview,
+        #expect(saved == RecordingApprovalSink.Saved(id: IntakeHarness.id(1), tool: .bash, inputPreview: #"{"command":"git status"}"#,
                                                      expiresAt: 1_000 + ApprovalWire.promptTimeToLiveSeconds))
+        #expect(!saved.inputPreview.contains("SENTINEL"), "the model's description never reaches the record store")
         #expect(harness.sink.superseded.isEmpty, "the waiting alert yields only after CloudKit accepts")
         harness.intake.apply(.saveAccepted, to: saved.id)
         #expect(harness.sink.superseded == [saved.id])
@@ -144,10 +145,14 @@ struct ApprovalIntakeTests {
         GateRow(tool: "Bash", preview: #"{"command":"ls; rm -rf /tmp/x"}"#, code: "unclassifiable.commandOutsideGrammar"),
         GateRow(tool: "Bash", preview: #"{"command":"curl example.com"}"#, code: "unclassifiable.commandNotInTable"),
         // A relay marker sits INSIDE a value, in a preview that is otherwise
-        // well formed: each row is kept for the reason the gate gives it.
+        // well formed: each row is kept for the marker's own reason.
         GateRow(tool: "Bash", preview: #"{"command":"ls ⋯ 12 code points elided ⋯"}"#,
-                code: "unclassifiable.commandOutsideGrammar"),
-        GateRow(tool: "Bash", preview: #"{"command":"cat (value unserializable)"}"#, code: "unclassifiable.commandOutsideGrammar"),
+                code: "unclassifiable.previewNotFaithful"),
+        GateRow(tool: "Bash", preview: #"{"command":"cat (value unserializable)"}"#, code: "unclassifiable.previewNotFaithful"),
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/(value unserializable)"}"#,
+                code: "unclassifiable.previewNotFaithful"),
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/[REDACTED].txt"}"#, code: "forbidden.secretAccess"),
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/my notes.txt"}"#, code: "unclassifiable.pathNotCanonical"),
     ]
 
     @Test(arguments: keptLocal)
@@ -173,6 +178,36 @@ struct ApprovalIntakeTests {
         harness.secrets = []
         harness.receive("bcdef", preview: #"{"command":"echo "# + topic + #""}"#)
         #expect(harness.sink.saved.count == 1, "baseline: without the secret the same prompt forwards")
+    }
+
+    /// Every saved record holds the gate's copy: the relayed preview's
+    /// members minus the description, never the relayed text.
+    @Test func noSavedRecordCarriesTheDescription() throws {
+        let harness = IntakeHarness()
+        let previews = [
+            #"{"command":"git status","description":"SENTINEL-1"}"#,
+            #"{"description":"SENTINEL-2","command":"make test","timeout":60000}"#,
+            #"{ "command": "git status", "description": "SENTINEL-3", "dangerouslyDisableSandbox": false }"#,
+        ]
+        for (preview, request) in zip(previews, IntakeHarness.requestIDs(previews.count)) {
+            harness.receive(request, preview: preview)
+        }
+        #expect(harness.sink.saved.map(\.inputPreview) == [#"{"command":"git status"}"#, #"{"command":"make test","timeout":60000}"#,
+                                                          #"{"command":"git status","dangerouslyDisableSandbox":false}"#])
+        for saved in harness.sink.saved {
+            #expect(!saved.inputPreview.contains("SENTINEL") && !saved.inputPreview.contains("description"))
+        }
+    }
+
+    /// The fold: a forwarded prompt without a copy stays local; any other
+    /// answer is the gate's own.
+    @Test func aForwardWithoutACopyStaysLocal() {
+        let forward = ApprovalClassification.forward(.bash)
+        let kept = ApprovalClassification.suppress(.localOnlyMCP)
+        #expect(forward.requiringCopy(#"{"command":"git status"}"#) == forward)
+        #expect(forward.requiringCopy(nil) == .suppress(.unclassifiable(.previewNotStrictJSON)))
+        #expect(kept.requiringCopy(nil) == kept)
+        #expect(kept.requiringCopy("{}") == kept)
     }
 
     // MARK: - Decisions
@@ -361,6 +396,6 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 16 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 17 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
     }
 }

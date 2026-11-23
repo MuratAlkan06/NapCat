@@ -7,7 +7,10 @@
 // forwarded ONLY by the single `.forward` at the end of `classify`, after
 // every check passed; a table miss is a refusal (there is no default-forward
 // branch, lint-locked in ApprovalClassificationTests). Classification reads
-// the tool name and the parsed input preview, never the description.
+// the tool name and the parsed input preview, never the description. A
+// description member INSIDE the preview is read only to refuse (it is
+// scanned like every string), and what leaves the Mac is the gate's own copy
+// without it (`forwardedPreview`), never the relayed text.
 
 /// The tools the gate classifies (one row each in the tool table). Only the
 /// rows marked `forwards` may leave the Mac: the file-edit tools (Write,
@@ -38,6 +41,10 @@ public enum Unclassifiable: String, CaseIterable, Sendable {
     case malformedToolName
     case previewTooLarge
     case previewNotStrictJSON
+    /// The preview holds one of the relay's placeholders
+    /// (`ApprovalGate.unfaithfulMarkers`), in a string or in the raw text: it
+    /// is not a faithful copy of what would run.
+    case previewNotFaithful
     /// A string holds a character that renders invisibly or reorders text
     /// (bidi controls, zero-width characters, control characters other than
     /// tab, newline and carriage return), so the phone could not show what
@@ -82,6 +89,9 @@ public enum ApprovalClassification: Equatable, Sendable {
 public enum ApprovalGate {
     public static let maxToolNameBytes = 64
     public static let maxPreviewBytes = 32_768
+    /// The longest preview read, in Unicode code points of the text as
+    /// relayed (so every string in it is shorter still).
+    public static let maxPreviewScalars = 3_000
     public static let maxCommandBytes = 2_048
     public static let maxPathBytes = 1_024
     public static let maxCommandSegments = 8
@@ -98,12 +108,15 @@ public enum ApprovalGate {
         guard !name.isEmpty, name.count <= maxToolNameBytes, name.allSatisfy(isToolNameByte) else {
             return .suppress(.unclassifiable(.malformedToolName))
         }
-        guard preview.count <= maxPreviewBytes else {
+        guard preview.count <= maxPreviewBytes, inputPreview.unicodeScalars.count <= maxPreviewScalars else {
             return .suppress(.unclassifiable(.previewTooLarge))
         }
         let secretBytes = secrets.map { Array($0.utf8) }.filter { !$0.isEmpty }
         if revealsSecret(name, secretBytes) || revealsSecret(preview, secretBytes) {
             return .suppress(.forbidden(.secretAccess))
+        }
+        if holdsUnfaithfulMarker(preview) {
+            return .suppress(.unclassifiable(.previewNotFaithful))
         }
         guard let members = ApprovalPreview.parseObject(inputPreview) else {
             return .suppress(.unclassifiable(.previewNotStrictJSON))
@@ -111,6 +124,9 @@ public enum ApprovalGate {
         let strings = ApprovalPreview.strings(in: members)
         for text in strings where revealsSecret(Array(text.utf8), secretBytes) {
             return .suppress(.forbidden(.secretAccess))
+        }
+        for text in strings where holdsUnfaithfulMarker(Array(text.utf8)) {
+            return .suppress(.unclassifiable(.previewNotFaithful))
         }
         for text in strings where text.unicodeScalars.contains(where: isHidden) {
             return .suppress(.unclassifiable(.hiddenText))
@@ -130,6 +146,33 @@ public enum ApprovalGate {
         return .forward(row.tool)
     }
 
+    /// The copy of a prompt's preview that may leave the Mac: the members its
+    /// tool's row checks, re-serialized in their order, WITHOUT any member
+    /// the row withholds (a Bash description, which the model writes). It is
+    /// never the relayed text itself. Nil for a tool whose row does not
+    /// forward, or a preview that is not one strict object of that row's
+    /// arguments with plain values — the gate refuses those anyway.
+    public static func forwardedPreview(toolName: String, inputPreview: String) -> String? {
+        guard let row = toolTable.first(where: { $0.forwards && $0.tool.rawValue.utf8.elementsEqual(toolName.utf8) }),
+              let members = ApprovalPreview.parseObject(inputPreview) else { return nil }
+        var fields: [String] = []
+        for member in members {
+            guard let argument = (row.required + row.optional).first(where: { $0.name.utf8.elementsEqual(member.key.utf8) }) else {
+                return nil
+            }
+            if case .withheld = argument.kind { continue }
+            let value: String
+            switch member.value {
+            case .string(let text): value = ApprovalChannel.quoted(text)
+            case .number(let literal): value = literal
+            case .bool(let flag): value = flag ? "true" : "false"
+            case .null, .array, .object: return nil
+            }
+            fields.append(ApprovalChannel.quoted(member.key) + ":" + value)
+        }
+        return "{" + fields.joined(separator: ",") + "}"
+    }
+
     // MARK: - Tables
 
     enum ArgumentKind: Sendable {
@@ -139,6 +182,9 @@ public enum ApprovalGate {
         case command
         /// Any string (scanned for secrets like everything else).
         case text
+        /// Any string, read only to refuse (scanned like every string) and
+        /// never part of the copy that leaves the Mac (`forwardedPreview`).
+        case withheld
         case number
         case bool
         /// Present only as `false` (`true` would leave the sandbox).
@@ -169,7 +215,7 @@ public enum ApprovalGate {
     /// refuses the prompt. Only Bash and Read forward.
     static let toolTable: [ToolRow] = [
         ToolRow(tool: .bash, forwards: true, required: [Argument("command", .command)],
-                optional: [Argument("description", .text), Argument("timeout", .number),
+                optional: [Argument("description", .withheld), Argument("timeout", .number),
                            Argument("run_in_background", .bool), Argument("dangerouslyDisableSandbox", .falseOnly)]),
         ToolRow(tool: .write, forwards: false, required: [Argument("file_path", .path), Argument("content", .text)], optional: []),
         ToolRow(tool: .edit, forwards: false,
@@ -290,6 +336,14 @@ public enum ApprovalGate {
     /// its retired defaults key (parity-linted against the Mac app). Matched
     /// case-insensitively in the whole preview, for every tool.
     static let secretNames = ["ntfy-topic", "lidguardntfytopic"]
+
+    /// Placeholders the relay may write into a preview, matched in any
+    /// letter case in the raw text and in every decoded string: a preview
+    /// holding one is `previewNotFaithful`.
+    static let unfaithfulMarkers = ["\u{22EF}", "code points elided", "(value unserializable)"]
+    /// The relay's placeholder for a credential, matched the same way and in
+    /// the same places as `secretNames`: secret access.
+    static let maskMarkers = ["[redacted]"]
 
     struct CommandFamilyRule: Sendable {
         let words: [String]
@@ -468,16 +522,19 @@ public enum ApprovalGate {
         case (.path, .string(let text)): return pathRefusal(Array(text.utf8))
         case (.command, .string(let text)): return commandRefusal(Array(text.utf8))
         case (.text, .string): return nil
+        case (.withheld, .string): return nil
         case (.number, .number): return nil
         case (.bool, .bool): return nil
         case (.falseOnly, .bool(let flag)): return flag ? .forbidden(.privilegeEscalation) : nil
-        case (.path, _), (.command, _), (.text, _), (.number, _), (.bool, _), (.falseOnly, _):
+        case (.path, _), (.command, _), (.text, _), (.withheld, _), (.number, _), (.bool, _), (.falseOnly, _):
             return .unclassifiable(.argumentKind)
         }
     }
 
-    /// A file tool's path: absolute, printable ASCII without a backslash, no
-    /// empty, `.` or `..` component, no trailing slash — then the families.
+    /// A file tool's path: absolute, printable ASCII without a backslash (so
+    /// never a middle dot), no empty, `.` or `..` component, no trailing
+    /// slash — then the families — and, last, no space (so a forbidden path
+    /// with a space is still logged as its family).
     static func pathRefusal(_ path: [UInt8]) -> ApprovalSuppression? {
         guard path.count >= 2, path.count <= maxPathBytes, path.first == slash, path.last != slash,
               path.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E && $0 != backslash }) else {
@@ -487,7 +544,10 @@ public enum ApprovalGate {
         guard components.allSatisfy({ !$0.isEmpty && $0 != dot && $0 != dotDot }) else {
             return .unclassifiable(.pathNotCanonical)
         }
-        return pathFamily(components, rooted: true).map { .forbidden($0) }
+        if let family = pathFamily(components, rooted: true) {
+            return .forbidden(family)
+        }
+        return path.contains(space) ? .unclassifiable(.pathNotCanonical) : nil
     }
 
     /// The first family whose rule matches `components` (lowercased).
@@ -758,9 +818,15 @@ public enum ApprovalGate {
     }
 
     /// Whether `bytes` holds one of `secrets` (exactly) or one of the
-    /// `secretNames` (case-insensitively).
+    /// `secretNames` or `maskMarkers` (case-insensitively).
     private static func revealsSecret(_ bytes: [UInt8], _ secrets: [[UInt8]]) -> Bool {
         let lower = lowercased(bytes)
-        return secrets.contains { contains(bytes, $0) } || secretNames.contains { contains(lower, Array($0.utf8)) }
+        return secrets.contains { contains(bytes, $0) } || (secretNames + maskMarkers).contains { contains(lower, Array($0.utf8)) }
+    }
+
+    /// Whether `bytes` holds one of the `unfaithfulMarkers` (case-insensitively).
+    private static func holdsUnfaithfulMarker(_ bytes: [UInt8]) -> Bool {
+        let lower = lowercased(bytes)
+        return unfaithfulMarkers.contains { contains(lower, Array($0.utf8)) }
     }
 }
