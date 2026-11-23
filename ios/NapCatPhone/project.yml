@@ -81,6 +81,10 @@ targets:
         # HTTPS and CloudKit transport, which is exempt. Declaring it here
         # answers App Store Connect's question once instead of per upload.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # Face ID asks for this once, the first time Allow on a forwarded
+        # permission prompt asks for a match (F4, CL-3: Allow is in-app and
+        # biometric-only). Without it, Face ID is refused to the app.
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "NapCat asks for Face ID before it sends Allow to your Mac."
         # The app icon set's name in the app's asset catalog. xcodegen's
         # application preset sets the same value; it is pinned here so the
         # icon wiring does not depend on that default.

@@ -36,7 +36,14 @@ enum RequestFixtures {
 
     static func id(_ low: UInt64) -> PromptID { PromptID(high: 0xabcd_ef01_2345_6789, low: low)! }
 
-    /// A Bash request the Mac forwarded `age` seconds before `now`.
+    /// An inbox on `clock` whose answers go nowhere: a recording writer and
+    /// a biometric gate that confirms (answering has its own tests).
+    @MainActor
+    static func inbox(_ clock: TestClock) -> RequestInbox {
+        RequestInbox(writer: RecordingDecisionWriter(), biometrics: ScriptedBiometricGate(), clock: { clock.now })
+    }
+
+    /// A Bash request the Mac forwarded at `createdAt`.
     static func request(_ low: UInt64, createdAt: Date, window: TimeInterval = ttl,
                         preview: String = #"{"command":"git status --short"}"#) -> PendingRequest {
         PendingRequest(id: id(low), toolName: "Bash", inputPreview: preview, projectLabel: "napcat",
@@ -53,7 +60,7 @@ enum RequestFixtures {
 
     @Test func aFreshRequestIsPendingUntilItsExpiry() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let request = F.request(1, createdAt: clock.now)
         inbox.receive([request])
         #expect(inbox.phase(of: request.id) == .pending(until: request.expiresAt))
@@ -67,7 +74,7 @@ enum RequestFixtures {
     /// after this phone first saw the request.
     @Test func theWindowNeverOutlastsTheTTLFromFirstSight() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let ahead = F.request(1, createdAt: clock.now.addingTimeInterval(3_600))
         inbox.receive([ahead])
         #expect(inbox.phase(of: ahead.id) == .pending(until: clock.now.addingTimeInterval(F.ttl)))
@@ -78,7 +85,7 @@ enum RequestFixtures {
     /// A request first seen after its expiry was never answerable here.
     @Test func aRequestSeenLateIsAlreadyExpired() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let stale = F.request(1, createdAt: clock.now.addingTimeInterval(-F.ttl - 5))
         inbox.receive([stale])
         #expect(inbox.phase(of: stale.id) == .expired)
@@ -87,7 +94,7 @@ enum RequestFixtures {
     /// Expiry is terminal once seen: a clock moved back does not reopen it.
     @Test func expiryIsStickyWhenTheClockGoesBack() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let request = F.request(1, createdAt: clock.now)
         inbox.receive([request])
         clock.advance(F.ttl + 1)
@@ -104,7 +111,7 @@ enum RequestFixtures {
     /// back; the others are unchanged.
     @Test func aRequestMissingFromAFetchIsWithdrawn() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let first = F.request(1, createdAt: clock.now)
         let second = F.request(2, createdAt: clock.now)
         inbox.receive([first, second])
@@ -116,7 +123,7 @@ enum RequestFixtures {
 
     @Test func aDirectWithdrawalIsTerminal() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let request = F.request(1, createdAt: clock.now)
         inbox.receive([request])
         inbox.withdraw(request.id)
@@ -129,7 +136,7 @@ enum RequestFixtures {
     /// carries stays expired, and a withdrawn one never turns expired.
     @Test func theFirstTerminalStateWins() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let expiring = F.request(1, createdAt: clock.now)
         let withdrawing = F.request(2, createdAt: clock.now)
         inbox.receive([expiring, withdrawing])
@@ -142,7 +149,7 @@ enum RequestFixtures {
     }
 
     @Test func anUnknownRequestHasNoPhase() {
-        let inbox = RequestInbox()
+        let inbox = RequestFixtures.inbox(TestClock())
         inbox.withdraw(F.id(9))
         #expect(inbox.phase(of: F.id(9)) == nil)
         #expect(inbox.requests.isEmpty)
@@ -153,7 +160,7 @@ enum RequestFixtures {
     /// Several requests are held separately, newest first.
     @Test func requestsAreListedNewestFirst() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let older = F.request(1, createdAt: clock.now.addingTimeInterval(-60))
         let newer = F.request(2, createdAt: clock.now)
         inbox.receive([older, newer])
@@ -163,7 +170,7 @@ enum RequestFixtures {
     /// Past the capacity, finished requests go first; pending ones stay.
     @Test func finishedRequestsMakeRoomFirst() {
         let clock = TestClock()
-        let inbox = RequestInbox(clock: { clock.now })
+        let inbox = RequestFixtures.inbox(clock)
         let finished = (0..<UInt64(RequestInbox.capacity)).map { F.request($0 + 1, createdAt: clock.now) }
         inbox.receive(finished)
         clock.advance(1)

@@ -13,7 +13,10 @@ import Testing
 /// 2. the CloudKit decision writer is built by no app source, and nothing in
 ///    the app conforms to its database seam: decisions are written by tests
 ///    and fakes only, so no CloudKit operation of this path can run;
-/// 3. the S3 test files touch nothing live.
+/// 3. the S3 test files touch nothing live;
+/// 4. Allow writes only after a biometric match it asked for itself, Deny
+///    never asks, and both write through one site that re-checks the window
+///    first (CL-3).
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously.
@@ -110,7 +113,8 @@ import Testing
 
     static let testsDir = CloudKitStructureTests.testsDir
     /// The S3 test files that run anything (this file only reads sources).
-    static let s3TestFiles = ["ApprovalRecordFakes.swift", "RequestInboxTests.swift", "CloudKitRequestRecordTests.swift"]
+    static let s3TestFiles = ["ApprovalRecordFakes.swift", "RequestInboxTests.swift", "CloudKitRequestRecordTests.swift",
+                              "RequestAnsweringTests.swift", "PendingRequestScreenTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
     /// notification center and the real biometric prompt.
@@ -142,6 +146,77 @@ import Testing
                         "let n = UNUserNotificationCenter.current()"] {
             let mutant = tests.map { ($0.path, $0.text + "\n" + planted) }
             #expect(!Self.liveFailures(mutant).isEmpty, "canary '\(planted)' was NOT caught")
+        }
+    }
+
+    // MARK: 4. Allow needs the match; one write site re-checks the window
+
+    static let inboxFile = "\(appDir)/Model/RequestInbox.swift"
+
+    /// In the inbox: Allow opens on the answerable check, asks the gate,
+    /// returns unless matched, and only then sends; Deny opens on the same
+    /// check and never names the gate; the gate is asked in one place and
+    /// the writer reached in one place, `send`, whose first act is to
+    /// re-check that the request is still pending.
+    static func allowPathFailures(_ inbox: String) -> [String] {
+        let code = CloudKitStructureTests.codeOnly(inbox)
+        var failures: [String] = []
+        guard let allow = CloudKitStructureTests.body(after: "func allow(_ id: PromptID) async {", in: code),
+              let deny = CloudKitStructureTests.body(after: "func deny(_ id: PromptID) async {", in: code),
+              let send = CloudKitStructureTests.body(after: "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {",
+                                                     in: code) else {
+            return ["allow, deny or send moved (the lock would be vacuous)"]
+        }
+        let allowSteps = ["guard isAnswerable(id) else { return }", "let match = await biometrics.confirm(reason: Self.allowReason)",
+                          "guard match == .confirmed else {", "await send(.allow, for: id)"]
+        var cursor = allow.startIndex
+        for step in allowSteps {
+            guard let found = allow.range(of: step, range: cursor..<allow.endIndex) else {
+                failures.append("Allow lost '\(step)', or it moved out of order")
+                break
+            }
+            cursor = found.upperBound
+        }
+        let denyFlat = SettingsReachabilityTests.flat(deny)
+        if !denyFlat.hasPrefix("guard isAnswerable(id) else { return } await send(.deny, for: id)") {
+            failures.append("Deny must open on the answerable check, then send")
+        }
+        if deny.contains("biometrics") { failures.append("Deny never asks for a match") }
+        let sendFlat = SettingsReachabilityTests.flat(send)
+        if !sendFlat.hasPrefix("tick() guard phase(of: id)?.isPending == true else {") {
+            failures.append("send must re-check that the request is still pending before anything else")
+        }
+        for (token, count) in [("biometrics.confirm(", 1), ("writer.write(", 1), ("send(.allow", 1), ("send(.deny", 1)]
+        where CloudKitStructureTests.occurrences(of: token, in: code) != count {
+            failures.append("'\(token)' must appear exactly \(count) time(s) in the inbox")
+        }
+        if !send.contains("writer.write(") { failures.append("the one write must be in send") }
+        return failures
+    }
+
+    @Test func allowNeedsTheMatchAndOneSiteWrites() throws {
+        let inbox = try #require(try Self.app().first { $0.path == Self.inboxFile }).text
+        #expect(Self.allowPathFailures(inbox).isEmpty, "\(Self.allowPathFailures(inbox))")
+        let mutants: [(String, String)] = [
+            ("Allow without the match", inbox.replacingOccurrences(
+                of: "        guard match == .confirmed else {\n            entries[id]?.answer = .notConfirmed\n            return\n        }\n",
+                with: "")),
+            ("Allow sends before asking", inbox.replacingOccurrences(
+                of: "        entries[id]?.answer = .confirming\n",
+                with: "        entries[id]?.answer = .confirming\n        await send(.allow, for: id)\n")),
+            ("Allow ignores the match", inbox.replacingOccurrences(of: "guard match == .confirmed else {",
+                                                                   with: "guard match == match else {")),
+            ("Deny skips the check", inbox.replacingOccurrences(
+                of: "    func deny(_ id: PromptID) async {\n        guard isAnswerable(id) else { return }\n",
+                with: "    func deny(_ id: PromptID) async {\n")),
+            ("send skips the re-check", inbox.replacingOccurrences(
+                of: "        tick()\n        guard phase(of: id)?.isPending == true else {\n            entries[id]?.answer = .none\n            return\n        }\n        entries[id]?.answer = .sending(verdict)",
+                with: "        entries[id]?.answer = .sending(verdict)")),
+            ("a second write site", inbox + "\nextension RequestInbox { func f() async { _ = await writer.write(d) } }"),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != inbox, "canary '\(name)' did not apply")
+            #expect(!Self.allowPathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 }
