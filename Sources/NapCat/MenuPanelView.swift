@@ -305,6 +305,8 @@ struct ClaudeSurfacedLines: View {
         SurfacedLine(line: model.hookStatus)
         SurfacedLine(line: model.hookVersionStatus)
         SurfacedLine(line: model.claudeAwakeLine)
+        // F4 slice S2: the channel-policy reading (absent while off).
+        SurfacedLine(line: model.remoteApprovalsPolicyLine)
     }
 }
 
@@ -515,6 +517,24 @@ struct SessionAlertsToggle: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .accessibilityLabel("Session alerts — notify me when a Claude session finishes or waits for me")
+    }
+}
+
+/// F4 slice S2: remote approvals behind ONE switch, which renders the
+/// OBSERVED phase. Off is the kill switch. Forwards to the model; the menu
+/// stays open.
+struct RemoteApprovalsToggle: View {
+    @ObservedObject var model: MenuStateModel
+
+    var body: some View {
+        Toggle(MenuStateModel.remoteApprovalsToggleTitle, isOn: Binding(
+            get: { model.remoteApprovalsEnabled },
+            set: { model.setRemoteApprovalsEnabled($0) }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .accessibilityLabel(MenuStateModel.remoteApprovalsAccessibilityLabel)
     }
 }
 

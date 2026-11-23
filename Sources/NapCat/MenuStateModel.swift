@@ -1,3 +1,4 @@
+import NapCatWire
 import ServiceManagement
 import SwiftUI
 
@@ -50,9 +51,12 @@ enum PanelSymbol {
     static let sent = "checkmark"
     /// The footer's Settings gear (slice W, issue #78).
     static let settings = "gearshape"
+    /// F4 slice S2: the Remote approvals row — a checked shield, distinct
+    /// from the two alert glyphs.
+    static let remoteApprovals = "checkmark.shield"
 
     static let all = [stayAwake, lockScreen, chargeLimit, lidAlert, sessionAlerts,
-                      desktop, charging, battery, info, warning, error, sent, settings]
+                      desktop, charging, battery, info, warning, error, sent, settings, remoteApprovals]
 }
 
 /// The test-send button's phase (#67): transient view state owned by
@@ -247,6 +251,12 @@ final class MenuStateModel: ObservableObject {
     /// app (re-validated by the controller at every read).
     @Published private(set) var updateKnownNewer: ReleaseVersion?
 
+    // F4 slice S2 (remote approvals) mirrors — the toggle's OBSERVED phase
+    // and the managed-settings reading taken while it is on. No controller
+    // (debugBattery mode) ⇒ off, no row, no line.
+    @Published private(set) var remoteApprovalsPhase: RemoteApprovalsPhase = .off
+    @Published private(set) var remoteApprovalsFinding: ChannelPolicyFinding?
+
     /// Owner ruling (e): the Stay Awake turn-on feedback. In-memory UI state,
     /// held OUTSIDE the published mirrors on purpose (see
     /// `StayAwakeTurnOnFeedback`).
@@ -273,6 +283,9 @@ final class MenuStateModel: ObservableObject {
     private let phoneTransport: CompositeMessageSender?
     /// Non-nil outside debugBattery mode — the update check (issue #111).
     private let updateCheck: UpdateCheckController?
+    /// Non-nil outside debugBattery mode — the remote-approvals toggle and
+    /// kill switch (F4 slice S2).
+    private let remoteApprovals: RemoteApprovalsController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -310,6 +323,8 @@ final class MenuStateModel: ObservableObject {
     var phoneTransportVisible: Bool { lidGuard != nil && phoneTransport != nil }
     /// Settings › General's Updates group (issue #111).
     var updateCheckVisible: Bool { updateCheck != nil }
+    /// F4 slice S2: the Remote approvals row and its Settings › Claude group.
+    var remoteApprovalsVisible: Bool { remoteApprovals != nil }
 
     init(
         power: PowerInterface,
@@ -323,6 +338,7 @@ final class MenuStateModel: ObservableObject {
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
         updateCheck: UpdateCheckController? = nil,
+        remoteApprovals: RemoteApprovalsController? = nil,
         stayAwakeTurnOn: StayAwakeTurnOnFeedback = StayAwakeTurnOnFeedback()
     ) {
         self.power = power
@@ -336,6 +352,7 @@ final class MenuStateModel: ObservableObject {
         self.finishAlert = finishAlert
         self.phoneTransport = phoneTransport
         self.updateCheck = updateCheck
+        self.remoteApprovals = remoteApprovals
         self.stayAwakeTurnOn = stayAwakeTurnOn
         refresh()
     }
@@ -394,6 +411,10 @@ final class MenuStateModel: ObservableObject {
         updateCheckLastResult = updateCheck?.lastResult
         updateCheckLastAttempt = updateCheck?.lastAttempt
         updateKnownNewer = updateCheck?.knownNewer
+        // F4 slice S2 mirrors. Observed state only — reading never listens,
+        // never probes.
+        remoteApprovalsPhase = remoteApprovals?.phase ?? .off
+        remoteApprovalsFinding = remoteApprovals?.finding
     }
 
     // MARK: Actions (forwarded)
@@ -467,6 +488,14 @@ final class MenuStateModel: ObservableObject {
 
     func setUpdateCheckAutoEnabled(_ enabled: Bool) {
         updateCheck?.setAutoEnabled(enabled)
+        refresh()
+    }
+
+    // MARK: F4 slice S2 action — the remote-approvals toggle; off is the kill
+    // switch. No AppKit flow: the menu stays open.
+
+    func setRemoteApprovalsEnabled(_ enabled: Bool) {
+        remoteApprovals?.setEnabled(enabled)
         refresh()
     }
 
@@ -562,6 +591,21 @@ final class MenuStateModel: ObservableObject {
     /// is known (nil without the update check).
     var updateAvailableLine: PanelLine? { Self.updateAvailableLine(newer: updateKnownNewer) }
 
+    /// F4 slice S2: the switch renders the OBSERVED phase, never the stored
+    /// intent.
+    var remoteApprovalsEnabled: Bool { remoteApprovalsPhase != .off }
+
+    /// The Remote approvals row's caption (shown in the card while not
+    /// nominal; in full in Settings › Claude).
+    var remoteApprovalsStatus: PanelLine { Self.remoteApprovalsStatus(phase: remoteApprovalsPhase) }
+
+    /// Settings › Claude's channel-policy line, while the toggle is on (the
+    /// probe runs only then).
+    var remoteApprovalsPolicyLine: PanelLine? {
+        guard remoteApprovalsVisible else { return nil }
+        return Self.remoteApprovalsPolicyLine(finding: remoteApprovalsFinding)
+    }
+
     /// Badge on the footer's Settings gear (slice W, issue #78): the worst
     /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
     /// is a pane of the Settings window — over the panes this wiring shows.
@@ -592,7 +636,11 @@ final class MenuStateModel: ObservableObject {
             // Claude status itself is the footer label, which carries its own
             // (paused) warning — never counted.
             guard claudeDetectionVisible else { return [] }
-            return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal]
+            // F4 slice S2: the channel-policy line. The Remote approvals
+            // status is not counted — its home is the panel row's caption,
+            // where it surfaces and is acted on.
+            return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal,
+                    remoteApprovalsPolicyLine?.severity ?? .nominal]
         }
     }
 
@@ -1404,6 +1452,74 @@ final class MenuStateModel: ObservableObject {
         + "when you open the menu or Settings. The request exposes your IP address, the app name and version "
         + "in the User-Agent, and standard macOS HTTPS headers; nothing else is sent. Nothing is downloaded "
         + "or installed."
+
+    // MARK: - F4 slice S2 (remote approvals) presentation
+
+    /// The panel row's title — and the Settings group's.
+    nonisolated static let remoteApprovalsToggleTitle = "Remote approvals"
+
+    /// The Settings switch's label: under the group title it says what the
+    /// switch does instead of repeating the title.
+    nonisolated static let remoteApprovalsSettingsToggleTitle = "Answer permission prompts from iPhone"
+
+    /// The panel switch's VoiceOver name.
+    nonisolated static let remoteApprovalsAccessibilityLabel =
+        "Remote approvals — answer Claude permission prompts from your iPhone"
+
+    /// Under the Settings switch: what it does, what never leaves the Mac,
+    /// and that off is the kill switch.
+    nonisolated static let remoteApprovalsHint =
+        "Lets the NapCat iPhone app answer Claude Code permission prompts. The terminal dialog always stays "
+        + "answerable, and privileged, settings and secret prompts never leave this Mac. Off withdraws every "
+        + "prompt at once."
+
+    /// The Remote approvals row's caption (canon C2: a fragment, state word
+    /// first, no row-title prefix). Off is a choice (nominal). On, it is
+    /// honest about this build: NapCat listens and keeps every prompt on
+    /// the Mac, because the iPhone half cannot answer yet — calm info, so it
+    /// shows under the row while on. A socket that could not be opened is a
+    /// warning: switched on, but not even listening.
+    nonisolated static func remoteApprovalsStatus(phase: RemoteApprovalsPhase) -> PanelLine {
+        switch phase {
+        case .off:
+            return PanelLine(text: "Off", severity: .nominal)
+        case .listening:
+            return PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
+        case .unavailable:
+            return PanelLine(text: "Not listening — the approvals socket could not be opened; prompts stay on this Mac",
+                             severity: .warning)
+        }
+    }
+
+    /// What the file tier of Claude Code's managed settings says about the
+    /// per-session development flag — a Settings › Claude line with its
+    /// subject label (it surfaces below the cards, where no row title sits
+    /// above it). nil while no reading exists (the toggle is off). The
+    /// readings that are simply how this Mac is set up are nominal; one that
+    /// cannot be read, or that turns channels off, is info.
+    nonisolated static func remoteApprovalsPolicyLine(finding: ChannelPolicyFinding?) -> PanelLine? {
+        guard let finding else { return nil }
+        let flagNeeded = "each session still needs the development flag"
+        switch finding {
+        case .noFilePolicy:
+            return PanelLine(text: "Channel policy: no managed settings — \(flagNeeded)", severity: .nominal)
+        case .defaultAllowlist:
+            return PanelLine(text: "Channel policy: managed settings keep the default allowlist — \(flagNeeded)",
+                             severity: .nominal)
+        case .allowlistOmitsNapCat:
+            return PanelLine(text: "Channel policy: the managed allowlist does not name NapCat — \(flagNeeded)",
+                             severity: .nominal)
+        case .allowlistNamesNapCat:
+            return PanelLine(text: "Channel policy: the managed allowlist names NapCat — on an organization plan "
+                                + "no development flag is needed", severity: .nominal)
+        case .channelsNotEnabled:
+            return PanelLine(text: "Channel policy: managed settings do not enable channels — on an organization "
+                                + "plan no session can relay prompts", severity: .info)
+        case .unreadable:
+            return PanelLine(text: "Channel policy: managed settings could not be read — \(flagNeeded)",
+                             severity: .info)
+        }
+    }
 
     // MARK: - Issue #34: the run-floor group of the ntfy settings editor
 

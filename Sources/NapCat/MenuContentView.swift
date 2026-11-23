@@ -108,7 +108,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             lidGuard: lidGuard,
             finishAlert: finishAlert,
             phoneTransport: phoneTransport,
-            updateCheck: updateCheck
+            updateCheck: updateCheck,
+            remoteApprovals: remoteApprovals
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -180,6 +181,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         }
         // Issue #111: a check starting or finishing republishes the same way.
         updateCheck?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
+        // F4 slice S2: a toggle transition (listening, the kill switch, a
+        // new policy reading) republishes the same way.
+        remoteApprovals?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
         // A pause toggle (the DISABLED flag) re-gates the finish alert at

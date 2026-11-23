@@ -10,7 +10,14 @@ import Testing
 
 /// Collects values delivered on another queue, with a bounded wait (slice
 /// S2's own, so these tests do not lean on the S1 seam files' helpers).
+///
+/// A wait for something that MUST arrive returns the moment it does, so its
+/// deadline is generous (`arrivalSeconds`): on a loaded CI VM a socket's
+/// close or a frame can take seconds to reach its read source (#129). Only
+/// the waits that prove something does NOT happen are short.
 final class ApprovalsInbox<Value>: @unchecked Sendable {
+    static var arrivalSeconds: Double { 30 }
+
     private let lock = NSLock()
     private let arrived = DispatchSemaphore(value: 0)
     private var values: [Value] = []
@@ -24,7 +31,7 @@ final class ApprovalsInbox<Value>: @unchecked Sendable {
     }
 
     /// The next value not yet taken, or nil after `seconds`.
-    func next(within seconds: Double = 5) -> Value? {
+    func next(within seconds: Double = arrivalSeconds) -> Value? {
         guard arrived.wait(timeout: .now() + seconds) == .success else { return nil }
         lock.lock()
         defer { lock.unlock() }
@@ -33,7 +40,7 @@ final class ApprovalsInbox<Value>: @unchecked Sendable {
     }
 
     /// Takes values until one satisfies `match`, or nil after `seconds`.
-    func next(within seconds: Double = 5, where match: (Value) -> Bool) -> Value? {
+    func next(within seconds: Double = arrivalSeconds, where match: (Value) -> Bool) -> Value? {
         let deadline = Date().addingTimeInterval(seconds)
         while true {
             let left = deadline.timeIntervalSinceNow

@@ -42,6 +42,7 @@ struct SettingsWindowTests {
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
+        remoteApprovals: RemoteApprovalsController? = nil,
         _ body: (MenuStateModel, UserDefaults) throws -> Void
     ) rethrows {
         let suite = "com.muratalkan.napcat.tests.settings.\(UUID().uuidString)"
@@ -51,7 +52,7 @@ struct SettingsWindowTests {
         let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
         let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter,
                                    screenLock: ScreenLockController(), detection: detection, lidGuard: lidGuard,
-                                   finishAlert: finishAlert, phoneTransport: phoneTransport)
+                                   finishAlert: finishAlert, phoneTransport: phoneTransport, remoteApprovals: remoteApprovals)
         try body(model, defaults)
     }
 
@@ -661,6 +662,47 @@ struct SettingsWindowTests {
             #expect(model.claudePane.sections.first?.rows.first == .line(
                 PanelLine(text: "Claude: paused", severity: .warning)))
             model.setDetectionPaused(false)
+        }
+    }
+
+    /// F4 slice S2, through the model with the real toggle over a scratch
+    /// socket (ApprovalsWorld — no defaults, keychain or home of its own):
+    /// the Settings group follows the OBSERVED phase, the policy line comes
+    /// with the reading taken while on and leaves with the kill switch, and it
+    /// raises the gear badge only as the problem it is. The row's own status
+    /// never counts toward the badge — the panel row is its home.
+    @Test @MainActor func theModelMirrorsTheRemoteApprovalsToggle() throws {
+        let markerDir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: markerDir) }
+        let detection = ClaudeActivityController(store: StubMarkerStore(), prober: StubProber(),
+                                                 assertions: StubAssertions(holdingAwake: false), markerDirURL: markerDir)
+        detection.sample()
+        let world = try ApprovalsWorld()
+        world.finding = .unreadable
+        try withModel(detection: detection, remoteApprovals: world.controller) { model, _ in
+            let hint = MenuStateModel.remoteApprovalsHint
+            #expect(model.remoteApprovalsVisible)
+            #expect(!model.remoteApprovalsEnabled)
+            #expect(model.remoteApprovalsPolicyLine == nil, "off: no probe, so no reading")
+            #expect(model.claudePane.sections.last?.rows == [.remoteApprovals(isOn: false, caption: nil, hint: hint)])
+            #expect(!model.settingsResidentSeverities(.claude).contains(.info))
+
+            model.setRemoteApprovalsEnabled(true)
+            #expect(model.remoteApprovalsEnabled)
+            let policy = try #require(model.remoteApprovalsPolicyLine)
+            #expect(policy == MenuStateModel.remoteApprovalsPolicyLine(finding: .unreadable))
+            #expect(model.claudePane.sections.last?.rows == [
+                .remoteApprovals(isOn: true, caption: MenuStateModel.remoteApprovalsStatus(phase: .listening), hint: hint),
+                .line(policy),
+            ])
+            #expect(model.settingsResidentSeverities(.claude).filter { $0 == .info }.count == 1,
+                    "the unreadable reading raises the badge once; the row's info status does not")
+
+            model.setRemoteApprovalsEnabled(false)
+            #expect(!model.remoteApprovalsEnabled)
+            #expect(model.remoteApprovalsPolicyLine == nil)
+            #expect(!world.socketExists, "the Settings switch is the kill switch too")
         }
     }
 
@@ -1432,7 +1474,8 @@ struct SettingsWindowTests {
                         "set: { model.setFinishAlertMinimumRunSeconds($0) }",
                         "set: { model.setPhoneTransportEnabled($0) }", "set: { model.setDetectionPaused($0) }",
                         "Button(\"Check for Updates…\") { model.checkForUpdates() }",
-                        "set: { model.setUpdateCheckAutoEnabled($0) }"] {
+                        "set: { model.setUpdateCheckAutoEnabled($0) }",
+                        "set: { model.setRemoteApprovalsEnabled($0) }"] {
             #expect(Self.occurrences(of: forward, in: views) == 1, "'\(forward)' — exactly one Settings control")
         }
         for token in ["cancelTracking", "request", "lidGuard?.", "finishAlert?.", "detection?.", "UserDefaults",
@@ -1472,6 +1515,10 @@ struct SettingsWindowTests {
         "hookStatus": "SurfacedLine(line: model.hookStatus)",
         "hookVersionStatus": "SurfacedLine(line: model.hookVersionStatus)",
         "claudeAwakeLine": "SurfacedLine(line: model.claudeAwakeLine)",
+        // F4 slice S2: the switch's status is the panel row's own caption;
+        // the channel-policy reading surfaces below the cards.
+        "remoteApprovalsStatus": "indentedCaption(model.remoteApprovalsStatus)",
+        "remoteApprovalsPolicyLine": "SurfacedLine(line: model.remoteApprovalsPolicyLine)",
     ]
 
     static func settingsLineMappings() throws -> Set<String> {

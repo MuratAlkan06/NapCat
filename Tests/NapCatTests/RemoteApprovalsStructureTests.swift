@@ -45,10 +45,80 @@ struct RemoteApprovalsStructureTests {
         #expect(Self.purityFailures(source + "\n// UserDefaults in a comment is fine").isEmpty)
     }
 
+    // MARK: - The panel row and its switch
+
+    /// The row sits in the Alerts card directly under Session alerts, gated
+    /// on the model's one visibility flag, in the alert rows' shape: the
+    /// switch, then its caption (non-nominal only). The switch is rendered
+    /// once, renders the OBSERVED phase, and only forwards to the model, which
+    /// only forwards to the controller.
+    static func panelFailures(layout: String, views: String, model: String) -> [String] {
+        func flat(_ text: some StringProtocol) -> String { MenuPanelStructureTests.flat(text) }
+        var failures: [String] = []
+        guard let alerts = MenuPanelStructureTests.cardBlocks(in: layout).last else { return ["no Alerts card"] }
+        let card = flat(layout[alerts])
+        let row = "if model.remoteApprovalsVisible { PanelFeature { "
+            + "PanelRow(symbol: PanelSymbol.remoteApprovals, title: \"Remote approvals\") { "
+            + "RemoteApprovalsToggle(model: model) } indentedCaption(model.remoteApprovalsStatus) } }"
+        if let session = card.range(of: "indentedCaption(model.finishAlertStatus)"), let mine = card.range(of: row) {
+            if session.upperBound > mine.lowerBound || card[session.upperBound..<mine.lowerBound].contains("PanelRow(") {
+                failures.append("the Remote approvals row must sit directly under Session alerts")
+            }
+        } else {
+            failures.append("the Alerts card must hold the gated Remote approvals row, in the alert rows' shape")
+        }
+        if MenuPanelStructureTests.occurrences(of: "RemoteApprovalsToggle(model: model)", in: views) != 1 {
+            failures.append("the switch must render exactly once")
+        }
+        let toggle = flat(MenuPanelStructureTests.structChunk("RemoteApprovalsToggle", in: views) ?? "")
+        for token in ["get: { model.remoteApprovalsEnabled }", "set: { model.setRemoteApprovalsEnabled($0) }",
+                      ".toggleStyle(.switch)", ".accessibilityLabel(MenuStateModel.remoteApprovalsAccessibilityLabel)"]
+        where !toggle.contains(token) {
+            failures.append("the switch lost '\(token)'")
+        }
+        for token in ["cancelTracking", "request", "remoteApprovals?.", ".animation(", "withAnimation"] where toggle.contains(token) {
+            failures.append("'\(token)' in the switch — it only forwards to the model, and does not animate")
+        }
+        let modelFlat = flat(model)
+        if !modelFlat.contains("func setRemoteApprovalsEnabled(_ enabled: Bool) { remoteApprovals?.setEnabled(enabled) refresh() }") {
+            failures.append("the model's action must only forward to the controller, then refresh")
+        }
+        if !modelFlat.contains("var remoteApprovalsEnabled: Bool { remoteApprovalsPhase != .off }") {
+            failures.append("the switch must render the observed phase")
+        }
+        return failures
+    }
+
+    @Test func theRowSitsUnderSessionAlertsAndOnlyForwards() throws {
+        let layout = try MenuPanelStructureTests.layoutBody()
+        let views = try MenuPanelStructureTests.allViewCode()
+        let model = try MenuPanelStructureTests.code("MenuStateModel.swift")
+        #expect(Self.panelFailures(layout: layout, views: views, model: model).isEmpty,
+                "\(Self.panelFailures(layout: layout, views: views, model: model))")
+        let mutants: [(String, String, String, String)] = [
+            ("ungated", layout.replacingOccurrences(of: "if model.remoteApprovalsVisible {", with: "if true {"), views, model),
+            ("no caption", layout.replacingOccurrences(of: "indentedCaption(model.remoteApprovalsStatus)", with: ""), views, model),
+            ("rendered twice", layout, views + "\nlet t = RemoteApprovalsToggle(model: model)", model),
+            ("bound to the stored intent", layout,
+             views.replacingOccurrences(of: "get: { model.remoteApprovalsEnabled }", with: "get: { storedIntent }"), model),
+            ("closes the menu", layout,
+             views.replacingOccurrences(of: "set: { model.setRemoteApprovalsEnabled($0) }",
+                                        with: "set: { model.setRemoteApprovalsEnabled($0); menu.cancelTracking() }"), model),
+            ("the model acts itself", layout, views,
+             model.replacingOccurrences(of: "remoteApprovals?.setEnabled(enabled)", with: "remoteApprovals?.shutdown()")),
+            ("the switch reads the store", layout, views,
+             model.replacingOccurrences(of: "remoteApprovalsPhase != .off }", with: "storedToggle }")),
+        ]
+        for (name, layout, views, model) in mutants {
+            #expect(!Self.panelFailures(layout: layout, views: views, model: model).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - The S2 tests touch nothing live
 
     /// The S2 test files that run anything (this file only reads sources).
-    static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift"]
+    static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift",
+                              "RemoteApprovalsPresentationTests.swift"]
 
     /// S1's list, plus what S2 could reach: the toggle's production factory
     /// (it resolves the real socket path and reads the real defaults), the

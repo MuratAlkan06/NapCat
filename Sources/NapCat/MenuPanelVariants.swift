@@ -18,7 +18,8 @@ import SwiftUI
 
 /// Two cards and a footer. The Power card: the battery header (the Lock
 /// Screen icon in its top-right corner), Stay Awake, Charge Limit. The
-/// Alerts card, under its group header: Lid alert, Session alerts. Captions
+/// Alerts card, under its group header: Lid alert, Session alerts, Remote
+/// approvals. Captions
 /// ONLY for non-nominal states, inside the card under their row; the
 /// surfaced Settings lines below the cards; the footer last. 4/8/12 rhythm.
 ///
@@ -87,6 +88,17 @@ struct GroupedCardsPanel: View {
                             // > 429 hold > nominal —
                             // MenuStateModel.sessionAlertsSlot).
                             indentedCaption(model.finishAlertStatus)
+                        }
+                    }
+                    // F4 slice S2: under Session alerts — same shape. Off is
+                    // the kill switch; while on, the caption says what this
+                    // build does with a prompt.
+                    if model.remoteApprovalsVisible {
+                        PanelFeature {
+                            PanelRow(symbol: PanelSymbol.remoteApprovals, title: "Remote approvals") {
+                                RemoteApprovalsToggle(model: model)
+                            }
+                            indentedCaption(model.remoteApprovalsStatus)
                         }
                     }
                 }
