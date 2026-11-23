@@ -143,7 +143,8 @@ A live launch:
    you." appears only once a fetch has come back empty.
 2. Checks the iCloud account. No usable account shows **iCloud unavailable**
    (and, with nothing listed, "iCloud unavailable. Alerts can't arrive
-   without it.").
+   without it."; with rows listed, they stay under one note: "Stale —
+   iCloud unavailable, so new alerts can't arrive").
 3. Makes sure the one push subscription exists. It fetches the subscription
    by its fixed ID (`AlertWire.subscriptionID`) and creates it only when the
    server has none. A refusal is logged and retried on the next foreground
@@ -163,7 +164,7 @@ A live launch:
    by the record name the Mac wrote, so a record seen twice is one row.
    Records with a missing or unknown field are skipped. A fetch that fails
    keeps the list and says so: with rows listed, one line under the header
-   reads "Couldn't check just now — showing earlier alerts."; with none,
+   reads "Stale — couldn't check for new alerts just now"; with none,
    the empty state reads "Couldn't check for alerts just now. Pull down to
    try again." The next fetch that answers clears it. The list keeps at
    most 50 rows; a full list ends with "Last 50 alerts — older ones aren't

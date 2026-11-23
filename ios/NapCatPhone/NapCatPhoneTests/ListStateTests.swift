@@ -8,7 +8,8 @@ import UIKit
 /// already listed. The good outcome ("No alerts. Your Mac hasn't needed
 /// you.") needs a usable account AND a query that came back empty; every
 /// other cell says what is known instead, and a list that could not be
-/// checked stays on screen with one line saying so.
+/// checked stays on screen with one line saying why: a passing failure or
+/// the lasting one (no iCloud).
 @Suite struct ListStateTests {
     struct Cell: CustomTestStringConvertible, Sendable {
         let connection: ConnectionState
@@ -26,19 +27,19 @@ import UIKit
     static let table: [(ConnectionState, FetchStatus, nothingListed: ListState, rowsListed: ListState)] = [
         (.checking, .pending, .empty(.checking), .rows),
         (.checking, .fetched, .empty(.checking), .rows),
-        (.checking, .failed, .empty(.checking), .staleRows),
+        (.checking, .failed, .empty(.checking), .staleRows(.couldNotCheck)),
         (.connected, .pending, .empty(.checking), .rows),
         (.connected, .fetched, .empty(.noAlerts), .rows),
-        (.connected, .failed, .empty(.couldNotCheck), .staleRows),
+        (.connected, .failed, .empty(.couldNotCheck), .staleRows(.couldNotCheck)),
         (.notificationsOff, .pending, .empty(.checking), .rows),
         (.notificationsOff, .fetched, .empty(.noAlerts), .rows),
-        (.notificationsOff, .failed, .empty(.couldNotCheck), .staleRows),
+        (.notificationsOff, .failed, .empty(.couldNotCheck), .staleRows(.couldNotCheck)),
         (.pushNotSetUp, .pending, .empty(.checking), .rows),
         (.pushNotSetUp, .fetched, .empty(.noAlerts), .rows),
-        (.pushNotSetUp, .failed, .empty(.couldNotCheck), .staleRows),
-        (.iCloudUnavailable, .pending, .empty(.iCloudUnavailable), .staleRows),
-        (.iCloudUnavailable, .fetched, .empty(.iCloudUnavailable), .staleRows),
-        (.iCloudUnavailable, .failed, .empty(.iCloudUnavailable), .staleRows),
+        (.pushNotSetUp, .failed, .empty(.couldNotCheck), .staleRows(.couldNotCheck)),
+        (.iCloudUnavailable, .pending, .empty(.iCloudUnavailable), .staleRows(.iCloudUnavailable)),
+        (.iCloudUnavailable, .fetched, .empty(.iCloudUnavailable), .staleRows(.iCloudUnavailable)),
+        (.iCloudUnavailable, .failed, .empty(.iCloudUnavailable), .staleRows(.iCloudUnavailable)),
     ]
 
     static let cells: [Cell] = table.flatMap { row in
@@ -96,9 +97,12 @@ import UIKit
         #expect(Self.screenState(.pushNotSetUp, .failed, listed: false) == .empty(.couldNotCheck))
         #expect(Self.screenState(.connected, .failed, listed: false) == .empty(.couldNotCheck))
         #expect(Self.screenState(.iCloudUnavailable, .failed, listed: false) == .empty(.iCloudUnavailable))
-        // A failed query with rows listed: the list stays, marked stale.
-        #expect(Self.screenState(.connected, .failed, listed: true) == .staleRows)
-        #expect(Self.screenState(.iCloudUnavailable, .fetched, listed: true) == .staleRows)
+        // A failed query with rows listed: the list stays, marked stale,
+        // and the note gives the cause: a passing failure, or no iCloud
+        // (lasting, so never "just now").
+        #expect(Self.screenState(.connected, .failed, listed: true) == .staleRows(.couldNotCheck))
+        #expect(Self.screenState(.iCloudUnavailable, .fetched, listed: true) == .staleRows(.iCloudUnavailable))
+        #expect(Self.screenState(.iCloudUnavailable, .failed, listed: true) == .staleRows(.iCloudUnavailable))
     }
 
     // MARK: Copy
@@ -110,15 +114,57 @@ import UIKit
         #expect(EmptyHero.noAlerts.message == "No alerts. Your Mac hasn't needed you.")
     }
 
-    /// A quiet note: a glyph and text (never color alone), the state word
-    /// first, and VoiceOver hears "Note" first.
-    @Test func theStaleLineIsANoteWithAGlyph() throws {
-        let line = ListState.staleLine
-        #expect(line == PhoneLine(text: "Couldn't check just now — showing earlier alerts.", severity: .info))
-        #expect(line.spoken == "Note: Couldn't check just now — showing earlier alerts.")
+    /// Each stale note gives its own cause. Only the failed query is
+    /// passing ("just now"); no iCloud is said as the cause it is.
+    @Test func eachStaleNoteSaysExactlyThis() {
+        #expect(StaleReason.couldNotCheck.line
+            == PhoneLine(text: "Stale — couldn't check for new alerts just now", severity: .info))
+        #expect(StaleReason.iCloudUnavailable.line
+            == PhoneLine(text: "Stale — iCloud unavailable, so new alerts can't arrive", severity: .info))
+        #expect(StaleReason.couldNotCheck.line.spoken == "Note: Stale — couldn't check for new alerts just now")
+        #expect(StaleReason.iCloudUnavailable.line.spoken == "Note: Stale — iCloud unavailable, so new alerts can't arrive")
+        #expect(StaleReason.iCloudUnavailable.line.text.contains("iCloud unavailable"))
+        #expect(!StaleReason.iCloudUnavailable.line.text.contains("just now"))
+        // The screen's note is the reason's line, and only stale rows have one.
+        for reason in StaleReason.allCases {
+            #expect(ListState.staleRows(reason).note == reason.line)
+        }
+        #expect(([ListState.rows] + EmptyHero.allCases.map(ListState.empty)).allSatisfy { $0.note == nil })
+    }
+
+    /// A quiet note: a glyph and text (never color alone), and VoiceOver
+    /// hears "Note" first.
+    @Test(arguments: StaleReason.allCases)
+    func eachStaleNoteIsANoteWithAGlyph(_ reason: StaleReason) throws {
+        let line = reason.line
+        #expect(line.spoken == "Note: \(line.text)")
         let glyph = try #require(line.severity.symbol)
         #expect(UIImage(systemName: glyph) != nil)
         #expect(UIImage(systemName: "\(glyph).fill") != nil)
+    }
+
+    /// The Mac panel's caption register: ONE state word, an em dash, the
+    /// explanation, no closing period ("Held — …", "Offline — …").
+    static func captionRegisterFailures(_ text: String) -> [String] {
+        var failures: [String] = []
+        let parts = text.components(separatedBy: " — ")
+        if parts.count != 2 { failures.append("not one state word and one em dash: \(text)") }
+        if parts[0].range(of: #"^\p{Lu}\p{Ll}+$"#, options: .regularExpression) == nil {
+            failures.append("the state is not one word: \(parts[0])")
+        }
+        if let last = text.last, ".!?…".contains(last) { failures.append("closing punctuation: \(text)") }
+        return failures
+    }
+
+    @Test func everyStaleNoteIsInTheCaptionRegister() {
+        for line in StaleReason.allCases.map(\.line) {
+            #expect(Self.captionRegisterFailures(line.text).isEmpty, "\(Self.captionRegisterFailures(line.text))")
+        }
+        // Not vacuous: the old note and near misses fail it.
+        for old in ["Couldn't check just now — showing earlier alerts.", "Stale — couldn't check.",
+                    "Stale: couldn't check", "Not checked — couldn't check"] {
+            #expect(!Self.captionRegisterFailures(old).isEmpty, "missed: \(old)")
+        }
     }
 
     /// Every distinct state reads differently in words alone: no two heroes
@@ -129,10 +175,10 @@ import UIKit
             switch state {
             case .empty(let hero): return hero.message
             case .rows: return ""
-            case .staleRows: return ListState.staleLine.text
+            case .staleRows(let reason): return reason.line.text
             }
         }
-        let states = EmptyHero.allCases.map(ListState.empty) + [.rows, .staleRows]
+        let states = EmptyHero.allCases.map(ListState.empty) + [.rows] + StaleReason.allCases.map(ListState.staleRows)
         #expect(Set(states.map(words)).count == states.count)
         for cell in Self.cells {
             #expect(states.contains(cell.expected), "\(cell.testDescription)")

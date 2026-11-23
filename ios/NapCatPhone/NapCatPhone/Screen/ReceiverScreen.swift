@@ -61,8 +61,8 @@ struct ReceiverScreen: View {
                         .textCase(.uppercase)
                         .foregroundStyle(theme.inkSecondary)
                         .accessibilityAddTraits(.isHeader)
-                    if list == .staleRows {
-                        CaptionLine(line: ListState.staleLine)
+                    if let note = list.note {
+                        CaptionLine(line: note)
                     }
                     LazyVStack(spacing: theme.rowGap) {
                         ForEach(Array(alerts.enumerated()), id: \.element.id) { index, alert in
@@ -104,9 +104,14 @@ struct ReceiverScreen: View {
     ReceiverScreen(alerts: [], connection: .checking, fetch: .pending)
 }
 
-/// The query failed with earlier rows on screen: the list stays, and says so.
+/// The query failed with earlier rows on screen: the list stays, and says why.
 #Preview("Couldn't check, earlier alerts") {
     ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .pushNotSetUp, fetch: .failed)
+}
+
+/// No iCloud with earlier rows on screen: the note gives that cause.
+#Preview("No iCloud, earlier alerts") {
+    ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .iCloudUnavailable, fetch: .failed)
 }
 
 /// The query failed before anything was listed (no launch value shows it).

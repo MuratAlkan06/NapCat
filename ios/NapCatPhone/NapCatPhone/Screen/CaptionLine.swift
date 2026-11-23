@@ -2,7 +2,7 @@ import SwiftUI
 
 /// One quiet line about the list, state word first: the severity's glyph
 /// (when it has one) and the text, in the secondary ink. Never color alone;
-/// VoiceOver hears the severity first: "Note: Couldn't check just now …".
+/// VoiceOver hears the severity first: "Note: Stale — …".
 struct CaptionLine: View {
     let line: PhoneLine
 

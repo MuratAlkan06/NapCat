@@ -210,7 +210,7 @@ import Testing
         #expect(Self.shown(feed) == .rows)
         await feed.refresh()
         #expect(feed.alerts == shown)
-        #expect(Self.shown(feed) == .staleRows)
+        #expect(Self.shown(feed) == .staleRows(.couldNotCheck))
         await source.setFails(false)
         #expect(await feed.refresh() == false)
         #expect(feed.fetch == .fetched)
@@ -228,7 +228,7 @@ import Testing
                                notifications: FixedNotificationGate(connection: .connected), isLive: true,
                                alerts: [Self.alert("session-1", minutesAgo: 10)], connection: .connected, fetch: .fetched)
         await listed.refresh()
-        #expect(Self.shown(listed) == .staleRows)
+        #expect(Self.shown(listed) == .staleRows(.iCloudUnavailable))
     }
 
     // MARK: Pull to refresh
