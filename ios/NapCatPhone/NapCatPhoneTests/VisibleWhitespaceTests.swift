@@ -37,6 +37,9 @@ import UIKit
 ///   Unicode scalar of it, in order (compared as UTF-8 bytes, since
 ///   `String ==` would call a decomposed "é" equal to a precomposed one).
 ///   VoiceOver reads the input itself, from the card's label.
+/// - A wrap draws nothing: the drawing is set in no language, so the system
+///   never hyphenates it. A hyphen it added was drawn in the input's ink
+///   ("con-" / "tent") and read as one the input holds, a flag in a command.
 @Suite struct VisibleWhitespaceTests {
     typealias Segment = VisibleWhitespace.Segment
 
@@ -298,5 +301,145 @@ import UIKit
         #expect(VisibleWhitespace.spaceMark == "\u{2423}")
         #expect(!VisibleWhitespace.markGlyphs.contains("\u{00B7}"))
         #expect(Set(VisibleWhitespace.markGlyphs).count == VisibleWhitespace.markGlyphs.count)
+    }
+
+    // MARK: A wrap draws nothing the input does not hold
+
+    /// The design re-review's case: the screen broke "content" as "con-" /
+    /// "tent", the hyphen in the input's ink (the system hyphenates a
+    /// text-style font by the text's language).
+    static let hyphenated = #"{"file_path":"notes.txt","content":"rm\#u{00A0}-rf build\#u{2003}now\tok\#u{202F}./out"}"#
+    /// The same, in the drawing's second chunk.
+    static let hyphenatedLater = String(repeating: "x\n", count: VisibleWhitespace.chunkLineBreaks) + hyphenated
+
+    /// Every chunk is set in no language, all of it.
+    @Test(arguments: corpus + longInputs)
+    func everyChunkIsSetInNoLanguage(_ input: String) {
+        #expect(VisibleWhitespace.language == "zxx")
+        for chunk in VisibleWhitespace.chunks(input) {
+            let languages = VisibleWhitespace.attributed(chunk, mark: .gray).runs[\.languageIdentifier].map(\.0)
+            #expect(languages == ["zxx"], "\(input.debugDescription.prefix(80)): \(languages)")
+        }
+    }
+
+    /// The texts in `content` as laid out `width` points wide (the
+    /// unbroken default is wider than any line here), in view order, read
+    /// back glyph by glyph: per line, the character each glyph draws, as
+    /// its UTF-16 offset in its paragraph (the layout counts from each
+    /// paragraph's start). A glyph the layout adds (a hyphen) reads back as
+    /// a character drawn twice.
+    @MainActor static func readBack(_ content: some View, width: CGFloat = 100_000,
+                                    size: DynamicTypeSize = .large) -> [[[Int]]] {
+        let notes = Notes<[[[Int]]]>()
+        let laidOut = content.environment(\.dynamicTypeSize, size).backgroundPreferenceValue(Text.LayoutKey.self) { texts in
+            // CharacterIndex is a frozen wrapper of that offset.
+            notes.note(texts.map { text in
+                text.layout.map { line in line.flatMap { run in run.characterIndices.map { unsafeBitCast($0, to: Int.self) } } }
+            })
+            return Color.clear
+        }
+        let renderer = ImageRenderer(content: laidOut)
+        renderer.proposedSize = ProposedViewSize(width: width, height: nil)
+        renderer.render { _, _ in }
+        return notes.all.last ?? []
+    }
+
+    /// A chunk's text paragraph by paragraph (it breaks only at "\n", after
+    /// a return mark): for each UTF-16 offset, the input character drawn
+    /// there in the input's ink (its ordinal in the chunk), or nil for a
+    /// mark. And which characters must show a glyph: all but
+    /// default-ignorable ones (a typed zero-width space draws nothing,
+    /// wrapped or not).
+    static func inputCharacters(_ chunk: [Segment]) -> (paragraphs: [[Int?]], shown: Set<Int>) {
+        let text = VisibleWhitespace.attributed(chunk, mark: .gray)
+        var at: [Int?] = [], shown = Set<Int>(), ordinal = 0
+        for run in text.runs {
+            let string = String(text[run.range].characters)
+            guard run[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] == nil else {
+                at += Array(repeating: nil, count: string.utf16.count)
+                continue
+            }
+            for character in string {
+                at += Array(repeating: ordinal, count: character.utf16.count)
+                if !character.unicodeScalars.allSatisfy(\.properties.isDefaultIgnorableCodePoint) { shown.insert(ordinal) }
+                ordinal += 1
+            }
+        }
+        var paragraphs: [[Int?]] = [], start = 0
+        for (offset, unit) in String(text.characters).utf16.enumerated() where unit == 0x0A {
+            paragraphs.append(Array(at[start...offset]))
+            start = offset + 1
+        }
+        return (paragraphs + [Array(at[start...])], shown)
+    }
+
+    /// The screen's drawing at every width from a narrow phone's to past the
+    /// widest, at the default and a large text size. Unbroken, each line of
+    /// a chunk draws, in the input's ink, the input's characters in order,
+    /// each shown. Wrapped, every chunk draws exactly the glyphs it draws
+    /// unbroken, in the same order. So the glyphs in the input's ink are the
+    /// input's characters at every width: a wrap inserts none (no hyphen)
+    /// and drops none, and the marks stay as they were.
+    @MainActor @Test(arguments: corpus + [hyphenated, hyphenatedLater])
+    func aWrapDrawsNoGlyphTheInputDoesNotHold(_ input: String) {
+        let chunks = VisibleWhitespace.chunks(input)
+        let characters = chunks.map(Self.inputCharacters)
+        let name = input.debugDescription.prefix(80)
+        for size in [DynamicTypeSize.large, .accessibility3] {
+            let unbroken = Self.readBack(InputDrawing(input: input, muted: false), size: size)
+            guard unbroken.count == chunks.count else {
+                Issue.record("\(name): \(unbroken.count) texts drawn for \(chunks.count) chunks")
+                return
+            }
+            for (lines, chars) in zip(unbroken, characters) {
+                #expect(lines.count == chars.paragraphs.count, "\(name): one unbroken line per line of the input")
+                let inInk = zip(lines, chars.paragraphs).flatMap { glyphs, at in
+                    glyphs.map { at.indices.contains($0) ? at[$0] : -1 }
+                }.compactMap { $0 }
+                #expect(!inInk.contains(-1), "\(name): a glyph outside its text")
+                #expect(inInk == inInk.sorted(), "\(name): the input drawn out of order")
+                #expect(chars.shown.isSubset(of: Set(inInk)), "\(name): a character of the input not drawn")
+            }
+            let glyphs = { (drawing: [[[Int]]]) in drawing.map { Array($0.joined()) } }
+            for width in stride(from: 120, through: 400, by: 3) {
+                let wrapped = Self.readBack(InputDrawing(input: input, muted: false), width: CGFloat(width), size: size)
+                guard glyphs(wrapped) == glyphs(unbroken) else {
+                    let drawn = "\(wrapped)".prefix(300), whole = "\(unbroken)".prefix(300)
+                    Issue.record("\(name) at \(width) pt, \(size): drawn \(drawn), unbroken \(whole)")
+                    break
+                }
+            }
+        }
+    }
+
+    /// The re-review's case, at the widths where the screen drew "con-" /
+    /// "tent": the line still breaks inside "content" (a soft wrap: no
+    /// return mark, nothing drawn at it), and no hyphen is drawn. Not
+    /// vacuous: set in the system's language, the same text draws the
+    /// hyphen at some of these widths, and the read-back sees it.
+    @MainActor @Test func contentStillWrapsButDrawsNoHyphen() throws {
+        let chunk = try #require(VisibleWhitespace.chunks(Self.hyphenated).first)
+        let text = VisibleWhitespace.attributed(chunk, mark: .gray)
+        let string = String(text.characters)
+        let word = try #require(string.range(of: "content"))
+        let start = string.utf16.distance(from: string.startIndex, to: word.lowerBound)
+        let insideWord = (start + 1)..<(start + "content".utf16.count)
+        let unbroken = Self.readBack(InputDrawing(input: Self.hyphenated, muted: false))
+        var brokeInsideWord = false
+        for width in 280...360 {
+            let wrapped = Self.readBack(InputDrawing(input: Self.hyphenated, muted: false), width: CGFloat(width))
+            #expect(wrapped.map { Array($0.joined()) } == unbroken.map { Array($0.joined()) },
+                    "at \(width) pt: \("\(wrapped)".prefix(300))")
+            if wrapped.first?.dropFirst().contains(where: { insideWord.contains($0.first ?? -1) }) == true {
+                brokeInsideWord = true
+            }
+        }
+        #expect(brokeInsideWord, "no width broke inside the word: the case is not exercised")
+        var inTheSystemsLanguage = text
+        inTheSystemsLanguage.languageIdentifier = nil
+        let hyphenText = Text(inTheSystemsLanguage).font(ThemeID.fallback.theme.bodyFont.monospaced())
+        let unhyphenated = Self.readBack(hyphenText).map { Array($0.joined()) }
+        #expect((280...360).contains { Self.readBack(hyphenText, width: CGFloat($0)).map { Array($0.joined()) } != unhyphenated },
+                "the system no longer hyphenates here: the read-back is unproven")
     }
 }

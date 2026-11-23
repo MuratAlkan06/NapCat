@@ -267,8 +267,8 @@ struct PendingRequestScreen: View {
 /// and its tone are, so the screen's other redraws (its clock, its
 /// measuring) leave it as drawn. The box's height stays right: a short
 /// input's chunks are all in sight, and a long one's in sight already fill
-/// the box.
-private struct InputDrawing: View, Equatable {
+/// the box. Not private: `VisibleWhitespaceTests` lays it out.
+struct InputDrawing: View, Equatable {
     let input: String
     let muted: Bool
 

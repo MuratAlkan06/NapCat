@@ -12,8 +12,9 @@ import SwiftUI
 /// decided by what the input holds and never by how a glyph looks (a mark
 /// glyph typed into the input is drawn as input), and the input itself is
 /// never trimmed, collapsed or changed: `source(of:)` gives back every
-/// Unicode scalar of it, in order. VoiceOver reads the input itself, not the
-/// drawing. Why these marks: `VisibleWhitespaceTests`.
+/// Unicode scalar of it, in order, and a wrap adds no glyph to it (no
+/// hyphen: `language`). VoiceOver reads the input itself, not the drawing.
+/// Why these marks: `VisibleWhitespaceTests`.
 enum VisibleWhitespace {
     /// A run of the drawing: what is shown, the input it stands for, and
     /// whether it is a mark (decoration) or the input drawn as it is.
@@ -148,10 +149,20 @@ enum VisibleWhitespace {
         return pieces
     }
 
-    /// One chunk as text: the input's runs carry no color of their own
-    /// (they take the view's ink), the marks carry `mark`. A chunk that
-    /// ends on a line break draws its mark but not the break: the next
-    /// chunk starts its own line.
+    /// The drawing's language: none, ISO 639's "no linguistic content".
+    /// The system hyphenates text in a text style (the input's body font)
+    /// by its language and draws the hyphen in the text's own ink, so
+    /// "content" broken as "con-" / "tent" shows a hyphen the input does not
+    /// hold. No language has no hyphenation. Lines still wrap after a mark,
+    /// or between two characters of a run too long for its line, and that
+    /// wrap draws nothing. (`Text` ignores a paragraph style's hyphenation
+    /// factor; the language is what it honors.)
+    static let language = "zxx"
+
+    /// One chunk as text, set in no language (`language`): the input's runs
+    /// carry no color of their own (they take the view's ink), the marks
+    /// carry `mark`. A chunk that ends on a line break draws its mark but
+    /// not the break: the next chunk starts its own line.
     static func attributed(_ chunk: [Segment], mark: Color) -> AttributedString {
         var drawing = AttributedString()
         for (index, segment) in chunk.enumerated() {
@@ -160,6 +171,7 @@ enum VisibleWhitespace {
             if segment.isMark { run.swiftUI.foregroundColor = mark }
             drawing.append(run)
         }
+        drawing.languageIdentifier = language
         return drawing
     }
 }
