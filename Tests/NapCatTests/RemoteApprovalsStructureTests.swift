@@ -114,11 +114,53 @@ struct RemoteApprovalsStructureTests {
         }
     }
 
+    // MARK: - The secrets fail closed
+
+    /// The production host gets the lid guard's fail-closed answer (nil while
+    /// the topic could not be read), and the intake folds a nil into a
+    /// refusal right on the gate's answer — before the lifecycle opens.
+    static func secretsFailures(intake: String, toggle: String) -> [String] {
+        func flat(_ text: String) -> String { MenuPanelStructureTests.flat(text) }
+        var failures: [String] = []
+        if !flat(toggle).contains("makeHost: { Self.failDarkHost(socketPath: $0, secrets: { @Sendable in lidGuard.approvalSecrets }) }") {
+            failures.append("the production host must look for the lid guard's fail-closed secrets")
+        }
+        let fold = "let known = secrets() let classification = ApprovalGate.classify(toolName: request.toolName, "
+            + "inputPreview: request.inputPreview, secrets: known ?? []).failingClosed(secretsKnown: known != nil)"
+        if !flat(intake).contains(fold) {
+            failures.append("the intake must fold unknown secrets into a refusal on the gate's own answer")
+        }
+        if MenuPanelStructureTests.occurrences(of: "secrets()", in: intake) != 1 {
+            failures.append("the secrets are read once per prompt, in one place")
+        }
+        if !flat(intake).contains("secretsKnown ? self : .suppress(.forbidden(.secretAccess))") {
+            failures.append("unknown secrets must mean secret access")
+        }
+        return failures
+    }
+
+    @Test func theSecretsFailClosed() throws {
+        let intake = try MenuPanelStructureTests.code("ApprovalIntake.swift")
+        let toggle = try MenuPanelStructureTests.code("RemoteApprovalsController.swift")
+        #expect(Self.secretsFailures(intake: intake, toggle: toggle).isEmpty, "\(Self.secretsFailures(intake: intake, toggle: toggle))")
+        let mutants: [(String, String, String)] = [
+            ("the stored topic, unreadable read as none", intake, toggle.replacingOccurrences(
+                of: "lidGuard.approvalSecrets", with: "[lidGuard.storedTopic]")),
+            ("the fold dropped", intake.replacingOccurrences(of: ".failingClosed(secretsKnown: known != nil)", with: ""), toggle),
+            ("unknown read as none", intake.replacingOccurrences(
+                of: "secretsKnown ? self : .suppress(.forbidden(.secretAccess))", with: "self"), toggle),
+        ]
+        for (name, intake, toggle) in mutants {
+            #expect(!Self.secretsFailures(intake: intake, toggle: toggle).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - The S2 tests touch nothing live
 
     /// The S2 test files that run anything (this file only reads sources).
     static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift",
-                              "RemoteApprovalsPresentationTests.swift", "WaitingPromptContextTests.swift"]
+                              "RemoteApprovalsPresentationTests.swift", "WaitingPromptContextTests.swift",
+                              "ApprovalSecretsFailClosedTests.swift"]
 
     /// S1's list, plus what S2 could reach: the toggle's production factory
     /// (it resolves the real socket path and reads the real defaults), the

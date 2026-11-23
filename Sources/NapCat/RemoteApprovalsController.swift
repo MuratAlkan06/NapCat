@@ -82,7 +82,8 @@ final class RemoteApprovalsController {
 
     /// The single construction site, gated by the debug-sim wiring predicate
     /// (checked FIRST): nil in debugBattery mode, and nil without the lid
-    /// guard (it holds the alert topic, a secret the gate keeps on the Mac)
+    /// guard (it holds the alert topic, a secret the gate keeps on the Mac —
+    /// or, when the topic could not be read, the fail-closed nil)
     /// or without a home directory to put the socket in. Construction does
     /// no I/O: nothing listens until `reconcile()` reads a switched-on
     /// toggle. The socket path comes from the user database, like the
@@ -95,14 +96,14 @@ final class RemoteApprovalsController {
             socketPath: SeamPaths.socketPath(home: home),
             readStored: { defaults.object(forKey: DefaultsKey.remoteApprovalsEnabled) },
             writeStored: { defaults.set($0, forKey: DefaultsKey.remoteApprovalsEnabled) },
-            makeHost: { Self.failDarkHost(socketPath: $0, secrets: { @Sendable in [lidGuard.storedTopic] }) },
+            makeHost: { Self.failDarkHost(socketPath: $0, secrets: { @Sendable in lidGuard.approvalSecrets }) },
             probe: { ChannelPolicyProbe.probe() })
     }
 
     /// The ONE construction of the seam host: never armed, and its record
     /// sink writes nothing (fail-dark until the iPhone half exists).
     /// Its closures run on the seam's queue, hence `@Sendable`.
-    nonisolated static func failDarkHost(socketPath: String, secrets: @escaping @Sendable () -> [String],
+    nonisolated static func failDarkHost(socketPath: String, secrets: @escaping @Sendable () -> [String]?,
                                          audit: @escaping @Sendable (ApprovalAuditEvent) -> Void = ApprovalAuditLog.record,
                                          peerReader: @escaping @Sendable (Int32) -> SeamPeer? = SeamSocket.peer(of:))
         -> ApprovalSeamHost {

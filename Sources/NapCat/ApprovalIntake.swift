@@ -84,6 +84,12 @@ enum ApprovalAuditEvent: Equatable, Sendable {
 }
 
 extension ApprovalClassification {
+    /// Fail closed: without the secrets the gate must look for, every prompt
+    /// is kept on the Mac as secret access.
+    func failingClosed(secretsKnown: Bool) -> ApprovalClassification {
+        secretsKnown ? self : .suppress(.forbidden(.secretAccess))
+    }
+
     /// The tool the gate forwards this prompt as, or nil when it keeps it.
     var forwardedTool: ApprovalTool? {
         if case .forward(let tool) = self { return tool }
@@ -118,7 +124,7 @@ final class ApprovalIntake {
     static let maxPrompts = 256
 
     private let armed: () -> Bool
-    private let secrets: () -> [String]
+    private let secrets: () -> [String]?
     private let newPromptID: () -> PromptID?
     private let now: () -> Int
     private let records: ApprovalRecordSink
@@ -133,8 +139,10 @@ final class ApprovalIntake {
 
     /// `armed`: whether the feature is enabled on both devices (always false
     /// until the iPhone half lands). `secrets`: strings that must never leave the
-    /// Mac (the alert topic). `now`: monotonic seconds.
-    init(armed: @escaping () -> Bool, secrets: @escaping () -> [String], newPromptID: @escaping () -> PromptID?,
+    /// Mac (the alert topic) — nil while one exists that could not be read,
+    /// and then every prompt stays local (fail closed). `now`: monotonic
+    /// seconds.
+    init(armed: @escaping () -> Bool, secrets: @escaping () -> [String]?, newPromptID: @escaping () -> PromptID?,
          now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,
          closeConnection: @escaping (ConnectionKey) -> Void, audit: @escaping (ApprovalAuditEvent) -> Void) {
         self.armed = armed
@@ -161,8 +169,11 @@ final class ApprovalIntake {
         }
         guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }
         guard let id = newPromptID(), prompts[id] == nil else { return audit(.promptIDUnavailable) }
+        // A secret that exists but could not be read is one the gate cannot
+        // look for: the prompt is then secret access, whatever it is.
+        let known = secrets()
         let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,
-                                                   secrets: secrets())
+                                                   secrets: known ?? []).failingClosed(secretsKnown: known != nil)
         let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())
         prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,
                             forwardable: classification.forwardedTool)

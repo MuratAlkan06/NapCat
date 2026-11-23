@@ -49,7 +49,7 @@ final class ApprovalSeamHost: @unchecked Sendable {
     private var intake: ApprovalIntake?
 
     /// `peerReader` is injectable so tests can present a foreign peer.
-    init(socketPath: String, armed: @escaping () -> Bool, secrets: @escaping () -> [String],
+    init(socketPath: String, armed: @escaping () -> Bool, secrets: @escaping () -> [String]?,
          records: ApprovalRecordSink, audit: @escaping (ApprovalAuditEvent) -> Void = ApprovalAuditLog.record,
          newPromptID: @escaping () -> PromptID? = ApprovalSources.randomPromptID,
          now: @escaping () -> Int = ApprovalSources.monotonicSeconds,
