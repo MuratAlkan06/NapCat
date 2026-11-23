@@ -13,8 +13,9 @@ import NapCatWire
 /// claude.ai or server-managed (remote) settings) and an MDM profile rank above the file
 /// tier, and on a Pro, Max or Ultra plan without an organization Claude Code
 /// skips these checks entirely, so there the development flag stays needed
-/// whatever the files say. Nothing calls it yet; surfacing it belongs to the
-/// settings slice.
+/// whatever the files say. It runs only while the Mac toggle is on (slice
+/// S2: the toggle's `.probe` effect, lint-locked), and Settings › Claude
+/// shows the finding.
 enum ChannelPolicyProbe {
     /// Claude Code's system directory for managed settings on macOS.
     static let systemDirectory = "/Library/Application Support/ClaudeCode"

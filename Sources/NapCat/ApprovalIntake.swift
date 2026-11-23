@@ -14,7 +14,8 @@ import NapCatWire
 
 /// Where NapCat writes a forwarded prompt's record: CloudKit, a later slice.
 /// Nothing reaches it while the feature is unarmed, which it always is until
-/// the toggles land.
+/// the iPhone half lands (the S2 host is built never armed, with a sink that
+/// writes nothing).
 protocol ApprovalRecordSink: AnyObject {
     /// Write the prompt record: the tool and the preview exactly as the gate
     /// classified them, nothing else from the session.
@@ -43,6 +44,13 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     case unknownPrompt
     /// A peer failed the seam's check and was closed unread.
     case peerRefused
+    /// The Mac toggle went on and the seam is listening (slice S2).
+    case listening
+    /// The Mac toggle is on but the seam's socket could not be opened:
+    /// nothing listens and every prompt stays local.
+    case listenFailed
+    /// The kill switch: the Mac toggle went off (or NapCat quit).
+    case stopped
 
     /// The log line's text.
     var code: String {
@@ -54,6 +62,9 @@ enum ApprovalAuditEvent: Equatable, Sendable {
         case .promptIDUnavailable: return "seam.promptIDUnavailable"
         case .unknownPrompt: return "seam.unknownPrompt"
         case .peerRefused: return "seam.peerRefused"
+        case .listening: return "seam.listening"
+        case .listenFailed: return "seam.listenFailed"
+        case .stopped: return "seam.stopped"
         }
     }
 
@@ -103,7 +114,7 @@ final class ApprovalIntake {
     private(set) var prompts: [PromptID: Entry] = [:]
 
     /// `armed`: whether the feature is enabled on both devices (always false
-    /// until the toggles land). `secrets`: strings that must never leave the
+    /// until the iPhone half lands). `secrets`: strings that must never leave the
     /// Mac (the alert topic). `now`: monotonic seconds.
     init(armed: @escaping () -> Bool, secrets: @escaping () -> [String], newPromptID: @escaping () -> PromptID?,
          now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,

@@ -6,10 +6,11 @@ import os
 // F4 slice S1: NapCat's end of the seam — the authenticated listener and the
 // intake behind it. Design: design/remote-approvals.md.
 //
-// NOTHING CONSTRUCTS IT YET. It is started by the Mac toggle and stopped by
-// the kill switch, both a later slice; until then no socket exists, a channel
-// server finds nothing to connect to, and every prompt stays local (dark by
-// default). Its queue is the intake's: every frame, close and event runs
+// Built and started ONLY behind the Mac toggle (slice S2:
+// RemoteApprovalsController, lint-locked) and stopped by its kill switch;
+// with the toggle off no socket exists, a channel server finds nothing to
+// connect to, and every prompt stays local. The S2 host is built never armed
+// (fail-dark). Its queue is the intake's: every frame, close and event runs
 // there.
 
 /// The audit trail's log category (`approvals`): one closed-vocabulary line

@@ -113,6 +113,12 @@ struct RemoteApprovalsState: Equatable, Sendable {
 }
 
 enum RemoteApprovalsPolicy {
+    /// In debugBattery mode the feature is STRUCTURALLY absent (the shape of
+    /// `LidGuardPolicy.lidGuardMayBeConstructed`): no toggle, no socket.
+    static func remoteApprovalsMayBeConstructed(debugBattery: Bool) -> Bool {
+        !debugBattery
+    }
+
     /// `remoteApprovalsEnabled` as stored. Only a stored Bool `true` is on;
     /// unset, `false`, or anything else — a hand-written string, a number
     /// other than 0/1 — reads as OFF: a junk value must never arm a

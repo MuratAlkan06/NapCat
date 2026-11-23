@@ -895,7 +895,7 @@ struct SettingsWindowTests {
         let settings = try body(of: "settingsWindowBecameKey")
         let reads = ["sleep.refreshObservedState()", "power.reprobeChargeControlIfNeeded()", "limiter.evaluate(reason: ",
                      "loginItem.refresh()", "detection?.sample()", "lidGuard?.refreshArming()",
-                     "finishAlert?.reconcile()", "updateCheck?.checkIfDue()", "model.refresh()"]
+                     "finishAlert?.reconcile()", "remoteApprovals?.refresh()", "updateCheck?.checkIfDue()", "model.refresh()"]
         for (name, text) in [("menuWillOpen", menuOpen), ("settingsWindowBecameKey", settings)] {
             let positions = try reads.map { read in
                 try #require(text.range(of: read), "'\(read)' missing from \(name)").lowerBound

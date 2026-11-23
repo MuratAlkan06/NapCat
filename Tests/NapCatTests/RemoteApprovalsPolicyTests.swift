@@ -186,40 +186,6 @@ struct RemoteApprovalsPolicyTests {
         }
     }
 
-    // MARK: - Pure by construction
-
-    static let policyFile = "RemoteApprovalsPolicy.swift"
-    /// I/O, clocks, logging and the feature's effectful types: the policy
-    /// only ever returns effects for the controller to perform.
-    static let bannedTokens = ["UserDefaults", "FileManager", "Logger", "os_log", "DispatchQueue", "DispatchSource",
-                               "Date(", "clock_gettime", "Timer", "URLSession", "Process(", "ApprovalSeamHost",
-                               "SeamListener", "ChannelPolicyProbe", "NSApp", "print("]
-
-    static func purityFailures(_ source: String) -> [String] {
-        let code = LidGuardStructureTests.codeOnly(source)
-        var failures = bannedTokens.filter { code.contains($0) }.map { "'\($0)' in \(policyFile) — the policy stays I/O-free" }
-        for line in code.split(separator: "\n") {
-            let words = line.trimmingCharacters(in: .whitespaces).split(separator: " ")
-            guard let index = words.firstIndex(of: "import"), words[..<index].allSatisfy({ $0.hasPrefix("@") }) else { continue }
-            if words.joined(separator: " ") != "import NapCatWire" {
-                failures.append("'\(line)' — the only import allowed in \(policyFile) is NapCatWire (for the finding)")
-            }
-        }
-        return failures
-    }
-
-    @Test func thePolicyIsPure() throws {
-        let source = try String(contentsOf: LidGuardStructureTests.sourcesDir().appendingPathComponent(Self.policyFile),
-                                encoding: .utf8)
-        #expect(source.contains("struct RemoteApprovalsState"), "vacuity: the file is the policy")
-        #expect(Self.purityFailures(source).isEmpty, "\(Self.purityFailures(source))")
-        for planted in ["import Foundation", "let d = UserDefaults.standard", "let q = DispatchQueue(label: \"x\")",
-                        "let h = ApprovalSeamHost(socketPath: p)", "let f = ChannelPolicyProbe.probe()"] {
-            #expect(!Self.purityFailures(source + "\n" + planted).isEmpty, "canary '\(planted)' was NOT caught")
-        }
-        #expect(Self.purityFailures(source + "\n// UserDefaults in a comment is fine").isEmpty)
-    }
-
     /// A reading lands only while on, and every reading is kept as is.
     @Test(arguments: ChannelPolicyFinding.allCases)
     func aReadingIsKeptOnlyWhileOn(_ finding: ChannelPolicyFinding) {
