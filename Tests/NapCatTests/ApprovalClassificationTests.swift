@@ -490,29 +490,57 @@ struct ApprovalClassificationTests {
     }
 
     static let forwardableFiles: [Row] = [
-        write("\(base)/README.md", .forward(.write)),
-        write("\(base)/Sources/App.swift", .forward(.write)),
-        write("\(base)/.github/workflows/ci.yml", .forward(.write)),
-        write("\(base)/.gitignore", .forward(.write)),
-        write("\(base)/My Notes/todo.txt", .forward(.write)),
-        write("/tmp/scratch.txt", .forward(.write)),
         read("\(base)/Package.swift", .forward(.read)),
+        read("\(base)/.github/workflows/ci.yml", .forward(.read)),
+        read("/tmp/scratch.txt", .forward(.read)),
         raw("Read", object([("file_path", quote("\(base)/doc.pdf")), ("offset", "1"), ("limit", "200"), ("pages", quote("1-3"))]),
             .forward(.read), "Read with every optional argument"),
-        raw("Edit", object([("file_path", quote("\(base)/App.swift")), ("old_string", quote("a")), ("new_string", quote("b")),
-                            ("replace_all", "true")]), .forward(.edit), "Edit with replace_all"),
-        raw("NotebookEdit", object([("notebook_path", quote("\(base)/n.ipynb")), ("new_source", quote("print(1)")),
-                                    ("cell_id", quote("c1")), ("cell_type", quote("code")), ("edit_mode", quote("replace"))]),
-            .forward(.notebookEdit), "NotebookEdit with every optional argument"),
-        raw("Write", object([("file_path", quote("\(base)/a.txt")), ("content", quote("sudo is mentioned in docs"))]),
-            .forward(.write), "content is classified by its target, not its words"),
-        raw("Write", object([("file_path", quote("\(base)/emoji.txt")), ("content", "\"\\ud83d\\ude00 \\u00e9\"")]),
-            .forward(.write), "a valid surrogate pair in content"),
     ]
 
     @Test(arguments: forwardableFiles)
-    func fileToolsForwardOrdinaryPaths(_ row: Row) {
+    func readForwardsOrdinaryPaths(_ row: Row) {
         #expect(Self.classify(row) == row.expected)
+    }
+
+    static let localOnly = ApprovalClassification.suppress(.localOnlyFileEdit)
+
+    /// The file-edit tools are local-only: the same prompts that forwarded
+    /// before stay on the Mac, each logged as `localOnly.fileEdit`.
+    static let localOnlyFileEdits: [Row] = [
+        write("\(base)/README.md", localOnly),
+        write("\(base)/Sources/App.swift", localOnly),
+        write("\(base)/.github/workflows/ci.yml", localOnly),
+        write("\(base)/.gitignore", localOnly),
+        write("\(base)/My Notes/todo.txt", localOnly),
+        write("/tmp/scratch.txt", localOnly),
+        raw("Edit", object([("file_path", quote("\(base)/App.swift")), ("old_string", quote("a")), ("new_string", quote("b")),
+                            ("replace_all", "true")]), localOnly, "Edit with replace_all"),
+        raw("Edit", object([("file_path", quote("\(base)/App.swift")), ("old_string", quote("a")), ("new_string", quote("b"))]),
+            localOnly, "Edit with the required arguments"),
+        raw("NotebookEdit", object([("notebook_path", quote("\(base)/n.ipynb")), ("new_source", quote("print(1)")),
+                                    ("cell_id", quote("c1")), ("cell_type", quote("code")), ("edit_mode", quote("replace"))]),
+            localOnly, "NotebookEdit with every optional argument"),
+        raw("NotebookEdit", object([("notebook_path", quote("\(base)/n.ipynb")), ("new_source", quote("print(1)"))]),
+            localOnly, "NotebookEdit with the required arguments"),
+        raw("Write", object([("file_path", quote("\(base)/a.txt")), ("content", quote("sudo is mentioned in docs"))]),
+            localOnly, "content is classified by its target, not its words"),
+        raw("Write", object([("file_path", quote("\(base)/emoji.txt")), ("content", "\"\\ud83d\\ude00 \\u00e9\"")]),
+            localOnly, "a valid surrogate pair in content"),
+    ]
+
+    @Test(arguments: localOnlyFileEdits)
+    func fileEditToolsStayLocalEvenOnOrdinaryPaths(_ row: Row) {
+        #expect(Self.classify(row) == row.expected)
+    }
+
+    /// Local-only comes last: a file-edit prompt is still checked in full,
+    /// so a forbidden or malformed one is logged for what it is.
+    @Test func aFileEditPromptIsStillClassifiedBeforeItIsKeptLocal() {
+        #expect(Self.classify(Self.write("/Users/someone/.claude/settings.json", Self.localOnly))
+            == Self.forbidden(.configurationOrHooks))
+        #expect(Self.classify(Self.write("README.md", Self.localOnly)) == Self.unclassifiable(.pathNotCanonical))
+        #expect(Self.classify(Self.raw("Edit", Self.object([("file_path", Self.quote("\(Self.base)/a"))]), Self.localOnly, ""))
+            == Self.unclassifiable(.missingArgument))
     }
 
     // MARK: - Fail-closed defaults
@@ -609,9 +637,9 @@ struct ApprovalClassificationTests {
                 #expect(Self.classify(row) == row.expected, "U+\(String(scalar.value, radix: 16, uppercase: true)) in \(row.note)")
             }
         }
-        let plain = Self.raw("Write", Self.object([("file_path", Self.quote("\(Self.base)/a.txt")),
-                                                   ("content", Self.quote("tab\tnewline\nwindows\r\nemoji \u{1F600} caf\u{00E9}"))]),
-                             .forward(.write), "tab, newline, CR and ordinary Unicode")
+        let plain = Self.raw("Bash", Self.object([("command", Self.quote("git status")),
+                                                  ("description", Self.quote("tab\tnewline\nwindows\r\nemoji \u{1F600} caf\u{00E9}"))]),
+                             Self.forwardBash, "tab, newline, CR and ordinary Unicode")
         #expect(Self.classify(plain) == plain.expected)
     }
 
@@ -656,8 +684,9 @@ struct ApprovalClassificationTests {
     @Test func auditCodesAreAClosedVocabulary() {
         #expect(ApprovalSuppression.forbidden(.secretAccess).auditCode == "forbidden.secretAccess")
         #expect(ApprovalSuppression.localOnlyMCP.auditCode == "localOnly.mcp")
+        #expect(ApprovalSuppression.localOnlyFileEdit.auditCode == "localOnly.fileEdit")
         #expect(ApprovalSuppression.unclassifiable(.unknownTool).auditCode == "unclassifiable.unknownTool")
-        let all = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP]
+        let all = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP, .localOnlyFileEdit]
             + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
         #expect(Set(all.map(\.auditCode)).count == all.count, "codes are distinct")
         for code in all.map(\.auditCode) {
@@ -704,6 +733,9 @@ struct ApprovalClassificationTests {
     }
 
     static let missRefusal = "else {\n            return .suppress(.unclassifiable(.unknownTool))\n        }"
+    /// The row's own switch, directly before the single forward.
+    static let localOnlyRefusal = "guard row.forwards else {\n            return .suppress(.localOnlyFileEdit)\n        }\n"
+        + "        return .forward(row.tool)"
 
     static func defaultForwardFailures(_ code: String) -> [String] {
         var failures: [String] = []
@@ -716,6 +748,9 @@ struct ApprovalClassificationTests {
             if forward.lowerBound < miss.upperBound { failures.append("the forward precedes the table-miss refusal") }
         } else {
             failures.append("the table-miss refusal or the single forward is missing")
+        }
+        if !code.contains(localOnlyRefusal) {
+            failures.append("the single forward must follow the row's local-only guard directly")
         }
         if !code.contains("public static func classify(toolName: String, inputPreview: String, secrets: [String] = [])") {
             failures.append("classify's parameters changed (the description must never be an input)")
@@ -731,6 +766,9 @@ struct ApprovalClassificationTests {
             code.replacingOccurrences(of: "        case (.path, _),", with: "        default: return nil\n        case (.path, _),"),
             code + "\nlet x = y ?? .forward(.bash)\n",
             code.replacingOccurrences(of: "inputPreview: String, secrets", with: "inputPreview: String, description: String, secrets"),
+            code.replacingOccurrences(of: "guard row.forwards else {", with: "guard true else {"),
+            code.replacingOccurrences(of: "        guard row.forwards else {\n            return .suppress(.localOnlyFileEdit)\n        }\n",
+                                      with: ""),
         ]
         for mutant in mutants {
             #expect(!Self.defaultForwardFailures(mutant).isEmpty, "a mutant was NOT caught")
@@ -757,6 +795,8 @@ struct ApprovalClassificationTests {
     @Test func theToolTableIsExactlyTheForwardableTools() {
         let tools = ApprovalGate.toolTable.map(\.tool)
         #expect(tools == ApprovalTool.allCases, "one row per tool, in order")
+        #expect(ApprovalGate.toolTable.filter(\.forwards).map(\.tool) == [.bash, .read],
+                "the file-edit tools are local-only")
         #expect(!ApprovalGate.toolTable.contains { $0.tool.rawValue.hasPrefix(ApprovalGate.mcpPrefix) })
         for row in ApprovalGate.toolTable {
             let names = (row.required + row.optional).map(\.name)

@@ -9,7 +9,9 @@
 // branch, lint-locked in ApprovalClassificationTests). Classification reads
 // the tool name and the parsed input preview, never the description.
 
-/// The tools whose prompts may be forwarded (one row each in the tool table).
+/// The tools the gate classifies (one row each in the tool table). Only the
+/// rows marked `forwards` may leave the Mac: the file-edit tools (Write,
+/// Edit, NotebookEdit) are local-only.
 public enum ApprovalTool: String, CaseIterable, Sendable {
     case bash = "Bash"
     case write = "Write"
@@ -55,6 +57,9 @@ public enum ApprovalSuppression: Equatable, Sendable {
     case forbidden(ForbiddenFamily)
     /// MCP tools are local-only in the MVP (CL-2).
     case localOnlyMCP
+    /// The file-edit tools are local-only too: a Write, Edit or NotebookEdit
+    /// prompt that passes every other check still stays on the Mac.
+    case localOnlyFileEdit
     case unclassifiable(Unclassifiable)
 
     /// A closed-vocabulary code for the audit log (never any prompt text).
@@ -62,6 +67,7 @@ public enum ApprovalSuppression: Equatable, Sendable {
         switch self {
         case .forbidden(let family): return "forbidden.\(family.rawValue)"
         case .localOnlyMCP: return "localOnly.mcp"
+        case .localOnlyFileEdit: return "localOnly.fileEdit"
         case .unclassifiable(let reason): return "unclassifiable.\(reason.rawValue)"
         }
     }
@@ -118,6 +124,9 @@ public enum ApprovalGate {
         if let refusal = refusal(members, row) {
             return .suppress(refusal)
         }
+        guard row.forwards else {
+            return .suppress(.localOnlyFileEdit)
+        }
         return .forward(row.tool)
     }
 
@@ -147,23 +156,28 @@ public enum ApprovalGate {
 
     struct ToolRow: Sendable {
         let tool: ApprovalTool
+        /// Whether a prompt that passes every check may leave the Mac. A row
+        /// that does not forward is still checked in full, so a forbidden
+        /// prompt is logged as its family.
+        let forwards: Bool
         let required: [Argument]
         let optional: [Argument]
     }
 
-    /// The forwardable tools and their EXACT argument sets: an argument not
+    /// The classified tools and their EXACT argument sets: an argument not
     /// listed, a missing required one, or a value of the wrong JSON type
-    /// refuses the prompt.
+    /// refuses the prompt. Only Bash and Read forward.
     static let toolTable: [ToolRow] = [
-        ToolRow(tool: .bash, required: [Argument("command", .command)],
+        ToolRow(tool: .bash, forwards: true, required: [Argument("command", .command)],
                 optional: [Argument("description", .text), Argument("timeout", .number),
                            Argument("run_in_background", .bool), Argument("dangerouslyDisableSandbox", .falseOnly)]),
-        ToolRow(tool: .write, required: [Argument("file_path", .path), Argument("content", .text)], optional: []),
-        ToolRow(tool: .edit, required: [Argument("file_path", .path), Argument("old_string", .text), Argument("new_string", .text)],
+        ToolRow(tool: .write, forwards: false, required: [Argument("file_path", .path), Argument("content", .text)], optional: []),
+        ToolRow(tool: .edit, forwards: false,
+                required: [Argument("file_path", .path), Argument("old_string", .text), Argument("new_string", .text)],
                 optional: [Argument("replace_all", .bool)]),
-        ToolRow(tool: .notebookEdit, required: [Argument("notebook_path", .path), Argument("new_source", .text)],
+        ToolRow(tool: .notebookEdit, forwards: false, required: [Argument("notebook_path", .path), Argument("new_source", .text)],
                 optional: [Argument("cell_id", .text), Argument("cell_type", .text), Argument("edit_mode", .text)]),
-        ToolRow(tool: .read, required: [Argument("file_path", .path)],
+        ToolRow(tool: .read, forwards: true, required: [Argument("file_path", .path)],
                 optional: [Argument("offset", .number), Argument("limit", .number), Argument("pages", .text)]),
     ]
 

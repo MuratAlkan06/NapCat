@@ -204,12 +204,13 @@ struct WaitingPromptContextTests {
         harness.armed = false   // the S2 posture: classified, never forwarded
         harness.receive("abcde", preview: #"{"command":"git status"}"#, from: 1)
         harness.receive("bcdef", preview: #"{"command":"sudo ls"}"#, from: 1)
-        harness.receive("cdefg", tool: "Write", preview: #"{"file_path":"/Users/someone/project/notes.md","content":"x"}"#,
-                        from: 2)
+        harness.receive("cdefg", tool: "Read", preview: #"{"file_path":"/Users/someone/project/notes.md"}"#, from: 2)
         harness.receive("defgh", tool: "mcp__webhook__reply", preview: #"{"text":"hi"}"#, from: 2)
+        harness.receive("efghi", tool: "Write", preview: #"{"file_path":"/Users/someone/project/notes.md","content":"x"}"#,
+                        from: 2)
         let within = ApprovalIntake.waitingContextSeconds
-        #expect(harness.intake.recentForwardableTools(within: within).sorted { $0.rawValue < $1.rawValue } == [.bash, .write],
-                "the forbidden and the MCP prompts are never counted")
+        #expect(harness.intake.recentForwardableTools(within: within).sorted { $0.rawValue < $1.rawValue } == [.bash, .read],
+                "the forbidden, the MCP and the file-edit prompts are never counted")
         #expect(harness.sink.saved.isEmpty, "counting is not forwarding")
 
         harness.intake.connectionClosed(2)

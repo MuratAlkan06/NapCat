@@ -138,6 +138,8 @@ struct ApprovalIntakeTests {
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/.ssh/id_ed25519"}"#, code: "forbidden.secretAccess"),
         GateRow(tool: "Bash", preview: #"{"command":"security find-generic-password"}"#, code: "forbidden.secretAccess"),
         GateRow(tool: "mcp__webhook__reply", preview: #"{"text":"hi"}"#, code: "localOnly.mcp"),
+        GateRow(tool: "Write", preview: #"{"file_path":"/Users/someone/project/notes.md","content":"hello"}"#,
+                code: "localOnly.fileEdit"),
         GateRow(tool: "WebFetch", preview: #"{"url":"https://example.com"}"#, code: "unclassifiable.unknownTool"),
         GateRow(tool: "Bash", preview: #"{"command":"ls; rm -rf /tmp/x"}"#, code: "unclassifiable.commandOutsideGrammar"),
         GateRow(tool: "Bash", preview: #"{"command":"curl example.com"}"#, code: "unclassifiable.commandNotInTable"),
@@ -327,7 +329,7 @@ struct ApprovalIntakeTests {
     /// Every code the intake can log, built from the S0 enums: the whole
     /// vocabulary, nothing else.
     static var vocabulary: Set<String> {
-        let suppressions = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP]
+        let suppressions = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP, .localOnlyFileEdit]
             + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
         let audits: [ApprovalAudit] = suppressions.map { .suppressed(.gate($0)) } + [.suppressed(.notArmed), .forwarded, .forwardFailed]
             + ApprovalWire.Verdict.allCases.map { .decided(.remote($0)) } + [.decided(.local), .expired]
@@ -359,6 +361,6 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 15 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 16 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
     }
 }

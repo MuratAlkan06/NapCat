@@ -85,10 +85,10 @@ struct ApprovalSeamEndToEndTests {
         #expect(world.host.start())
         defer { world.host.stop() }
         world.handshake()
-        let preview = #"{"file_path":"/Users/someone/project/notes.md","content":"hello"}"#
-        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Write", preview: preview, description: "Write a file"))
+        let preview = #"{"file_path":"/Users/someone/project/notes.md"}"#
+        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Read", preview: preview, description: "Read a file"))
         let saved = try #require(world.sink.saved.next(), "the forwardable prompt must reach the record store")
-        #expect(saved.tool == .write)
+        #expect(saved.tool == .read)
         #expect(saved.inputPreview == preview, "exactly what the gate classified")
         #expect(world.emitted.next(within: 0.2) == nil, "nothing is answered while the prompt waits")
         world.host.withIntake { intake in
