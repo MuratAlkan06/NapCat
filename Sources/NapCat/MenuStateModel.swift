@@ -1459,19 +1459,23 @@ final class MenuStateModel: ObservableObject {
     nonisolated static let remoteApprovalsToggleTitle = "Remote approvals"
 
     /// The Settings switch's label: under the group title it says what the
-    /// switch does instead of repeating the title.
-    nonisolated static let remoteApprovalsSettingsToggleTitle = "Answer permission prompts from iPhone"
+    /// switch turns on TODAY — a preview that stays on this Mac — so the off
+    /// state promises nothing this build cannot do.
+    nonisolated static let remoteApprovalsSettingsToggleTitle = "Mac-only preview"
 
-    /// The panel switch's VoiceOver name.
-    nonisolated static let remoteApprovalsAccessibilityLabel =
-        "Remote approvals — answer Claude permission prompts from your iPhone"
+    /// The panel switch's VoiceOver name: the row title and the same honest
+    /// qualifier (the panel shows no caption while off).
+    nonisolated static let remoteApprovalsAccessibilityLabel = "Remote approvals, Mac-only preview"
 
-    /// Under the Settings switch: what it does, what never leaves the Mac,
-    /// and that off is the kill switch.
+    /// Under the Settings switch: what it does today, the one change it
+    /// makes you can see, what never leaves the Mac (with the iPhone half
+    /// stated as a condition, not a promise), and that off is the kill
+    /// switch.
     nonisolated static let remoteApprovalsHint =
-        "Lets the NapCat iPhone app answer Claude Code permission prompts. The terminal dialog always stays "
-        + "answerable, and privileged, settings and secret prompts never leave this Mac. Off withdraws every "
-        + "prompt at once."
+        "NapCat listens for permission prompts from Claude Code sessions set up for it, and keeps every one on "
+        + "this Mac. A waiting push can count them (“— 1 Bash permission prompt”), except privileged, settings, "
+        + "and secret prompts, which would never leave this Mac even if a later version let the iPhone app "
+        + "answer. The terminal dialog always stays answerable. Off withdraws every prompt at once."
 
     /// The Remote approvals row's caption (canon C2: a fragment, state word
     /// first, no row-title prefix). Off is a choice (nominal). On, it is
