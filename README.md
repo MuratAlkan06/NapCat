@@ -738,8 +738,9 @@ silences both pushes, and the row says so.
   While the Remote approvals preview is switched on, a waiting push may add how
   many permission prompts wired sessions just opened, and their tool kind from
   a fixed list ("— 1 Bash permission prompt") — never a command, a path or any
-  other text from the session. Prompts NapCat keeps on the Mac are never
-  counted.
+  other text from the session. Only prompts the safety gate could ever let
+  leave the Mac are counted: privileged, settings, and secret prompts never
+  are.
   Both publish at ntfy priority `high`, tagged `white_check_mark`
   (finished) or `raised_hand` (waiting).
 - **Settings › Alerts shows the outcome of the last session alert** under

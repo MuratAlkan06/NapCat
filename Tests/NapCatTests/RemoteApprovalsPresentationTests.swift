@@ -134,13 +134,13 @@ struct RemoteApprovalsPresentationTests {
         #expect(MenuStateModel.remoteApprovalsAccessibilityLabel == "Remote approvals, Mac-only preview")
         let hint = MenuStateModel.remoteApprovalsHint
         #expect(hint == "NapCat listens for permission prompts from Claude Code sessions set up for it, and keeps "
-                + "every one on this Mac. A waiting push can count them (“— 1 Bash permission prompt”), except "
-                + "privileged, settings, and secret prompts, which would never leave this Mac even if a later "
-                + "version let the iPhone app answer. The terminal dialog always stays answerable. Off withdraws "
-                + "every prompt at once.")
-        for phrase in ["keeps every one on this Mac", "A waiting push can count them", "1 Bash permission prompt",
-                       "privileged, settings, and secret", "never leave this Mac", "even if a later version",
-                       "terminal dialog always stays answerable", "Off withdraws every prompt"] {
+                + "every one on this Mac. A waiting push can count some of them by kind (“— 1 Bash permission "
+                + "prompt”); privileged, settings, and secret prompts are never counted, and would never leave this "
+                + "Mac even if a later version let the iPhone app answer. The terminal dialog always stays "
+                + "answerable. Off withdraws every prompt at once.")
+        for phrase in ["keeps every one on this Mac", "A waiting push can count some of them", "1 Bash permission prompt",
+                       "privileged, settings, and secret prompts are never counted", "never leave this Mac",
+                       "even if a later version", "terminal dialog always stays answerable", "Off withdraws every prompt"] {
             #expect(hint.contains(phrase), "the hint must say '\(phrase)'")
         }
         // The promise must not come back: no present-tense iPhone answering

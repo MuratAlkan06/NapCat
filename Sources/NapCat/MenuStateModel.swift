@@ -1474,9 +1474,10 @@ final class MenuStateModel: ObservableObject {
     /// switch.
     nonisolated static let remoteApprovalsHint =
         "NapCat listens for permission prompts from Claude Code sessions set up for it, and keeps every one on "
-        + "this Mac. A waiting push can count them (“— 1 Bash permission prompt”), except privileged, settings, "
-        + "and secret prompts, which would never leave this Mac even if a later version let the iPhone app "
-        + "answer. The terminal dialog always stays answerable. Off withdraws every prompt at once."
+        + "this Mac. A waiting push can count some of them by kind (“— 1 Bash permission prompt”); privileged, "
+        + "settings, and secret prompts are never counted, and would never leave this Mac even if a later version "
+        + "let the iPhone app answer. The terminal dialog always stays answerable. Off withdraws every prompt at "
+        + "once."
 
     /// The Remote approvals row's caption (canon C2: a fragment, state word
     /// first, no row-title prefix). Off is a choice (nominal). On, it is
