@@ -366,7 +366,7 @@ It builds controls only: nothing can be forwarded yet.
   audits them, and keeps every one on the Mac; the row says so ("Local only —
   the iPhone app cannot answer prompts yet"). No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
-  apply: a pre-arming revision of the category gate (tracked privately) and
+  apply: a pre-arming revision of the category gate (done: S-GATE, #145) and
   an owner-run live test.
 - **The waiting buzz.** While the toggle is on and listening, the plain
   waiting push says how many permission prompts wired sessions just relayed,
@@ -449,10 +449,12 @@ this section points at them.
   in any form (scoped imports included). The S0 type's constructor is not
   reachable unnamed (an unapplied `init`, the metatype or an alias).
 - **Owner-owed.** The Production schema deploy for PromptRequest and
-  PromptDecision, in the CloudKit Console, before any forwarding slice. No
-  operation of this slice ran against either CloudKit environment.
-- **Next.** Before any forward is real: a database for the store (after the
-  schema deploy), the writer's outcome reaching the prompt's lifecycle (the
+  PromptDecision is DONE (2026-11-23, CloudKit Console, Production: both
+  record types, encrypted fields exactly as `ApprovalWire` lists them, no
+  indexes, no other schema object changed). No operation of this slice ran
+  against either CloudKit environment.
+- **Next.** Before any forward is real: a database for the store (the
+  schema is deployed), the writer's outcome reaching the prompt's lifecycle (the
   prompt stays `saving` until then, so no decision can count), the waiting
   buzz superseded by the alert lane, the project label, and signed
   decisions (CL-1) before any decision counts. Also owed before arming:
@@ -462,3 +464,10 @@ this section points at them.
     name, which also caps a retraction at two records.
   - A decision record the Mac never read is never deleted.
   - The project label passes the gate's filters before it is ever written.
+  - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
+    validated), #150 (serverVersion bump and an intake-side client
+    re-check), #153 (the alert lane's CloudKit structure locks and the
+    construction-count pins), #154 (the unconfirmed-Allow re-offer). For
+    completeness, the test-hardening items #151 (widen the saved-copy lock)
+    and #155 (comment stripping inside string literals) ride the same
+    window.
