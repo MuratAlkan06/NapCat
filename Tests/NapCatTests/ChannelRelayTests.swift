@@ -67,7 +67,7 @@ final class RelayHarness {
 
     static func quote(_ text: String) -> String { ApprovalChannel.quoted(text) }
 
-    static func permissionRequest(_ id: String, tool: String = "Bash", preview: String = #"{"command":"ls -la"}"#,
+    static func permissionRequest(_ id: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#,
                                   description: String = "List files") -> String {
         #"{"jsonrpc":"2.0","method":"notifications/claude/channel/permission_request","params":{"request_id":"#
             + quote(id) + #","tool_name":"# + quote(tool) + #","description":"# + quote(description)

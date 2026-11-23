@@ -10,7 +10,8 @@ import Testing
 /// from both sides: every forbidden family and every row of every table is
 /// exercised, the Bash grammar is run against a catalogue of shell bypass
 /// classes (chaining, substitution, redirection, quoting, globbing, wrappers,
-/// exec-capable options, encoding tricks), and every unknown or malformed
+/// exec-capable options, encoding tricks), Bash forwards only an exact listed
+/// command (slice S-GATE: each split-audited), and every unknown or malformed
 /// input must fail closed. Fixtures are synthetic — no real topic, no real
 /// home directory.
 struct ApprovalClassificationTests {
@@ -235,12 +236,11 @@ struct ApprovalClassificationTests {
         }
     }
 
-    /// The minimal command of every row is forwarded — the table is the
-    /// whole positive grammar, and each row is reachable.
-    @Test func everyCommandRowForwardsItsMinimalForm() {
-        for row in ApprovalGate.commandRows {
-            let operands = Array(repeating: "a", count: row.minOperands)
-            let command = (row.words + operands).joined(separator: " ")
+    /// Every listed command is forwarded, exactly as listed — the list is the
+    /// whole forward basis, and each entry is reachable past every filter.
+    @Test func everyListedCommandForwards() {
+        #expect(ApprovalGate.bashCommands.count >= 1, "vacuity: the list is loaded")
+        for command in ApprovalGate.bashCommands {
             #expect(Self.classify(Self.bash(command, Self.forwardBash)) == Self.forwardBash, "\(command)")
         }
     }
@@ -254,7 +254,7 @@ struct ApprovalClassificationTests {
         }
     }
 
-    // MARK: - Bash positive grammar: the bypass catalogue
+    // MARK: - Bash: the grammar as a refusal filter, against the bypass catalogue
 
     static let chaining: [Row] = [
         bash("ls;pwd", outside),
@@ -433,9 +433,11 @@ struct ApprovalClassificationTests {
         #expect(Self.classify(row) != Self.forwardBash)
     }
 
-    // MARK: - What the grammar forwards
+    // MARK: - The Bash list: exact commands only
 
-    static let forwardable: [String] = [
+    /// What the positive grammar used to forward: every one still passes the
+    /// refusal filters, but none is a listed command, so none is forwarded.
+    static let noLongerForwarded: [String] = [
         "ls",
         "ls -la",
         "ls -la Sources",
@@ -454,12 +456,9 @@ struct ApprovalClassificationTests {
         "diff a.txt b.txt",
         "mkdir -p build/out",
         "make",
-        "make test",
         "swift build -c release",
         "swift test --filter ApprovalTests",
-        "npm test",
         "npm run test:unit",
-        "git status",
         "git status -sb",
         "git status --short",
         "git add .",
@@ -477,9 +476,227 @@ struct ApprovalClassificationTests {
             .joined(separator: " && "),
     ]
 
-    @Test(arguments: forwardable)
-    func thePositiveGrammarForwardsPlainCommands(_ command: String) {
-        #expect(Self.classify(Self.bash(command, Self.forwardBash)) == Self.forwardBash)
+    @Test(arguments: noLongerForwarded)
+    func aCommandOffTheListIsNotForwarded(_ command: String) {
+        #expect(Self.classify(Self.bash(command, Self.notInTable)) == Self.notInTable)
+    }
+
+    /// Near misses of listed commands — spacing, case, quoting, an option or
+    /// operand, a joiner, a look-alike — are never forwarded.
+    static let nearMisses: [Row] = [
+        bash("git status ", notInTable),
+        bash(" git status", notInTable),
+        bash("git  status", notInTable),
+        bash("git status -s", notInTable),
+        bash("git status --short", notInTable),
+        bash("git status .", notInTable),
+        bash("git diff HEAD", notInTable),
+        bash("git diff --stat", notInTable),
+        bash("Git status", notInTable),
+        bash("git Status", notInTable),
+        bash("GIT STATUS", notInTable),
+        bash("git 'status'", notInTable),
+        bash("'git status'", notInTable),
+        bash("\"git\" status", notInTable),
+        bash("git status && git status", notInTable),
+        bash("git status; git diff", outside),
+        bash("git status | cat", notInTable),
+        bash("make test2", notInTable),
+        bash("make tests", notInTable),
+        bash("make  test", notInTable),
+        bash("make test -j8", notInTable),
+        bash("make -C sub test", notInTable),
+        bash("make test SHELL=/bin/sh", notInTable),
+        bash("swift build -c release", notInTable),
+        bash("swift test --filter X", notInTable),
+        bash("npm test -- --watch", notInTable),
+        bash("npm run test", notInTable),
+        bash("git\tstatus", outside),
+        bash("git\nstatus", outside),
+        bash("git status\n", outside),
+        bash("git status;", outside),
+        bash("git status &", outside),
+        bash("git status #", outside),
+        bash("git\u{00A0}status", outside),
+        bash("git\u{00B7}status", outside),
+        bash("\u{FF47}it status", outside),
+        bash("git\u{200B}status", unclassifiable(.hiddenText)),
+        bash("git status\u{200B}", unclassifiable(.hiddenText)),
+        bash("sudo git status", forbidden(.privilegeEscalation)),
+    ]
+
+    @Test(arguments: nearMisses)
+    func aNearMissOfAListedCommandIsNotForwarded(_ row: Row) {
+        #expect(Self.classify(row) == row.expected)
+        #expect(Self.classify(row) != Self.forwardBash)
+    }
+
+    // MARK: - The split audit: every reading of every listed command
+
+    /// A character the shell does not split words on, standing for every
+    /// such character (a zero-width or other invisible one, a no-break
+    /// space, a carriage return).
+    static let glue = "\u{200B}"
+
+    /// What one space shown in a command may have been in the text the
+    /// display was made from: a blank, a run of blanks, a line break, or a
+    /// non-splitting character instead of or next to either.
+    static let spaceReadings = [" ", "  ", "\t", " \t ", "\n", " \n ", glue, glue + " ", " " + glue, glue + " " + glue,
+                                glue + "\n", "\n" + glue, glue + "\n" + glue]
+
+    /// Every reading of `command`: each of its spaces replaced by each of
+    /// `spaceReadings`, independently.
+    static func readings(_ command: String) -> [String] {
+        let words = command.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        var results = [words[0]]
+        for word in words.dropFirst() {
+            results = results.flatMap { prefix in spaceReadings.map { prefix + $0 + word } }
+        }
+        return results
+    }
+
+    /// The commands a shell runs for `text`: one per line, each split into
+    /// words on blanks (space and tab) only.
+    static func shellCommands(_ text: String) -> [[String]] {
+        var commands: [[String]] = []
+        var words: [String] = []
+        var word = ""
+        func endWord() {
+            if !word.isEmpty { words.append(word) }
+            word = ""
+        }
+        for scalar in text.unicodeScalars {
+            if scalar == " " || scalar == "\t" {
+                endWord()
+            } else if scalar == "\n" {
+                endWord()
+                if !words.isEmpty { commands.append(words) }
+                words = []
+            } else {
+                word.unicodeScalars.append(scalar)
+            }
+        }
+        endWord()
+        if !words.isEmpty { commands.append(words) }
+        return commands
+    }
+
+    /// THE CURATED LIST (macOS): what each piece a reading can produce does
+    /// when it runs on its own. A piece that is not here fails the audit, so
+    /// a new list entry must have its pieces vetted first.
+    static let harmlessAlone: [[String]: String] = [
+        ["git"]: "prints its usage",
+        ["make"]: "builds the default target of the same build files the listed make command runs",
+        ["swift"]: "prints its usage, or starts its REPL, which ends at the end of its input",
+        ["npm"]: "prints its usage",
+        ["status"]: "no such command",
+        ["build"]: "no such command",
+        ["diff"]: "diff without operands: a usage error",
+        ["test"]: "the shell builtin without operands: exits 1",
+    ]
+
+    /// The curated heads, and what each does with one word it does not know
+    /// (a subcommand, script or target holding a non-splitting character):
+    /// it stops with an error.
+    static let unknownWordStops: [String: String] = [
+        "git": "not a git command: no alias or git- program has that name",
+        "swift": "no swift- subcommand has that name",
+        "npm": "unknown command",
+        "make": "no rule to make that target (a pattern rule is the same build files)",
+    ]
+
+    /// Why `argv`, run on its own, is harmless — or nil when nobody vetted it.
+    static func harmless(_ argv: [String]) -> String? {
+        if !argv.joined().contains(glue), ApprovalGate.bashCommands.contains(argv.joined(separator: " ")) {
+            return "the listed command itself"
+        }
+        if argv[0].contains(glue) { return "no such command: a name holding a non-splitting character is another name" }
+        if let reason = harmlessAlone[argv] { return reason }
+        if argv.count == 2, argv[1].contains(glue), let reason = unknownWordStops[argv[0]] { return reason }
+        return nil
+    }
+
+    /// THE SPLIT AUDIT, one test case per listed command: every way each
+    /// space it shows could have been written is enumerated (13 readings per
+    /// space, independently), and every command each reading would run is
+    /// harmless on its own.
+    @Test(arguments: ApprovalGate.bashCommands)
+    func everyReadingOfAListedCommandIsHarmless(_ command: String) {
+        let spaces = command.unicodeScalars.filter { $0 == " " }.count
+        let readings = Self.readings(command)
+        #expect(readings.count == (0..<spaces).reduce(1) { total, _ in total * Self.spaceReadings.count }, "every combination")
+        #expect(Set(readings).count == readings.count)
+        for reading in readings {
+            let commands = Self.shellCommands(reading)
+            #expect(!commands.isEmpty)
+            for argv in commands {
+                #expect(Self.harmless(argv) != nil, "\(command): the reading \(reading.debugDescription) runs \(argv), which nobody vetted")
+            }
+        }
+    }
+
+    /// The audit can fail: a command with an operand of its own has a
+    /// reading that runs that operand as a command, and a reading of a
+    /// two-word command can run each word alone.
+    @Test func theSplitAuditCatchesAnUnsafeEntry() {
+        func failing(_ command: String) -> [[String]] {
+            Self.readings(command).flatMap(Self.shellCommands).filter { Self.harmless($0) == nil }
+        }
+        #expect(failing("make test rm").contains(["rm"]))
+        #expect(failing("git status x").contains(["x"]))
+        #expect(failing("echo ok").contains(["ok"]))
+        #expect(Self.shellCommands("git\n" + Self.glue + "status") == [["git"], [Self.glue + "status"]])
+        #expect(Self.shellCommands("git" + Self.glue + " \t status") == [["git" + Self.glue, "status"]])
+        for command in ApprovalGate.bashCommands {
+            #expect(failing(command).isEmpty, "\(command)")
+        }
+    }
+
+    /// The list is small, plain and pinned: each entry is 2 to 4 lowercase
+    /// words with single spaces (no option or operand of its own), headed by
+    /// a curated tool, never an executor or a forbidden command.
+    @Test func theBashListIsSmallAndPlain() {
+        #expect(ApprovalGate.bashCommands == ["git status", "git diff", "make test", "swift build", "swift test", "npm test"])
+        #expect(Set(ApprovalGate.bashCommands).count == ApprovalGate.bashCommands.count)
+        for command in ApprovalGate.bashCommands {
+            let words = command.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+            #expect((2...4).contains(words.count), "\(command)")
+            #expect(words.allSatisfy { !$0.isEmpty && $0.unicodeScalars.allSatisfy { $0 >= "a" && $0 <= "z" } },
+                    "\(command): plain lowercase words and single spaces")
+            #expect(Self.unknownWordStops[words[0]] != nil, "\(command): a curated head")
+            #expect(Set(words).isDisjoint(with: Self.executors), "\(command)")
+            for rule in ApprovalGate.commandFamilies {
+                #expect(!words.starts(with: rule.words), "\(command) is the forbidden command \(rule.words)")
+            }
+        }
+    }
+
+    // MARK: - Bash's other arguments
+
+    static let auxiliary: [Row] = [
+        raw("Bash", object([("command", quote("make test")), ("timeout", "1")]), forwardBash, "the shortest timeout"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "600000")]), forwardBash, "the longest timeout"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "600001")]), unclassifiable(.argumentValue),
+            "a timeout past its bound"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "1000000")]), unclassifiable(.argumentValue),
+            "a seven-digit timeout"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "0")]), unclassifiable(.argumentValue), "a zero timeout"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "-1")]), unclassifiable(.argumentValue), "a negative timeout"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "1.5")]), unclassifiable(.argumentValue), "a fraction"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "1e3")]), unclassifiable(.argumentValue), "an exponent"),
+        raw("Bash", object([("command", quote("make test")), ("timeout", "120000.0")]), unclassifiable(.argumentValue),
+            "a whole number written with a fraction"),
+        raw("Bash", object([("command", quote("make test")), ("run_in_background", "false")]), forwardBash, "in the foreground"),
+        raw("Bash", object([("command", quote("make test")), ("run_in_background", "true")]), unclassifiable(.argumentValue),
+            "in the background"),
+        raw("Bash", object([("command", quote("make test")), ("dangerouslyDisableSandbox", "false")]), forwardBash, "in the sandbox"),
+        raw("Bash", object([("command", quote("make test")), ("dangerouslyDisableSandbox", "true")]), forbidden(.privilegeEscalation),
+            "outside the sandbox"),
+    ]
+
+    @Test(arguments: auxiliary)
+    func bashsOtherArgumentsAreBounded(_ row: Row) {
+        #expect(Self.classify(row) == row.expected)
     }
 
     @Test func bashForwardsWithEveryOptionalArgument() {
@@ -588,10 +805,11 @@ struct ApprovalClassificationTests {
         raw("Write", object([("file_path", quote("\(base)/a"))]), unclassifiable(.missingArgument), "Write without content"),
         raw("Bash", object([("command", "[\"ls\"]")]), unclassifiable(.argumentKind), "command as an array"),
         raw("Bash", object([("command", "null")]), unclassifiable(.argumentKind), "command null"),
-        raw("Bash", object([("command", quote("ls")), ("timeout", quote("5"))]), unclassifiable(.argumentKind), "timeout as a string"),
-        raw("Bash", object([("command", quote("ls")), ("run_in_background", quote("true"))]),
+        raw("Bash", object([("command", quote("git status")), ("timeout", quote("5"))]), unclassifiable(.argumentKind),
+            "timeout as a string"),
+        raw("Bash", object([("command", quote("git status")), ("run_in_background", quote("true"))]),
             unclassifiable(.argumentKind), "boolean as a string"),
-        raw("Bash", object([("command", quote("ls")), ("dangerouslyDisableSandbox", quote("false"))]),
+        raw("Bash", object([("command", quote("git status")), ("dangerouslyDisableSandbox", quote("false"))]),
             unclassifiable(.argumentKind), "sandbox flag as a string"),
         raw("Write", object([("file_path", "{\"p\":\"x\"}"), ("content", quote("x"))]), unclassifiable(.argumentKind), "path as an object"),
         // Paths: absolute and canonical.
@@ -833,9 +1051,11 @@ struct ApprovalClassificationTests {
         let toolNameSecret = "SECRETNAME"
         #expect(ApprovalGate.classify(toolName: "mcp__\(toolNameSecret)", inputPreview: "{}", secrets: [toolNameSecret])
             == Self.forbidden(.secretAccess), "in the tool name")
-        #expect(Self.classify(Self.bash("echo \(Self.topic)", Self.forwardBash), secrets: []) == Self.forwardBash,
-                "control: without the secret the same command forwards")
-        #expect(Self.classify(Self.bash("echo hello", Self.forwardBash), secrets: [""]) == Self.forwardBash,
+        let described = Self.raw("Bash", Self.object([("command", Self.quote("git status")), ("description", Self.quote(Self.topic))]),
+                                 Self.forbidden(.secretAccess), "a listed command, the topic in its description")
+        #expect(Self.classify(described, secrets: [Self.topic]) == described.expected)
+        #expect(Self.classify(described, secrets: []) == Self.forwardBash, "control: without the secret the same prompt forwards")
+        #expect(Self.classify(Self.bash("git status", Self.forwardBash), secrets: [""]) == Self.forwardBash,
                 "an empty secret matches nothing")
     }
 
@@ -942,21 +1162,20 @@ struct ApprovalClassificationTests {
         }
     }
 
-    /// The command table never lists a shell, an interpreter, a wrapper that
-    /// runs its arguments, or a forbidden command.
-    @Test func theCommandTableHasNoExecutors() {
-        let heads = Set(ApprovalGate.commandRows.map { $0.words[0] })
-        let executors = ["sh", "bash", "zsh", "fish", "env", "xargs", "exec", "eval", "command", "builtin", "source", ".",
-                         "nohup", "nice", "time", "timeout", "watch", "python", "python3", "node", "perl", "ruby", "osascript",
-                         "awk", "sed", "find", "cd", "open", "curl", "wget", "ssh", "scp", "rm", "mv", "cp", "chmod", "tee", "dd"]
-        #expect(heads.isDisjoint(with: executors), "\(heads.intersection(executors))")
-        let forbiddenHeads = Set(ApprovalGate.commandFamilies.filter { $0.words.count == 1 }.map { $0.words[0] })
-        #expect(heads.isDisjoint(with: forbiddenHeads))
-        // No recursive walk (ls's lowercase -r only reverses the sort).
-        for row in ApprovalGate.commandRows {
-            #expect(!row.flags.contains("R"), "\(row.words): no recursive flag")
-            #expect(!row.flags.contains("r") || row.words == ["ls"], "\(row.words): no recursive flag")
-        }
+    /// A shell, an interpreter, a wrapper that runs its arguments, or a
+    /// command that deletes, moves or fetches.
+    static let executors: Set<String> = ["sh", "bash", "zsh", "fish", "env", "xargs", "exec", "eval", "command", "builtin", "source",
+                                         ".", "nohup", "nice", "time", "timeout", "watch", "python", "python3", "node", "perl",
+                                         "ruby", "osascript", "awk", "sed", "find", "cd", "open", "curl", "wget", "ssh", "scp", "rm",
+                                         "mv", "cp", "chmod", "tee", "dd", "run", "npx", "install", "add", "push", "-c"]
+
+    /// The list never names an executor, or a one-word forbidden command, as
+    /// any of its words.
+    @Test func theBashListHasNoExecutors() {
+        let words = Set(ApprovalGate.bashCommands.flatMap { $0.split(separator: " ").map(String.init) })
+        #expect(words.isDisjoint(with: Self.executors), "\(words.intersection(Self.executors))")
+        let forbidden = Set(ApprovalGate.commandFamilies.filter { $0.words.count == 1 }.map { $0.words[0] })
+        #expect(words.isDisjoint(with: forbidden), "\(words.intersection(forbidden))")
     }
 
     @Test func theToolTableIsExactlyTheForwardableTools() {

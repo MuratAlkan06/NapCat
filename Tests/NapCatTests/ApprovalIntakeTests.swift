@@ -48,12 +48,12 @@ final class IntakeHarness {
 
     static func id(_ n: UInt64) -> PromptID { PromptID(high: 0xA0, low: n)! }
 
-    static func prompt(_ request: String, tool: String = "Bash", preview: String = #"{"command":"ls -la"}"#) -> [UInt8] {
+    static func prompt(_ request: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#) -> [UInt8] {
         Array(ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: ChannelRequestID(request)!, toolName: tool,
                                                                    inputPreview: preview))!.utf8)
     }
 
-    func receive(_ request: String, tool: String = "Bash", preview: String = #"{"command":"ls -la"}"#, from connection: Int = 1) {
+    func receive(_ request: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#, from connection: Int = 1) {
         intake.receive(Self.prompt(request, tool: tool, preview: preview), from: connection)
     }
 
@@ -172,11 +172,12 @@ struct ApprovalIntakeTests {
         let harness = IntakeHarness()
         let topic = "napcat-TESTONLYz9y8x7w6v5"
         harness.secrets = [topic]
-        harness.receive("abcde", preview: #"{"command":"echo "# + topic + #""}"#)
+        let preview = #"{"command":"git status","description":"echo "# + topic + #""}"#
+        harness.receive("abcde", preview: preview)
         #expect(harness.sink.saved.isEmpty)
         #expect(harness.codes == ["prompt=\(IntakeHarness.id(1).hex) suppressed.gate.forbidden.secretAccess"])
         harness.secrets = []
-        harness.receive("bcdef", preview: #"{"command":"echo "# + topic + #""}"#)
+        harness.receive("bcdef", preview: preview)
         #expect(harness.sink.saved.count == 1, "baseline: without the secret the same prompt forwards")
     }
 
@@ -396,6 +397,6 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 17 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 18 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
     }
 }
