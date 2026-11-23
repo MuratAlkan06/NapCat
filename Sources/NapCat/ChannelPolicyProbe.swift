@@ -10,7 +10,7 @@ import NapCatWire
 /// (`managed-settings.json` and the `managed-settings.d` drop-ins) and
 /// nothing else: it never writes, never runs anything and never reads
 /// `~/.claude`. What it cannot see it does not claim: remote settings (from
-/// claude.ai or a Claude apps gateway) and an MDM profile rank above the file
+/// claude.ai or server-managed (remote) settings) and an MDM profile rank above the file
 /// tier, and on a Pro, Max or Ultra plan without an organization Claude Code
 /// skips these checks entirely, so there the development flag stays needed
 /// whatever the files say. Nothing calls it yet; surfacing it belongs to the

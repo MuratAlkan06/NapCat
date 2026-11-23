@@ -307,7 +307,7 @@ napcat-channel-version: 1
   drop-ins by name, in `/Library/Application Support/ClaudeCode`) and
   reports one finding. Only an organization allowlist naming NapCat's plugin,
   with channels enabled, removes the per-session development flag. It cannot
-  see remote settings (claude.ai or a Claude apps gateway) or an MDM profile,
+  see remote settings (claude.ai or server-managed (remote) settings) or an MDM profile,
   which rank above the file tier, and on a personal plan Claude Code skips
   these checks entirely, so the flag stays needed there. The plugin and
   marketplace names it looks for are provisional until the install slice
