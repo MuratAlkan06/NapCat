@@ -1482,7 +1482,8 @@ final class MenuStateModel: ObservableObject {
     /// honest about this build: NapCat listens and keeps every prompt on
     /// the Mac, because the iPhone half cannot answer yet — calm info, so it
     /// shows under the row while on. A socket that could not be opened is a
-    /// warning: switched on, but not even listening.
+    /// warning: switched on, but not even listening — said in user words,
+    /// with the next step (every menu or Settings open tries again).
     nonisolated static func remoteApprovalsStatus(phase: RemoteApprovalsPhase) -> PanelLine {
         switch phase {
         case .off:
@@ -1490,8 +1491,7 @@ final class MenuStateModel: ObservableObject {
         case .listening:
             return PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
         case .unavailable:
-            return PanelLine(text: "Not listening — the approvals socket could not be opened; prompts stay on this Mac",
-                             severity: .warning)
+            return PanelLine(text: "Not listening — could not start; reopen the menu to retry", severity: .warning)
         }
     }
 

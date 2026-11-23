@@ -12,8 +12,7 @@ import Testing
 /// MenuPanelPresentationTests and SettingsWindowTests include these lines.)
 struct RemoteApprovalsPresentationTests {
     static let localOnly = PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
-    static let notListening = PanelLine(
-        text: "Not listening — the approvals socket could not be opened; prompts stay on this Mac", severity: .warning)
+    static let notListening = PanelLine(text: "Not listening — could not start; reopen the menu to retry", severity: .warning)
 
     // MARK: - The row's caption
 
@@ -21,6 +20,12 @@ struct RemoteApprovalsPresentationTests {
         #expect(MenuStateModel.remoteApprovalsStatus(phase: .off) == PanelLine(text: "Off", severity: .nominal))
         #expect(MenuStateModel.remoteApprovalsStatus(phase: .listening) == Self.localOnly)
         #expect(MenuStateModel.remoteApprovalsStatus(phase: .unavailable) == Self.notListening)
+        // The warning in user words with its next step (a menu or Settings
+        // open retries: anUnusableSocketIsUnavailableAndRetriedOnRefresh), as
+        // short as the panel's other warnings.
+        let warning = Self.notListening.text
+        #expect(!warning.contains("socket") && warning.hasSuffix("reopen the menu to retry"))
+        #expect(warning.split(separator: " ").filter { $0 != "—" }.count <= 10, "'\(warning)' is longer than the others")
     }
 
     /// Off is a choice, so it stays out of the card; on — in this build
