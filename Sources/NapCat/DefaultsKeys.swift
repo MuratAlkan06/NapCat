@@ -89,6 +89,15 @@ enum DefaultsKey {
     /// running version at every read: once the app is upgraded to it (or
     /// past), it no longer counts as an update.
     static let updateCheckLatestTag = "updateCheckLatestTag"
+
+    // MARK: F4 slice S2 — remote approvals (the only key it adds)
+
+    /// The Mac's remote-approvals toggle (Bool, default false). Only a stored
+    /// `true` reads as on (`RemoteApprovalsPolicy.enabled(stored:)`); turning
+    /// it off is the kill switch. On, NapCat listens for wired sessions'
+    /// permission prompts; nothing is forwarded until the iPhone half of the
+    /// feature exists and is switched on too.
+    static let remoteApprovalsEnabled = "remoteApprovalsEnabled"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

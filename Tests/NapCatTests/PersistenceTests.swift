@@ -37,6 +37,9 @@ struct PersistenceTests {
         #expect(DefaultsKey.updateCheckAutoEnabled == "updateCheckAutoEnabled")
         #expect(DefaultsKey.updateCheckLastAttempt == "updateCheckLastAttempt")
         #expect(DefaultsKey.updateCheckLatestTag == "updateCheckLatestTag")
+        // F4 slice S2 — the remote-approvals toggle (default off; off is the
+        // kill switch).
+        #expect(DefaultsKey.remoteApprovalsEnabled == "remoteApprovalsEnabled")
         // The 2026-10-18 redesign's `menuPanelStyle` scaffold is no longer a
         // live key — retired at the design freeze (RetiredDefaultsKey).
     }
