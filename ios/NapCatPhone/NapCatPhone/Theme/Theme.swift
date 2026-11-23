@@ -92,6 +92,8 @@ struct Theme: Sendable {
     let borderWidth: CGFloat
     /// Offset of a blur-free shadow; 0 = no shadow.
     let hardShadow: CGFloat
+    /// The least height of a tappable control (the HIG's 44 pt).
+    let minTouchTarget: CGFloat
 
     // MARK: Icon family
 

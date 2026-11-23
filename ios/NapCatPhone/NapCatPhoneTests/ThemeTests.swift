@@ -52,4 +52,10 @@ import Testing
         }
         #expect(theme.cornerRadius == 0 && theme.pillCornerRadius == 0)
     }
+
+    /// A tappable control is at least the HIG's 44 pt tall.
+    @Test(arguments: ThemeID.allCases)
+    func theTouchTargetMeetsTheHIG(_ id: ThemeID) {
+        #expect(id.theme.minTouchTarget >= 44)
+    }
 }

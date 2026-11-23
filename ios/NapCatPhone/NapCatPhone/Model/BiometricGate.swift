@@ -26,8 +26,17 @@ enum BiometryKind: String, CaseIterable, Sendable {
 enum BiometricAvailability: Equatable, Sendable {
     case available(BiometryKind)
     /// No biometrics, none enrolled, or locked out: Allow cannot be
-    /// confirmed here (Deny still works).
-    case unavailable
+    /// confirmed here (Deny still works). Carries the biometric the phone
+    /// has, if it has one, so the screen can name it.
+    case unavailable(BiometryKind?)
+
+    /// The biometric this phone has, whether or not it can confirm now.
+    var kind: BiometryKind? {
+        switch self {
+        case .available(let kind): return kind
+        case .unavailable(let kind): return kind
+        }
+    }
 }
 
 /// What one confirmation came to. Anything short of a match (a failed

@@ -24,9 +24,14 @@ import UIKit
 
     /// Every line the screen can show is in the caption register: one state
     /// word, an em dash, the cause, no closing period.
+    static let everyUnavailableLine = (BiometryKind.allCases.map { Optional($0) } + [nil])
+        .map(PendingRequestScreen.allowUnavailable)
+
     @Test func everyLineIsInTheCaptionRegister() {
         var lines = Self.everyStatus.map { $0.line(at: Self.now) } + Self.everyStatus.compactMap(\.note)
-        lines.append(PendingRequestScreen.allowUnavailable)
+        lines += Self.everyUnavailableLine
+        lines.append(RequestStatus.pending(until: Self.now.addingTimeInterval(30), note: nil).line(at: Self.now))
+        lines.append(PendingRequestScreen.longInput)
         for line in lines {
             #expect(ListStateTests.captionRegisterFailures(line.text).isEmpty,
                     "\(ListStateTests.captionRegisterFailures(line.text))")
@@ -45,6 +50,24 @@ import UIKit
         #expect(text(.withdrawn) == "Withdrawn — your Mac took this prompt back")
         #expect(PendingRequestScreen.allowTitle(.faceID) == "Allow with Face ID")
         #expect(PendingRequestScreen.allowTitle(.touchID) == "Allow with Touch ID")
+        #expect(PendingRequestScreen.allowUnavailable(.faceID).text
+                == "Unavailable — Allow needs Face ID turned on; Deny still works")
+        #expect(PendingRequestScreen.allowUnavailable(nil).text
+                == "Unavailable — this phone can't confirm Allow with biometrics; Deny still works")
+        #expect(PendingRequestScreen.longInput.text == "Long — the input scrolls inside its box")
+    }
+
+    /// The unavailable line names the biometric this phone has, and no
+    /// other: never "Face ID or Touch ID".
+    @Test(arguments: BiometryKind.allCases)
+    func theUnavailableLineNamesThePhonesBiometric(_ kind: BiometryKind) {
+        let text = PendingRequestScreen.allowUnavailable(kind).text
+        #expect(text.contains(kind.name))
+        for other in BiometryKind.allCases where other != kind {
+            #expect(!text.contains(other.name), "'\(text)' names \(other.name)")
+        }
+        let unnamed = PendingRequestScreen.allowUnavailable(nil).text
+        #expect(!unnamed.contains(kind.name), "'\(unnamed)' names \(kind.name) on a phone without it")
     }
 
     /// Never "Allowed" or "Approved": a saved answer is sent, and only the
@@ -78,7 +101,25 @@ import UIKit
         #expect(RequestStatus.expired.line(at: Self.now).severity == .info)
         #expect(RequestStatus.withdrawn.line(at: Self.now).severity == .info)
         #expect(RequestStatus.sent(.allow).line(at: Self.now).severity == .nominal)
-        #expect(PendingRequestScreen.allowUnavailable.severity == .warning)
+        #expect(Self.everyUnavailableLine.allSatisfy { $0.severity == .warning })
+    }
+
+    /// The last minute reads as a warning (the theme's warning glyph and
+    /// tint, and "Warning:" for VoiceOver), so "under a minute" never looks
+    /// like "8 min". The line changes only at the minute marks the sheet
+    /// already redraws at: nothing counts down.
+    @Test(arguments: [(600.0, PhoneSeverity.nominal), (61, .nominal), (60, .nominal), (59, .warning), (1, .warning)])
+    func theLastMinuteIsAWarning(_ seconds: TimeInterval, _ severity: PhoneSeverity) {
+        let until = Self.now.addingTimeInterval(seconds)
+        let line = RequestStatus.pending(until: until, note: nil).line(at: Self.now)
+        #expect(line.severity == severity)
+        if severity == .warning {
+            #expect(line.spoken == "Warning: Pending — expires in under a minute")
+            #expect(PendingRequestSheet.schedule(now: until.addingTimeInterval(-90), until: until).contains(until.addingTimeInterval(-60)),
+                    "the sheet redraws when the last minute starts")
+        }
+        // The same reading with a note keeps its warning.
+        #expect(RequestStatus.pending(until: until, note: .unsent).line(at: Self.now).severity == severity)
     }
 
     // MARK: The offer
@@ -90,8 +131,10 @@ import UIKit
             let offer = PendingRequestScreen.offer(for: status, biometry: .available(.faceID))
             if status.isAnswerable {
                 #expect(offer == PendingRequestScreen.Offer(allow: .faceID, deny: true), "\(status)")
-                #expect(PendingRequestScreen.offer(for: status, biometry: .unavailable)
-                        == PendingRequestScreen.Offer(allow: nil, deny: true), "\(status)")
+                for unavailable in [BiometricAvailability.unavailable(.faceID), .unavailable(nil)] {
+                    #expect(PendingRequestScreen.offer(for: status, biometry: unavailable)
+                            == PendingRequestScreen.Offer(allow: nil, deny: true), "\(status)")
+                }
             } else {
                 #expect(offer == .none, "\(status)")
             }
@@ -114,10 +157,100 @@ import UIKit
 
     /// The glyphs exist in the system's set.
     @Test func theGlyphsAreSystemSymbols() {
-        for name in BiometryKind.allCases.map(\.symbol) + [PendingRequestScreen.denySymbol,
-                                                            PendingRequestScreen.toolSymbol("Bash"),
-                                                            PendingRequestScreen.toolSymbol("Other")] {
+        let tools = ApprovalTool.allCases.map { PendingRequestScreen.toolSymbol($0.rawValue) }
+        for name in BiometryKind.allCases.map(\.symbol) + tools + [PendingRequestScreen.denySymbol,
+                                                                    PendingRequestScreen.sentSymbol,
+                                                                    PendingRequestScreen.toolSymbol("Other")] {
             #expect(UIImage(systemName: name) != nil, "\(name)")
+        }
+    }
+
+    /// Every tool the Mac's gate can forward has a glyph of its own; a name
+    /// it does not know gets the neutral tool mark, never a question mark
+    /// (which reads as suspicion of an ordinary Edit or Write).
+    @Test func eachForwardableToolHasItsOwnGlyph() {
+        let symbols = ApprovalTool.allCases.map { PendingRequestScreen.toolSymbol($0.rawValue) }
+        #expect(PendingRequestScreen.toolSymbol("Bash") == "terminal")
+        #expect(!symbols.contains(PendingRequestScreen.otherToolSymbol))
+        #expect(Set(symbols).count == ApprovalTool.allCases.count, "\(symbols)")
+        for name in ["Other", "", "bash", "WebFetch"] {
+            #expect(PendingRequestScreen.toolSymbol(name) == PendingRequestScreen.otherToolSymbol, "\(name)")
+        }
+        for symbol in symbols + [PendingRequestScreen.otherToolSymbol] {
+            #expect(!symbol.contains("questionmark") && !symbol.contains("exclamationmark"), "\(symbol)")
+        }
+    }
+
+    // MARK: Sent, and the finished card
+
+    /// Sent is a confirmation: its own glyph (a paper plane: it went out,
+    /// nothing more) beside the words; no other state carries one.
+    @Test func onlySentIsAConfirmation() {
+        for status in Self.everyStatus {
+            let expected: String? = if case .sent = status { "paperplane" } else { nil }
+            #expect(PendingRequestScreen.confirmationSymbol(status) == expected, "\(status)")
+        }
+    }
+
+    /// VoiceOver hears "Sent" once, as an answer goes out, Allow or Deny,
+    /// in the Sent line's own words; no other change is announced, and no
+    /// announcement claims the Mac acted.
+    @Test func theSentStateIsAnnouncedOnce() {
+        #expect(PendingRequestScreen.announcement(from: .sending(.allow), to: .sent(.allow), at: Self.now)
+                == "Sent — Allow is saved; your Mac hasn't confirmed it")
+        #expect(PendingRequestScreen.announcement(from: .sending(.deny), to: .sent(.deny), at: Self.now)
+                == "Sent — Deny is saved; your Mac hasn't confirmed it")
+        for old in Self.everyStatus {
+            for new in Self.everyStatus {
+                let spoken = PendingRequestScreen.announcement(from: old, to: new, at: Self.now)
+                if case .sent = new, old != new {
+                    #expect(spoken?.hasPrefix("Sent — ") == true, "\(old) → \(new)")
+                    for claim in ["Allowed", "Approved", "Denied", "Done"] {
+                        #expect(spoken?.contains(claim) == false, "\(old) → \(new) claims the Mac acted")
+                    }
+                } else {
+                    #expect(spoken == nil, "\(old) → \(new) is announced")
+                }
+            }
+        }
+    }
+
+    /// Once no answer can go out, the card lies flat in the secondary ink;
+    /// while one can, it is live. The same states drop the footnote.
+    @Test func aFinishedCardLiesFlat() {
+        for status in Self.everyStatus {
+            let expected: Bool = switch status {
+            case .pending, .confirming, .sending: false
+            case .sent, .answered, .expired, .withdrawn: true
+            }
+            #expect(PendingRequestScreen.mutesCard(status) == expected, "\(status)")
+            #expect(PendingRequestScreen.mutesCard(status) == !PendingRequestScreen.showsFootnote(status), "\(status)")
+        }
+    }
+
+    // MARK: The input's box
+
+    /// The box is as tall as the input up to a third of the screen; a
+    /// taller input scrolls inside it (and says so), so the state line and
+    /// the answers below it are never pushed past two thirds of the screen
+    /// by the input.
+    @Test func theInputBoxStopsAtItsShareOfTheScreen() {
+        let screen: CGFloat = 690
+        let cap = screen * PendingRequestScreen.inputShare
+        #expect(PendingRequestScreen.inputShare > 0 && PendingRequestScreen.inputShare <= 0.4)
+        #expect(PendingRequestScreen.inputBoxHeight(input: 66, screen: screen) == 66)
+        #expect(PendingRequestScreen.inputBoxHeight(input: cap, screen: screen) == cap)
+        #expect(PendingRequestScreen.inputBoxHeight(input: 30_000, screen: screen) == cap)
+        #expect(!PendingRequestScreen.inputScrolls(input: 66, screen: screen))
+        #expect(!PendingRequestScreen.inputScrolls(input: cap, screen: screen))
+        #expect(PendingRequestScreen.inputScrolls(input: cap + 1, screen: screen))
+        // Before the first layout: no frame yet, and nothing said.
+        #expect(PendingRequestScreen.inputBoxHeight(input: nil, screen: screen) == nil)
+        #expect(!PendingRequestScreen.inputScrolls(input: nil, screen: screen))
+        #expect(PendingRequestScreen.inputBoxHeight(input: 500, screen: nil) == 500)
+        for height in stride(from: 0, through: 40_000, by: 250) {
+            let box = PendingRequestScreen.inputBoxHeight(input: CGFloat(height), screen: screen) ?? .infinity
+            #expect(box <= screen * PendingRequestScreen.inputShare, "\(height)")
         }
     }
 
@@ -225,6 +358,120 @@ import UIKit
         for (name, mutantScreen, mutantSheet) in mutants {
             #expect(mutantScreen != screen || mutantSheet != sheet, "canary '\(name)' did not apply")
             #expect(!Self.wiringFailures(screen: mutantScreen, sheet: mutantSheet).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    static let buttonStyleFile = "\(appDir)/Screen/RequestButtonStyle.swift"
+
+    /// What the review asked of the screen, as its source says it:
+    ///
+    /// - the input is drawn once, marked (`VisibleWhitespace`) and in
+    ///   chunks (one text holding all of a long input draws blank at large
+    ///   sizes), in a lazy stack that redraws only when the input or its
+    ///   tone changes, never as bare text; VoiceOver still reads it verbatim
+    ///   from the card's label;
+    /// - it sits in its own scroll box, framed to `inputBoxHeight`, with the
+    ///   long-input line under it, and nothing else in the box: the state
+    ///   line and the answers follow the card in the screen's stack, so a
+    ///   long input never pushes them out of reach;
+    /// - a finished card lies flat (no shadow) with its glyph in the
+    ///   secondary ink;
+    /// - Sent gets its confirmation glyph, and the change to Sent is
+    ///   announced to VoiceOver at high priority;
+    /// - the unavailable line names this phone's biometric;
+    /// - the answers' height comes from the theme's touch target.
+    static let compositionShapes = [
+        "VStack(alignment: .leading, spacing: theme.rowGap) { promptCard if let note = status.note { CaptionLine(line: note) } "
+            + "stateLine answers if Self.showsFootnote(status) {",
+        "ScrollView { InputDrawing(input: request.inputPreview, muted: muted) .equatable() "
+            + ".onGeometryChange(for: CGFloat.self) { $0.size.height } action: { inputHeight = $0 } } "
+            + ".frame(height: Self.inputBoxHeight(input: inputHeight, screen: screenHeight)) .scrollBounceBehavior(.basedOnSize) "
+            + "if Self.inputScrolls(input: inputHeight, screen: screenHeight) { CaptionLine(line: Self.longInput) }",
+        // The drawing: a lazy stack (a 32 KB input's marks are thousands of
+        // color runs; only the chunks in sight are built), redrawn only when
+        // the input or its tone changes.
+        "lhs.input == rhs.input && lhs.muted == rhs.muted",
+        "let chunks = VisibleWhitespace.chunks(input) LazyVStack(alignment: .leading, spacing: 0) { "
+            + "ForEach(chunks.indices, id: \\.self) { index in "
+            + "Text(VisibleWhitespace.attributed(chunks[index], mark: theme.inkSecondary)) "
+            + ".fixedSize(horizontal: false, vertical: true) .frame(maxWidth: .infinity, alignment: .leading) } } "
+            + ".font(theme.bodyFont.monospaced()) .foregroundStyle(muted ? theme.inkSecondary : theme.ink)",
+        ".onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }",
+        ".themedCard(castsShadow: !muted) .accessibilityElement(children: .ignore) .accessibilityLabel(Self.spoken(request))",
+        "let muted = Self.mutesCard(status)",
+        ".foregroundStyle(muted ? theme.inkSecondary : theme.accent)",
+        "if let symbol = Self.confirmationSymbol(status) {",
+        "} else { CaptionLine(line: line) }",
+        ".onChange(of: status) { old, new in guard let text = Self.announcement(from: old, to: new, at: now) else { return } "
+            + "var spoken = AttributedString(text) spoken.accessibilitySpeechAnnouncementPriority = .high "
+            + "AccessibilityNotification.Announcement(spoken).post() }",
+        "CaptionLine(line: Self.allowUnavailable(biometry.kind))",
+    ]
+
+    static func compositionFailures(screen: String, buttonStyle: String) -> [String] {
+        let code = SettingsReachabilityTests.flat(screen)
+        var failures = compositionShapes.filter { !code.contains($0) }.map { "the screen lost '\($0)'" }
+        if code.contains("Text(verbatim: request.inputPreview)")
+            || CloudKitStructureTests.occurrences(of: "VisibleWhitespace.attributed(", in: code) != 1 {
+            failures.append("the input must be drawn once, with its whitespace marked")
+        }
+        if let box = CloudKitStructureTests.body(after: "@ViewBuilder private func inputBox(muted: Bool) -> some View {",
+                                                 in: CloudKitStructureTests.codeOnly(screen)) {
+            for token in ["Button(", "answers", "stateLine", "status.line", "footnote"] where box.contains(token) {
+                failures.append("'\(token)' inside the input's box — it scrolls away with the input")
+            }
+        } else {
+            failures.append("the input's box moved (the lock would be vacuous)")
+        }
+        let style = SettingsReachabilityTests.flat(buttonStyle)
+        if !style.contains(".frame(maxWidth: .infinity, minHeight: theme.minTouchTarget)")
+            || style.range(of: #"minHeight:\s*[0-9]"#, options: .regularExpression) != nil {
+            failures.append("the answers' height must come from the theme's touch target")
+        }
+        return failures
+    }
+
+    @Test func theScreenKeepsTheReviewedComposition() throws {
+        let screen = try Self.code(Self.screenFile)
+        let style = try Self.code(Self.buttonStyleFile)
+        #expect(Self.compositionFailures(screen: screen, buttonStyle: style).isEmpty,
+                "\(Self.compositionFailures(screen: screen, buttonStyle: style))")
+        let mutants: [(String, String, String)] = [
+            ("the input drawn bare", screen.replacingOccurrences(
+                of: "Text(VisibleWhitespace.attributed(chunks[index], mark: theme.inkSecondary))",
+                with: "Text(verbatim: request.inputPreview)"), style),
+            ("the input as one text", screen.replacingOccurrences(
+                of: "let chunks = VisibleWhitespace.chunks(input)",
+                with: "let chunks = [VisibleWhitespace.segments(input)]"), style),
+            ("every chunk built at once", screen.replacingOccurrences(
+                of: "LazyVStack(alignment: .leading, spacing: 0)", with: "VStack(alignment: .leading, spacing: 0)"), style),
+            ("the tone not compared", screen.replacingOccurrences(
+                of: "lhs.input == rhs.input && lhs.muted == rhs.muted", with: "lhs.input == rhs.input"), style),
+            ("redrawn on every pass", screen.replacingOccurrences(
+                of: "InputDrawing(input: request.inputPreview, muted: muted)\n                .equatable()\n",
+                with: "InputDrawing(input: request.inputPreview, muted: muted)\n"), style),
+            ("the box uncapped", screen.replacingOccurrences(
+                of: ".frame(height: Self.inputBoxHeight(input: inputHeight, screen: screenHeight))", with: ""), style),
+            ("the answers in the box", screen.replacingOccurrences(
+                of: "        .scrollBounceBehavior(.basedOnSize)\n",
+                with: "        .scrollBounceBehavior(.basedOnSize)\n        answers\n"), style),
+            ("the answers before the state", screen.replacingOccurrences(
+                of: "                stateLine\n                answers\n", with: "                answers\n                stateLine\n"), style),
+            ("a finished card still raised", screen.replacingOccurrences(
+                of: ".themedCard(castsShadow: !muted)", with: ".themedCard()"), style),
+            ("Sent as a plain caption", screen.replacingOccurrences(
+                of: "if let symbol = Self.confirmationSymbol(status) {", with: "if let symbol = Optional<String>.none {"), style),
+            ("Sent not announced", screen.replacingOccurrences(
+                of: "AccessibilityNotification.Announcement(spoken).post()", with: ""), style),
+            ("the old unavailable line", screen.replacingOccurrences(
+                of: "Self.allowUnavailable(biometry.kind)", with: "Self.allowUnavailable(nil)"), style),
+            ("a hard-coded touch target", screen, style.replacingOccurrences(
+                of: "minHeight: theme.minTouchTarget", with: "minHeight: 44")),
+        ]
+        for (name, mutantScreen, mutantStyle) in mutants {
+            #expect(mutantScreen != screen || mutantStyle != style, "canary '\(name)' did not apply")
+            #expect(!Self.compositionFailures(screen: mutantScreen, buttonStyle: mutantStyle).isEmpty,
+                    "canary '\(name)' was NOT caught")
         }
     }
 

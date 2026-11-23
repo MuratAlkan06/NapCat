@@ -406,7 +406,10 @@ this section points at them.
 - **The phone** (`ios/NapCatPhone`). `RequestInbox` holds each request's
   window: until the Mac's expiry, and never longer than the TTL after the
   phone first saw it. Expired and withdrawn are terminal. The request screen
-  shows the tool, the project and the input verbatim. Allow asks for a
+  shows the tool, the project and the input verbatim, every whitespace
+  character drawn as a mark so a wrapped line never hides a space or passes
+  for a line break (`VisibleWhitespace`), in a box that scrolls past a third
+  of the screen so the answers stay in reach. Allow asks for a
   biometric match every time (CL-3: biometrics only, no passcode fallback);
   Deny never asks; both re-check the window right before the one write. A
   saved answer reads "Sent", never "Allowed". The decision record is named

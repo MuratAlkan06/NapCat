@@ -222,16 +222,30 @@ actor RecordingDecisionWriter: DecisionWriter {
     // MARK: The biometry the screen offers
 
     @Test func theInboxReadsTheGatesAvailability() {
-        let gate = ScriptedBiometricGate(available: .unavailable)
+        let gate = ScriptedBiometricGate(available: .unavailable(.touchID))
         let inbox = RequestInbox(writer: RecordingDecisionWriter(), biometrics: gate)
-        #expect(inbox.biometry == .unavailable)
+        #expect(inbox.biometry == .unavailable(.touchID))
         gate.available = .available(.touchID)
         inbox.refreshBiometry()
         #expect(inbox.biometry == .available(.touchID))
     }
 
+    /// An unavailable biometric still names itself, so the screen can say
+    /// which one Allow needs.
+    @Test func availabilityNamesThePhonesBiometric() {
+        #expect(BiometricAvailability.available(.faceID).kind == .faceID)
+        #expect(BiometricAvailability.unavailable(.opticID).kind == .opticID)
+        #expect(BiometricAvailability.unavailable(nil).kind == nil)
+    }
+
     /// The system prompt's reason is fixed words: nothing from a request.
+    /// It cannot be read as "confirm on your Mac": the match is asked for
+    /// here, and the prompt it answers is the Mac's.
     @Test func theMatchReasonCarriesNothingFromTheRequest() {
-        #expect(RequestInbox.allowReason == "Confirm Allow for this permission prompt on your Mac.")
+        #expect(RequestInbox.allowReason == "Confirm it's you to send Allow to your Mac's permission prompt.")
+        #expect(!RequestInbox.allowReason.contains("on your Mac"))
+        for claim in ["Allowed", "Approve", "approve"] {
+            #expect(!RequestInbox.allowReason.contains(claim), "\(claim)")
+        }
     }
 }

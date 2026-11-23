@@ -84,9 +84,9 @@ import Testing
             == [base.titleFont, base.sectionFont, base.bodyFont, base.metaFont, base.detailFont,
                 base.timestampFont, base.pillFont, base.emptyFont])
         #expect([theme.margin, theme.rowPadding, theme.rowGap, theme.innerGap, theme.cornerRadius,
-                 theme.pillCornerRadius, theme.borderWidth, theme.hardShadow, theme.entranceOffset]
+                 theme.pillCornerRadius, theme.borderWidth, theme.hardShadow, theme.minTouchTarget, theme.entranceOffset]
             == [base.margin, base.rowPadding, base.rowGap, base.innerGap, base.cornerRadius,
-                base.pillCornerRadius, base.borderWidth, base.hardShadow, base.entranceOffset])
+                base.pillCornerRadius, base.borderWidth, base.hardShadow, base.minTouchTarget, base.entranceOffset])
         #expect(theme.pillInsets == base.pillInsets)
         #expect(theme.symbolVariant == base.symbolVariant && theme.symbolWeight == base.symbolWeight)
         #expect(theme.emptyArt == base.emptyArt)

@@ -50,11 +50,14 @@ enum RequestStatus: Equatable, Sendable {
     }
 
     /// The state line, in the caption register: one state word, an em dash,
-    /// the cause, no closing period.
+    /// the cause, no closing period. The last minute of a pending request
+    /// is a warning (glyph, tint and "Warning:" for VoiceOver); nothing
+    /// counts down.
     func line(at now: Date) -> PhoneLine {
         switch self {
         case .pending(let until, _):
-            return PhoneLine(text: "Pending — " + Self.expiry(until: until, now: now), severity: .nominal)
+            let severity: PhoneSeverity = Self.minutesLeft(until: until, now: now) >= 1 ? .nominal : .warning
+            return PhoneLine(text: "Pending — " + Self.expiry(until: until, now: now), severity: severity)
         case .confirming:
             return PhoneLine(text: "Confirming — waiting for the biometric match", severity: .nominal)
         case .sending(let verdict):
@@ -87,8 +90,12 @@ enum RequestStatus: Equatable, Sendable {
     /// Whole minutes left, rounded down, so the line never promises time
     /// the request does not have.
     static func expiry(until: Date, now: Date) -> String {
-        let minutes = Int((until.timeIntervalSince(now) / 60).rounded(.down))
+        let minutes = minutesLeft(until: until, now: now)
         return minutes >= 1 ? "expires in \(minutes) min" : "expires in under a minute"
+    }
+
+    static func minutesLeft(until: Date, now: Date) -> Int {
+        Int((until.timeIntervalSince(now) / 60).rounded(.down))
     }
 
     static func name(_ verdict: ApprovalWire.Verdict) -> String {

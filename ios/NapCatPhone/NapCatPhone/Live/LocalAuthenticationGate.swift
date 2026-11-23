@@ -9,13 +9,14 @@ import LocalAuthentication
 struct LocalAuthenticationGate: BiometricGate {
     static let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
 
+    /// `biometryType` is set by `canEvaluatePolicy` whatever it returns, so
+    /// a phone with Face ID that has none enrolled still names Face ID.
     func availability() -> BiometricAvailability {
         let context = LAContext()
         var error: NSError?
-        guard context.canEvaluatePolicy(Self.policy, error: &error), let kind = Self.kind(context.biometryType) else {
-            return .unavailable
-        }
-        return .available(kind)
+        let canConfirm = context.canEvaluatePolicy(Self.policy, error: &error)
+        guard let kind = Self.kind(context.biometryType) else { return .unavailable(nil) }
+        return canConfirm ? .available(kind) : .unavailable(kind)
     }
 
     func confirm(reason: String) async -> BiometricResult {

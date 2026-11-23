@@ -73,8 +73,10 @@ final class RequestInbox {
 
     /// What the biometric prompt says Allow is for (Touch ID shows it; Face
     /// ID shows the app's usage description the first time). Fixed words:
-    /// nothing from the request reaches the system prompt.
-    nonisolated static let allowReason = "Confirm Allow for this permission prompt on your Mac."
+    /// nothing from the request reaches the system prompt. The match is
+    /// asked for here, on the phone; the prompt it answers is the Mac's, and
+    /// what Allow does there is the Mac's to decide.
+    nonisolated static let allowReason = "Confirm it's you to send Allow to your Mac's permission prompt."
 
     private(set) var entries: [PromptID: Entry] = [:]
     /// Whether Allow can be confirmed here, as last read.

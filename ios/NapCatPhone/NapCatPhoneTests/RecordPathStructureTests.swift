@@ -122,7 +122,7 @@ import Testing
     /// The S3 test files that run anything (this file only reads sources).
     static let s3TestFiles = ["ApprovalRecordFakes.swift", "RequestInboxTests.swift", "CloudKitRequestRecordTests.swift",
                               "RequestAnsweringTests.swift", "PendingRequestScreenTests.swift",
-                              "CloudKitDecisionWriterTests.swift"]
+                              "CloudKitDecisionWriterTests.swift", "VisibleWhitespaceTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
     /// notification center and the real biometric prompt.
