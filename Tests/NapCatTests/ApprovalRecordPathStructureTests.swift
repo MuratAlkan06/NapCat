@@ -71,16 +71,18 @@ struct ApprovalRecordPathStructureTests {
         return failures
     }
 
-    /// A record path file as a later commit could get it wrong (canaries
-    /// plant into it while the real file does not exist yet).
-    static let syntheticRecordPath = "final class ApprovalRecordWriter {}\nenum DecisionRecordReader {}"
+    /// Vacuity: the record path is where the locks look for it.
+    static func vacuityFailures(_ sources: Sources) -> [String] {
+        let file = text(recordPathFile, in: sources)
+        return ["final class ApprovalRecordWriter", "enum DecisionRecordReader", "protocol GateApprovedPrompt",
+                "protocol ApprovalRecordDatabase"].filter { !file.contains($0) }
+            .map { "'\($0)' not found in \(recordPathFile) — the record-path locks would be vacuous" }
+    }
 
     @Test func theRecordPathNeverReachesTheVerdictAPI() throws {
-        let sources = try ApprovalChannelStructureTests.sources()
-        #expect(Self.verdictReachFailures(sources).isEmpty, "\(Self.verdictReachFailures(sources))")
-        let withFile: Sources = sources.contains { $0.name == Self.recordPathFile }
-            ? sources : sources + [(Self.recordPathFile, Self.syntheticRecordPath)]
-        #expect(Self.verdictReachFailures(withFile).isEmpty, "the synthetic record path must pass as written")
+        let withFile = try ApprovalChannelStructureTests.sources()
+        #expect(Self.vacuityFailures(withFile).isEmpty, "\(Self.vacuityFailures(withFile))")
+        #expect(Self.verdictReachFailures(withFile).isEmpty, "\(Self.verdictReachFailures(withFile))")
         let mutants: [(String, Sources)] = [
             ("the writer answers the dialog", Self.mutate(withFile, Self.recordPathFile) {
                 $0 + "\nfunc f(i: Int, r: ChannelRequestID) { sendFrame(i, ApprovalChannel.verdictFrame(r, .allow)) }" }),
@@ -226,10 +228,11 @@ struct ApprovalRecordPathStructureTests {
     }
 
     @Test func theRecordPathCannotReachICloudByItself() throws {
-        let sources = try ApprovalChannelStructureTests.sources()
-        #expect(Self.iCloudFailures(sources).isEmpty, "\(Self.iCloudFailures(sources))")
-        let withFile: Sources = sources.contains { $0.name == Self.recordPathFile }
-            ? sources : sources + [(Self.recordPathFile, Self.syntheticRecordPath)]
+        let withFile = try ApprovalChannelStructureTests.sources()
+        #expect(Self.vacuityFailures(withFile).isEmpty, "\(Self.vacuityFailures(withFile))")
+        #expect(Self.iCloudFailures(withFile).isEmpty, "\(Self.iCloudFailures(withFile))")
+        #expect(Self.text(Self.recordPathFile, in: withFile).contains("func submit(_ operation: CKModifyRecordsOperation)"),
+                "vacuity: the seam the lock looks at")
         let mutants: [(String, Sources)] = [
             ("a container", Self.mutate(withFile, Self.recordPathFile) {
                 $0 + "\nlet c = CKContainer(identifier: ApprovalWire.containerIdentifier)" }),
@@ -245,10 +248,53 @@ struct ApprovalRecordPathStructureTests {
         }
     }
 
+    // MARK: - 6. The prompt record is written only through the wire
+
+    /// As the alert lane's record (PhoneTransportSchemaTests): ONE record
+    /// construction, every key an `ApprovalWire` field (no literal key, no
+    /// bulk setter, no asset or reference), and the encrypted-or-clear choice
+    /// read from the wire's own table.
+    static func schemaFailures(_ file: String) -> [String] {
+        var failures: [String] = []
+        if ApprovalChannelStructureTests.count("CKRecord(recordType:", in: file) != 1 {
+            failures.append("a prompt record must be constructed in exactly one place (makePromptRecord)")
+        }
+        for token in ["record[\"", "encryptedValues[\"", "setValuesForKeys", "setObject(", "setValue(", "CKAsset",
+                      "CKRecord.Reference"] where file.contains(token) {
+            failures.append("'\(token)' — record fields are written only through the ApprovalWire field keys")
+        }
+        let shape = "for field in ApprovalWire.PromptField.allCases { let value = promptValue(field, of: prompt) "
+            + "if ApprovalWire.encryptedPromptFields.contains(field) { record.encryptedValues[field.rawValue] = value } "
+            + "else { record[field.rawValue] = value } }"
+        if !MenuPanelStructureTests.flat(file).contains(shape) {
+            failures.append("the prompt record's fields must be every wire field, encrypted as the wire's table says")
+        }
+        return failures
+    }
+
+    @Test func thePromptRecordIsWrittenOnlyThroughTheWire() throws {
+        let file = Self.text(Self.recordPathFile, in: try ApprovalChannelStructureTests.sources())
+        #expect(Self.schemaFailures(file).isEmpty, "\(Self.schemaFailures(file))")
+        let anchor = "            } else {\n                record[field.rawValue] = value\n            }"
+        #expect(file.contains(anchor), "vacuity: the clear-field write is the anchor")
+        let mutants: [(String, String)] = [
+            ("a literal key", file.replacingOccurrences(of: anchor, with: anchor + "\n            record[\"sessionId\"] = \"x\" as NSString")),
+            ("an encrypted side channel", file.replacingOccurrences(of: anchor, with: anchor + "\n            record.encryptedValues[\"cwd\"] = v")),
+            ("everything in the clear", file.replacingOccurrences(of: "if ApprovalWire.encryptedPromptFields.contains(field) {",
+                                                                  with: "if false {")),
+            ("a second record", file + "\nlet r = CKRecord(recordType: \"PromptRequest\", recordID: i)"),
+            ("a bulk setter", file + "\nfunc f(r: CKRecord) { r.setValuesForKeys([:]) }"),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != file, "canary '\(name)' did not apply")
+            #expect(!Self.schemaFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - 5. The S3 tests touch nothing live
 
     /// The S3 Mac test files that run anything (this file only reads sources).
-    static let s3TestFiles = ["ApprovalRecordFakes.swift"]
+    static let s3TestFiles = ["ApprovalRecordFakes.swift", "ApprovalRecordWriterTests.swift", "DecisionRecordReaderTests.swift"]
 
     /// S2's list (defaults, keychain, the real home, processes, the probe,
     /// the toggle's production factory), plus CloudKit's live doors.

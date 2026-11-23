@@ -353,6 +353,17 @@ struct LidGuardStructureTests {
     /// (`httpBody`), the per-header writer the ntfy headers use (`setValue` —
     /// the GitHub client sets its two headers as one dictionary), and the
     /// per-lane session accessor.
+    ///
+    /// F4 slice S3 AMENDMENT (deliberate, issue #146): CloudKitApprovalRecords.swift
+    /// may also name CloudKit's RECORD vocabulary — exactly the four tokens in
+    /// `approvalRecordVocabulary`, so it can build the approval records and
+    /// their operation. Every token that reaches iCloud by itself (the
+    /// container, the database, the account check, the entitlement probe)
+    /// stays single-owner, so that file can never run an operation
+    /// (ApprovalRecordPathStructureTests locks the rest of it).
+    static let approvalRecordsFile = "CloudKitApprovalRecords.swift"
+    static let approvalRecordVocabulary: Set<String> = ["import CloudKit", "CKRecord", "CKModifyRecordsOperation", "CKError"]
+
     @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
         let allowed: [String: String] = [
             "httpBody": "NtfyMessageSender.swift",
@@ -375,10 +386,19 @@ struct LidGuardStructureTests {
         let sources = try Self.swiftSources()
         for (token, owner) in allowed {
             for (name, text) in sources where text.contains(token) {
-                #expect(name == owner, "'\(token)' leaked into \(name) — it must stay in \(owner)")
+                let shared = name == Self.approvalRecordsFile && Self.approvalRecordVocabulary.contains(token)
+                #expect(name == owner || shared, "'\(token)' leaked into \(name) — it must stay in \(owner)")
             }
             let present = sources.contains { $0.name == owner && $0.text.contains(token) }
             #expect(present, "'\(token)' not found in \(owner) — this lint would be vacuous")
+        }
+        #expect(Self.approvalRecordVocabulary.isSubset(of: Set(allowed.keys)), "the amendment names table tokens only")
+        let approvals = sources.first { $0.name == Self.approvalRecordsFile }?.text ?? ""
+        #expect(Self.approvalRecordVocabulary.allSatisfy { approvals.contains($0) },
+                "the amendment names only what \(Self.approvalRecordsFile) uses (vacuity)")
+        // The amendment shares the record vocabulary, never a door to iCloud.
+        for token in allowed.keys where !Self.approvalRecordVocabulary.contains(token) {
+            #expect(!approvals.contains(token), "'\(token)' in \(Self.approvalRecordsFile) — only the record vocabulary is shared")
         }
     }
 
