@@ -3,8 +3,8 @@
 Status: design FROZEN 2026-11-22 with three ratified amendments (CL-1, CL-2,
 CL-3). Spike S-4 passed the same day. This document is the in-repo record of
 the design tracked on issue #98; slice S0 (issue #122) lands it together with
-the pure core described at the end, and slice S1 (issue #125) adds the server
-side.
+the pure core described at the end, slice S1 (issue #125) adds the server
+side, and slice S2 (issue #134) the Mac's control surface.
 
 ## Problem
 
@@ -272,8 +272,9 @@ napcat-channel-version: 1
   verdict goes back only for a request the server relayed and still holds
   open, and only once. The server never sends a channel message into the
   session, reads no Claude Code configuration and no environment, and
-  connects to NapCat only when a prompt opens, so it holds nothing while
-  idle. Every failure keeps the prompt local.
+  connects to NapCat only when a prompt opens; once connected it keeps the
+  link until NapCat lets it go (slice S2: after a quiet minute with no prompt
+  waiting on the phone). Every failure keeps the prompt local.
 - **The seam** (`Sources/NapCatSeam`). A Unix socket,
   `~/Library/Application Support/NapCat/approvals/seam.sock`, in a 0700
   directory (the socket itself 0600). NapCat listens and each server
@@ -282,8 +283,9 @@ napcat-channel-version: 1
   unreadable credentials are a refusal. The listener replaces only a stale
   socket of its own, never another kind of file, another user's socket or a
   live listener; the server connects only to a socket of its own user inside
-  a directory nobody else can enter. Writes time out after 2 seconds, so a
-  stuck peer cannot hold either side. Frames are one JSON object per line, at
+  a directory nobody else can enter. A frame must be written within 2
+  seconds (since slice S2 a deadline per frame, over non-blocking writes), so
+  a stuck or slow-reading peer cannot hold either side. Frames are one JSON object per line, at
   most 256 KiB, frame version 1: `prompt` (frame, v, request, tool, preview)
   from the server, `verdict` (frame, v, request, verdict) from NapCat, each
   with exactly those members. Each side refuses the other's kind, and any
@@ -297,10 +299,10 @@ napcat-channel-version: 1
   away (its session ended), the kill switch and the TTL only withdraw. The
   audit trail is the `approvals` log category: the random prompt ID and a
   closed code, never prompt text, a request ID, a session ID or the topic.
-- **Dark by default.** Nothing constructs the host or runs the probe yet
-  (lint-locked); the toggle and settings slices wire them deliberately. Until
-  then no socket exists, a server finds nothing to connect to, and every
-  prompt stays local.
+- **Dark by default.** In S1 nothing constructed the host or ran the probe
+  (lint-locked). Slice S2 wires both behind the Mac toggle, never armed (see
+  below); with the toggle off no socket exists, a server finds nothing to
+  connect to, and every prompt stays local.
 - **The allowlist probe** (`ChannelPolicyProbe`, the reading in
   `NapCatWire/ApprovalChannelPolicy.swift`). It reads the file tier of the
   managed settings (`managed-settings.json`, then the `managed-settings.d`
@@ -319,12 +321,57 @@ napcat-channel-version: 1
   path. Structure locks keep the socket calls in one file, the peer check on
   every connection, one verdict site on each side, the gate ahead of every
   lifecycle, the strict reader as the only parser, and the seam and probe
-  unwired. The refusal catalogue the gate and the seam are tested against is
+  unwired (slice S2 replaced that last lock with one that allows them only
+  behind the toggle). The refusal catalogue the gate and the seam are tested against is
   in [remote-approvals-catalogue.md](remote-approvals-catalogue.md).
 
 Later slices own the rest: bundling and signing the server, the user-run
 registration rails and the per-session flag, a code-signing check on the
 seam's peer (the audit token is already read for it), the project label,
-CloudKit, the phone, pairing and the toggles. The relay carries no signal
+CloudKit, the phone, pairing and the toggles (the Mac's is slice S2). The relay carries no signal
 that a dialog was answered at the Mac; a remote verdict that arrives after a
 local answer is dropped by Claude Code, and the TTL withdraws the record.
+
+## Slice S2: the Mac control surface
+
+S2 adds the Mac's switch for the feature and wires the S1 pieces behind it.
+It builds controls only: nothing can be forwarded yet.
+
+- **The toggle.** One stored setting, off by default; only a stored `true`
+  turns it on, so a missing or junk value never arms anything. It shows as a
+  Remote approvals row in the menu's Alerts card, under Session alerts, and as
+  a group in Settings › Claude (the same action). Off is the kill switch:
+  every open prompt is withdrawn, every channel server disconnected and the
+  socket removed, and a later decision for a withdrawn prompt is ignored and
+  logged. Quitting NapCat is the same stop, final.
+- **Behind the toggle only.** With the toggle off nothing exists: no host, no
+  socket or socket directory, no listener, no probe, no timer. On, NapCat
+  builds the seam host once and listens; the managed-settings probe runs
+  while on (at enable, and when the menu or Settings opens) and Settings ›
+  Claude shows its reading. A lock replaces S1's dark-by-default lock: the
+  host is built in one place, never armed, with a record sink that writes
+  nothing, and only the toggle's state machine starts it or runs the probe.
+- **Fail-dark.** On, NapCat hears a wired session's prompts, classifies and
+  audits them, and keeps every one on the Mac; the row says so ("Local only —
+  the iPhone app cannot answer prompts yet"). No CloudKit record operation
+  exists in this slice. Before any slice makes forwarding real, two gates
+  apply: a pre-arming revision of the category gate (tracked privately) and
+  an owner-run live test.
+- **The waiting buzz.** While the toggle is on and listening, the plain
+  waiting push says how many permission prompts wired sessions just relayed,
+  and of which kind, in fixed words ("— 1 Bash permission prompt"). Only
+  prompts the gate would forward are counted, as counts per tool kind: never
+  a command, path or preview, and never a prompt the gate keeps. Off, or for
+  an unwired session, the push is unchanged.
+- **Hardening.** A topic that exists but could not be read keeps every prompt
+  local. The host holds at most 64 servers and, per server, 64 of its 256
+  prompts; part of a frame left unfinished for 5 seconds closes the link, and
+  a server quiet for a minute with nothing waiting on the phone is let go (it
+  reconnects with its next prompt; the same round lets the TTL withdraw an
+  expired prompt). The probe opens a document non-blocking and checks it is a
+  regular file within the size cap before reading any of it. Nothing the host
+  hands out holds it, so a host or listener released without a stop leaves no
+  socket, link or timer behind.
+- **Tests.** Real sockets in scratch directories, injected clocks and short
+  limits, the toggle over an in-memory setting: no test reads the real
+  defaults, keychain or home, registers a channel or starts a process.
