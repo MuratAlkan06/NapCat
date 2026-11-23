@@ -4,11 +4,12 @@ import SwiftUI
 /// The receiver's one screen: the connection pill, the notification-
 /// permission row (only while notifications are off), and the recent alerts.
 /// When there are no alerts, the empty state is the hero, with the sentence
-/// the list state allows. A full list ends on its cap, said. A row that
-/// arrives while the list is on screen comes in on the theme's entrance
-/// curve, and nothing else moves with it (`ListMotion`; nothing moves at
-/// all under Reduce Motion). Everything visual comes from the
-/// environment's `Theme`.
+/// the list state allows; where it says it couldn't get alerts, VoiceOver
+/// can "Check again" (`CheckAgainAction`). A full list ends on its cap,
+/// said. A row that arrives while the list is on screen comes in on the
+/// theme's entrance curve, and nothing else moves with it (`ListMotion`;
+/// nothing moves at all under Reduce Motion). Everything visual comes from
+/// the environment's `Theme`.
 struct ReceiverScreen: View {
     nonisolated static let title = "NapCat"
     nonisolated static let recentHeader = "Recent"
@@ -19,6 +20,9 @@ struct ReceiverScreen: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The pull's action, read here: the scroll view clears it for its own
+    /// content, so the hero and the note get it from the screen.
+    @Environment(\.refresh) private var refresh
     @State private var revealed = false
 
     /// What the screen says about its list (`ListState`).
@@ -55,6 +59,7 @@ struct ReceiverScreen: View {
                 switch list {
                 case .empty(let hero):
                     EmptyStateView(hero: hero)
+                        .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)
                         .frame(maxWidth: .infinity)
                         .containerRelativeFrame(.vertical) { length, _ in length * 0.7 }
                 case .rows, .staleRows:
@@ -65,6 +70,7 @@ struct ReceiverScreen: View {
                         .accessibilityAddTraits(.isHeader)
                     if let note = list.note {
                         CaptionLine(line: note)
+                            .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)
                     }
                     LazyVStack(spacing: theme.rowGap) {
                         ForEach(Array(alerts.enumerated()), id: \.element.id) { index, alert in

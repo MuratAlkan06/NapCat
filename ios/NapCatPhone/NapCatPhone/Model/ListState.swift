@@ -28,7 +28,7 @@ enum EmptyHero: CaseIterable, Sendable {
         switch self {
         case .checking: return "Checking for alerts…"
         case .iCloudUnavailable: return "iCloud unavailable. Alerts can't arrive without it."
-        case .couldNotCheck: return "Couldn't check for alerts just now. Pull down to try again."
+        case .couldNotCheck: return "Couldn't check for alerts just now. Pull down to check again."
         case .noAlerts: return "No alerts. Your Mac hasn't needed you."
         }
     }
@@ -91,5 +91,15 @@ enum ListState: Equatable, Sendable {
     var note: PhoneLine? {
         guard case .staleRows(let reason) = self else { return nil }
         return reason.line
+    }
+
+    /// Whether the screen says it couldn't get alerts (a hero or a note),
+    /// and so offers "Check again", the pull's single-step twin
+    /// (`CheckAgainAction`). Not while checking, and not when all is well.
+    var offersCheckAgain: Bool {
+        switch self {
+        case .empty(.couldNotCheck), .empty(.iCloudUnavailable), .staleRows: return true
+        case .empty(.checking), .empty(.noAlerts), .rows: return false
+        }
     }
 }

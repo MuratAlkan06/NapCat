@@ -103,6 +103,69 @@ import UIKit
         }
     }
 
+    // MARK: Check again (the pull's single-step twin, WCAG 2.5.1)
+
+    /// Offered exactly where the screen says it couldn't get alerts: the
+    /// couldn't-check and iCloud heroes, and every stale note.
+    @Test func checkAgainIsOfferedWhereTheScreenCouldNotGetAlerts() {
+        #expect(CheckAgainAction.name == "Check again")
+        let states = EmptyHero.allCases.map(ListState.empty) + [.rows] + StaleReason.allCases.map(ListState.staleRows)
+        #expect(states.filter(\.offersCheckAgain) == [
+            .empty(.iCloudUnavailable), .empty(.couldNotCheck), .staleRows(.couldNotCheck), .staleRows(.iCloudUnavailable),
+        ])
+    }
+
+    static let checkAgainFile = "\(CloudKitStructureTests.appDir)/Screen/CheckAgainAction.swift"
+    static let checkAgainAction =
+        "content.accessibilityActions { if offered, let refresh { Button(Self.name) { Task { await refresh() } } } }"
+    /// The screen reads the pull's action itself (inside the scroll view it
+    /// is nil: seen on the simulator) and hands it to the hero and the note.
+    static let checkAgainSites = [
+        "@Environment(\\.refresh) private var refresh",
+        "EmptyStateView(hero: hero) .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+        "CaptionLine(line: note) .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+    ]
+
+    static func checkAgainFailures(root: String, screen: String, action: String) -> [String] {
+        var failures: [String] = []
+        if !SettingsReachabilityTests.flat(root).contains(pull) { failures.append("the pull is not the feed's pullToRefresh()") }
+        if !SettingsReachabilityTests.flat(action).contains(checkAgainAction) { failures.append("missing: \(checkAgainAction)") }
+        let screenCode = SettingsReachabilityTests.flat(screen)
+        failures += checkAgainSites.filter { !screenCode.contains($0) }.map { "missing: \($0)" }
+        return failures
+    }
+
+    /// The action runs the screen's refresh action: the very one the root's
+    /// pull sets to `feed.pullToRefresh()`, so it is the same full pass. It
+    /// sits on the hero and on the note. SwiftUI's accessibility tree cannot
+    /// be driven headlessly, so this locks the source, and runs against
+    /// mutants.
+    @Test func checkAgainRunsThePullsFullPass() throws {
+        let app = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
+        let root = try SettingsReachabilityTests.rootCode()
+        let screen = try #require(app.first { $0.path == ListStateTests.screenFile }).text
+        let action = try #require(app.first { $0.path == Self.checkAgainFile }).text
+        #expect(Self.checkAgainFailures(root: root, screen: screen, action: action).isEmpty,
+                "\(Self.checkAgainFailures(root: root, screen: screen, action: action))")
+        let mutants = [
+            (root.replacingOccurrences(of: "await feed.pullToRefresh()", with: "await feed.refresh()"), screen, action),
+            (root, screen.replacingOccurrences(
+                of: "EmptyStateView(hero: hero)\n                        .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+                with: "EmptyStateView(hero: hero)"), action),
+            (root, screen.replacingOccurrences(
+                of: "CaptionLine(line: note)\n                            .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+                with: "CaptionLine(line: note)"), action),
+            (root, screen.replacingOccurrences(of: "refresh: refresh)", with: "refresh: nil)"), action),
+            (root, screen.replacingOccurrences(
+                of: "@Environment(\\.refresh) private var refresh", with: "private let refresh: RefreshAction? = nil"), action),
+            (root, screen, action.replacingOccurrences(of: "await refresh()", with: "_ = refresh")),
+        ]
+        for (mutantRoot, mutantScreen, mutantAction) in mutants {
+            #expect(mutantRoot != root || mutantScreen != screen || mutantAction != action, "a mutation did not apply")
+            #expect(!Self.checkAgainFailures(root: mutantRoot, screen: mutantScreen, action: mutantAction).isEmpty)
+        }
+    }
+
     // MARK: Connection pill
 
     @Test func theConnectionStatesReadAsTheirSeverity() {

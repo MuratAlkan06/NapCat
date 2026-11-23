@@ -166,7 +166,10 @@ A live launch:
    keeps the list and says so: with rows listed, one line under the header
    reads "Stale — couldn't check for new alerts just now"; with none,
    the empty state reads "Couldn't check for alerts just now. Pull down to
-   try again." The next fetch that answers clears it. The list keeps at
+   check again." The next fetch that answers clears it. Wherever the screen
+   says it couldn't get alerts (that hero, the iCloud one, or a stale
+   note), VoiceOver and Switch Control also offer a **Check again** action
+   that runs the same pass as a pull. The list keeps at
    most 50 rows; a full list ends with "Capped — the list keeps the latest
    50 alerts" (it says the rule; it can't know whether older ones exist).
 

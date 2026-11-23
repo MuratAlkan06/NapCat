@@ -110,7 +110,7 @@ import UIKit
     @Test func eachHeroSaysExactlyThis() {
         #expect(EmptyHero.checking.message == "Checking for alerts…")
         #expect(EmptyHero.iCloudUnavailable.message == "iCloud unavailable. Alerts can't arrive without it.")
-        #expect(EmptyHero.couldNotCheck.message == "Couldn't check for alerts just now. Pull down to try again.")
+        #expect(EmptyHero.couldNotCheck.message == "Couldn't check for alerts just now. Pull down to check again.")
         #expect(EmptyHero.noAlerts.message == "No alerts. Your Mac hasn't needed you.")
     }
 
