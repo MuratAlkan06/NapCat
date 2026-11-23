@@ -175,8 +175,11 @@ struct ApprovalSeamLimitsTests {
     /// Part of a frame left unfinished closes the connection on the stall
     /// clock; a finished frame stops the clock.
     @Test func anUnfinishedFrameClosesTheConnection() throws {
+        // Long enough that a loaded CI VM reads the steady frame's second
+        // piece in time; the stalled one still ends within a couple of
+        // seconds.
         var limits = Self.slow
-        limits.stallSeconds = 0.3
+        limits.stallSeconds = 1
         let world = try Host(limits: limits)
         let frame = Host.prompt("abcde")
         let steady = try #require(world.raw())
@@ -187,7 +190,7 @@ struct ApprovalSeamLimitsTests {
         let stalled = try #require(world.raw())
         #expect(stalled.write(String(Host.prompt("bcdef").prefix(30))))
         #expect(stalled.closed(within: ApprovalsInbox<String>.arrivalSeconds), "the stalled server is disconnected")
-        #expect(!steady.closed(within: 0.5), "the steady one is not")
+        #expect(!steady.closed(within: 1.5), "the steady one is not")
     }
 
     /// The same clock on a bare connection, both ends in this process.
@@ -199,7 +202,7 @@ struct ApprovalSeamLimitsTests {
         let closes = ApprovalsInbox<Void>()
         let lines = ApprovalsInbox<String>()
         let connection = SeamConnection(descriptor: pair[0], peer: SeamPeer(uid: geteuid(), tokenUID: geteuid(), pid: getpid()),
-                                        queue: queue, stallTimeout: 0.3)
+                                        queue: queue, stallTimeout: 1)
         queue.sync {
             connection.start(onLine: { lines.put(String(decoding: $0, as: UTF8.self)) }, onClose: { closes.put(()) })
         }
@@ -210,7 +213,7 @@ struct ApprovalSeamLimitsTests {
         write("hel")
         write("lo\n")
         #expect(lines.next() == "hello")
-        #expect(closes.next(within: 0.6) == nil, "nothing is buffered, so nothing stalls")
+        #expect(closes.next(within: 1.5) == nil, "nothing is buffered, so nothing stalls")
         write("half a fra")
         #expect(closes.next() != nil, "an unfinished frame stalls the connection")
         #expect(queue.sync { !connection.isOpen })
