@@ -6,8 +6,10 @@ import UIKit
 
 /// The screen's fixed copy, cadence and state mappings.
 @Suite struct ReceiverScreenTests {
+    /// The good outcome's sentence is unchanged; `ListStateTests` pins the
+    /// others and when each shows.
     @Test func theEmptyStateSaysExactlyThis() {
-        #expect(EmptyStateView.message == "No alerts. Your Mac hasn't needed you.")
+        #expect(EmptyHero.noAlerts.message == "No alerts. Your Mac hasn't needed you.")
     }
 
     // MARK: Stagger (charter: 40 ms per row, first eight rows)
@@ -34,6 +36,134 @@ import UIKit
     @Test(arguments: ThemeID.allCases)
     func theWholeEntranceIsOverInUnderSixTenths(_ id: ThemeID) {
         #expect(StaggerTiming.delay(forIndex: .max) + id.theme.entranceDuration <= 0.6)
+    }
+
+    // MARK: The cap
+
+    /// The cap is said once the list is full, and only then, in words
+    /// built from the limit and in the caption register. A nominal line:
+    /// VoiceOver reads it as written.
+    @Test func theCapIsSaidOnceTheListIsFull() throws {
+        for count in [0, 1, AlertFeed.listLimit - 1] {
+            #expect(ReceiverScreen.capLine(rowCount: count) == nil, "\(count) rows")
+        }
+        let line = try #require(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit))
+        #expect(AlertFeed.listLimit == 50)
+        #expect(line == PhoneLine(text: "Capped — the list keeps the latest 50 alerts", severity: .nominal))
+        #expect(line.spoken == line.text)
+        #expect(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit + 1) == line)
+        #expect(ListStateTests.captionRegisterFailures(line.text).isEmpty,
+                "\(ListStateTests.captionRegisterFailures(line.text))")
+        #expect(!ListStateTests.captionRegisterFailures("Last 50 alerts — older ones aren't shown.").isEmpty)
+    }
+
+    /// Words that would claim alerts exist beyond the list.
+    static func claimsMoreAlerts(_ text: String) -> Bool {
+        ["older", "aren't shown", "hidden", "more"].contains { text.localizedCaseInsensitiveContains($0) }
+    }
+
+    /// At exactly the limit there may be nothing older (the query asks for
+    /// at most that many), so the cap never claims older alerts exist.
+    @Test func theCapNeverClaimsOlderAlertsExist() throws {
+        let line = try #require(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit))
+        #expect(!Self.claimsMoreAlerts(line.text))
+        // Not vacuous: the old line made the claim.
+        #expect(Self.claimsMoreAlerts("Last 50 alerts — older ones aren't shown."))
+    }
+
+    /// A feed that fills up ends on the cap: 60 records fetched, 50 listed.
+    @Test @MainActor func aFullFeedEndsOnTheCapLine() async {
+        let many = (0..<60).map { AlertFeedTests.alert("session-\($0)", minutesAgo: Double($0)) }
+        let feed = AlertFeed(source: ScriptedSource(account: .available, alerts: many),
+                             notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.refresh()
+        #expect(feed.alerts.count == AlertFeed.listLimit)
+        #expect(ReceiverScreen.capLine(rowCount: feed.alerts.count) != nil)
+    }
+
+    // MARK: Pull to refresh
+
+    static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch) "
+        + ".refreshable { await feed.pullToRefresh() }"
+
+    /// The list pulls down to refresh, through the feed's waiting pull (a
+    /// plain refresh can return before anything is checked, ending the
+    /// system's spinner early). SwiftUI composition cannot be driven
+    /// headlessly, so this locks the source, and runs against mutants.
+    @Test func theListPullsToRefreshThroughTheFeed() throws {
+        let root = try SettingsReachabilityTests.rootCode()
+        #expect(SettingsReachabilityTests.flat(root).contains(Self.pull))
+        let mutants = [
+            root.replacingOccurrences(of: "                .refreshable { await feed.pullToRefresh() }\n", with: ""),
+            root.replacingOccurrences(of: "await feed.pullToRefresh()", with: "await feed.refresh()"),
+        ]
+        for mutant in mutants {
+            #expect(mutant != root, "a mutation did not apply")
+            #expect(!SettingsReachabilityTests.flat(mutant).contains(Self.pull))
+        }
+    }
+
+    // MARK: Check again (the pull's single-step twin, WCAG 2.5.1)
+
+    /// Offered exactly where the screen says it couldn't get alerts: the
+    /// couldn't-check and iCloud heroes, and every stale note.
+    @Test func checkAgainIsOfferedWhereTheScreenCouldNotGetAlerts() {
+        #expect(CheckAgainAction.name == "Check again")
+        let states = EmptyHero.allCases.map(ListState.empty) + [.rows] + StaleReason.allCases.map(ListState.staleRows)
+        #expect(states.filter(\.offersCheckAgain) == [
+            .empty(.iCloudUnavailable), .empty(.couldNotCheck), .staleRows(.couldNotCheck), .staleRows(.iCloudUnavailable),
+        ])
+    }
+
+    static let checkAgainFile = "\(CloudKitStructureTests.appDir)/Screen/CheckAgainAction.swift"
+    static let checkAgainAction =
+        "content.accessibilityActions { if offered, let refresh { Button(Self.name) { Task { await refresh() } } } }"
+    /// The screen reads the pull's action itself (inside the scroll view it
+    /// is nil: seen on the simulator) and hands it to the hero and the note.
+    static let checkAgainSites = [
+        "@Environment(\\.refresh) private var refresh",
+        "EmptyStateView(hero: hero) .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+        "CaptionLine(line: note) .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+    ]
+
+    static func checkAgainFailures(root: String, screen: String, action: String) -> [String] {
+        var failures: [String] = []
+        if !SettingsReachabilityTests.flat(root).contains(pull) { failures.append("the pull is not the feed's pullToRefresh()") }
+        if !SettingsReachabilityTests.flat(action).contains(checkAgainAction) { failures.append("missing: \(checkAgainAction)") }
+        let screenCode = SettingsReachabilityTests.flat(screen)
+        failures += checkAgainSites.filter { !screenCode.contains($0) }.map { "missing: \($0)" }
+        return failures
+    }
+
+    /// The action runs the screen's refresh action: the very one the root's
+    /// pull sets to `feed.pullToRefresh()`, so it is the same full pass. It
+    /// sits on the hero and on the note. SwiftUI's accessibility tree cannot
+    /// be driven headlessly, so this locks the source, and runs against
+    /// mutants.
+    @Test func checkAgainRunsThePullsFullPass() throws {
+        let app = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
+        let root = try SettingsReachabilityTests.rootCode()
+        let screen = try #require(app.first { $0.path == ListStateTests.screenFile }).text
+        let action = try #require(app.first { $0.path == Self.checkAgainFile }).text
+        #expect(Self.checkAgainFailures(root: root, screen: screen, action: action).isEmpty,
+                "\(Self.checkAgainFailures(root: root, screen: screen, action: action))")
+        let mutants = [
+            (root.replacingOccurrences(of: "await feed.pullToRefresh()", with: "await feed.refresh()"), screen, action),
+            (root, screen.replacingOccurrences(
+                of: "EmptyStateView(hero: hero)\n                        .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+                with: "EmptyStateView(hero: hero)"), action),
+            (root, screen.replacingOccurrences(
+                of: "CaptionLine(line: note)\n                            .checkAgainAction(offered: list.offersCheckAgain, refresh: refresh)",
+                with: "CaptionLine(line: note)"), action),
+            (root, screen.replacingOccurrences(of: "refresh: refresh)", with: "refresh: nil)"), action),
+            (root, screen.replacingOccurrences(
+                of: "@Environment(\\.refresh) private var refresh", with: "private let refresh: RefreshAction? = nil"), action),
+            (root, screen, action.replacingOccurrences(of: "await refresh()", with: "_ = refresh")),
+        ]
+        for (mutantRoot, mutantScreen, mutantAction) in mutants {
+            #expect(mutantRoot != root || mutantScreen != screen || mutantAction != action, "a mutation did not apply")
+            #expect(!Self.checkAgainFailures(root: mutantRoot, screen: mutantScreen, action: mutantAction).isEmpty)
+        }
     }
 
     // MARK: Connection pill

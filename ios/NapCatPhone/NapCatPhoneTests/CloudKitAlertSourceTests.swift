@@ -116,6 +116,22 @@ import Testing
         #expect(feed.connection == .connected)
     }
 
+    /// "Connected — no push" gets a retry by hand: a pull re-probes the
+    /// subscription (fetch first, then create), and the pill follows.
+    @Test @MainActor func aPullReprobesAnUnconfirmedPushSubscription() async {
+        let database = FixtureDatabase(saveError: CKError(.invalidArguments), records: [Self.macRecord()])
+        let feed = AlertFeed(source: CloudKitAlertSource(database: database),
+                             notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.refresh()
+        #expect(feed.connection == .pushNotSetUp)
+        #expect(await database.subscriptionFetches.count == 1)
+        await database.clearSaveError()
+        await feed.pullToRefresh()
+        #expect(await database.subscriptionFetches.count == 2)
+        #expect(await database.saved.map(\.subscriptionID) == [AlertWire.subscriptionID])
+        #expect(feed.connection == .connected)
+    }
+
     @Test func missingMeansUnknownItemOnly() {
         #expect(CloudKitAlertSource.isMissing(CKError(.unknownItem)))
         let wrapped = NSError(domain: CKErrorDomain, code: CKError.Code.partialFailure.rawValue, userInfo: [

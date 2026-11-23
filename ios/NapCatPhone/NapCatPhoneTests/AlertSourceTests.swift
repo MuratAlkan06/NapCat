@@ -61,6 +61,20 @@ import UserNotifications
         #expect(feed.connection == connection)
     }
 
+    /// A fixture feed's first frame already has the fetch status a refresh
+    /// of it reads: answered, except without an account. So the empty
+    /// fixture shows the good outcome only where a live feed would.
+    @Test(arguments: FixtureSet.allCases, ConnectionState.probed)
+    @MainActor
+    func aFixtureFeedStartsOnTheFetchStatusARefreshReads(_ set: FixtureSet, _ connection: ConnectionState) async {
+        let values = [LaunchOptions.fixtureKey: set.rawValue, LaunchOptions.connectionKey: connection.rawValue]
+        let feed = AlertFeed.make(options: LaunchOptions { values[$0] }, now: Self.now, liveCapable: false)
+        let first = feed.fetch
+        #expect(first == (connection == .iCloudUnavailable ? .failed : .fetched))
+        await feed.refresh()
+        #expect(feed.fetch == first)
+    }
+
     // MARK: The fixture conformance
 
     /// The fixture source and gate reproduce the fixture's pill exactly.

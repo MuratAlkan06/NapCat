@@ -81,6 +81,7 @@ import Testing
         #expect(await feed.refresh() == false)
         #expect(feed.alerts == shown)
         #expect(feed.connection == .connected)
+        #expect(feed.fetch == .failed)
     }
 
     @Test func notificationsOffShowsInThePillButAlertsStillArrive() async {
@@ -145,6 +146,128 @@ import Testing
         #expect(await feed.refresh())
         #expect(feed.connection == .pushNotSetUp)
         #expect(feed.alerts == fresh)
+    }
+
+    // MARK: The list is honest (#118)
+
+    /// The list state the screen derives from the feed, as `ReceiverRoot`
+    /// builds it.
+    static func shown(_ feed: AlertFeed) -> ListState {
+        ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch).list
+    }
+
+    /// Before the first probe, and while it runs, the hero says it is
+    /// checking; only an answered, empty query earns the good outcome.
+    @Test func aLiveFeedSaysCheckingUntilItsFirstQueryAnswers() async {
+        let source = ScriptedSource(account: .available, alerts: [], holdFirstConnect: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        #expect(feed.fetch == .pending)
+        #expect(Self.shown(feed) == .empty(.checking))
+        let first = Task { await feed.refresh() }
+        while await !source.isHolding { await Task.yield() }
+        #expect(Self.shown(feed) == .empty(.checking))
+        await source.release()
+        _ = await first.value
+        #expect(feed.fetch == .fetched)
+        #expect(Self.shown(feed) == .empty(.noAlerts))
+    }
+
+    /// A long first query: the pill has answered, the list has not, so the
+    /// hero still says it is checking (never the good outcome).
+    @Test func aSlowFirstQueryStillSaysChecking() async {
+        let source = ScriptedSource(account: .available, alerts: [], holdFirstFetch: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let first = Task { await feed.refresh() }
+        while await !source.isHolding { await Task.yield() }
+        #expect(feed.connection == .connected)
+        #expect(Self.shown(feed) == .empty(.checking))
+        await source.release()
+        _ = await first.value
+        #expect(Self.shown(feed) == .empty(.noAlerts))
+    }
+
+    /// A failed query with nothing listed (airplane mode on a first launch)
+    /// says it couldn't check; the next good pass clears it.
+    @Test func aFailedQueryWithNothingListedSaysItCouldNotCheck() async {
+        let source = ScriptedSource(account: .availableWithoutPush, alerts: [], fails: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.refresh()
+        #expect(feed.connection == .pushNotSetUp)
+        #expect(feed.fetch == .failed)
+        #expect(Self.shown(feed) == .empty(.couldNotCheck))
+        await source.setFails(false)
+        await feed.refresh()
+        #expect(Self.shown(feed) == .empty(.noAlerts))
+    }
+
+    /// A failed query keeps the rows and marks them stale; the next pass
+    /// whose query answers clears the mark.
+    @Test func aFailedQueryKeepsEarlierRowsAndSaysSoUntilAGoodPass() async {
+        let shown = [Self.alert("session-1", minutesAgo: 10)]
+        let source = ScriptedSource(account: .available, alerts: shown, fails: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected),
+                             isLive: true, alerts: shown, connection: .connected, fetch: .fetched)
+        #expect(Self.shown(feed) == .rows)
+        await feed.refresh()
+        #expect(feed.alerts == shown)
+        #expect(Self.shown(feed) == .staleRows(.couldNotCheck))
+        await source.setFails(false)
+        #expect(await feed.refresh() == false)
+        #expect(feed.fetch == .fetched)
+        #expect(Self.shown(feed) == .rows)
+    }
+
+    /// No account: the hero says iCloud, and listed rows are marked stale.
+    @Test func withoutAnAccountTheListSaysICloudOrStale() async {
+        let empty = AlertFeed(source: ScriptedSource(account: .unavailable, alerts: []),
+                              notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await empty.refresh()
+        #expect(empty.fetch == .failed)
+        #expect(Self.shown(empty) == .empty(.iCloudUnavailable))
+        let listed = AlertFeed(source: ScriptedSource(account: .unavailable, alerts: []),
+                               notifications: FixedNotificationGate(connection: .connected), isLive: true,
+                               alerts: [Self.alert("session-1", minutesAgo: 10)], connection: .connected, fetch: .fetched)
+        await listed.refresh()
+        #expect(Self.shown(listed) == .staleRows(.iCloudUnavailable))
+    }
+
+    // MARK: Pull to refresh
+
+    /// An idle pull runs one pass of its own: the probe and the query.
+    @Test func aPullWhileIdleRunsOnePass() async {
+        let fresh = [Self.alert("session-1", minutesAgo: 1)]
+        let source = ScriptedSource(account: .available, alerts: fresh)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        await feed.pullToRefresh()
+        #expect(await source.connects == 1)
+        #expect(await source.fetches == 1)
+        #expect(feed.alerts == fresh)
+    }
+
+    /// A pull during a running pass does not return at once (the spinner
+    /// would end before anything was checked): it returns after the
+    /// follow-up pass, which re-probes, and its answer is on screen.
+    @Test func aPullDuringARunningPassWaitsForTheFollowUp() async {
+        let source = ScriptedSource(account: .availableWithoutPush, alerts: [], holdFirstConnect: true)
+        let feed = AlertFeed(source: source, notifications: FixedNotificationGate(connection: .connected), isLive: true)
+        let first = Task { await feed.refresh() }
+        while await !source.isHolding { await Task.yield() }
+        let pull = Task {
+            await feed.pullToRefresh()
+            return (await source.connects, feed.connection)
+        }
+        for _ in 0..<10_000 {
+            if feed.waitingPulls > 0 { break }
+            await Task.yield()
+        }
+        #expect(feed.waitingPulls == 1)
+        await source.setAccount(.available)
+        await source.release()
+        _ = await first.value
+        let (connectsWhenDone, connectionWhenDone) = await pull.value
+        #expect(connectsWhenDone == 2)
+        #expect(connectionWhenDone == .connected)
+        #expect(feed.waitingPulls == 0)
     }
 
     // MARK: Pushes
@@ -232,9 +355,9 @@ import Testing
 }
 
 /// A scripted `AlertSource`: a fixed account answer and list, call counts,
-/// and optionally a first `connect()` that waits until released. `stored`
-/// is what a direct fetch by name finds (the query's `alerts` may lag it);
-/// a push payload names a record under `pushKey`.
+/// and optionally a first `connect()` (or a first query) that waits until
+/// released. `stored` is what a direct fetch by name finds (the query's
+/// `alerts` may lag it); a push payload names a record under `pushKey`.
 actor ScriptedSource: AlertSource {
     struct Failure: Error {}
     static let pushKey = "scripted-record"
@@ -242,9 +365,10 @@ actor ScriptedSource: AlertSource {
     private(set) var account: AccountAvailability
     let alerts: [PhoneAlert]
     let stored: [PhoneAlert]
-    let fails: Bool
+    private(set) var fails: Bool
     let directFails: Bool
     private var holdFirstConnect: Bool
+    private var holdFirstFetch: Bool
     private var held: CheckedContinuation<Void, Never>?
     private(set) var connects = 0
     private(set) var fetches = 0
@@ -256,7 +380,8 @@ actor ScriptedSource: AlertSource {
         stored: [PhoneAlert] = [],
         fails: Bool = false,
         directFails: Bool = false,
-        holdFirstConnect: Bool = false
+        holdFirstConnect: Bool = false,
+        holdFirstFetch: Bool = false
     ) {
         self.account = account
         self.alerts = alerts
@@ -264,7 +389,10 @@ actor ScriptedSource: AlertSource {
         self.fails = fails
         self.directFails = directFails
         self.holdFirstConnect = holdFirstConnect
+        self.holdFirstFetch = holdFirstFetch
     }
+
+    func setFails(_ fails: Bool) { self.fails = fails }
 
     static func push(naming recordName: String) -> [AnyHashable: Any] {
         [pushKey: recordName]
@@ -300,6 +428,10 @@ actor ScriptedSource: AlertSource {
 
     func fetchRecent() async throws -> [PhoneAlert] {
         fetches += 1
+        if holdFirstFetch {
+            holdFirstFetch = false
+            await withCheckedContinuation { held = $0 }
+        }
         if fails { throw Failure() }
         return alerts
     }

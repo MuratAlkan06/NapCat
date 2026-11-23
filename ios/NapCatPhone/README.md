@@ -77,7 +77,11 @@ choice alone. `-NapCatScreen settings` opens the launch on Settings (for
 screenshots). Neither forces fixtures on a device build.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
-probe answers it). The SwiftUI preview "Checking" shows it.
+probe answers it). The SwiftUI preview "Checking" shows it. Nor is a failed
+fetch; the previews "Couldn't check, …" show it. With
+`-NapCatConnection iCloudUnavailable` a fixture list reads as not checked,
+exactly as a live one would: the populated set shows the stale line and the
+empty set says iCloud is unavailable.
 
 ```sh
 xcrun simctl launch booted com.muratalkan.napcat.phone \
@@ -134,27 +138,47 @@ A live launch:
 
 1. Asks once for notification permission (alerts and sound) and registers
    for remote notifications. Until the first account check answers, the
-   pill reads **Checking…**.
-2. Checks the iCloud account. No usable account shows **iCloud unavailable**.
+   pill reads **Checking…**, and until the first fetch answers an empty
+   list reads **Checking for alerts…**. "No alerts. Your Mac hasn't needed
+   you." appears only once a fetch has come back empty.
+2. Checks the iCloud account. No usable account shows **iCloud unavailable**
+   (and, with nothing listed, "iCloud unavailable. Alerts can't arrive
+   without it."; with rows listed, they stay under one note: "Stale —
+   iCloud unavailable, so new alerts can't arrive").
 3. Makes sure the one push subscription exists. It fetches the subscription
    by its fixed ID (`AlertWire.subscriptionID`) and creates it only when the
-   server has none. A refusal is logged and retried on the next foreground.
-   Until the subscription is confirmed, the pill reads **Connected — no
-   push**: alerts still load whenever the app opens, but none is pushed.
+   server has none. A refusal is logged and retried on the next foreground
+   or pull to refresh. Until the subscription is confirmed, the pill reads
+   **Connected — no push**: alerts still load whenever the app opens, but
+   none is pushed.
    (**Notifications off** takes precedence, because the owner can fix that in
    Settings.)
 4. Fetches the newest `Alert` records (newest first, up to 50). It does this
-   again on every return to the foreground and on every push. A push also
+   again on every return to the foreground, on every push, and when you
+   pull the list down. A pull runs the whole pass (the account check, the
+   subscription retry while it is unconfirmed, the fetch), and its spinner
+   stays up until a pass begun after the pull has finished. A push also
    names the record it announces, and that record is fetched directly by ID,
    because the query's index can lag a record created moments ago. A push
    that names no usable record relies on the query alone. Rows are keyed
    by the record name the Mac wrote, so a record seen twice is one row.
-   Records with a missing or unknown field are skipped.
+   Records with a missing or unknown field are skipped. A fetch that fails
+   keeps the list and says so: with rows listed, one line under the header
+   reads "Stale — couldn't check for new alerts just now"; with none,
+   the empty state reads "Couldn't check for alerts just now. Pull down to
+   check again." The next fetch that answers clears it. Wherever the screen
+   says it couldn't get alerts (that hero, the iCloud one, or a stale
+   note), VoiceOver and Switch Control also offer a **Check again** action
+   that runs the same pass as a pull. The list keeps at
+   most 50 rows; a full list ends with "Capped — the list keeps the latest
+   50 alerts" (it says the rule; it can't know whether older ones exist).
 
 The notification itself is rendered by iOS from the subscription: title
 "NapCat", the record's body as the text, default sound. The app schedules no
-notification of its own. A push that arrives while the app is open updates
-the list without a banner. The app declares no background modes, so it is
+notification of its own. A push that arrives while the app is open still
+shows its banner and plays its sound, and its row comes into the list on
+the entrance curve (under Reduce Motion it is simply there). The app
+declares no background modes, so it is
 never woken in the background. Whatever arrived while it was closed is
 fetched when it opens.
 
