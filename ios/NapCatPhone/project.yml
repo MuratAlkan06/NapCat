@@ -20,8 +20,8 @@ settings:
     # The phone app's own version line, independent of the Mac app's 1.x.
     # CURRENT_PROJECT_VERSION goes up by 1 for every TestFlight upload.
     # TestFlight builds get no vX.Y.Z tag.
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "2"
 packages:
   # The repository root. Only its `NapCatWire` product (the wire contract
   # and the pure approval core: zero imports, no I/O) is linked; the Mac
