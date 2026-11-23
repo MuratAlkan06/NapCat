@@ -231,10 +231,12 @@ code are normative, and the unit tests pin them.
 - **Category gate** (data-driven tables): the three forbidden families are
   checked first and are never forwarded; a Bash command is forwarded only when
   it parses under the positive grammar and every command matches a row of the
-  command table; MCP tools are local-only; an unknown tool, an unknown or
-  missing argument, a preview that is not a strict JSON object, or anything
-  else the tables do not recognise fails closed. There is no default-forward
-  branch.
+  command table (since slice S-GATE: only when it is exactly one of a short
+  list of commands, with the grammar kept as a refusal filter); MCP tools are
+  local-only (since S-GATE, the file-edit tools too); an unknown tool, an
+  unknown or missing argument, a preview that is not a strict JSON object, or
+  anything else the tables do not recognise fails closed. There is no
+  default-forward branch.
 - **Lifecycle state machine**: one prompt from gate to a terminal state. Only
   a valid, signed remote decision for the same prompt, inside the TTL, ever
   produces a verdict; expiry, retraction and the kill switch only withdraw the
@@ -268,10 +270,11 @@ napcat-channel-version: 1
   notification, the permission request: exactly its four string fields, with
   a request ID of five letters from a to z without l. The description is
   checked for type and dropped right there; it never crosses the seam. A
-  prompt is relayed only after the handshake, once per request ID (Claude
-  Code drops any verdict for a repeated ID), and at most 32 wait at once. A
-  verdict goes back only for a request the server relayed and still holds
-  open, and only once. The server never sends a channel message into the
+  prompt is relayed only after the handshake (since slice S-GATE, only when
+  the handshake named a confirmed Claude Code build), once per request ID
+  (Claude Code drops any verdict for a repeated ID), and at most 32 wait at
+  once. A verdict goes back only for a request the server relayed and still
+  holds open, and only once. The server never sends a channel message into the
   session, reads no Claude Code configuration and no environment, and
   connects to NapCat only when a prompt opens; once connected it keeps the
   link until NapCat lets it go (slice S2: after a quiet minute with no prompt

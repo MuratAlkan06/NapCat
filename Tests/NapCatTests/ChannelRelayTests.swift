@@ -67,7 +67,7 @@ final class RelayHarness {
 
     static func quote(_ text: String) -> String { ApprovalChannel.quoted(text) }
 
-    static func permissionRequest(_ id: String, tool: String = "Bash", preview: String = #"{"command":"ls -la"}"#,
+    static func permissionRequest(_ id: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#,
                                   description: String = "List files") -> String {
         #"{"jsonrpc":"2.0","method":"notifications/claude/channel/permission_request","params":{"request_id":"#
             + quote(id) + #","tool_name":"# + quote(tool) + #","description":"# + quote(description)
@@ -234,6 +234,100 @@ struct ChannelRelayTests {
         harness.stdin(RelayHarness.permissionRequest("abcde"))
         #expect(harness.connectAttempts == 0)
         #expect(harness.notes == [.heldBeforeInitialize])
+    }
+
+    // MARK: - Only a confirmed client's prompts are relayed
+
+    /// An `initialize` line whose params carry `clientInfo` as this raw JSON
+    /// (none when nil).
+    static func initializeLine(clientInfo: String?) -> String {
+        #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}"#
+            + (clientInfo.map { #","clientInfo":"# + $0 } ?? "") + "}}"
+    }
+
+    @Test func theHarnessHandshakeNamesTheConfirmedClient() {
+        #expect(RelayHarness.initializeLine == Self.initializeLine(clientInfo: #"{"name":"claude-code","version":"2.1.326"}"#))
+    }
+
+    /// Anything but exactly a confirmed name and version, as strings.
+    static let unconfirmedClients: [String?] = [
+        nil, "null", #""claude-code""#, "[]", "{}",
+        #"{"name":"claude-code"}"#,
+        #"{"version":"2.1.326"}"#,
+        #"{"name":"claude-code","version":"2.1.327"}"#,
+        #"{"name":"claude-code","version":"2.1.325"}"#,
+        #"{"name":"claude-code","version":"2.1.32"}"#,
+        #"{"name":"claude-code","version":"2.1.3260"}"#,
+        #"{"name":"claude-code","version":"2.1.326.0"}"#,
+        #"{"name":"claude-code","version":"2.1.326-beta"}"#,
+        #"{"name":"claude-code","version":"v2.1.326"}"#,
+        #"{"name":"claude-code","version":"2.1.326 "}"#,
+        #"{"name":"claude-code","version":" 2.1.326"}"#,
+        #"{"name":"claude-code","version":"2.1.326\n"}"#,
+        #"{"name":"claude-code","version":"２.1.326"}"#,
+        #"{"name":"claude-code","version":""}"#,
+        #"{"name":"claude-code","version":2.1}"#,
+        #"{"name":"claude-code","version":["2.1.326"]}"#,
+        #"{"name":"claude-code","version":null}"#,
+        #"{"name":"Claude-Code","version":"2.1.326"}"#,
+        #"{"name":"claude-code ","version":"2.1.326"}"#,
+        #"{"name":"claude","version":"2.1.326"}"#,
+        #"{"name":"claude-code-x","version":"2.1.326"}"#,
+        #"{"name":"other-client","version":"2.1.326"}"#,
+        #"{"name":null,"version":"2.1.326"}"#,
+        #"{"name":"2.1.326","version":"claude-code"}"#,
+    ]
+
+    /// The handshake is still answered (the session works as unwired), but
+    /// no prompt is relayed, and the seam is never even reached.
+    @Test(arguments: unconfirmedClients)
+    func anUnconfirmedClientsPromptsStayLocal(_ clientInfo: String?) {
+        let harness = RelayHarness()
+        harness.stdin(Self.initializeLine(clientInfo: clientInfo))
+        #expect(harness.emitted.count == 1, "the handshake is answered")
+        #expect(Self.field(["result", "protocolVersion"], in: harness.emitted.first ?? "") == .string("2025-06-18"))
+        harness.stdin(RelayHarness.permissionRequest("abcde"))
+        harness.stdin(RelayHarness.permissionRequest("bcdef"))
+        #expect(harness.connectAttempts == 0)
+        #expect(harness.notes == [.heldUnconfirmedClient, .heldUnconfirmedClient])
+    }
+
+    /// Exactly the confirmed name and version are read; other `clientInfo`
+    /// members are ignored, and an escape decodes to the same text.
+    @Test(arguments: [
+        #"{"name":"claude-code","version":"2.1.326"}"#,
+        #"{"version":"2.1.326","name":"claude-code"}"#,
+        #"{"name":"claude-code","version":"2.1.326","title":"Claude Code"}"#,
+        #"{"name":"claude-code","version":"2.1.326"}"#,
+    ])
+    func theConfirmedClientsPromptsAreRelayed(_ clientInfo: String) throws {
+        let harness = RelayHarness()
+        harness.stdin(Self.initializeLine(clientInfo: clientInfo))
+        harness.stdin(RelayHarness.permissionRequest("abcde"))
+        #expect(try #require(harness.link).sent.count == 1)
+        #expect(harness.notes == [.relayed])
+    }
+
+    /// A later handshake can keep a session's prompts local, never release
+    /// them again.
+    @Test func aLaterHandshakeCanOnlyKeepPromptsLocal() throws {
+        let harness = RelayHarness.initialized()
+        harness.stdin(RelayHarness.permissionRequest("abcde"))
+        harness.stdin(Self.initializeLine(clientInfo: #"{"name":"claude-code","version":"2.1.327"}"#))
+        harness.stdin(RelayHarness.permissionRequest("bcdef"))
+        harness.stdin(RelayHarness.initializeLine)
+        harness.stdin(RelayHarness.permissionRequest("cdefg"))
+        #expect(try #require(harness.link).sent.count == 1)
+        #expect(harness.notes == [.relayed, .heldUnconfirmedClient, .heldUnconfirmedClient])
+    }
+
+    /// The confirmed list is exactly the one checked build: a new build joins
+    /// it only after its relay has been checked again.
+    @Test func theConfirmedClientsAreExactlyTheCheckedBuild() {
+        #expect(ApprovalChannel.confirmedClients == [ChannelClient(name: "claude-code", version: "2.1.326")])
+        #expect(ApprovalChannel.confirms(ChannelClient(name: "claude-code", version: "2.1.326")))
+        #expect(!ApprovalChannel.confirms(nil))
+        #expect(!ApprovalChannel.confirms(ChannelClient(name: "claude-code", version: "2.1.327")))
     }
 
     static let malformedRequests: [String] = [

@@ -209,6 +209,57 @@ struct ApprovalChannelStructureTests {
         }
     }
 
+    // MARK: - Only the gate's copy of a preview is ever saved
+
+    /// The relayed preview is read exactly twice — by the gate and by the
+    /// gate's copy — and what reaches `records.save(` is the copy (which has
+    /// no description); a forward without a copy stays local.
+    static func savedCopyFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        let intake = text(intakeFile, in: sources)
+        let copy = "let copy = ApprovalGate.forwardedPreview(toolName: request.toolName, inputPreview: request.inputPreview)"
+        if count(copy, in: intake) != 1 { failures.append("the intake must take the gate's copy of the preview, once") }
+        if count("request.inputPreview", in: intake) != 2 {
+            failures.append("the relayed preview may be read only by the gate and by its copy")
+        }
+        if count(".requiringCopy(copy)", in: intake) != 1 { failures.append("a forward without a copy must stay local") }
+        if count("classified: (", in: intake) != 2
+            || !intake.contains("perform(opened.transition, for: id, classified: (classification, copy))") {
+            failures.append("the lifecycle's save effect must be handed the copy, nothing else")
+        }
+        if count("records.save(", in: intake) != 1
+            || !intake.contains("let preview = classified?.1 else { continue }\n"
+                                + "                records.save(id, tool: tool, inputPreview: preview, expiresAt: ") {
+            failures.append("the one save must write the copy it was handed")
+        }
+        for (name, text) in sources where name != intakeFile && name != "ApprovalClassification.swift"
+            && text.contains("forwardedPreview(") {
+            failures.append("\(name) takes a copy of a preview — only the intake may")
+        }
+        return failures
+    }
+
+    @Test func onlyTheGatesCopyOfAPreviewIsEverSaved() throws {
+        let sources = try Self.sources()
+        #expect(Self.savedCopyFailures(sources).isEmpty, "\(Self.savedCopyFailures(sources))")
+        let mutants: [(String, Sources)] = [
+            ("the relayed text handed to the save", Self.mutate(sources, Self.intakeFile) {
+                $0.replacingOccurrences(of: "classified: (classification, copy))", with: "classified: (classification, request.inputPreview))") }),
+            ("the fold dropped", Self.mutate(sources, Self.intakeFile) {
+                $0.replacingOccurrences(of: ".requiringCopy(copy)", with: "") }),
+            ("the save writes something else", Self.mutate(sources, Self.intakeFile) {
+                $0.replacingOccurrences(of: "records.save(id, tool: tool, inputPreview: preview,",
+                                        with: "records.save(id, tool: tool, inputPreview: preview + suffix,") }),
+            ("a second save", Self.mutate(sources, Self.intakeFile) {
+                $0 + "\nfunc f(p: String) { records.save(id, tool: .bash, inputPreview: p, expiresAt: 0) }" }),
+            ("a copy taken elsewhere", Self.mutate(sources, Self.hostFile) {
+                $0 + "\nlet c = ApprovalGate.forwardedPreview(toolName: t, inputPreview: p)" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(!Self.savedCopyFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - One reader, no second parser
 
     static let parserTokens = ["JSONSerialization", "JSONDecoder", "PropertyListSerialization", "PropertyListDecoder",
