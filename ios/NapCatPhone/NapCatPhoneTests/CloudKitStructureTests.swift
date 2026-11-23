@@ -10,10 +10,11 @@ import Testing
 /// 1. The wire's identifiers are spelled once, in NapCatWire: no other Swift
 ///    file in either app (or in these tests) holds the subscription ID or
 ///    the container ID, and no receiver source spells a record key itself.
-/// 2. CloudKit lives in ONE receiver file, and a container is built at ONE
-///    site, `makeLive()`, whose first statement is the `LiveCapability`
-///    guard (an unentitled construction traps). No test names a container
-///    constructor at all.
+/// 2. CloudKit lives in ONE receiver file (no other file imports it in any
+///    form, a scoped `import class CloudKit.X` included), and a container is
+///    built at ONE site, `makeLive()`, whose first statement is the
+///    `LiveCapability` guard (an unentitled construction traps). No test
+///    names a container constructor at all.
 @Suite struct CloudKitStructureTests {
     typealias Source = (path: String, text: String)
 
@@ -53,8 +54,34 @@ import Testing
             .joined(separator: "\n")
     }
 
+    /// WHOLE-LINE `//` comments removed only. Unlike `codeOnly`, it never
+    /// cuts a code line at a `//` inside a string literal (`"https://…"`), so
+    /// a token after a URL on the same line stays visible (that truncation,
+    /// security review L3, is tracked separately). Trailing comments stay
+    /// in: they can only over-match.
+    static func wholeLineCommentsRemoved(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in line.drop { $0 == " " || $0 == "\t" }.hasPrefix("//") ? "" : line }
+            .joined(separator: "\n")
+    }
+
+    /// An import of the CloudKit module in ANY form: `import CloudKit`,
+    /// `@_exported import CloudKit`, a scoped `import class CloudKit.X`, split
+    /// over lines or with a block comment between the words. The literal
+    /// "import CloudKit" missed the scoped form (security review 2, G2).
+    static let cloudKitImport: String = {
+        let gap = #"(?:\s|/\*[\s\S]*?\*/)+"#
+        return #"\bimport"# + gap + #"(?:\w+"# + gap + #")?`?CloudKit\b"#
+    }()
+
     static func occurrences(of token: String, in text: String) -> Int {
         text.components(separatedBy: token).count - 1
+    }
+
+    /// How many times `pattern` matches in `text`.
+    static func matchCount(_ pattern: String, in text: String) -> Int {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return -1 }
+        return regex.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text))
     }
 
     /// From a declaration line to the first closing brace at its indentation.
@@ -142,7 +169,8 @@ import Testing
         for (path, text) in tests where codeOnly(text).contains(constructor) {
             failures.append("\(path) builds a container; tests use fixture databases only")
         }
-        for (path, text) in receiver where path != cloudKitFile && codeOnly(text).contains("import CloudKit") {
+        for (path, text) in receiver where path != cloudKitFile
+            && wholeLineCommentsRemoved(text).range(of: cloudKitImport, options: .regularExpression) != nil {
             failures.append("\(path) imports CloudKit; only \(cloudKitFile) may")
         }
         let file = codeOnly(receiver.first { $0.path == cloudKitFile }?.text ?? "")
@@ -182,11 +210,22 @@ import Testing
         // CloudKit imported elsewhere in the app.
         let leaked = receiver.map { $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, "import CloudKit\n" + $0.text) : $0 }
         #expect(!Self.containerFailures(receiver: leaked, tests: tests).isEmpty)
+        // … in any form (security review 2, G2): scoped, re-exported, split.
+        for importLine in ["import class CloudKit.CKModifyRecordsOperation", "@_exported import CloudKit",
+                           "import\n    struct\n    CloudKit.CKRecordZone", "import /* ops */ CloudKit"] {
+            let scoped = receiver.map { $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, importLine + "\n" + $0.text) : $0 }
+            #expect(!Self.containerFailures(receiver: scoped, tests: tests).isEmpty, "canary '\(importLine)' was NOT caught")
+        }
         // A test that builds a container.
         let rogue = tests + [("\(Self.testsDir)/Rogue.swift", "let c = \(Self.container)(identifier: \"x\")")]
         #expect(!Self.containerFailures(receiver: receiver, tests: rogue).isEmpty)
         // A comment naming the constructor is fine.
         let commented = mutated { $0 + "\n// \(Self.container)(identifier:) traps unentitled\n" }
         #expect(Self.containerFailures(receiver: commented, tests: tests).isEmpty)
+        // So is a whole-line comment naming the import, elsewhere in the app.
+        let noted = receiver.map {
+            $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, "/// never import class CloudKit.CKRecord here\n" + $0.text) : $0
+        }
+        #expect(Self.containerFailures(receiver: noted, tests: tests).isEmpty)
     }
 }

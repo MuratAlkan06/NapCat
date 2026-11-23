@@ -18,10 +18,16 @@ import Testing
 ///    never asks, and both write through one site that re-checks the window
 ///    first (CL-3);
 /// 5. the decision record is built once, only through the wire's keys and
-///    encryption table, and carries no signature before pairing.
+///    encryption table, and carries no signature before pairing;
+/// 6. (security review 2) the decision's record and its save operation are
+///    each reached once, in `CloudKitDecisionWriter.write`, which hands the
+///    operation to the seam, and nothing in the CloudKit file runs an
+///    operation itself.
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
-/// catches planted canaries, so none can pass vacuously.
+/// catches planted canaries, so none can pass vacuously. Lock 6 strips
+/// whole-line comments only, so a `//` inside a string literal cannot hide
+/// a token from it.
 @Suite struct RecordPathStructureTests {
     typealias Source = CloudKitStructureTests.Source
 
@@ -275,5 +281,108 @@ import Testing
             #expect(mutant != file, "canary '\(name)' did not apply")
             #expect(!Self.decisionSchemaFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+    }
+
+    // MARK: 6. The decision operation runs only through the seam
+
+    /// A record operation run with no database set targets the user's
+    /// private database (Apple's `CKDatabaseOperation.database`), so the
+    /// operation must never run outside the seam (security review 2: P1
+    /// started it outside the writer, P2 added it to the live alert
+    /// database). The two factories are counted as whole words across the
+    /// app (an unapplied `let make = …makeDecisionSaveOperation` counts):
+    /// each is declared once and used once, in the writer's `write`, whose
+    /// body is exactly "build the record, hand its operation to the seam".
+    /// And nothing in the CloudKit file runs an operation itself: no `start`
+    /// or `main`, no queue, no database `add`, no dynamic message (whole
+    /// words, so `addingTimeInterval` passes).
+    static let decisionFactories = ["makeDecisionRecord", "makeDecisionSaveOperation"]
+    static let writerHead = "struct CloudKitDecisionWriter: DecisionWriter {"
+    static let writeHead = "func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome {"
+    static let writeBody = "let record = CloudKitAlertSource.makeDecisionRecord(decision) "
+        + "return await withCheckedContinuation { continuation in "
+        + "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) { continuation.resume(returning: $0) }) }"
+    static let operationRunPatterns = [#"\.\s*start\b"#, #"\.\s*main\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#,
+                                       #"\.\s*add\b"#, #"\bperform\b"#, #"#selector\b"#, #"\bSelector\b"#,
+                                       #"\bNSSelectorFromString\b"#]
+
+    static func decisionRunFailures(_ app: [Source]) -> [String] {
+        let uncut = app.map { (path: $0.path, text: CloudKitStructureTests.wholeLineCommentsRemoved($0.text)) }
+        let file = uncut.first { $0.path == cloudKitFile }?.text ?? ""
+        guard let writer = CloudKitStructureTests.body(after: writerHead, in: file),
+              let write = CloudKitStructureTests.body(after: writeHead, in: writer) else {
+            return ["CloudKitDecisionWriter.write moved (the lock would be vacuous)"]
+        }
+        var failures: [String] = []
+        for factory in decisionFactories {
+            let word = #"\b"# + factory + #"\b"#
+            let total = uncut.reduce(0) { $0 + CloudKitStructureTests.matchCount(word, in: $1.text) }
+            let declared = CloudKitStructureTests.occurrences(of: "static func \(factory)(", in: file)
+            if declared != 1 || total != 2 || CloudKitStructureTests.matchCount(word, in: write) != 1 {
+                failures.append("'\(factory)' must be declared once and reached once, in CloudKitDecisionWriter.write "
+                                + "(\(declared) declaration(s), \(total) mention(s) in the app)")
+            }
+        }
+        if SettingsReachabilityTests.flat(write) != writeBody {
+            failures.append("CloudKitDecisionWriter.write builds the record and hands its operation to the seam, nothing else")
+        }
+        for pattern in operationRunPatterns where file.range(of: pattern, options: .regularExpression) != nil {
+            failures.append("'\(pattern)' in \(cloudKitFile) — only the seam runs a decision's operation")
+        }
+        return failures
+    }
+
+    @Test func theDecisionOperationRunsOnlyThroughTheSeam() throws {
+        let app = try Self.app()
+        #expect(Self.decisionRunFailures(app).isEmpty, "\(Self.decisionRunFailures(app))")
+        let probes = ["o.start()", "o.main()", "OperationQueue.current", "q.addOperation(o)", "db.add(o)", "o.perform(s)",
+                      "#selector(Operation.start)", "Selector((\"start\"))", "NSSelectorFromString(\"start\")"]
+        #expect(probes.count == Self.operationRunPatterns.count)
+        for (pattern, probe) in zip(Self.operationRunPatterns, probes) {
+            #expect(probe.range(of: pattern, options: .regularExpression) != nil, "'\(pattern)' does not match '\(probe)'")
+        }
+        let ck = Self.cloudKitFile
+        let inbox = Self.inboxFile
+        let submit = "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) { continuation.resume(returning: $0) })"
+        let mutants: [(String, [Source])] = [
+            ("P1: started outside the writer", Self.mutate(app, ck) {
+                $0 + "\nextension CloudKitAlertSource {\n    static func p1(_ d: PhoneDecision) {\n"
+                    + "        makeDecisionSaveOperation(makeDecisionRecord(d)) { _ in }.start()\n    }\n}" }),
+            ("P1 from another file", Self.mutate(app, inbox) {
+                $0 + "\nfunc p1(_ d: PhoneDecision) { CloudKitAlertSource.makeDecisionSaveOperation("
+                    + "CloudKitAlertSource.makeDecisionRecord(d)) { _ in }.start() }" }),
+            ("P2: added to the live alert database", Self.mutate(app, ck) {
+                $0 + "\nextension LiveCloudKitAlertDatabase {\n    func p2(_ d: PhoneDecision) {\n"
+                    + "        container.privateCloudDatabase.add(CloudKitAlertSource.makeDecisionSaveOperation("
+                    + "CloudKitAlertSource.makeDecisionRecord(d)) { _ in })\n    }\n}" }),
+            ("P2 with an operation handed in", Self.mutate(app, ck) {
+                $0 + "\nextension LiveCloudKitAlertDatabase { func p2(_ o: CKModifyRecordsOperation) { "
+                    + "container.privateCloudDatabase.add(o) } }" }),
+            ("an unapplied factory", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
+                $0 + "\nlet make = CloudKitAlertSource.makeDecisionSaveOperation" }),
+            ("a second record for the writer", Self.mutate(app, ck) {
+                $0 + "\nfunc f(d: PhoneDecision) -> CKRecord { CloudKitAlertSource.makeDecisionRecord(d) }" }),
+            ("the writer starts its own operation", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: submit, with: "CloudKitAlertSource.makeDecisionSaveOperation(record) "
+                                        + "{ continuation.resume(returning: $0) }.start()") }),
+            ("the writer queues it", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "database.submit(", with: "OperationQueue.main.addOperation(") }),
+            ("a start behind a URL", Self.mutate(app, ck) {
+                $0 + "\nfunc f(o: CKOperation) { let u = \"https://www.icloud.com\"; o.start(); _ = u }" }),
+            ("an operation run by hand", Self.mutate(app, ck) { $0 + "\nfunc f(o: CKOperation) { o.main() }" }),
+            ("an operation messaged dynamically", Self.mutate(app, ck) {
+                $0 + "\nfunc f(o: CKOperation) { o.perform(NSSelectorFromString(\"start\")) }" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.decisionRunFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: a whole-line comment may name the factories,
+        // and `addingTimeInterval` or the feed's own `start()` elsewhere pass.
+        #expect(Self.decisionRunFailures(Self.mutate(app, ck) {
+            $0 + "\n/// never makeDecisionSaveOperation(…).start() outside the writer\n"
+                + "func f(d: Date) -> Date { d.addingTimeInterval(1) }"
+        }).isEmpty)
+        #expect(app.contains { $0.text.contains("await feed.start()") }, "vacuity: a legitimate start() lives outside the CloudKit file")
     }
 }

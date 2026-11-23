@@ -8,10 +8,13 @@ import os
 //
 // SECOND FILE THAT MAY NAME CLOUDKIT (deliberate lint amendment, #146): its
 // RECORD vocabulary only — records, record IDs and zones, the modify
-// operation and CloudKit's error codes. Nothing that reaches iCloud by
-// itself: the container, the database, the account check and the
-// entitlement probe stay in CloudKitMessageSender.swift alone
-// (LidGuardStructureTests, ApprovalRecordPathStructureTests).
+// operation and CloudKit's error codes (an exact allow-list). The container,
+// the database, the account check and the entitlement probe stay in
+// CloudKitMessageSender.swift alone. The operation built here COULD reach
+// iCloud if it ran: one run with no database set targets the user's private
+// database. So nothing here runs it — no start, no queue, no database `add` —
+// it only goes to the database seam, which only test fakes conform to
+// (LidGuardStructureTests, ApprovalRecordPathStructureTests lock 4).
 //
 // - The WRITER saves one PromptRequest record per prompt the category gate
 //   already forwarded (`GateApprovedPrompt`: the writer never classifies),

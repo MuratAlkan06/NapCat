@@ -37,12 +37,25 @@ struct LidGuardStructureTests {
             .joined(separator: "\n")
     }
 
-    static func swiftSources() throws -> [(name: String, text: String)] {
+    /// Removes WHOLE-LINE `//` comments only (a line whose first non-blank
+    /// characters are `//`). Unlike `codeOnly`, it never cuts a code line at
+    /// a `//` inside a string literal (`"https://…"`), so a token after a URL
+    /// on the same line stays visible; that truncation (security review L3)
+    /// is tracked separately, so the checks added after security review 2
+    /// (#146) scan this form. Trailing comments stay in: they can only
+    /// over-match.
+    static func wholeLineCommentsRemoved(_ text: String) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in line.drop { $0 == " " || $0 == "\t" }.hasPrefix("//") ? "" : line }
+            .joined(separator: "\n")
+    }
+
+    static func swiftSources(_ strip: (String) -> String = codeOnly) throws -> [(name: String, text: String)] {
         let dir = sourcesDir()
         let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
             .filter { $0.hasSuffix(".swift") }
             .sorted()
-        return try names.map { ($0, codeOnly(try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8))) }
+        return try names.map { ($0, strip(try String(contentsOf: dir.appendingPathComponent($0), encoding: .utf8))) }
     }
 
     /// The files that make up the B2 subsystem. F3 stage 1 added the
@@ -357,49 +370,123 @@ struct LidGuardStructureTests {
     /// F4 slice S3 AMENDMENT (deliberate, issue #146): CloudKitApprovalRecords.swift
     /// may also name CloudKit's RECORD vocabulary — exactly the four tokens in
     /// `approvalRecordVocabulary`, so it can build the approval records and
-    /// their operation. Every token that reaches iCloud by itself (the
+    /// their operation. Every token that names a door to iCloud (the
     /// container, the database, the account check, the entitlement probe)
-    /// stays single-owner, so that file can never run an operation
-    /// (ApprovalRecordPathStructureTests locks the rest of it).
+    /// stays single-owner. That alone does NOT stop the file running an
+    /// operation: a CKDatabaseOperation run with no database set targets the
+    /// user's private database (Apple's `CKDatabaseOperation.database`), so a
+    /// `.start()` or a queue reaches iCloud naming none of these tokens
+    /// (security review G1). ApprovalRecordPathStructureTests lock 4 closes
+    /// that: an allow-list of the file's CloudKit identifiers, and no way to
+    /// run an operation but the database seam.
+    ///
+    /// The CloudKit import is matched in ANY form (`cloudKitImport`): the
+    /// literal "import CloudKit" let a scoped `import class CloudKit.X` into a
+    /// third file (security review G2).
     static let approvalRecordsFile = "CloudKitApprovalRecords.swift"
     static let approvalRecordVocabulary: Set<String> = ["import CloudKit", "CKRecord", "CKModifyRecordsOperation", "CKError"]
 
-    @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
-        let allowed: [String: String] = [
-            "httpBody": "NtfyMessageSender.swift",
-            "setValue": "NtfyMessageSender.swift",
-            "session(for:": "NtfyMessageSender.swift",
-            "IORegisterForSystemPower": "SystemSleepSource.swift",
-            "IODeregisterForSystemPower": "SystemSleepSource.swift",
-            "IOAllowPowerChange": "SystemSleepSource.swift",
-            "IONotificationPortSetDispatchQueue": "SystemSleepSource.swift",
-            "import CloudKit": "CloudKitMessageSender.swift",
-            "CKContainer": "CloudKitMessageSender.swift",
-            "CKDatabase": "CloudKitMessageSender.swift",
-            "CKRecord": "CloudKitMessageSender.swift",
-            "CKModifyRecordsOperation": "CloudKitMessageSender.swift",
-            "CKAccountStatus": "CloudKitMessageSender.swift",
-            "CKError": "CloudKitMessageSender.swift",
-            "SecTaskCreateFromSelf": "CloudKitMessageSender.swift",
-            "SecTaskCopyValueForEntitlement": "CloudKitMessageSender.swift",
-        ]
-        let sources = try Self.swiftSources()
-        for (token, owner) in allowed {
-            for (name, text) in sources where text.contains(token) {
-                let shared = name == Self.approvalRecordsFile && Self.approvalRecordVocabulary.contains(token)
-                #expect(name == owner || shared, "'\(token)' leaked into \(name) — it must stay in \(owner)")
+    static let oneOwnerTable: [String: String] = [
+        "httpBody": "NtfyMessageSender.swift",
+        "setValue": "NtfyMessageSender.swift",
+        "session(for:": "NtfyMessageSender.swift",
+        "IORegisterForSystemPower": "SystemSleepSource.swift",
+        "IODeregisterForSystemPower": "SystemSleepSource.swift",
+        "IOAllowPowerChange": "SystemSleepSource.swift",
+        "IONotificationPortSetDispatchQueue": "SystemSleepSource.swift",
+        "import CloudKit": "CloudKitMessageSender.swift",
+        "CKContainer": "CloudKitMessageSender.swift",
+        "CKDatabase": "CloudKitMessageSender.swift",
+        "CKRecord": "CloudKitMessageSender.swift",
+        "CKModifyRecordsOperation": "CloudKitMessageSender.swift",
+        "CKAccountStatus": "CloudKitMessageSender.swift",
+        "CKError": "CloudKitMessageSender.swift",
+        "SecTaskCreateFromSelf": "CloudKitMessageSender.swift",
+        "SecTaskCopyValueForEntitlement": "CloudKitMessageSender.swift",
+    ]
+
+    /// An import of the CloudKit module in ANY form: `import CloudKit`,
+    /// `@_exported import CloudKit`, `internal import CloudKit`, a scoped
+    /// `import class CloudKit.CKFetchRecordsOperation`, split over lines or
+    /// with a block comment between the words (security review G2).
+    static let cloudKitImport: String = {
+        let gap = #"(?:\s|/\*[\s\S]*?\*/)+"#
+        return #"\bimport"# + gap + #"(?:\w+"# + gap + #")?`?CloudKit\b"#
+    }()
+
+    /// Whether a source names `token`: the CloudKit import in any form,
+    /// matched on the `uncut` text (`wholeLineCommentsRemoved`, so no URL can
+    /// hide it); every other token as a substring of the `code` (`codeOnly`).
+    static func names(_ token: String, code: String, uncut: String) -> Bool {
+        token == "import CloudKit" ? uncut.range(of: cloudKitImport, options: .regularExpression) != nil : code.contains(token)
+    }
+
+    /// `sources`: Sources/NapCat with whole-line comments removed
+    /// (`swiftSources(wholeLineCommentsRemoved)`).
+    static func oneOwnerFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        let scanned = sources.map { (name: $0.name, code: codeOnly($0.text), uncut: $0.text) }
+        var failures: [String] = []
+        for (token, owner) in oneOwnerTable.sorted(by: { $0.key < $1.key }) {
+            for source in scanned where names(token, code: source.code, uncut: source.uncut) {
+                let shared = source.name == approvalRecordsFile && approvalRecordVocabulary.contains(token)
+                if source.name != owner && !shared {
+                    failures.append("'\(token)' leaked into \(source.name) — it must stay in \(owner)")
+                }
             }
-            let present = sources.contains { $0.name == owner && $0.text.contains(token) }
-            #expect(present, "'\(token)' not found in \(owner) — this lint would be vacuous")
+            if !scanned.contains(where: { $0.name == owner && names(token, code: $0.code, uncut: $0.uncut) }) {
+                failures.append("'\(token)' not found in \(owner) — this lint would be vacuous")
+            }
         }
-        #expect(Self.approvalRecordVocabulary.isSubset(of: Set(allowed.keys)), "the amendment names table tokens only")
-        let approvals = sources.first { $0.name == Self.approvalRecordsFile }?.text ?? ""
-        #expect(Self.approvalRecordVocabulary.allSatisfy { approvals.contains($0) },
-                "the amendment names only what \(Self.approvalRecordsFile) uses (vacuity)")
+        if !approvalRecordVocabulary.isSubset(of: Set(oneOwnerTable.keys)) {
+            failures.append("the amendment names table tokens only")
+        }
+        guard let approvals = scanned.first(where: { $0.name == approvalRecordsFile }) else {
+            return failures + ["\(approvalRecordsFile) not found — the amendment would be vacuous"]
+        }
+        for token in approvalRecordVocabulary.sorted() where !names(token, code: approvals.code, uncut: approvals.uncut) {
+            failures.append("'\(token)' not in \(approvalRecordsFile) — the amendment names only what it uses (vacuity)")
+        }
         // The amendment shares the record vocabulary, never a door to iCloud.
-        for token in allowed.keys where !Self.approvalRecordVocabulary.contains(token) {
-            #expect(!approvals.contains(token), "'\(token)' in \(Self.approvalRecordsFile) — only the record vocabulary is shared")
+        for token in oneOwnerTable.keys.sorted() where !approvalRecordVocabulary.contains(token)
+            && names(token, code: approvals.code, uncut: approvals.uncut) {
+            failures.append("'\(token)' in \(approvalRecordsFile) — only the record vocabulary is shared")
         }
+        return failures
+    }
+
+    @Test func externalCapabilitiesAreConfinedToOneFileEach() throws {
+        let sources = try Self.swiftSources(Self.wholeLineCommentsRemoved)
+        #expect(Self.oneOwnerFailures(sources).isEmpty, "\(Self.oneOwnerFailures(sources))")
+    }
+
+    /// The one-owner audit, run against mutated copies (security review 2,
+    /// #146): each must fail it.
+    @Test func theOneOwnerAuditCatchesEachBreach() throws {
+        let sources = try Self.swiftSources(Self.wholeLineCommentsRemoved)
+        func mutate(_ name: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
+            sources.map { $0.name == name ? ($0.name, transform($0.text)) : $0 }
+        }
+        let canaries: [(String, [(name: String, text: String)])] = [
+            // Security review 2 (#146), G2: a third file, scoped import.
+            ("a third CloudKit file, scoped import (G2)", sources + [("ZZFetchRecords.swift",
+                "import class CloudKit.CKFetchRecordsOperation\nfunc f() { CKFetchRecordsOperation(recordIDs: []).start() }")]),
+            ("an exported import", mutate("NapCatApp.swift") { "@_exported import CloudKit\n" + $0 }),
+            ("an access-level import", mutate("CompositeMessageSender.swift") { "internal import CloudKit\n" + $0 }),
+            ("a scoped import over three lines", mutate("MenuStateModel.swift") { "import\n    enum\n    CloudKit.CKError\n" + $0 }),
+            ("a block comment inside the import", mutate("LidGuardController.swift") {
+                "import /* zones */ struct CloudKit.CKRecordZone\n" + $0 }),
+            ("a record token in a third file", mutate("MessageSender.swift") { $0 + "\nlet canary: CKRecord? = nil" }),
+            ("the approvals file takes a container", mutate(Self.approvalRecordsFile) { $0 + "\nlet canary = CKContainer.default()" }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(!Self.oneOwnerFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: a doc comment may say what it rules out, and a
+        // type named after CloudKit is not an import of it.
+        #expect(Self.oneOwnerFailures(mutate("MenuStateModel.swift") {
+            $0 + Self.wholeLineCommentsRemoved("\n/// two files import CloudKit; never import class CloudKit.CKRecord")
+                + "\nimport NapCatWire\nlet canary = CloudKitMessageSender.self"
+        }).isEmpty)
     }
 
     /// The B2 subsystem spawns NOTHING. Before B4 the osascript sender was the

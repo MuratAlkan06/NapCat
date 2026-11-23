@@ -23,10 +23,14 @@ import Testing
 ///    the app still builds none of it;
 /// 2. the approval files hold exactly one `armed` literal, `{ false }`, in
 ///    the fail-dark factory;
-/// 3. no Mac source builds the S0 decision type or names its signature flag;
+/// 3. no Mac source builds the S0 decision type or names its signature flag
+///    — nor reaches its constructor unnamed: an unapplied `.init`, the
+///    metatype or an alias (security review 2, G4);
 /// 4. the record path cannot reach iCloud by itself: no container, no
-///    database, no account check, and nothing in the app conforms to its
-///    database seam;
+///    database, no account check, no CloudKit identifier off its allow-list,
+///    no way to run an operation but the database seam (security review 2,
+///    G1), no other file in the four targets importing CloudKit in any form
+///    (G2), and nothing in the app conforms to its database seam;
 /// 5. the S3 test files touch nothing live;
 /// 6. the prompt record is written only through the wire;
 /// 7. (#146) the record store writes the gate's forward answer exactly as
@@ -34,12 +38,30 @@ import Testing
 ///    and a decision read for a prompt only joins its retraction.
 ///
 /// Each lock is a pure function over comment-stripped sources and each
-/// catches planted canaries, so none can pass vacuously.
+/// catches planted canaries, so none can pass vacuously. Locks 3 and 4 scan
+/// `uncutSources` (whole-line comments removed only) and strip trailing
+/// comments themselves where they always did, so their security-review-2
+/// checks cannot be hidden behind a `//` inside a string literal.
 struct ApprovalRecordPathStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
     /// The record path's one Mac file (Sources/NapCat).
     static let recordPathFile = "CloudKitApprovalRecords.swift"
+
+    /// The four targets' sources with WHOLE-LINE comments removed only
+    /// (`LidGuardStructureTests.wholeLineCommentsRemoved`): `codeOnly` cuts a
+    /// line at a `//` inside a string literal (security review L3, tracked
+    /// separately), which would hide whatever follows a URL.
+    static func uncutSources() throws -> Sources {
+        try ApprovalChannelStructureTests.sources(LidGuardStructureTests.wholeLineCommentsRemoved)
+    }
+
+    /// Every match of `pattern` in `text`, as written.
+    static func matches(_ pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<bad pattern \(pattern)>"] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+    }
 
     /// The record path's own types. Outside its file, nothing names them —
     /// the record store included (#146), so the app's host cannot be handed
@@ -208,15 +230,30 @@ struct ApprovalRecordPathStructureTests {
     /// Until signed decisions exist (CL-1), no Mac source builds the S0
     /// decision type (however the construction is spelled) or names its
     /// signature flag: the one door to a verdict stays shut.
+    ///
+    /// AMENDED after security review 2 (#146, G4): `let make =
+    /// ApprovalDecision.init` then `make(…, true)` names neither, so the
+    /// constructor reached unnamed is banned too — an unapplied `.init`, the
+    /// metatype (`ApprovalDecision.self`, the road to a generic `T.init`),
+    /// and an alias of the type (`= ApprovalDecision`, then `Alias.init`).
+    static let indirectConstruction =
+        #"\bApprovalDecision\s*\.\s*(?:init|self)\b|=\s*(?:NapCatWire\s*\.\s*)?ApprovalDecision\b"#
+
+    /// `sources`: `uncutSources()`. The original two checks read the
+    /// comment-stripped code, as they always did.
     static func verdictTypeFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        for (name, text) in sources where !wireFiles.contains(name) {
+        for (name, uncut) in sources where !wireFiles.contains(name) {
+            let text = LidGuardStructureTests.codeOnly(uncut)
             let spelled = ApprovalChannelStructureTests.constructionSpelling(text)
             if spelled.contains("ApprovalDecision(") {
                 failures.append("\(name) builds an ApprovalDecision — no decision is a verdict before CL-1")
             }
             if text.contains("signatureVerified") {
                 failures.append("\(name) names signatureVerified — no decision is a verdict before CL-1")
+            }
+            if uncut.range(of: indirectConstruction, options: .regularExpression) != nil {
+                failures.append("\(name) reaches ApprovalDecision's constructor unnamed — no decision is a verdict before CL-1")
             }
         }
         return failures
@@ -226,7 +263,7 @@ struct ApprovalRecordPathStructureTests {
     static var wireFiles: [String] { WireContractTests.constantsFiles + WireContractTests.pureFiles }
 
     @Test func noMacSourceBuildsAVerdict() throws {
-        let sources = try ApprovalChannelStructureTests.sources()
+        let sources = try Self.uncutSources()
         #expect(Self.verdictTypeFailures(sources).isEmpty, "\(Self.verdictTypeFailures(sources))")
         #expect(Self.text("ApprovalStateMachine.swift", in: sources).contains("signatureVerified"),
                 "vacuity: the S0 type is where the lock looks for it")
@@ -247,6 +284,36 @@ struct ApprovalRecordPathStructureTests {
         }
     }
 
+    /// Security review 2 (#146), G4 and its siblings: the constructor reached
+    /// without naming it or the flag.
+    @Test func noMacSourceReachesTheVerdictConstructorUnnamed() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.text(ApprovalChannelStructureTests.intakeFile, in: sources).contains("func decide(_ decision: ApprovalDecision)"),
+                "vacuity: the one place outside the wire that names the type, as a parameter")
+        let mutants: [(String, Sources)] = [
+            ("an unapplied init (G4)", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc f(i: ApprovalIntake, p: PromptID) {\n    let make = ApprovalDecision.init\n"
+                    + "    i.decide(make(p, .allow, 1, true))\n}" }),
+            ("a module-qualified unapplied init", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nlet make = NapCatWire.ApprovalDecision . init" }),
+            ("the metatype", Self.mutate(sources, ApprovalChannelStructureTests.toggleFile) {
+                $0 + "\nlet type = ApprovalDecision.self" }),
+            ("an alias", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\ntypealias Claimed = ApprovalDecision\nlet make = Claimed.init" }),
+            ("an unapplied init behind a URL", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc f() { let u = \"https://www.icloud.com\"; let make = ApprovalDecision.init; _ = (u, make) }" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(!Self.verdictTypeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match control: the intake's own parameter, and the doc comment
+        // that names what it rules out, pass.
+        #expect(Self.verdictTypeFailures(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nfunc f(_ d: ApprovalDecision?, _ all: [ApprovalDecision]) {}"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never ApprovalDecision.init, never = ApprovalDecision")
+        }).isEmpty)
+    }
+
     // MARK: - 4. The record path cannot reach iCloud by itself
 
     /// The record path builds records and operations, and hands an
@@ -257,33 +324,81 @@ struct ApprovalRecordPathStructureTests {
                                "sharedCloudDatabase", "accountStatus", "CKFetch", "CKQuery", "CKSubscription",
                                "CKSyncEngine", "SecTask", ".add(", "URLSession"]
 
+    /// AMENDED after security review 2 (#146): the record path's CloudKit
+    /// identifiers are an ALLOW-LIST, exactly the ones it uses, matched as
+    /// whole words (`CKRecord` does not cover `CKRecordZone`), so any other
+    /// door (`CKFetchRecordsOperation`, `CKModifyRecordZonesOperation`, …)
+    /// fails by default instead of waiting for its own ban.
+    static let recordPathCloudKitIdentifiers: Set<String> = [
+        "CKRecord", "CKRecordZone", "CKRecordValue", "CKCurrentUserDefaultName",
+        "CKModifyRecordsOperation", "CKOperation", "CKError", "CKErrorDomain",
+    ]
+
+    /// Every way to RUN an operation but the seam (security review 2, G1).
+    /// The allow-list cannot stop this: a CKDatabaseOperation run with no
+    /// database set targets the user's private database (Apple's
+    /// `CKDatabaseOperation.database`), so the allow-listed operation is never
+    /// started or run by hand, queued, added to a database, pointed at a
+    /// database or a container (the writer's own `self.database` is the
+    /// seam), or messaged dynamically. Whole words, so `startIndex` or
+    /// `addingTimeInterval` pass.
+    static let operationRunPatterns = [#"\.\s*start\b"#, #"\.\s*main\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#,
+                                       #"\.\s*add\b"#, #"(?<!\bself)\.\s*database\b"#, #"\.\s*container\b"#,
+                                       #"\bperform\b"#, #"#selector\b"#, #"\bSelector\b"#, #"\bNSSelectorFromString\b"#]
+
+    /// The two Mac files that may import CloudKit (LidGuardStructureTests
+    /// owns that table for Sources/NapCat). This lock scans all four targets,
+    /// so a re-export from the seam's or the channel's target cannot carry
+    /// CloudKit into the app either.
+    static let cloudKitFiles: Set<String> = ["CloudKitMessageSender.swift", recordPathFile]
+
     static let seamConformance =
         #"\b(class|struct|actor|enum|extension)\b[^{\n]*:[^{\n]*\bApprovalRecordDatabase\b"#
 
+    /// `sources`: `uncutSources()`. The original checks read the
+    /// comment-stripped code, as they always did; the security-review-2
+    /// checks read the uncut text.
     static func iCloudFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        let file = text(recordPathFile, in: sources)
+        let uncut = text(recordPathFile, in: sources)
+        let file = LidGuardStructureTests.codeOnly(uncut)
         for token in iCloudTokens where file.contains(token) {
             failures.append("'\(token)' in \(recordPathFile) — the record path cannot reach iCloud by itself")
         }
-        for (name, text) in sources where text.range(of: seamConformance, options: .regularExpression) != nil {
+        for (name, text) in sources
+        where LidGuardStructureTests.codeOnly(text).range(of: seamConformance, options: .regularExpression) != nil {
             failures.append("\(name) conforms to ApprovalRecordDatabase — in this slice only test fakes may")
+        }
+        let named = Set(matches(#"\bCK\w*"#, in: uncut))
+        for identifier in named.subtracting(recordPathCloudKitIdentifiers).sorted() {
+            failures.append("'\(identifier)' in \(recordPathFile) — not on the record path's CloudKit allow-list")
+        }
+        for identifier in recordPathCloudKitIdentifiers.subtracting(named).sorted() {
+            failures.append("'\(identifier)' is allow-listed but unused in \(recordPathFile) — the list stays exact")
+        }
+        for pattern in operationRunPatterns where uncut.range(of: pattern, options: .regularExpression) != nil {
+            failures.append("'\(pattern)' in \(recordPathFile) — only the database seam runs an operation")
+        }
+        for (name, text) in sources where !cloudKitFiles.contains(name)
+            && text.range(of: LidGuardStructureTests.cloudKitImport, options: .regularExpression) != nil {
+            failures.append("\(name) imports CloudKit — only \(cloudKitFiles.sorted()) may, in any of the four targets")
         }
         return failures
     }
 
     @Test func theRecordPathCannotReachICloudByItself() throws {
-        let withFile = try ApprovalChannelStructureTests.sources()
+        let withFile = try Self.uncutSources()
         #expect(Self.vacuityFailures(withFile).isEmpty, "\(Self.vacuityFailures(withFile))")
         #expect(Self.iCloudFailures(withFile).isEmpty, "\(Self.iCloudFailures(withFile))")
         #expect(Self.text(Self.recordPathFile, in: withFile).contains("func submit(_ operation: CKModifyRecordsOperation)"),
                 "vacuity: the seam the lock looks at")
+        let record = Self.recordPathFile
         let mutants: [(String, Sources)] = [
-            ("a container", Self.mutate(withFile, Self.recordPathFile) {
+            ("a container", Self.mutate(withFile, record) {
                 $0 + "\nlet c = CKContainer(identifier: ApprovalWire.containerIdentifier)" }),
-            ("a database", Self.mutate(withFile, Self.recordPathFile) { $0 + "\nlet d: CKDatabase? = nil" }),
-            ("an operation added directly", Self.mutate(withFile, Self.recordPathFile) { $0 + "\nfunc f() { d.add(o) }" }),
-            ("a live seam in the record path", Self.mutate(withFile, Self.recordPathFile) {
+            ("a database", Self.mutate(withFile, record) { $0 + "\nlet d: CKDatabase? = nil" }),
+            ("an operation added directly", Self.mutate(withFile, record) { $0 + "\nfunc f() { d.add(o) }" }),
+            ("a live seam in the record path", Self.mutate(withFile, record) {
                 $0 + "\nfinal class LiveApprovalRecords: ApprovalRecordDatabase { func submit(_ o: Op) {} }" }),
             ("a live seam elsewhere", Self.mutate(withFile, "CloudKitMessageSender.swift") {
                 $0 + "\nextension LiveCloudKitAlertStore: ApprovalRecordDatabase {}" }),
@@ -291,6 +406,68 @@ struct ApprovalRecordPathStructureTests {
         for (name, mutant) in mutants {
             #expect(!Self.iCloudFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+    }
+
+    /// Security review 2 (#146): G1 (an allow-listed operation run without
+    /// the seam), a CloudKit door off the allow-list, and G2 (CloudKit
+    /// imported by a third file, or re-exported by another target).
+    @Test func nothingRunsARecordOperationButTheSeam() throws {
+        let withFile = try Self.uncutSources()
+        #expect(Self.text(Self.recordPathFile, in: withFile).contains("        self.database = database\n"),
+                "vacuity: the writer's own seam is the one `.database` the lock lets through")
+        #expect(ApprovalChannelStructureTests.directories.count == 4 && withFile.contains { $0.name == "SeamSocket.swift" },
+                "vacuity: the import scan sees the seam's target")
+        let record = Self.recordPathFile
+        let mutants: [(String, Sources)] = [
+            ("the operation started (G1)", Self.mutate(withFile, record) {
+                $0 + "\nextension ApprovalRecordWriter {\n    static func go(_ r: CKRecord) {\n"
+                    + "        makeOperation(saving: [r], deleting: []) { _ in }.start()\n    }\n}" }),
+            ("the operation queued (G1)", Self.mutate(withFile, record) {
+                $0 + "\nfunc f(o: CKModifyRecordsOperation) { OperationQueue().addOperation(o) }" }),
+            ("a queue reached without its name", Self.mutate(withFile, record) {
+                $0 + "\nfunc f(q: Q, o: CKOperation) { q.addOperations([o], waitUntilFinished: false) }" }),
+            ("the operation run by hand", Self.mutate(withFile, record) { $0 + "\nfunc f(o: CKOperation) { o . main() }" }),
+            ("an unapplied start", Self.mutate(withFile, record) { $0 + "\nfunc f(o: CKOperation) { let run = o.start; run() }" }),
+            ("a start behind a URL", Self.mutate(withFile, record) {
+                $0 + "\nfunc f(o: CKOperation) { let u = \"https://www.icloud.com\"; o.start(); _ = u }" }),
+            ("the operation pointed at a database", Self.mutate(withFile, record) {
+                $0 + "\nfunc f(o: CKModifyRecordsOperation, d: Db) { o.database = d }" }),
+            ("the configuration handed a container", Self.mutate(withFile, record) {
+                $0 + "\nfunc f(c: CKOperation.Configuration) { c.container = .default() }" }),
+            ("the operation messaged dynamically", Self.mutate(withFile, record) {
+                $0 + "\nfunc f(o: CKOperation) { o.perform(NSSelectorFromString(\"start\")) }" }),
+            // … and a CloudKit door off the allow-list.
+            ("a zone operation", Self.mutate(withFile, record) {
+                $0 + "\nlet z = CKModifyRecordZonesOperation(recordZonesToSave: [], recordZoneIDsToDelete: nil)" }),
+            ("a fetch operation", Self.mutate(withFile, record) { $0 + "\nlet f = CKFetchRecordsOperation(recordIDs: [])" }),
+            ("a share", Self.mutate(withFile, record) { $0 + "\nlet s: CKShare? = nil" }),
+            ("an allow-listed identifier dropped", Self.mutate(withFile, record) {
+                $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
+            // G2: CloudKit imported by a third file, or re-exported by another target.
+            ("a third CloudKit file, scoped import (G2)", withFile + [("ZZFetchRecords.swift",
+                "import class CloudKit.CKFetchRecordsOperation\nfunc f() { CKFetchRecordsOperation(recordIDs: []).start() }")]),
+            ("CloudKit re-exported by the seam's target", Self.mutate(withFile, "SeamSocket.swift") {
+                "@_exported import CloudKit\n" + $0 }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != withFile.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.iCloudFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Each run pattern compiles and bites on its own (one that did not
+        // compile would match nothing, silently).
+        let probes = ["o.start()", "o.main()", "OperationQueue.current", "q.addOperation(o)", "db.add(o)", "o.database = d",
+                      "c.container = k", "o.perform(s)", "#selector(Operation.start)", "Selector((\"start\"))",
+                      "NSSelectorFromString(\"start\")"]
+        #expect(probes.count == Self.operationRunPatterns.count)
+        for (pattern, probe) in zip(Self.operationRunPatterns, probes) {
+            #expect(probe.range(of: pattern, options: .regularExpression) != nil, "'\(pattern)' does not match '\(probe)'")
+        }
+        // Over-match controls: whole words only (`startIndex`, `addingTimeInterval`,
+        // `CKRecord.ID`), and a whole-line comment naming what it rules out.
+        #expect(Self.iCloudFailures(Self.mutate(withFile, record) {
+            $0 + "\nfunc f(s: String, d: Date, r: CKRecord.ID) -> Bool { s.startIndex == s.endIndex && d.addingTimeInterval(1) > d }"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n    // never .start() it, never OperationQueue, never import class CloudKit.CKShare")
+        }).isEmpty)
     }
 
     // MARK: - 6. The prompt record is written only through the wire

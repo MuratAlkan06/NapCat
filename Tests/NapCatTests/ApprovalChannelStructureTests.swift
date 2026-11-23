@@ -27,14 +27,14 @@ struct ApprovalChannelStructureTests {
     /// The I/O files S1 added.
     static let s1Files = [seamFile, relayFile, serverFile, intakeFile, hostFile, probeFile]
 
-    /// Every Swift source of the four targets, comment-stripped. (File names
-    /// are unique across them.)
-    static func sources() throws -> Sources {
+    /// Every Swift source of the four targets, comment-stripped (`strip`).
+    /// (File names are unique across them.)
+    static func sources(_ strip: (String) -> String = LidGuardStructureTests.codeOnly) throws -> Sources {
         let root = LidGuardStructureTests.repoRoot()
         return try directories.flatMap { directory -> Sources in
             let url = root.appendingPathComponent(directory)
             let names = try FileManager.default.contentsOfDirectory(atPath: url.path).filter { $0.hasSuffix(".swift") }.sorted()
-            return try names.map { ($0, LidGuardStructureTests.codeOnly(try String(contentsOf: url.appendingPathComponent($0), encoding: .utf8))) }
+            return try names.map { ($0, strip(try String(contentsOf: url.appendingPathComponent($0), encoding: .utf8))) }
         }
     }
 

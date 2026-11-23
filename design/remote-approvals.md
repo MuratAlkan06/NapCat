@@ -441,6 +441,13 @@ this section points at them.
   record path can reach iCloud on its own; the records are written only
   through the wire's keys and encryption table; Allow's order (check,
   match, send) and its one write site; the S3 tests touch nothing live.
+  After security review 2: an operation run with no database set targets
+  the private database, so on both devices nothing runs one but the seam
+  (no start, queue or database `add`), and the phone reaches the decision's
+  record and operation once each, in the writer. The Mac file's CloudKit
+  identifiers are an exact allow-list. CloudKit is imported in no other file,
+  in any form (scoped imports included). The S0 type's constructor is not
+  reachable unnamed (an unapplied `init`, the metatype or an alias).
 - **Owner-owed.** The Production schema deploy for PromptRequest and
   PromptDecision, in the CloudKit Console, before any forwarding slice. No
   operation of this slice ran against either CloudKit environment.
@@ -448,4 +455,10 @@ this section points at them.
   schema deploy), the writer's outcome reaching the prompt's lifecycle (the
   prompt stays `saving` until then, so no decision can count), the waiting
   buzz superseded by the alert lane, the project label, and signed
-  decisions (CL-1) before any decision counts.
+  decisions (CL-1) before any decision counts. Also owed before arming:
+  - Retraction is best-effort: a failed one is only audited. Fix it before
+    arming: retry or sweep, delete the prompt record apart from its
+    decisions, and have the Mac reader require the `<promptID>-decision`
+    name, which also caps a retraction at two records.
+  - A decision record the Mac never read is never deleted.
+  - The project label passes the gate's filters before it is ever written.
