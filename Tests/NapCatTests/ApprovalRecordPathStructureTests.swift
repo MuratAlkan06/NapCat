@@ -259,9 +259,12 @@ struct ApprovalRecordPathStructureTests {
         if ApprovalChannelStructureTests.count("CKRecord(recordType:", in: file) != 1 {
             failures.append("a prompt record must be constructed in exactly one place (makePromptRecord)")
         }
-        for token in ["record[\"", "encryptedValues[\"", "setValuesForKeys", "setObject(", "setValue(", "CKAsset",
-                      "CKRecord.Reference"] where file.contains(token) {
+        for token in ["setValuesForKeys", "setObject(", "setValue(", "CKAsset", "CKRecord.Reference"] where file.contains(token) {
             failures.append("'\(token)' — record fields are written only through the ApprovalWire field keys")
+        }
+        // A string literal as a key, on any receiver (`r["note"] = …`).
+        if file.range(of: #"\[\s*"[^"]*"\s*\]\s*="#, options: .regularExpression) != nil {
+            failures.append("a literal key — record fields are written only through the ApprovalWire field keys")
         }
         let shape = "for field in ApprovalWire.PromptField.allCases { let value = promptValue(field, of: prompt) "
             + "if ApprovalWire.encryptedPromptFields.contains(field) { record.encryptedValues[field.rawValue] = value } "
@@ -284,6 +287,7 @@ struct ApprovalRecordPathStructureTests {
                                                                   with: "if false {")),
             ("a second record", file + "\nlet r = CKRecord(recordType: \"PromptRequest\", recordID: i)"),
             ("a bulk setter", file + "\nfunc f(r: CKRecord) { r.setValuesForKeys([:]) }"),
+            ("a literal key on another receiver", file + "\nfunc f(r: CKRecord) { r[\"note\"] = \"x\" as NSString }"),
         ]
         for (name, mutant) in mutants {
             #expect(mutant != file, "canary '\(name)' did not apply")

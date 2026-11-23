@@ -235,6 +235,132 @@ actor CloudKitAlertSource: AlertSource {
         return PromptID(hex: recordID.recordName)
     }
 
+    // MARK: - F4 decisions (slice S3; built and tested here, run by nothing yet)
+
+    /// A decision's record: named after its prompt, so there is one decision
+    /// record per prompt. A retry names the same record, and a second answer
+    /// to the same prompt is refused by iCloud as already answered instead of
+    /// being written twice. The Mac does not rely on the name: it reads the
+    /// prompt ID from the record's own (encrypted) field.
+    static func decisionRecordID(for promptID: PromptID) -> CKRecord.ID {
+        CKRecord.ID(recordName: promptID.hex + "-decision", zoneID: approvalsZoneID)
+    }
+
+    /// THE one place a PromptDecision record is built: the wire's fields,
+    /// each stored encrypted exactly when the wire lists it in
+    /// `encryptedDecisionFields`. The signature is left out: there is no
+    /// paired key before CL-1, so the decision is unsigned, and the Mac reads
+    /// it as a claim it does not act on.
+    static func makeDecisionRecord(_ decision: PhoneDecision) -> CKRecord {
+        let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,
+                              recordID: decisionRecordID(for: decision.promptID))
+        for field in ApprovalWire.DecisionField.allCases {
+            guard let value = decisionValue(field, of: decision) else { continue }
+            if ApprovalWire.encryptedDecisionFields.contains(field) {
+                record.encryptedValues[field.rawValue] = value
+            } else {
+                record[field.rawValue] = value
+            }
+        }
+        return record
+    }
+
+    /// One field's value; nil for a field this slice does not write.
+    /// Exhaustive on purpose: a new wire field does not compile until it is
+    /// decided here.
+    static func decisionValue(_ field: ApprovalWire.DecisionField, of decision: PhoneDecision) -> CKRecordValue? {
+        switch field {
+        case .wireVersion: return ApprovalWire.wireVersion as NSNumber
+        case .promptID: return decision.promptID.hex as NSString
+        case .verdict: return decision.verdict.rawValue as NSString
+        case .decidedAt: return decision.decidedAt as NSDate
+        case .signature: return nil
+        }
+    }
+
+    /// THE save operation for one decision, built here so a test can play
+    /// CloudKit's part on the real thing. A new record only (never overwrite
+    /// an answer), user-initiated, with the alert fetch's ceilings. What
+    /// `completion` receives, once: `decisionOutcome`.
+    static func makeDecisionSaveOperation(
+        _ record: CKRecord,
+        completion: @escaping @Sendable (DecisionWriteOutcome) -> Void
+    ) -> CKModifyRecordsOperation {
+        let operation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)
+        operation.savePolicy = .ifServerRecordUnchanged
+        operation.isAtomic = true
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        operation.configuration = configuration
+        let saved = DecisionSaveResult()
+        operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }
+        operation.modifyRecordsResultBlock = { batch in
+            guard let outcome = saved.finish(batch: batch) else { return }
+            if outcome != .saved { logger.error("decision not saved (\(outcome.rawValue, privacy: .public))") }
+            completion(outcome)
+        }
+        return operation
+    }
+
+    /// The record's OWN result first (CloudKit hands a refused record to the
+    /// result block as a batch success; the Mac's issue #139):
+    /// - refused because a decision for this prompt is saved already
+    ///   (`serverRecordChanged`) → `alreadyAnswered`;
+    /// - refused for any other reason → `failed`;
+    /// - reported saved, and the batch agreed → `saved`;
+    /// - the batch succeeded with no per-record result → `unconfirmed`;
+    /// - the batch failed: a timeout-class transport error underneath →
+    ///   `unconfirmed`; a code that means nothing was saved → `failed`;
+    ///   anything else → `unconfirmed`.
+    static func decisionOutcome(record: Result<Void, any Error>?, batch: Result<Void, any Error>) -> DecisionWriteOutcome {
+        if case .failure(let error)? = record {
+            let nsError = error as NSError
+            let collided = nsError.domain == CKErrorDomain && nsError.code == CKError.Code.serverRecordChanged.rawValue
+            return collided ? .alreadyAnswered : .failed
+        }
+        switch batch {
+        case .success:
+            return record == nil ? .unconfirmed : .saved
+        case .failure(let error):
+            let nsError = recordLevelError(error as NSError)
+            if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
+               underlying.domain == NSURLErrorDomain, unconfirmedTransportCodes.contains(underlying.code) {
+                return .unconfirmed
+            }
+            if nsError.domain == CKErrorDomain, nsError.code == CKError.Code.serverRecordChanged.rawValue {
+                return .alreadyAnswered
+            }
+            guard nsError.domain == CKErrorDomain, let code = CKError.Code(rawValue: nsError.code),
+                  nothingSavedCodes.contains(code) else { return .unconfirmed }
+            return .failed
+        }
+    }
+
+    /// Transport errors after which a save may still have landed (the Mac's
+    /// `LidGuardPolicy.unconfirmedTransportErrorCodes`).
+    static let unconfirmedTransportCodes: Set<Int> = [
+        URLError.timedOut.rawValue, URLError.cancelled.rawValue, URLError.networkConnectionLost.rawValue,
+    ]
+
+    /// CloudKit codes that mean nothing was saved (the Mac's definitive
+    /// table, plus the two that say the approvals zone is not there).
+    static let nothingSavedCodes: Set<CKError.Code> = [
+        .networkUnavailable, .networkFailure, .notAuthenticated, .accountTemporarilyUnavailable, .badContainer,
+        .missingEntitlement, .requestRateLimited, .serviceUnavailable, .quotaExceeded, .serverRejectedRequest,
+        .permissionFailure, .zoneNotFound, .userDeletedZone,
+    ]
+
+    /// A batch `partialFailure` around exactly one record error is that
+    /// record's error; anything else is returned unchanged.
+    static func recordLevelError(_ error: NSError) -> NSError {
+        guard error.domain == CKErrorDomain, error.code == CKError.Code.partialFailure.rawValue,
+              let partial = error.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: Any],
+              partial.count == 1, let only = partial.values.first as? NSError else { return error }
+        return only
+    }
+
     /// Accounts other than `available` cannot receive anything.
     static func availability(_ status: CKAccountStatus) -> AccountAvailability {
         status == .available ? .available : .unavailable
@@ -305,5 +431,56 @@ private struct LiveCloudKitAlertDatabase: CloudKitAlertDatabase {
         try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in
             try await database.record(for: recordID)
         }
+    }
+}
+
+// MARK: - F4 decisions: the writer and its seam (slice S3)
+
+/// THE seam over CloudKit I/O for decisions: run this operation against the
+/// owner's private database. In this slice nothing in the app conforms
+/// (lint-locked): the approvals zone and its schema are not deployed, so
+/// only test fakes run the operations built here.
+protocol CloudKitApprovalDatabase: Sendable {
+    func submit(_ operation: CKModifyRecordsOperation)
+}
+
+/// The CloudKit `DecisionWriter`: one decision record per answer
+/// (`CloudKitAlertSource.makeDecisionRecord`), saved through the seam. Built
+/// by no app source in this slice (lint-locked).
+struct CloudKitDecisionWriter: DecisionWriter {
+    let database: any CloudKitApprovalDatabase
+
+    func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome {
+        let record = CloudKitAlertSource.makeDecisionRecord(decision)
+        return await withCheckedContinuation { continuation in
+            database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) { continuation.resume(returning: $0) })
+        }
+    }
+}
+
+/// Holds the decision record's own result until the batch result arrives,
+/// then says what the save came to, once (`CloudKitAlertSource.decisionOutcome`).
+private final class DecisionSaveResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var record: Result<Void, any Error>?
+    private var finished = false
+
+    /// A failure is kept over a success: the record's own refusal decides.
+    func note(_ result: Result<Void, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if case .failure = result {
+            record = result
+        } else if record == nil {
+            record = result
+        }
+    }
+
+    func finish(batch: Result<Void, any Error>) -> DecisionWriteOutcome? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return nil }
+        finished = true
+        return CloudKitAlertSource.decisionOutcome(record: record, batch: batch)
     }
 }

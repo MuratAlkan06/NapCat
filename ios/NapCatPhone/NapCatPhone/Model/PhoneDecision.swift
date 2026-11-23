@@ -13,7 +13,7 @@ struct PhoneDecision: Equatable, Sendable {
 }
 
 /// What writing one decision came to.
-enum DecisionWriteOutcome: Equatable, Sendable {
+enum DecisionWriteOutcome: String, Equatable, Sendable {
     /// iCloud saved it.
     case saved
     /// A decision for this prompt is saved already (an earlier attempt from
@@ -28,9 +28,9 @@ enum DecisionWriteOutcome: Equatable, Sendable {
     case unconfirmed
 }
 
-/// THE seam behind Allow and Deny. No app source builds a CloudKit writer in
-/// this slice (lint-locked): a fixture launch writes to `FixtureDecisionWriter`
-/// and a live launch to `UnsentDecisionWriter`.
+/// THE seam behind Allow and Deny. The CloudKit one, `CloudKitDecisionWriter`,
+/// is built by no app source in this slice (lint-locked): a fixture launch
+/// writes to `FixtureDecisionWriter` and a live launch to `UnsentDecisionWriter`.
 protocol DecisionWriter: Sendable {
     func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome
 }

@@ -16,7 +16,9 @@ import Testing
 /// 3. the S3 test files touch nothing live;
 /// 4. Allow writes only after a biometric match it asked for itself, Deny
 ///    never asks, and both write through one site that re-checks the window
-///    first (CL-3).
+///    first (CL-3);
+/// 5. the decision record is built once, only through the wire's keys and
+///    encryption table, and carries no signature before pairing.
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously.
@@ -94,6 +96,11 @@ import Testing
     @Test func noAppSourceBuildsALiveDecisionWriter() throws {
         let app = try Self.app()
         #expect(Self.liveWriterFailures(app).isEmpty, "\(Self.liveWriterFailures(app))")
+        let cloudKit = CloudKitStructureTests.codeOnly(app.first { $0.path == Self.cloudKitFile }?.text ?? "")
+        for declaration in ["struct CloudKitDecisionWriter: DecisionWriter", "protocol CloudKitApprovalDatabase: Sendable",
+                            "func submit(_ operation: CKModifyRecordsOperation)"] {
+            #expect(cloudKit.contains(declaration), "vacuity: '\(declaration)' is what the lock looks for")
+        }
         let feed = "\(Self.appDir)/Model/AlertFeed.swift"
         let mutants: [(String, [Source])] = [
             ("the feed builds it", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitDecisionWriter(database: d)" }),
@@ -114,7 +121,8 @@ import Testing
     static let testsDir = CloudKitStructureTests.testsDir
     /// The S3 test files that run anything (this file only reads sources).
     static let s3TestFiles = ["ApprovalRecordFakes.swift", "RequestInboxTests.swift", "CloudKitRequestRecordTests.swift",
-                              "RequestAnsweringTests.swift", "PendingRequestScreenTests.swift"]
+                              "RequestAnsweringTests.swift", "PendingRequestScreenTests.swift",
+                              "CloudKitDecisionWriterTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
     /// notification center and the real biometric prompt.
@@ -217,6 +225,55 @@ import Testing
         for (name, mutant) in mutants {
             #expect(mutant != inbox, "canary '\(name)' did not apply")
             #expect(!Self.allowPathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    // MARK: 5. The decision record is written only through the wire
+
+    /// As the Mac's records: ONE record construction in the receiver (the
+    /// decision), every key an `ApprovalWire` field (no literal key, no bulk
+    /// setter, no asset or reference), the encrypted-or-clear choice read
+    /// from the wire's own table, and no signature before pairing (CL-1).
+    static func decisionSchemaFailures(_ file: String) -> [String] {
+        let code = CloudKitStructureTests.codeOnly(file)
+        var failures: [String] = []
+        if CloudKitStructureTests.occurrences(of: "CKRecord(recordType:", in: code) != 1 {
+            failures.append("a decision record must be constructed in exactly one place (makeDecisionRecord)")
+        }
+        for token in ["setValuesForKeys", "setObject(", "setValue(", "CKAsset", "CKRecord.Reference"] where code.contains(token) {
+            failures.append("'\(token)' — decision fields are written only through the ApprovalWire field keys")
+        }
+        // A string literal as a key, on any receiver (`r["note"] = …`).
+        if code.range(of: #"\[\s*"[^"]*"\s*\]\s*="#, options: .regularExpression) != nil {
+            failures.append("a literal key — decision fields are written only through the ApprovalWire field keys")
+        }
+        let flat = SettingsReachabilityTests.flat(code)
+        let shape = "for field in ApprovalWire.DecisionField.allCases { guard let value = decisionValue(field, of: decision) "
+            + "else { continue } if ApprovalWire.encryptedDecisionFields.contains(field) { "
+            + "record.encryptedValues[field.rawValue] = value } else { record[field.rawValue] = value } }"
+        if !flat.contains(shape) {
+            failures.append("the decision's fields must be the wire's, encrypted as the wire's table says")
+        }
+        if !flat.contains("case .signature: return nil") {
+            failures.append("a decision carries no signature before pairing (CL-1)")
+        }
+        return failures
+    }
+
+    @Test func theDecisionRecordIsWrittenOnlyThroughTheWire() throws {
+        let file = try #require(try Self.app().first { $0.path == Self.cloudKitFile }).text
+        #expect(Self.decisionSchemaFailures(file).isEmpty, "\(Self.decisionSchemaFailures(file))")
+        let mutants: [(String, String)] = [
+            ("a signature written", file.replacingOccurrences(of: "case .signature: return nil",
+                                                              with: "case .signature: return Data([1]) as NSData")),
+            ("everything in the clear", file.replacingOccurrences(of: "if ApprovalWire.encryptedDecisionFields.contains(field) {",
+                                                                  with: "if false {")),
+            ("a literal key", file + "\nfunc f(r: CKRecord) { r[\"note\"] = \"x\" as NSString }"),
+            ("a second record", file + "\nlet r = CKRecord(recordType: \"PromptDecision\", recordID: i)"),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != file, "canary '\(name)' did not apply")
+            #expect(!Self.decisionSchemaFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 }
