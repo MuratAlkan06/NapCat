@@ -69,8 +69,9 @@ public enum SeamPeerPolicy {
 
 /// The seam's socket calls.
 public enum SeamSocket {
-    /// How long a write may wait for the peer to read before the connection
-    /// is given up (a stuck peer can never hold NapCat's queue).
+    /// How long writing one frame may take, all of it, before the connection
+    /// is given up (a stuck or slow-reading peer can never hold NapCat's
+    /// queue): a deadline per frame, not per write call.
     public static let sendTimeoutSeconds = 2
     /// How long part of a frame may sit unfinished before the connection is
     /// given up: a peer writes a frame at once, so a stalled one holds a
@@ -116,16 +117,18 @@ public enum SeamSocket {
         return descriptor
     }
 
-    /// A connected socket's options: close-on-exec, blocking, no SIGPIPE on
-    /// a closed peer, and the send timeout.
+    /// A connected socket's options: close-on-exec, NON-blocking, and no
+    /// SIGPIPE on a closed peer. Non-blocking because a blocking write is not
+    /// bounded by a send timeout while the peer keeps reading a little (the
+    /// kernel restarts that wait on every bit of progress, and ignores
+    /// MSG_DONTWAIT on these sockets): every wait is a bounded poll instead
+    /// (`SeamConnection.send`), and a read only ever follows readiness.
     static func configureConnected(_ descriptor: Int32) -> Bool {
         var on: Int32 = 1
-        var timeout = timeval(tv_sec: sendTimeoutSeconds, tv_usec: 0)
         let flags = fcntl(descriptor, F_GETFL)
         return fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0
-            && flags >= 0 && fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK) == 0
+            && flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0
             && setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0
-            && setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0
     }
 
     static func directory(of path: String) -> String {
@@ -204,15 +207,19 @@ public final class SeamConnection: @unchecked Sendable {
     /// Runs while part of a frame is buffered (`stallTimeout`).
     private var stallTimer: DispatchSourceTimer?
     private let stallTimeout: Double
+    /// The whole-frame write deadline, in seconds.
+    private let sendTimeout: Double
     public private(set) var isOpen = true
     /// Who connected (checked before this object existed).
     public let peer: SeamPeer
 
-    init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue, stallTimeout: Double = SeamSocket.stallTimeoutSeconds) {
+    init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue, stallTimeout: Double = SeamSocket.stallTimeoutSeconds,
+         sendTimeout: Double = Double(SeamSocket.sendTimeoutSeconds)) {
         self.descriptor = descriptor
         self.peer = peer
         self.queue = queue
         self.stallTimeout = stallTimeout
+        self.sendTimeout = sendTimeout
     }
 
     deinit {
@@ -277,21 +284,41 @@ public final class SeamConnection: @unchecked Sendable {
         timer.resume()
     }
 
-    /// Writes one line and its newline. A failed or timed-out write closes
-    /// the connection and returns false.
+    /// Writes one line and its newline, all of it inside the frame's
+    /// deadline. The socket is non-blocking (`configureConnected`): each
+    /// piece goes out at once, and the wait for room is a poll bounded by
+    /// what is left of the deadline — so a peer that reads a little at a time
+    /// cannot stretch one frame out. A failed write, or a frame not written
+    /// in time, closes the connection and returns false.
     @discardableResult
     public func send(_ line: String) -> Bool {
         guard isOpen else { return false }
         let bytes = Array(line.utf8) + [0x0A]
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(sendTimeout * 1_000_000_000)
         var offset = 0
         while offset < bytes.count {
-            let written = bytes[offset...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
-            if written < 0 && errno == EINTR { continue }
-            guard written > 0 else {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else {
                 close()
                 return false
             }
-            offset += written
+            let written = bytes[offset...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+            if written > 0 {
+                offset += written
+                continue
+            }
+            if written < 0 && errno == EINTR { continue }
+            guard written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else {
+                close()
+                return false
+            }
+            // No room right now: wait for some, at most until the deadline.
+            var room = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            let milliseconds = Int32(clamping: max(1, (deadline - now) / 1_000_000))
+            if poll(&room, 1, milliseconds) < 0 && errno != EINTR {
+                close()
+                return false
+            }
         }
         return true
     }
