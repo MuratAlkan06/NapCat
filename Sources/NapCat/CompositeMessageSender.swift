@@ -30,13 +30,16 @@ struct PhoneTransportSnapshot: Equatable, Sendable {
 ///   the toggle off NapCat behaves exactly as it did before this type existed
 ///   (`CompositeMessageSenderTests` locks that).
 ///
-/// FALLBACK RULE (frozen F3 ADR): ntfy is tried after the phone ONLY when the
-/// CloudKit attempt is a DEFINITIVE failure — `sendFailed`, meaning nothing
-/// was committed (no network, iCloud unreachable, no account, rate-limited,
-/// container or entitlement problems). NEVER after `timedOutUnconfirmed`: the
-/// record may have landed and the phone may already be buzzing, so a second
-/// copy over ntfy would be a double buzz. The caller sees the outcome of the
-/// transport that answered last: the phone's, or — after a fallback — ntfy's.
+/// FALLBACK RULE (frozen F3 ADR, amended by issue #139): ntfy is tried after
+/// the phone ONLY when the CloudKit attempt is `sendFailed`, meaning iCloud
+/// refused the alert or did not confirm it (no network, iCloud unreachable,
+/// no account, rate-limited, container or entitlement problems, the record's
+/// own failure, a batch success with no per-record result) — the fallback is
+/// used, and a rare double buzz is preferred to silence. NEVER after
+/// `timedOutUnconfirmed`: no answer came back, the record may have landed and
+/// the phone may already be buzzing, so a second copy over ntfy would be a
+/// double buzz. The caller sees the outcome of the transport that answered
+/// last: the phone's, or — after a fallback — ntfy's.
 ///
 /// PER-LANE SINGLE FLIGHT carries over unchanged: on the phone path the lane
 /// is claimed for the WHOLE chain (phone, then any fallback), so a second
@@ -164,9 +167,9 @@ final class CompositeMessageSender: MessageSender, @unchecked Sendable {
         }
     }
 
-    /// THE fallback rule: only a definitive failure — nothing was committed —
-    /// may be retried over ntfy. `timedOutUnconfirmed` (it may have landed),
-    /// `accepted` and `rejected` never are.
+    /// THE fallback rule: only `sendFailed` — iCloud refused the alert or did
+    /// not confirm it — is retried over ntfy. `timedOutUnconfirmed` (no answer
+    /// came back; it may have landed), `accepted` and `rejected` never are.
     static func fallsBack(after outcome: MessageSendOutcome) -> Bool {
         if case .sendFailed = outcome { return true }
         return false

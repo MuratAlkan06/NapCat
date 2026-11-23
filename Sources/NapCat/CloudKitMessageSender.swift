@@ -34,7 +34,8 @@ import Security
 /// constructs a container.
 ///
 /// OUTCOMES (frozen F3 ADR), in the shared `MessageSendOutcome` vocabulary:
-/// - save committed → `accepted` (durably in iCloud; the push is async);
+/// - save committed → `accepted` (durably in iCloud; the push is async) — and
+///   only when the record ITSELF reported saved (issue #139);
 /// - a DEFINITIVE failure — nothing was committed and the composite may fall
 ///   back to ntfy without risking a double buzz → `sendFailed(<fixed text>)`:
 ///   no network, iCloud unreachable, not signed in / account unavailable,
@@ -42,8 +43,13 @@ import Security
 ///   (quota exceeded, request rejected, permission denied — widened by owner
 ///   ruling g, 2026-11-20), and — for this attempt — iCloud rate-limiting or
 ///   temporarily unavailable;
-/// - a timeout, a lost response, or anything not listed → `timedOutUnconfirmed`
-///   (the record may have landed; never retried, never fallen back).
+/// - the record's OWN failure, whatever its code (issue #139): CloudKit's
+///   verdict that this record was not committed → `sendFailed`; and a batch
+///   success with no per-record result at all → `sendFailed` (a rare double
+///   buzz is preferred to silence);
+/// - a BATCH-level timeout, lost response, or anything not listed →
+///   `timedOutUnconfirmed` (the record may have landed; never retried, never
+///   fallen back).
 ///
 /// PER-LANE SINGLE FLIGHT, mirroring NtfyMessageSender: a busy lane refuses a
 /// second send inline; the other lane is unaffected.
@@ -68,6 +74,8 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
     static let quotaExceededText = "the iCloud quota was exceeded"
     static let serverRejectedText = "iCloud rejected the request"
     static let permissionText = "iCloud denied permission to save the alert"
+    static let refusedText = "iCloud refused the alert"
+    static let unconfirmedSaveText = "iCloud did not confirm the alert"
     static let busyLaneText = "another message is still being sent"
 
     private let isEntitled: @Sendable () -> Bool
@@ -222,18 +230,26 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
         }
     }
 
-    /// One save's outcome (frozen F3 ADR):
+    /// One save's outcome (frozen F3 ADR, amended by issue #139):
     /// - no error → `accepted`;
-    /// - a TIMEOUT-class transport error underneath (timed out, cancelled,
-    ///   connection lost — `LidGuardPolicy.unconfirmedTransportErrorCodes`) →
-    ///   `timedOutUnconfirmed`, whatever CloudKit code carries it: the record
-    ///   may have landed, so it must never be fallen back from (double buzz);
-    /// - a CloudKit code in the definitive list (`definitiveFailureText`) →
-    ///   `sendFailed` with that code's fixed sentence;
-    /// - anything else, any other error domain included → `timedOutUnconfirmed`.
-    /// A one-record `partialFailure` is judged by the record's own error.
+    /// - `CloudKitSaveUnconfirmed` (batch success, no per-record result) →
+    ///   `sendFailed(unconfirmedSaveText)`;
+    /// - `CloudKitRecordRefusal` (the record's own failure) → `sendFailed`
+    ///   ALWAYS: the code's fixed sentence where the definitive list has one,
+    ///   otherwise `refusedText`;
+    /// - for a BATCH-level error, unchanged:
+    ///   - a TIMEOUT-class transport error underneath (timed out, cancelled,
+    ///     connection lost — `LidGuardPolicy.unconfirmedTransportErrorCodes`) →
+    ///     `timedOutUnconfirmed`, whatever CloudKit code carries it: the record
+    ///     may have landed, so it must never be fallen back from (double buzz);
+    ///   - a CloudKit code in the definitive list (`definitiveFailureText`) →
+    ///     `sendFailed` with that code's fixed sentence;
+    ///   - anything else, any other error domain included → `timedOutUnconfirmed`.
+    ///   A one-record `partialFailure` is judged by the record's own error.
     static func classifySave(_ error: (any Error)?) -> MessageSendOutcome {
         guard let error else { return .accepted }
+        if error is CloudKitSaveUnconfirmed { return .sendFailed(unconfirmedSaveText) }
+        if let refusal = error as? CloudKitRecordRefusal { return .sendFailed(refusalText(refusal.error)) }
         let nsError = recordLevelError(error as NSError)
         if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError,
            underlying.domain == NSURLErrorDomain,
@@ -249,8 +265,10 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
     }
 
     /// The DEFINITIVE codes (nothing was committed), each with a fixed,
-    /// secret-free sentence; nil for every other code — a new or unknown code
-    /// stays unconfirmed (the safe direction: no fallback, no double buzz).
+    /// secret-free sentence; nil for every other code — at the BATCH level a
+    /// new or unknown code stays unconfirmed (the safe direction: no
+    /// fallback, no double buzz). The record's own failure is definitive
+    /// whatever its code (`refusalText`, issue #139).
     ///
     /// Owner ruling (g), 2026-11-20, added three refusals: `quotaExceeded`,
     /// `serverRejectedRequest` and `permissionFailure`. In each, iCloud turns
@@ -286,7 +304,137 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
         }
         return only
     }
+
+    /// The sentence for the record's OWN failure (issue #139). CloudKit
+    /// delivered it per record, so it is iCloud's verdict that this record
+    /// was not committed: `sendFailed` whatever the code — the definitive
+    /// list's sentence where it has one, `refusedText` for every other code
+    /// and every other domain.
+    static func refusalText(_ error: any Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == CKErrorDomain, let code = CKError.Code(rawValue: nsError.code),
+              let detail = definitiveFailureText(code) else {
+            return refusedText
+        }
+        return detail
+    }
+
+    // MARK: - Diagnostics (closed vocabulary)
+
+    /// The ONLY thing a per-record failure may log (issue #139): the CloudKit
+    /// code's name and number, e.g. `quotaExceeded (25)`. The name comes from
+    /// the closed `codeName` switch; a code it does not name logs as
+    /// `code N`, another domain as `non-CloudKit code N`. Never the error's
+    /// own message or user info, a record name, the body or the topic.
+    static func diagnosticCode(_ error: any Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == CKErrorDomain else { return "non-CloudKit code \(nsError.code)" }
+        guard let name = CKError.Code(rawValue: nsError.code).flatMap(codeName) else {
+            return "code \(nsError.code)"
+        }
+        return "\(name) (\(nsError.code))"
+    }
+
+    /// Every CloudKit code the oldest SDK in CI defines, by name. Closed on
+    /// purpose: a newer or unknown code falls to `nil` (`code N` in the log)
+    /// rather than to any text CloudKit supplies.
+    static func codeName(_ code: CKError.Code) -> String? {
+        switch code {
+        case .internalError: return "internalError"
+        case .partialFailure: return "partialFailure"
+        case .networkUnavailable: return "networkUnavailable"
+        case .networkFailure: return "networkFailure"
+        case .badContainer: return "badContainer"
+        case .serviceUnavailable: return "serviceUnavailable"
+        case .requestRateLimited: return "requestRateLimited"
+        case .missingEntitlement: return "missingEntitlement"
+        case .notAuthenticated: return "notAuthenticated"
+        case .permissionFailure: return "permissionFailure"
+        case .unknownItem: return "unknownItem"
+        case .invalidArguments: return "invalidArguments"
+        case .serverRecordChanged: return "serverRecordChanged"
+        case .serverRejectedRequest: return "serverRejectedRequest"
+        case .assetFileNotFound: return "assetFileNotFound"
+        case .assetFileModified: return "assetFileModified"
+        case .incompatibleVersion: return "incompatibleVersion"
+        case .constraintViolation: return "constraintViolation"
+        case .operationCancelled: return "operationCancelled"
+        case .changeTokenExpired: return "changeTokenExpired"
+        case .batchRequestFailed: return "batchRequestFailed"
+        case .zoneBusy: return "zoneBusy"
+        case .badDatabase: return "badDatabase"
+        case .quotaExceeded: return "quotaExceeded"
+        case .zoneNotFound: return "zoneNotFound"
+        case .limitExceeded: return "limitExceeded"
+        case .userDeletedZone: return "userDeletedZone"
+        case .tooManyParticipants: return "tooManyParticipants"
+        case .alreadyShared: return "alreadyShared"
+        case .referenceViolation: return "referenceViolation"
+        case .managedAccountRestricted: return "managedAccountRestricted"
+        case .participantMayNeedVerification: return "participantMayNeedVerification"
+        case .serverResponseLost: return "serverResponseLost"
+        case .assetNotAvailable: return "assetNotAvailable"
+        case .accountTemporarilyUnavailable: return "accountTemporarilyUnavailable"
+        default: return nil
+        }
+    }
+
+    // MARK: - The save operation
+
+    /// THE save operation for one payload, built here rather than inside the
+    /// live store so a test can play CloudKit's part on the real thing — fire
+    /// its per-record and batch callbacks by hand — with no container, no
+    /// database and nothing sent. A new record only (never overwrite one that
+    /// already exists), the same request/resource ceiling as an ntfy publish,
+    /// user-initiated priority.
+    ///
+    /// What `completion` receives (issue #139 — batch success alone is NOT
+    /// the record's verdict: `isAtomic` has no effect in the default zone,
+    /// and CloudKit's Result overlay hands a batch `partialFailure` to the
+    /// result block as SUCCESS, so a refused record arrives as batch success
+    /// with the refusal only in the per-record callback):
+    /// - the record reported saved and the batch succeeded → nil;
+    /// - the record reported a failure → `CloudKitRecordRefusal`, whatever
+    ///   the batch said;
+    /// - the batch succeeded with no per-record result → `CloudKitSaveUnconfirmed`;
+    /// - the batch failed and the record reported no failure → the batch
+    ///   error, unchanged.
+    static func makeSaveOperation(
+        _ payload: CloudKitAlertPayload,
+        completion: @escaping @Sendable ((any Error)?) -> Void
+    ) -> CKModifyRecordsOperation {
+        let operation = CKModifyRecordsOperation(recordsToSave: [makeRecord(payload)], recordIDsToDelete: nil)
+        operation.savePolicy = .ifServerRecordUnchanged
+        operation.isAtomic = true
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        configuration.isLongLived = false
+        configuration.timeoutIntervalForRequest = LidGuardTuning.requestTimeout
+        configuration.timeoutIntervalForResource = LidGuardTuning.requestTimeout
+        operation.configuration = configuration
+        let saveResult = RecordResultBox()
+        operation.perRecordSaveBlock = { _, result in
+            if case .failure(let error) = result {
+                Self.logger.error("phone: iCloud refused the alert: \(Self.diagnosticCode(error), privacy: .public)")
+            }
+            saveResult.note(result)
+        }
+        operation.modifyRecordsResultBlock = { result in
+            completion(saveResult.completionError(batch: result))
+        }
+        return operation
+    }
 }
+
+/// The record's OWN failure, as CloudKit delivered it to the per-record
+/// callback (issue #139) — always a definitive `sendFailed`.
+struct CloudKitRecordRefusal: Error {
+    let error: any Error
+}
+
+/// A batch success with no per-record result at all (issue #139): nothing
+/// confirms the record landed — a definitive `sendFailed`.
+struct CloudKitSaveUnconfirmed: Error {}
 
 // MARK: - The payload and the CloudKit seam
 
@@ -309,10 +457,11 @@ protocol CloudKitAlertStore: AnyObject, Sendable {
     func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void)
 }
 
-/// The real store: the owner's private database, one record per save, with
-/// the same request/resource ceiling as an ntfy publish and user-initiated
-/// priority (a discretionary operation could be parked until some later
-/// network — we want a fast, honest answer).
+/// The real store: the owner's private database, one record per save
+/// (`CloudKitMessageSender.makeSaveOperation`), with the same
+/// request/resource ceiling as an ntfy publish and user-initiated priority (a
+/// discretionary operation could be parked until some later network — we
+/// want a fast, honest answer).
 private final class LiveCloudKitAlertStore: CloudKitAlertStore, @unchecked Sendable {
     private let container: CKContainer
     private let database: CKDatabase
@@ -327,48 +476,36 @@ private final class LiveCloudKitAlertStore: CloudKitAlertStore, @unchecked Senda
     }
 
     func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void) {
-        let operation = CKModifyRecordsOperation(
-            recordsToSave: [CloudKitMessageSender.makeRecord(payload)],
-            recordIDsToDelete: nil
-        )
-        // A new record only — never overwrite one that already exists.
-        operation.savePolicy = .ifServerRecordUnchanged
-        operation.isAtomic = true
-        let configuration = CKOperation.Configuration()
-        configuration.qualityOfService = .userInitiated
-        configuration.isLongLived = false
-        configuration.timeoutIntervalForRequest = LidGuardTuning.requestTimeout
-        configuration.timeoutIntervalForResource = LidGuardTuning.requestTimeout
-        operation.configuration = configuration
-        let recordError = RecordErrorBox()
-        operation.perRecordSaveBlock = { _, result in
-            if case .failure(let error) = result { recordError.set(error) }
-        }
-        operation.modifyRecordsResultBlock = { result in
-            switch result {
-            case .success: completion(nil)
-            case .failure(let error): completion(recordError.value ?? error)
-            }
-        }
-        database.add(operation)
+        database.add(CloudKitMessageSender.makeSaveOperation(payload, completion: completion))
     }
 }
 
-/// Holds the one record's own error until the batch result arrives.
-private final class RecordErrorBox: @unchecked Sendable {
+/// Holds the one record's own result until the batch result arrives, then
+/// says what the save reports (see `CloudKitMessageSender.makeSaveOperation`).
+private final class RecordResultBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var stored: (any Error)?
+    private var reported = false
+    private var failure: (any Error)?
 
-    func set(_ error: any Error) {
+    func note(_ result: Result<CKRecord, any Error>) {
         lock.lock()
-        stored = error
+        reported = true
+        if case .failure(let error) = result { failure = error }
         lock.unlock()
     }
 
-    var value: (any Error)? {
+    func completionError(batch: Result<Void, any Error>) -> (any Error)? {
         lock.lock()
         defer { lock.unlock() }
-        return stored
+        switch batch {
+        case .success:
+            // Batch success is not the record's verdict (issue #139).
+            if let failure { return CloudKitRecordRefusal(error: failure) }
+            return reported ? nil : CloudKitSaveUnconfirmed()
+        case .failure(let error):
+            if let failure { return CloudKitRecordRefusal(error: failure) }
+            return error
+        }
     }
 }
 
