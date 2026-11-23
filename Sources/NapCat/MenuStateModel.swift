@@ -636,9 +636,10 @@ final class MenuStateModel: ObservableObject {
             // Claude status itself is the footer label, which carries its own
             // (paused) warning — never counted.
             guard claudeDetectionVisible else { return [] }
-            // F4 slice S2: the channel-policy line. The Remote approvals
-            // status is not counted — its home is the panel row's caption,
-            // where it surfaces and is acted on.
+            // F4 slice S2: the channel-policy line (nominal in this slice,
+            // so it raises no badge; counted so a later warning would). The
+            // Remote approvals status is not counted — its home is the panel
+            // row's caption, where it surfaces and is acted on.
             return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal,
                     remoteApprovalsPolicyLine?.severity ?? .nominal]
         }
@@ -1496,33 +1497,36 @@ final class MenuStateModel: ObservableObject {
     }
 
     /// What the file tier of Claude Code's managed settings says about the
-    /// per-session development flag — a Settings › Claude line with its
-    /// subject label (it surfaces below the cards, where no row title sits
-    /// above it). nil while no reading exists (the toggle is off). The
-    /// readings that are simply how this Mac is set up are nominal; one that
-    /// cannot be read, or that turns channels off, is info.
+    /// per-session development flag (in user words, "the preview option") —
+    /// a Settings › Claude line with its subject label. nil while no reading
+    /// exists (the toggle is off).
+    ///
+    /// Every reading is NOMINAL in this slice, so it lives in Settings alone:
+    /// no reading changes what NapCat does (every prompt stays on this Mac
+    /// whatever it says), none is NapCat's to fix, and the probe cannot see
+    /// the plan that decides whether one matters. The panel keeps its twin
+    /// (`ClaudeSurfacedLines`), so a reading a later slice makes actionable —
+    /// raised to a warning — surfaces at top level by construction.
     nonisolated static func remoteApprovalsPolicyLine(finding: ChannelPolicyFinding?) -> PanelLine? {
         guard let finding else { return nil }
-        let flagNeeded = "each session still needs the development flag"
+        let optionNeeded = "each session must start with the preview option"
+        let text: String
         switch finding {
         case .noFilePolicy:
-            return PanelLine(text: "Channel policy: no managed settings — \(flagNeeded)", severity: .nominal)
+            text = "Claude Code policy: no file on this Mac — \(optionNeeded)"
         case .defaultAllowlist:
-            return PanelLine(text: "Channel policy: managed settings keep the default allowlist — \(flagNeeded)",
-                             severity: .nominal)
+            text = "Claude Code policy: Anthropic's channel list applies — \(optionNeeded)"
         case .allowlistOmitsNapCat:
-            return PanelLine(text: "Channel policy: the managed allowlist does not name NapCat — \(flagNeeded)",
-                             severity: .nominal)
+            text = "Claude Code policy: the organization's channel list leaves out NapCat — \(optionNeeded)"
         case .allowlistNamesNapCat:
-            return PanelLine(text: "Channel policy: the managed allowlist names NapCat — on an organization plan "
-                                + "no development flag is needed", severity: .nominal)
+            text = "Claude Code policy: the organization's channel list includes NapCat — on that plan, sessions "
+                + "need no preview option"
         case .channelsNotEnabled:
-            return PanelLine(text: "Channel policy: managed settings do not enable channels — on an organization "
-                                + "plan no session can relay prompts", severity: .info)
+            text = "Claude Code policy: channels turned off — on an organization plan, no session can reach NapCat"
         case .unreadable:
-            return PanelLine(text: "Channel policy: managed settings could not be read — \(flagNeeded)",
-                             severity: .info)
+            text = "Claude Code policy: unclear to NapCat — \(optionNeeded)"
         }
+        return PanelLine(text: text, severity: .nominal)
     }
 
     // MARK: - Issue #34: the run-floor group of the ntfy settings editor

@@ -668,9 +668,10 @@ struct SettingsWindowTests {
     /// F4 slice S2, through the model with the real toggle over a scratch
     /// socket (ApprovalsWorld — no defaults, keychain or home of its own):
     /// the Settings group follows the OBSERVED phase, the policy line comes
-    /// with the reading taken while on and leaves with the kill switch, and it
-    /// raises the gear badge only as the problem it is. The row's own status
-    /// never counts toward the badge — the panel row is its home.
+    /// with the reading taken while on and leaves with the kill switch, and —
+    /// a Settings fact in this slice, even unreadable — it raises no gear
+    /// badge. The row's own status never counts toward the badge — the panel
+    /// row is its home.
     @Test @MainActor func theModelMirrorsTheRemoteApprovalsToggle() throws {
         let markerDir = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-settings-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: markerDir, withIntermediateDirectories: true)
@@ -696,8 +697,8 @@ struct SettingsWindowTests {
                 .remoteApprovals(isOn: true, caption: MenuStateModel.remoteApprovalsStatus(phase: .listening), hint: hint),
                 .line(policy),
             ])
-            #expect(model.settingsResidentSeverities(.claude).filter { $0 == .info }.count == 1,
-                    "the unreadable reading raises the badge once; the row's info status does not")
+            #expect(policy.severity == .nominal && !model.settingsResidentSeverities(.claude).contains(.info),
+                    "the unreadable reading is a Settings fact, and the row's info status is not counted: no badge")
 
             model.setRemoteApprovalsEnabled(false)
             #expect(!model.remoteApprovalsEnabled)

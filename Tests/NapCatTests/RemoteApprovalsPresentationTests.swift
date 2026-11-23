@@ -47,35 +47,45 @@ struct RemoteApprovalsPresentationTests {
         var testDescription: String { finding.rawValue }
     }
 
+    /// Every reading is a Settings fact in this slice (nominal: nothing in
+    /// the panel), in plain words — the development flag is "the preview
+    /// option" (`remoteApprovalsPolicyLine` says why none is a problem yet).
     static let policyRows: [PolicyRow] = [
         PolicyRow(finding: .noFilePolicy,
-                  text: "Channel policy: no managed settings — each session still needs the development flag",
+                  text: "Claude Code policy: no file on this Mac — each session must start with the preview option",
                   severity: .nominal),
         PolicyRow(finding: .defaultAllowlist,
-                  text: "Channel policy: managed settings keep the default allowlist — each session still needs the "
-                      + "development flag", severity: .nominal),
+                  text: "Claude Code policy: Anthropic's channel list applies — each session must start with the "
+                      + "preview option", severity: .nominal),
         PolicyRow(finding: .allowlistOmitsNapCat,
-                  text: "Channel policy: the managed allowlist does not name NapCat — each session still needs the "
-                      + "development flag", severity: .nominal),
+                  text: "Claude Code policy: the organization's channel list leaves out NapCat — each session must "
+                      + "start with the preview option", severity: .nominal),
         PolicyRow(finding: .allowlistNamesNapCat,
-                  text: "Channel policy: the managed allowlist names NapCat — on an organization plan no development "
-                      + "flag is needed", severity: .nominal),
+                  text: "Claude Code policy: the organization's channel list includes NapCat — on that plan, sessions "
+                      + "need no preview option", severity: .nominal),
         PolicyRow(finding: .channelsNotEnabled,
-                  text: "Channel policy: managed settings do not enable channels — on an organization plan no session "
-                      + "can relay prompts", severity: .info),
+                  text: "Claude Code policy: channels turned off — on an organization plan, no session can reach NapCat",
+                  severity: .nominal),
         PolicyRow(finding: .unreadable,
-                  text: "Channel policy: managed settings could not be read — each session still needs the "
-                      + "development flag", severity: .info),
+                  text: "Claude Code policy: unclear to NapCat — each session must start with the preview option",
+                  severity: .nominal),
     ]
 
     @Test(arguments: policyRows)
     func thePolicyLinePerReading(_ row: PolicyRow) throws {
         let line = try #require(MenuStateModel.remoteApprovalsPolicyLine(finding: row.finding))
         #expect(line == PanelLine(text: row.text, severity: row.severity))
-        // Honest about the flag: only the allowlist that names NapCat says
-        // it is not needed — and then only on an organization plan.
-        #expect(line.text.contains("still needs the development flag") == (row.finding.developmentFlagNeeded
-                                                                            && row.finding != .channelsNotEnabled))
+        // Honest about the option: only the allowlist that names NapCat says
+        // it is not needed — and then only on that organization's plan.
+        #expect(line.text.contains("each session must start with the preview option")
+                == (row.finding.developmentFlagNeeded && row.finding != .channelsNotEnabled))
+        // Settings only: the panel's twin never renders a reading in this
+        // slice, and the gear badge does not count one.
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .settings)
+        // Plain words: none of the admin and command-line jargon.
+        for jargon in ["flag", "allowlist", "managed settings", "Channel policy", "relay"] {
+            #expect(!line.text.contains(jargon), "'\(line.text)' says '\(jargon)'")
+        }
     }
 
     @Test func noReadingIsNoLine() {

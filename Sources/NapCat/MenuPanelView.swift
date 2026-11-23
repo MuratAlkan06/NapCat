@@ -296,8 +296,9 @@ struct SurfacedLine: View {
 }
 
 /// Top-level home for the Settings › Claude lines that can be problems.
-/// (The awake line is always nominal today, so it never renders here — it
-/// is listed so the iron rule holds by construction, not by the mapping.)
+/// (The awake line and the channel-policy reading are always nominal today,
+/// so they never render here — they are listed so the iron rule holds by
+/// construction, not by the mapping.)
 struct ClaudeSurfacedLines: View {
     @ObservedObject var model: MenuStateModel
 
@@ -305,7 +306,8 @@ struct ClaudeSurfacedLines: View {
         SurfacedLine(line: model.hookStatus)
         SurfacedLine(line: model.hookVersionStatus)
         SurfacedLine(line: model.claudeAwakeLine)
-        // F4 slice S2: the channel-policy reading (absent while off).
+        // F4 slice S2: the channel-policy reading (absent while off; a
+        // Settings fact in this slice — `remoteApprovalsPolicyLine`).
         SurfacedLine(line: model.remoteApprovalsPolicyLine)
     }
 }

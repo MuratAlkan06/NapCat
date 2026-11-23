@@ -774,10 +774,7 @@ struct MenuPanelPresentationTests {
     /// nominal string must never read like a problem.
     static let problemPhrases = ["not installed", "not seen yet", "not usable", "refused", "failed",
                                  "unconfirmed", "Waiting for approval", "Not found", "paused", "unavailable",
-                                 "out of date", "no version stamp", "newer than",
-                                 // F4 slice S2: the channel-policy readings that are not simply how
-                                 // the Mac is set up.
-                                 "could not be read", "do not enable channels"]
+                                 "out of date", "no version stamp", "newer than"]
 
     static func readsLikeAProblem(_ text: String) -> Bool {
         problemPhrases.contains { text.contains($0) }
