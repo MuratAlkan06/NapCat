@@ -31,8 +31,9 @@ enum VisibleWhitespace {
     /// A tab.
     static let tabMark = "\u{2192}"
     /// Any other horizontal whitespace (a no-break or an em space, …): not a
-    /// plain space, so not drawn as one.
-    static let otherSpaceMark = "\u{2591}"
+    /// plain space, so not drawn as one. A solid square: it must be seen at
+    /// a glance, and a shade pattern thins the mark ink to almost nothing.
+    static let otherSpaceMark = "\u{25A0}"
     /// A line break (LF, CR, CR LF, or a Unicode line or paragraph
     /// separator), drawn before the break itself.
     static let lineBreakMark = "\u{23CE}"

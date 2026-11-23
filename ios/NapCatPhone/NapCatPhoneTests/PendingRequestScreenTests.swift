@@ -181,6 +181,22 @@ import UIKit
         }
     }
 
+    /// Every tool glyph has the filled form the theme draws, so none reads
+    /// as a thin outline beside a filled one (an outline-only symbol keeps
+    /// its outline under the fill variant).
+    @Test(arguments: ThemeID.allCases)
+    func everyToolGlyphHasTheThemesFilledForm(_ id: ThemeID) {
+        #expect(id.theme.symbolVariant == .fill)
+        let symbols = ApprovalTool.allCases.map { PendingRequestScreen.toolSymbol($0.rawValue) }
+        for symbol in symbols + [PendingRequestScreen.otherToolSymbol] {
+            #expect(UIImage(systemName: symbol + ".fill") != nil, "\(symbol) has no filled form")
+        }
+        // Not vacuous: the outlines the review saw have none.
+        for outline in ["square.and.pencil", "pencil"] {
+            #expect(UIImage(systemName: outline + ".fill") == nil, "\(outline)")
+        }
+    }
+
     // MARK: Sent, and the finished card
 
     /// Sent is a confirmation: its own glyph (a paper plane: it went out,
@@ -271,6 +287,202 @@ import UIKit
                 == [Self.now, Self.now.addingTimeInterval(30)])
         #expect(PendingRequestSheet.schedule(now: Self.now, until: Self.now) == [Self.now])
         #expect(PendingRequestSheet.schedule(now: Self.now, until: nil) == [Self.now])
+        // Opened exactly on a whole minute: its reading changes just after
+        // now, so now is a mark too.
+        #expect(PendingRequestSheet.schedule(now: Self.now, until: Self.now.addingTimeInterval(120))
+                == [Self.now, Self.now, Self.now.addingTimeInterval(60), Self.now.addingTimeInterval(120)])
+    }
+
+    // MARK: The sheet's clock
+
+    /// A sheet clock on `clock`: each wait is noted, `during` runs in it,
+    /// and it ends exactly on the moment waited for (the hard case: a
+    /// reading holds through its mark). A clock still waiting after
+    /// `stuck` waits is cut off (no window has more than eleven marks).
+    static func sheetClock(_ clock: TestClock, waits: Notes<Date>, stuck: Int = 32,
+                           during: (@Sendable (Date) async -> Void)? = nil) -> SheetClock {
+        SheetClock(now: { clock.now }) { moment in
+            waits.note(moment)
+            if waits.all.count > stuck { throw CancellationError() }
+            await during?(moment)
+            clock.set(moment)
+        }
+    }
+
+    /// What the open screen shows: its state line and the answers it offers.
+    struct Reading: Equatable {
+        let line: PhoneLine
+        let offer: PendingRequestScreen.Offer
+    }
+
+    static func reading(_ inbox: RequestInbox, _ id: PromptID, at moment: Date) -> Reading? {
+        guard let status = inbox.status(of: id, at: moment) else { return nil }
+        return Reading(line: status.line(at: moment), offer: PendingRequestScreen.offer(for: status, biometry: inbox.biometry))
+    }
+
+    /// Runs the open sheet's clock for `id` to its end, as the sheet does:
+    /// the moments drawn and the waits in between.
+    static func follow(_ inbox: RequestInbox, _ id: PromptID, on clock: SheetClock) async -> [Date] {
+        var drawn: [Date] = []
+        await PendingRequestSheet.follow(clock: clock, closes: { PendingRequestSheet.closes(inbox, id, at: $0) },
+                                         redraw: { drawn.append($0) })
+        return drawn
+    }
+
+    static let answerable = PendingRequestScreen.Offer(allow: .faceID, deny: true)
+
+    /// The review's case: opened with 70 s left, the screen reads "1 min",
+    /// turns into the under-a-minute warning as the last minute starts, and
+    /// flips to Expired with its answers gone as the window closes; then its
+    /// clock stops. Nothing is touched, nothing reopens.
+    @Test func anOpenScreenWarnsAndExpiresOnItsOwn() async throws {
+        let clock = TestClock()
+        let inbox = RequestFixtures.inbox(clock)
+        let request = RequestFixtures.request(1, createdAt: clock.now, window: 70)
+        inbox.receive([request])
+        let until = clock.now.addingTimeInterval(70)
+        let waits = Notes<Date>()
+        let drawn = await Self.follow(inbox, request.id, on: Self.sheetClock(clock, waits: waits))
+        #expect(waits.all == [until.addingTimeInterval(-60), until])
+        try #require(drawn.count == 3)
+        let readings = drawn.map { Self.reading(inbox, request.id, at: $0) }
+        #expect(readings.map(\.?.line) == [
+            PhoneLine(text: "Pending — expires in 1 min", severity: .nominal),
+            PhoneLine(text: "Pending — expires in under a minute", severity: .warning),
+            PhoneLine(text: "Expired — only your Mac can answer it now", severity: .info),
+        ])
+        #expect(readings.map(\.?.offer) == [Self.answerable, Self.answerable, PendingRequestScreen.Offer.none])
+        // Each change is drawn as it happens, not a moment later.
+        #expect(drawn[1] > until.addingTimeInterval(-60) && drawn[1] < until.addingTimeInterval(-59.999))
+        #expect(drawn[2] > until && drawn[2] < until.addingTimeInterval(0.001))
+    }
+
+    /// Any window: the clock wakes exactly at the schedule's marks, every
+    /// wake changes what is drawn, what is drawn holds until the next wake
+    /// (never a stale minute, never a live answer past the close), and the
+    /// last drawing is Expired, with no answers, after which it stops.
+    @Test(arguments: [600.0, 599.5, 150, 120, 70, 60, 59.5, 1, 0.25])
+    func theScreenFollowsTheWindowToItsClose(_ window: TimeInterval) async throws {
+        let clock = TestClock()
+        let inbox = RequestFixtures.inbox(clock)
+        let request = RequestFixtures.request(1, createdAt: clock.now, window: window)
+        inbox.receive([request])
+        let open = clock.now
+        let waits = Notes<Date>()
+        let drawn = await Self.follow(inbox, request.id, on: Self.sheetClock(clock, waits: waits))
+        #expect(waits.all == Array(PendingRequestSheet.schedule(now: open, until: open.addingTimeInterval(window)).dropFirst()))
+        try #require(drawn.count == waits.all.count + 1)
+        let readings = try drawn.map { try #require(Self.reading(inbox, request.id, at: $0)) }
+        for (index, wake) in waits.all.enumerated() {
+            let justBefore = Date(timeIntervalSinceReferenceDate: wake.timeIntervalSinceReferenceDate.nextDown)
+            if justBefore >= drawn[index] {
+                #expect(Self.reading(inbox, request.id, at: justBefore) == readings[index], "stale before \(wake)")
+            }
+            #expect(readings[index + 1] != readings[index], "a wake at \(wake) changed nothing")
+        }
+        #expect(readings.dropLast().allSatisfy { $0.offer == Self.answerable })
+        #expect(readings.last == Reading(line: RequestStatus.expired.line(at: open), offer: .none))
+    }
+
+    /// A final state never changes again, so its screen keeps no clock:
+    /// Sent, Answered, Expired and Withdrawn are drawn once and nothing waits.
+    @Test func aFinalScreenKeepsNoClock() async {
+        let clock = TestClock()
+        let sent = RequestFixtures.inbox(clock)
+        let answered = RequestInbox(writer: RecordingDecisionWriter(.alreadyAnswered), biometrics: ScriptedBiometricGate(),
+                                    clock: { clock.now })
+        let request = RequestFixtures.request(1, createdAt: clock.now)
+        for inbox in [sent, answered] {
+            inbox.receive([request])
+            await inbox.deny(request.id)
+        }
+        let withdrawn = RequestFixtures.inbox(clock)
+        withdrawn.receive([request])
+        withdrawn.withdraw(request.id)
+        let expired = RequestFixtures.inbox(clock)
+        expired.receive([RequestFixtures.request(1, createdAt: clock.now, window: 0.5)])
+        clock.advance(1)
+        let expected: [RequestStatus] = [.sent(.deny), .answered, .withdrawn, .expired]
+        for (inbox, status) in zip([sent, answered, withdrawn, expired], expected) {
+            #expect(inbox.status(of: request.id, at: clock.now) == status)
+            let waits = Notes<Date>()
+            let drawn = await Self.follow(inbox, request.id, on: Self.sheetClock(clock, waits: waits))
+            #expect(drawn == [clock.now], "\(status)")
+            #expect(waits.all.isEmpty, "\(status) keeps a clock")
+        }
+    }
+
+    /// An answer sent while the clock waits ends it at that wake: the Sent
+    /// screen is drawn, and nothing waits after it.
+    @Test func aScreenAnsweredWhileWaitingStopsItsClock() async throws {
+        let clock = TestClock()
+        let inbox = RequestFixtures.inbox(clock)
+        let request = RequestFixtures.request(1, createdAt: clock.now)
+        inbox.receive([request])
+        let waits = Notes<Date>()
+        let answering = Self.sheetClock(clock, waits: waits) { _ in await inbox.deny(request.id) }
+        let drawn = await Self.follow(inbox, request.id, on: answering)
+        #expect(waits.all.count == 1)
+        #expect(drawn.count == 2)
+        #expect(Self.reading(inbox, request.id, at: try #require(drawn.last))?.line.text
+                == "Sent — Deny is saved; your Mac hasn't confirmed it")
+    }
+
+    /// Closing the sheet cancels its clock: the wait under way ends at once
+    /// and nothing is drawn after it.
+    @Test func closingTheSheetStopsItsClock() async {
+        let clock = TestClock()
+        let inbox = RequestFixtures.inbox(clock)
+        let request = RequestFixtures.request(1, createdAt: clock.now)
+        inbox.receive([request])
+        let waits = Notes<Date>()
+        let drawn = Notes<Date>()
+        let waiting = SheetClock(now: { clock.now }) { moment in
+            waits.note(moment)
+            try await Task.sleep(for: .seconds(3_600))
+        }
+        let open = Task {
+            await PendingRequestSheet.follow(clock: waiting, closes: { PendingRequestSheet.closes(inbox, request.id, at: $0) },
+                                             redraw: { drawn.note($0) })
+        }
+        for _ in 0..<10_000 where waits.all.isEmpty { await Task.yield() }
+        #expect(waits.all.count == 1, "the clock is waiting")
+        open.cancel()
+        await open.value
+        #expect(drawn.all.count == 1)
+        #expect(waits.all.count == 1)
+    }
+
+    /// The sheet draws at the moment its clock keeps (never a moment of its
+    /// own), keeps that clock in a task (which SwiftUI cancels as the sheet
+    /// closes) and no longer leans on a timeline view.
+    static func clockFailures(sheet: String) -> [String] {
+        let code = SettingsReachabilityTests.flat(sheet)
+        var failures: [String] = []
+        for shape in [".task { await Self.follow(clock: clock, closes: { Self.closes(inbox, id, at: $0) }, redraw: { now = $0 }) }",
+                      "inbox.status(of: id, at: now)", "status: status, now: now,", "@State private var now: Date",
+                      "_now = State(initialValue: clock.now())"]
+        where !code.contains(shape) {
+            failures.append("the sheet lost '\(shape)'")
+        }
+        for token in ["TimelineView", "Date()", "Date.now", "withAnimation"] where code.contains(token) {
+            failures.append("'\(token)' in the sheet — it draws at its clock's moment, at once")
+        }
+        return failures
+    }
+
+    @Test func theSheetDrawsAtItsClocksMoment() throws {
+        let sheet = try Self.code(Self.sheetFile)
+        #expect(Self.clockFailures(sheet: sheet).isEmpty, "\(Self.clockFailures(sheet: sheet))")
+        let mutants: [(String, String)] = [
+            ("no clock", sheet.replacingOccurrences(of: "        .task { await Self.follow(", with: "        .onAppear { _ = (")),
+            ("its own moment", sheet.replacingOccurrences(of: "inbox.status(of: id, at: now)", with: "inbox.status(of: id, at: Date())")),
+            ("a timeline again", sheet.replacingOccurrences(of: "            ZStack {", with: "            TimelineView(.everyMinute) { _ in")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != sheet, "canary '\(name)' did not apply")
+            #expect(!Self.clockFailures(sheet: mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
     }
 
     // MARK: The launch argument
@@ -376,6 +588,8 @@ import UIKit
     ///   long input never pushes them out of reach;
     /// - a finished card lies flat (no shadow) with its glyph in the
     ///   secondary ink;
+    /// - the tool's glyph is drawn over the layout, on the tool name's
+    ///   baseline, so a tall glyph never moves the name;
     /// - Sent gets its confirmation glyph, and the change to Sent is
     ///   announced to VoiceOver at high priority;
     /// - the unavailable line names this phone's biometric;
@@ -399,6 +613,9 @@ import UIKit
         ".onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }",
         ".themedCard(castsShadow: !muted) .accessibilityElement(children: .ignore) .accessibilityLabel(Self.spoken(request))",
         "let muted = Self.mutesCard(status)",
+        ".padding(.leading, glyphColumn + theme.innerGap * 2) "
+            + ".overlay(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) { "
+            + "Image(systemName: Self.toolSymbol(request.toolName))",
         ".foregroundStyle(muted ? theme.inkSecondary : theme.accent)",
         "if let symbol = Self.confirmationSymbol(status) {",
         "} else { CaptionLine(line: line) }",
@@ -457,6 +674,11 @@ import UIKit
                 with: "        .scrollBounceBehavior(.basedOnSize)\n        answers\n"), style),
             ("the answers before the state", screen.replacingOccurrences(
                 of: "                stateLine\n                answers\n", with: "                answers\n                stateLine\n"), style),
+            ("the glyph off the name's baseline", screen.replacingOccurrences(
+                of: ".overlay(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline))",
+                with: ".overlay(alignment: .topLeading)"), style),
+            ("the name drawn under the glyph", screen.replacingOccurrences(
+                of: "            .padding(.leading, glyphColumn + theme.innerGap * 2)\n", with: ""), style),
             ("a finished card still raised", screen.replacingOccurrences(
                 of: ".themedCard(castsShadow: !muted)", with: ".themedCard()"), style),
             ("Sent as a plain caption", screen.replacingOccurrences(
@@ -485,4 +707,12 @@ import UIKit
         #expect(sheetRange.upperBound < palette.lowerBound)
         #expect(root.contains("_shownRequest = State(initialValue: opensSettings ? nil : inbox.requests.first)"))
     }
+}
+
+/// What a test notes down, from any thread.
+final class Notes<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Value] = []
+    func note(_ value: Value) { lock.lock(); values.append(value); lock.unlock() }
+    var all: [Value] { lock.lock(); defer { lock.unlock() }; return values }
 }

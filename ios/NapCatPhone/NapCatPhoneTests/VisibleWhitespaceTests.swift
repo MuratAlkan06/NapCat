@@ -29,6 +29,10 @@ import UIKit
 ///   around it. A mark glyph typed INTO the input is drawn as input, in
 ///   the ink: what is marked is decided by the input's characters, never
 ///   by how a glyph looks.
+/// - Any other space (a no-break space, an em space, …) is a solid square
+///   U+25A0: an exotic space in an Edit or Write must be seen. The light
+///   shade U+2591 it replaced is a sparse dot pattern that thinned the mark
+///   ink to about 1.3:1 on a light card.
 /// - The input itself is never changed: the drawing gives back every
 ///   Unicode scalar of it, in order (compared as UTF-8 bytes, since
 ///   `String ==` would call a decomposed "é" equal to a precomposed one).
@@ -55,8 +59,9 @@ import UIKit
         // Other spaces and separators: no-break, en, ideographic, narrow
         // no-break, line and paragraph separators, next line.
         "a\u{00A0}b\u{2002}c\u{3000}d\u{202F}e\u{2028}f\u{2029}g\u{0085}h\u{000B}i\u{000C}j",
-        // Mark glyphs and the space look-alike typed into the input.
-        "\u{2423}\u{2192}\u{2591}\u{23CE}\u{00B7}\u{200B}",
+        // Mark glyphs (and the shade the other-space mark once was) and the
+        // space look-alike typed into the input.
+        "\u{2423}\u{2192}\u{25A0}\u{2591}\u{23CE}\u{00B7}\u{200B}",
         // A combining mark after a space, decomposed vs precomposed, emoji.
         "a \u{0301}b", "e\u{0301} é", "👩‍👩‍👧 🇹🇷 x",
     ] + reviewPairs.flatMap { [$0.0, $0.1] }
@@ -178,7 +183,7 @@ import UIKit
             Segment(shown: "b", source: "b", isMark: false),
             Segment(shown: "\u{2192}" + wrap, source: "\t", isMark: true),
             Segment(shown: "c", source: "c", isMark: false),
-            Segment(shown: "\u{2591}" + wrap, source: "\u{00A0}", isMark: true),
+            Segment(shown: "\u{25A0}" + wrap, source: "\u{00A0}", isMark: true),
             Segment(shown: "d", source: "d", isMark: false),
             Segment(shown: "\u{23CE}\n", source: "\r\n", isMark: true),
             Segment(shown: "e", source: "e", isMark: false),
@@ -234,6 +239,57 @@ import UIKit
         var glyphs = [CGGlyph](repeating: 0, count: units.count)
         #expect(CTFontGetGlyphsForCharacters(font, units, &glyphs, units.count), "\(glyph) falls back to another font")
         #expect(glyph.unicodeScalars.allSatisfy { !$0.properties.isWhitespace })
+    }
+
+    /// How a glyph of the input's font (the monospaced system font at
+    /// `size` pt) inks its own bounding box, drawn by Core Text at 3 px a
+    /// point: the share of the box it covers, the box's height, and the
+    /// font's x-height.
+    static func ink(_ glyph: String, size: CGFloat = 17) -> (coverage: Double, height: CGFloat, xHeight: CGFloat) {
+        let scale: CGFloat = 3
+        let font = UIFont.monospacedSystemFont(ofSize: size * scale, weight: .regular) as CTFont
+        let units = Array(glyph.utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: units.count)
+        guard units.count == 1, CTFontGetGlyphsForCharacters(font, units, &glyphs, 1) else { return (0, 0, 0) }
+        let box = CTFontGetBoundingRectsForGlyphs(font, .horizontal, glyphs, nil, 1)
+        let width = Int(ceil(box.maxX - min(box.minX, 0))) + 4
+        let height = Int(ceil(box.maxY - min(box.minY, 0))) + 4
+        guard box.width > 0, box.height > 0,
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue),
+              let data = context.data?.assumingMemoryBound(to: UInt8.self) else { return (0, 0, 0) }
+        context.setFillColor(gray: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(gray: 1, alpha: 1)
+        var origin = CGPoint(x: 2 - min(box.minX, 0), y: 2 - min(box.minY, 0))
+        CTFontDrawGlyphs(font, glyphs, &origin, 1, context)
+        let inked = (0..<width * height).reduce(0.0) { $0 + Double(data[$1]) / 255 }
+        return (inked / Double(box.width * box.height), box.height / scale, CTFontGetXHeight(font) / scale)
+    }
+
+    /// The other-space mark carries a warning (an exotic space in an Edit or
+    /// Write must be seen), so it is solid: it covers its box, it is at least
+    /// as tall as the font's x-height, and, averaged over its box as the eye
+    /// reads a small glyph, it keeps the mark ink's text contrast (4.5:1,
+    /// AA) on the card in every palette, light and dark. Not vacuous: the
+    /// light shade it replaced falls below even a graphic's 3:1.
+    @Test(arguments: PaletteID.allCases, PaletteLint.schemes)
+    func theOtherSpaceMarkIsSolidAndSeen(_ palette: PaletteID, _ scheme: ColorScheme) {
+        let theme = ThemeID.fallback.theme(palette: palette)
+        let card = PaletteLint.SRGB(theme.surface, scheme)
+        let markInk = PaletteLint.SRGB(theme.inkSecondary, scheme)
+        func seen(_ glyph: String) -> Double {
+            PaletteLint.contrast(markInk.over(card, alpha: min(Self.ink(glyph).coverage, 1)), card)
+        }
+        let mark = Self.ink(VisibleWhitespace.otherSpaceMark)
+        #expect(mark.coverage >= 0.9, "\(mark.coverage)")
+        #expect(mark.height >= mark.xHeight, "\(mark.height) < \(mark.xHeight)")
+        #expect(seen(VisibleWhitespace.otherSpaceMark) >= PaletteLint.textMinimum,
+                "\(PaletteLint.ratio(seen(VisibleWhitespace.otherSpaceMark)))")
+        #expect(Self.ink("\u{2591}").coverage < 0.9)
+        if scheme == .light {
+            #expect(seen("\u{2591}") < PaletteLint.borderMinimum, "\(PaletteLint.ratio(seen("\u{2591}")))")
+        }
     }
 
     /// The space mark is not the middle dot: a dot would let a real U+00B7

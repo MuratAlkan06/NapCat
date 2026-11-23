@@ -33,14 +33,15 @@ struct PendingRequestScreen: View {
     nonisolated static func allowHint(_ kind: BiometryKind) -> String { "Asks for \(kind.name) first." }
 
     /// The tool's glyph: one per tool the Mac's gate can forward, and a
-    /// neutral tool mark for a name it does not know.
+    /// neutral tool mark for a name it does not know. Each has the filled
+    /// form the theme draws, so none reads thinner than another.
     nonisolated static let otherToolSymbol = "wrench.and.screwdriver"
     nonisolated static func toolSymbol(_ toolName: String) -> String {
         switch toolName {
         case "Bash": return "terminal"
         case "Read": return "doc.text"
-        case "Write": return "square.and.pencil"
-        case "Edit": return "pencil"
+        case "Write": return "arrow.down.doc"
+        case "Edit": return "pencil.circle"
         case "NotebookEdit": return "book"
         default: return otherToolSymbol
         }
@@ -167,25 +168,28 @@ struct PendingRequestScreen: View {
 
     /// The tool, the project and the input, shown verbatim: the phone never
     /// reformats what it asks the owner to allow. Once no answer can go out
-    /// the card lies flat in the secondary ink.
+    /// the card lies flat in the secondary ink. The tool's glyph sits on the
+    /// tool name's baseline, over the layout: a tall glyph never moves the
+    /// name, so every tool's name sits at the same height.
     private var promptCard: some View {
         let muted = Self.mutesCard(status)
         return VStack(alignment: .leading, spacing: theme.innerGap * 2) {
-            HStack(alignment: .firstTextBaseline, spacing: theme.innerGap * 2) {
+            VStack(alignment: .leading, spacing: theme.innerGap) {
+                Text(verbatim: request.toolName)
+                    .font(theme.metaFont)
+                    .foregroundStyle(muted ? theme.inkSecondary : theme.ink)
+                Text(verbatim: request.projectLabel)
+                    .font(theme.detailFont)
+                    .foregroundStyle(theme.inkSecondary)
+            }
+            .padding(.leading, glyphColumn + theme.innerGap * 2)
+            .overlay(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) {
                 Image(systemName: Self.toolSymbol(request.toolName))
                     .symbolVariant(theme.symbolVariant)
                     .fontWeight(theme.symbolWeight)
                     .font(theme.metaFont)
                     .foregroundStyle(muted ? theme.inkSecondary : theme.accent)
                     .frame(width: glyphColumn)
-                VStack(alignment: .leading, spacing: theme.innerGap) {
-                    Text(verbatim: request.toolName)
-                        .font(theme.metaFont)
-                        .foregroundStyle(muted ? theme.inkSecondary : theme.ink)
-                    Text(verbatim: request.projectLabel)
-                        .font(theme.detailFont)
-                        .foregroundStyle(theme.inkSecondary)
-                }
             }
             Text(Self.inputHeader)
                 .font(theme.sectionFont)
