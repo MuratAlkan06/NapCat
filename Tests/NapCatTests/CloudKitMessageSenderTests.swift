@@ -241,8 +241,10 @@ struct CloudKitMessageSenderTests {
 
     /// Ruling (g) widened the list by name, not by default: a code OUTSIDE
     /// it — one this SDK lists but the ADR does not, or one a future SDK adds
-    /// — still classifies as unconfirmed (no ntfy fallback, so no double
-    /// buzz), including inside a one-record batch and at the account check.
+    /// — still classifies as unconfirmed at the BATCH level (no ntfy
+    /// fallback, so no double buzz), including inside a one-record batch and
+    /// at the account check. (The record's OWN failure is definitive whatever
+    /// its code — `CloudKitRecordResultTests`, issue #139.)
     @Test func anUnlistedCodeStaysUnconfirmed() {
         for code in [CKError.Code.zoneBusy, .limitExceeded, .serverRecordChanged, .changeTokenExpired] {
             #expect(CloudKitMessageSender.definitiveFailureText(code) == nil, "code \(code.rawValue)")
@@ -271,6 +273,7 @@ struct CloudKitMessageSenderTests {
                      CloudKitMessageSender.containerText, CloudKitMessageSender.rateLimitedText,
                      CloudKitMessageSender.serviceUnavailableText, CloudKitMessageSender.quotaExceededText,
                      CloudKitMessageSender.serverRejectedText, CloudKitMessageSender.permissionText,
+                     CloudKitMessageSender.refusedText, CloudKitMessageSender.unconfirmedSaveText,
                      CloudKitMessageSender.busyLaneText]
         #expect(Set(texts).count == texts.count)
         for text in texts {
