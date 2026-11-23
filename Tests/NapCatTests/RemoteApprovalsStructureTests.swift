@@ -155,13 +155,56 @@ struct RemoteApprovalsStructureTests {
         }
     }
 
+    // MARK: - The probe checks a document before it reads it
+
+    /// The probe's one read: opened non-blocking, a REGULAR file whose size
+    /// is within the cap — all checked on the open file before the first
+    /// byte is read — and no whole-file read API anywhere in the probe.
+    static func probeReadFailures(_ probe: String) -> [String] {
+        var failures: [String] = []
+        for token in ["contents(atPath", "Data(contentsOf", "String(contentsOf", "FileHandle", "NSData"]
+        where probe.contains(token) {
+            failures.append("'\(token)' in the probe — it reads whole files before any size check")
+        }
+        guard let start = probe.range(of: "static func read(_ path: String) -> String? {") else {
+            return failures + ["the probe's read moved (lint would be vacuous)"]
+        }
+        let body = probe[start.upperBound...]
+        if !body.contains("open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)") {
+            failures.append("the probe must open non-blocking, so nothing at the path can make it wait")
+        }
+        guard let firstRead = body.range(of: "Darwin.read(") else { return failures + ["the probe never reads"] }
+        for check in ["fstat(descriptor, &info) == 0", "info.st_mode & S_IFMT == S_IFREG", "info.st_size <= maxDocumentBytes"] {
+            guard let at = body.range(of: check), at.upperBound < firstRead.lowerBound else {
+                failures.append("'\(check)' must come before the first read")
+                continue
+            }
+        }
+        return failures
+    }
+
+    @Test func theProbeChecksADocumentBeforeReadingIt() throws {
+        let probe = try MenuPanelStructureTests.code("ChannelPolicyProbe.swift")
+        #expect(Self.probeReadFailures(probe).isEmpty, "\(Self.probeReadFailures(probe))")
+        let mutants: [(String, String)] = [
+            ("a whole-file read", probe + "\nlet d = FileManager.default.contents(atPath: p)"),
+            ("blocking open", probe.replacingOccurrences(of: "O_RDONLY | O_NONBLOCK | O_CLOEXEC", with: "O_RDONLY | O_CLOEXEC")),
+            ("no type check", probe.replacingOccurrences(of: "info.st_mode & S_IFMT == S_IFREG", with: "true")),
+            ("size checked after reading", probe.replacingOccurrences(of: "info.st_size <= maxDocumentBytes", with: "true")
+                .replacingOccurrences(of: "guard bytes.count <= maxDocumentBytes", with: "guard info.st_size <= maxDocumentBytes")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(!Self.probeReadFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - The S2 tests touch nothing live
 
     /// The S2 test files that run anything (this file only reads sources).
     static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift",
                               "RemoteApprovalsPresentationTests.swift", "WaitingPromptContextTests.swift",
                               "ApprovalSecretsFailClosedTests.swift", "ApprovalSeamLimitsTests.swift",
-                              "ApprovalSeamDeadlineTests.swift"]
+                              "ApprovalSeamDeadlineTests.swift", "ChannelPolicyProbeBoundsTests.swift"]
 
     /// S1's list (it bans any defaults store at all), plus what S2 could
     /// reach: the toggle's production factory (it resolves the real socket
