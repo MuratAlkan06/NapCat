@@ -67,6 +67,13 @@ final class SeamFixture {
 struct ApprovalSeamTests {
     static let ownUID = geteuid()
     static let foreign = SeamPeer(uid: geteuid() &+ 1, tokenUID: geteuid() &+ 1, pid: 1)
+    /// How long a test waits to SEE a connection end that reaches it from the
+    /// kernel, as end of stream or EPIPE on its socket's read source (both
+    /// seam suites use it). On a loaded CI VM that delivery can lag for
+    /// seconds: seam tests that take well under a second locally ran 20–22 s
+    /// there (#129). A wait returns the moment the close is seen, so a passing
+    /// run never pays this deadline.
+    static let closeObservationSeconds: Double = 30
 
     /// A started listener on its own queue, delivering connections and
     /// refusals to inboxes.
@@ -165,16 +172,25 @@ struct ApprovalSeamTests {
 
     /// The listener closes a foreign peer before reading a byte, and never
     /// hands it over.
+    ///
+    /// Either of two orderings is correct (#129). Usually the client's own
+    /// check of the listener (this user) passes first, and the client then
+    /// sees the connection end. But the refusal can land between the client's
+    /// connect and its read of the listener's audit token, which then fails
+    /// (ENOTCONN: the link is already gone). The client then refuses the
+    /// unreadable listener in turn and never holds a connection.
     @Test func theListenerRefusesAForeignPeer() throws {
         let fixture = try SeamFixture()
         let server = Server(fixture, peerReader: { _ in Self.foreign })
         #expect(server.start())
         defer { server.stop() }
         let client = Client(fixture)
-        #expect(client.connection != nil, "the client's own check passes: the listener is this user")
         #expect(server.refusals.next() != nil, "the listener must refuse the foreign peer")
-        _ = client.send("{\"hello\":1}")
-        #expect(client.closes.next() != nil, "the refused client sees the connection end")
+        if client.connection != nil {
+            _ = client.send("{\"hello\":1}")
+            #expect(client.closes.next(within: Self.closeObservationSeconds) != nil,
+                    "the refused client sees the connection end")
+        }
         #expect(server.connections.next(within: 0.3) == nil, "a refused peer is never handed over")
         #expect(server.lines.all.isEmpty)
     }
@@ -303,7 +319,8 @@ struct ApprovalSeamTests {
         let client = Client(fixture)
         _ = try #require(server.connections.next())
         _ = client.sendRaw(Array(repeating: UInt8(ascii: "a"), count: ApprovalChannel.maxFrameBytes + 1))
-        #expect(server.closes.next() != nil, "the over-long frame must close the connection")
+        #expect(server.closes.next(within: Self.closeObservationSeconds) != nil,
+                "the over-long frame must close the connection")
         #expect(server.lines.all.isEmpty, "and none of it is delivered")
     }
 
@@ -335,6 +352,6 @@ struct ApprovalSeamTests {
         #expect(server.closes.next() != nil)
         #expect(server.closes.next(within: 0.3) == nil, "onClose runs once")
         #expect(!server.queue.sync { serverConnection.send("x") }, "a closed connection sends nothing")
-        #expect(client.closes.next() != nil, "the other end sees the close")
+        #expect(client.closes.next(within: Self.closeObservationSeconds) != nil, "the other end sees the close")
     }
 }
