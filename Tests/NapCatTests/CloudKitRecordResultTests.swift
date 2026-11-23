@@ -86,6 +86,13 @@ struct CloudKitRecordResultTests {
         ResultRow(name: "record refused (a code this SDK does not know) + batch success",
                   steps: [.recordFailed(NSError(domain: CKErrorDomain, code: 9_999)), .batchSucceeded],
                   expected: .sendFailed(CloudKitMessageSender.refusedText), fallsBack: true),
+        // A timeout UNDER the record's own failure is still the record's
+        // verdict: the batch-level timeout rule never reaches it.
+        ResultRow(name: "record refused (networkFailure over a timed-out connection) + batch success",
+                  steps: [.recordFailed(CloudKitMessageSenderTests.ck(
+                              .networkFailure, underlying: CloudKitMessageSenderTests.url(.timedOut))),
+                          .batchSucceeded],
+                  expected: .sendFailed(CloudKitMessageSender.unreachableText), fallsBack: true),
         // Plain success: the record said saved, the batch agreed.
         ResultRow(name: "record saved + batch success", steps: [.recordSaved, .batchSucceeded],
                   expected: .accepted, fallsBack: false),
@@ -275,6 +282,13 @@ struct CloudKitRecordResultTests {
     static let logCall = ".error(\"phone: iCloud refused the alert: \\(Self.diagnosticCode(error), privacy: .public)\")"
     static let logPrefix = "phone: iCloud refused the alert: "
 
+    /// EVERY log call in the CloudKit file, pinned: a CloudKit error reaches
+    /// this file only, so a new log line here is a deliberate edit of this list.
+    static let fileLogCalls = [
+        ".error(\"phone: the iCloud store could not be built\")",
+        logCall,
+    ]
+
     @Test func thePerRecordFailureLogLineIsLocked() throws {
         let code = try Self.cloudKitCode()
         let calls = LidGuardStructureTests.logCalls(in: code).filter { $0.text.contains("diagnosticCode(") }
@@ -285,6 +299,20 @@ struct CloudKitRecordResultTests {
         let callback = try #require(PhoneTransportStructureTests.body(after: "operation.perRecordSaveBlock = {", in: code))
         #expect(callback.contains("if case .failure(let error) = result {") && callback.contains("Self.logger"),
                 "the code is logged where CloudKit delivers the record's failure")
+    }
+
+    /// The locked line is the per-record callback's ONLY log call — nothing
+    /// else there may log the error, in any form — and the CloudKit file logs
+    /// exactly the pinned list.
+    @Test func nothingElseLogsTheRecordsError() throws {
+        let code = try Self.cloudKitCode()
+        let callback = try #require(PhoneTransportStructureTests.body(after: "operation.perRecordSaveBlock = {", in: code))
+        #expect(LidGuardStructureTests.logCalls(in: callback).map(\.text) == [Self.logCall],
+                "the per-record callback logs exactly the locked line")
+        #expect(PhoneTransportStructureTests.occurrences(of: "logger", in: callback) == 1,
+                "one logger reference in the per-record callback")
+        #expect(LidGuardStructureTests.logCalls(in: code).map(\.text) == Self.fileLogCalls,
+                "the CloudKit file's log calls are exactly the pinned list")
     }
 
     struct CodeRow: CustomTestStringConvertible, Sendable {
