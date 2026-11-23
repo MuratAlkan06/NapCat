@@ -40,6 +40,12 @@ public enum ApprovalChannel {
     /// cannot carry channel messages.
     public static let protocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
+    /// The Claude Code builds whose permission relay NapCat has checked, each
+    /// exactly as it names itself in `initialize` (`clientInfo`). A session
+    /// whose client is not on this list, or does not name itself, keeps every
+    /// prompt local. A build joins only after its relay has been re-checked.
+    public static let confirmedClients = [ChannelClient(name: "claude-code", version: "2.1.326")]
+
     /// The experimental capability that makes the server a channel.
     public static let channelCapability = "claude/channel"
     /// The experimental capability that opts it into the permission relay.
@@ -118,6 +124,18 @@ public struct ChannelRequestID: Hashable, Sendable, CustomStringConvertible {
     public var description: String { text }
 }
 
+/// The client that opened the session, as its `initialize` named itself
+/// (`clientInfo.name` and `clientInfo.version`).
+public struct ChannelClient: Equatable, Sendable {
+    public let name: String
+    public let version: String
+
+    public init(name: String, version: String) {
+        self.name = name
+        self.version = version
+    }
+}
+
 /// A relayed permission prompt: exactly what the gate classifies. There is
 /// no description here (classification and display rely on the tool name and
 /// the input preview, never the description).
@@ -135,8 +153,9 @@ public struct ChannelPermissionRequest: Equatable, Sendable {
 
 /// What one inbound MCP line asks of the server.
 public enum ChannelMessage: Equatable, Sendable {
-    /// Answer with the capabilities.
-    case initialize(id: ChannelMessageID, protocolVersion: String)
+    /// Answer with the capabilities. `client` is the `clientInfo` name and
+    /// version, or nil when the client did not give both as strings.
+    case initialize(id: ChannelMessageID, protocolVersion: String, client: ChannelClient?)
     /// Answer with an empty result.
     case ping(id: ChannelMessageID)
     /// Answer with this error: any other request, including the 2026-07-28
@@ -175,7 +194,7 @@ extension ApprovalChannel {
             guard case .object(let fields)? = params, case .string(let version)? = value("protocolVersion", in: fields) else {
                 return .refused(id: id, .invalidParams)
             }
-            return .initialize(id: id, protocolVersion: version)
+            return .initialize(id: id, protocolVersion: version, client: clientInfo(value("clientInfo", in: fields)))
         case "ping":
             return .ping(id: id)
         default:
@@ -196,6 +215,23 @@ extension ApprovalChannel {
             return nil
         }
         return ChannelPermissionRequest(requestID: requestID, toolName: toolName, inputPreview: inputPreview)
+    }
+
+    /// The `clientInfo` object's `name` and `version`, both strings, or nil.
+    /// Its other members are not read.
+    static func clientInfo(_ raw: PreviewValue?) -> ChannelClient? {
+        guard case .object(let fields)? = raw, case .string(let name)? = value("name", in: fields),
+              case .string(let version)? = value("version", in: fields) else { return nil }
+        return ChannelClient(name: name, version: version)
+    }
+
+    /// Whether `client` is one of `confirmedClients`, byte for byte (never
+    /// by Unicode equivalence, never by prefix).
+    public static func confirms(_ client: ChannelClient?) -> Bool {
+        guard let client else { return false }
+        return confirmedClients.contains {
+            $0.name.utf8.elementsEqual(client.name.utf8) && $0.version.utf8.elementsEqual(client.version.utf8)
+        }
     }
 
     /// An integer (no fraction, no exponent) or a short string; never null.
