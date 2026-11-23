@@ -340,17 +340,24 @@ It builds controls only: nothing can be forwarded yet.
 - **The toggle.** One stored setting, off by default; only a stored `true`
   turns it on, so a missing or junk value never arms anything. It shows as a
   Remote approvals row in the menu's Alerts card, under Session alerts, and as
-  a group in Settings › Claude (the same action). Off is the kill switch:
-  every open prompt is withdrawn, every channel server disconnected and the
-  socket removed, and a later decision for a withdrawn prompt is ignored and
-  logged. Quitting NapCat is the same stop, final.
-- **Behind the toggle only.** With the toggle off nothing exists: no host, no
-  socket or socket directory, no listener, no probe, no timer. On, NapCat
+  a group in Settings › Claude (the same action; the switch there is named for
+  what it does today, "Mac-only preview", and promises no iPhone answering).
+  Off is the kill switch: every open prompt is withdrawn, every channel server
+  disconnected and the socket removed, and a later decision for a withdrawn
+  prompt is ignored and logged. Quitting NapCat is the same stop, final.
+- **Behind the toggle only.** Until the first switch-on nothing exists: no
+  host, no socket or socket directory, no listener, no probe, no timer. Once
+  off completes, no socket, listener, connection, probe or timer remains; the
+  stopped host and the empty private (0700) socket directory stay, by design
+  (the host still answers a late decision for a withdrawn prompt). On, NapCat
   builds the seam host once and listens; the managed-settings probe runs
   while on (at enable, and when the menu or Settings opens) and Settings ›
-  Claude shows its reading. A lock replaces S1's dark-by-default lock: the
-  host is built in one place, never armed, with a record sink that writes
-  nothing, and only the toggle's state machine starts it or runs the probe.
+  Claude shows its reading, there only: in this slice no reading changes what
+  NapCat does, so none is a problem the panel must show. A lock replaces S1's
+  dark-by-default lock: the host is built in one place, never armed, with a
+  record sink that writes nothing; it stays private to the toggle, its
+  listener and intake are built only inside it, and only the toggle's state
+  machine starts it or runs the probe.
 - **Fail-dark.** On, NapCat hears a wired session's prompts, classifies and
   audits them, and keeps every one on the Mac; the row says so ("Local only —
   the iPhone app cannot answer prompts yet"). No CloudKit record operation
