@@ -70,11 +70,17 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 | `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff`, `pushNotSetUp` | `connected` |
 | `-palette` | `nightGroom`, `deepCream`, `neutral` | the stored choice |
 | `-NapCatScreen` | `receiver`, `settings` | `receiver` |
+| `-NapCatRequest` | `pending`, `expired`, `withdrawn` | none |
 
 The chosen palette is kept in the app's defaults under the key `palette`.
 Passing `-palette` picks one for that launch only and leaves the stored
 choice alone. `-NapCatScreen settings` opens the launch on Settings (for
 screenshots). Neither forces fixtures on a device build.
+
+`-NapCatRequest` opens the launch on a fixture permission prompt (remote
+approvals, slice S3) in that state, answered in memory: nothing leaves the
+phone. Allow asks for Face ID or Touch ID; with none enrolled it is withheld
+and Deny still works. It leaves the alert list's source alone.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it. Nor is a failed

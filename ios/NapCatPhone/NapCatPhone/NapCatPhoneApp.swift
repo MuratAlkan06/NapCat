@@ -10,7 +10,7 @@ struct NapCatPhoneApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ReceiverRoot(feed: appDelegate.feed, opensSettings: opensSettings)
+            ReceiverRoot(feed: appDelegate.feed, inbox: appDelegate.inbox, opensSettings: opensSettings)
         }
     }
 }
@@ -25,18 +25,27 @@ struct NapCatPhoneApp: App {
 /// self-contained task beside the alert list (which has no hierarchy for a
 /// push to extend), closed with Done or a swipe, the list kept as it was
 /// underneath.
+///
+/// A forwarded permission prompt opens over it as a sheet too (F4, slice
+/// S3), drawn in the same palette: a `-NapCatRequest` launch opens on its
+/// fixture prompt. Nothing else opens one in this slice.
 struct ReceiverRoot: View {
     let feed: AlertFeed
+    let inbox: RequestInbox
 
     /// The chosen palette, kept in the app's own defaults across launches.
     /// A missing or unknown stored value reads as the default.
     @AppStorage(PaletteID.storageKey) private var palette = PaletteID.fallback
     @State private var showsSettings: Bool
+    /// The permission prompt shown as a sheet, if any.
+    @State private var shownRequest: PendingRequest?
     @Environment(\.scenePhase) private var scenePhase
 
-    init(feed: AlertFeed, opensSettings: Bool = false) {
+    init(feed: AlertFeed, inbox: RequestInbox, opensSettings: Bool = false) {
         self.feed = feed
+        self.inbox = inbox
         _showsSettings = State(initialValue: opensSettings)
+        _shownRequest = State(initialValue: opensSettings ? nil : inbox.requests.first)
     }
 
     var body: some View {
@@ -52,6 +61,9 @@ struct ReceiverRoot: View {
         .sheet(isPresented: $showsSettings) {
             SettingsScreen(palette: $palette, notifications: feed.notificationPermission)
         }
+        .sheet(item: $shownRequest) { request in
+            PendingRequestSheet(inbox: inbox, id: request.id)
+        }
         .environment(\.theme, ThemeID.fallback.theme(palette: palette))
         .task { await feed.start() }
         .onChange(of: scenePhase) { _, phase in
@@ -62,5 +74,6 @@ struct ReceiverRoot: View {
 }
 
 #Preview("Main screen") {
-    ReceiverRoot(feed: AlertFeed.make(options: LaunchOptions(), now: .now, liveCapable: false))
+    ReceiverRoot(feed: AlertFeed.make(options: LaunchOptions(), now: .now, liveCapable: false),
+                 inbox: RequestInbox.make(options: LaunchOptions(), now: .now))
 }

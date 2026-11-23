@@ -24,18 +24,21 @@ struct ThemedSurface: View {
     }
 }
 
-/// A row as a card on the theme's ground.
+/// A row as a card on the theme's ground. Without its shadow it lies flat:
+/// a card that is only read, not acted on.
 struct ThemedCard: ViewModifier {
+    var castsShadow = true
+
     @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
         content
             .padding(theme.rowPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background { ThemedSurface(fill: theme.surface, cornerRadius: theme.cornerRadius) }
+            .background { ThemedSurface(fill: theme.surface, cornerRadius: theme.cornerRadius, castsShadow: castsShadow) }
     }
 }
 
 extension View {
-    func themedCard() -> some View { modifier(ThemedCard()) }
+    func themedCard(castsShadow: Bool = true) -> some View { modifier(ThemedCard(castsShadow: castsShadow)) }
 }

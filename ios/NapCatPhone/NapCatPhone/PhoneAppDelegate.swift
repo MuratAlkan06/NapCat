@@ -12,6 +12,9 @@ final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
     private static let logger = Logger(subsystem: "com.muratalkan.napcat.phone", category: "push")
 
     let feed = AlertFeed.make(options: LaunchOptions.fromLaunchArguments(), now: Date())
+    /// The forwarded permission prompts (F4, slice S3). Nothing is received
+    /// live yet: only a `-NapCatRequest` launch holds one, a fixture.
+    let inbox = RequestInbox.make(options: LaunchOptions.fromLaunchArguments(), now: Date())
 
     func application(
         _ application: UIApplication,

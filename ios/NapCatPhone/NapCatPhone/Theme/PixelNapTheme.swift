@@ -44,6 +44,7 @@ extension Theme {
             pillCornerRadius: 0,
             borderWidth: 2,
             hardShadow: 4,
+            minTouchTarget: 44,
             symbolVariant: .fill,
             symbolWeight: .bold,
             emptyArt: .groomWatermark(height: 340),

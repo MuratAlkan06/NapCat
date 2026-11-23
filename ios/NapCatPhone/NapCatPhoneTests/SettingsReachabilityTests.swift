@@ -91,7 +91,7 @@ import UIKit
         #expect(builders == [Self.rootFile, "\(CloudKitStructureTests.appDir)/Settings/SettingsScreen.swift"])
         let root = Self.flat(try Self.rootCode())
         #expect(CloudKitStructureTests.occurrences(of: "showsSettings = true", in: root) == 1)
-        #expect(root.contains("init(feed: AlertFeed, opensSettings: Bool = false)"))
+        #expect(root.contains("init(feed: AlertFeed, inbox: RequestInbox, opensSettings: Bool = false)"))
         #expect(root.contains("private let opensSettings = LaunchOptions.fromLaunchArguments().screen == .settings"))
     }
 

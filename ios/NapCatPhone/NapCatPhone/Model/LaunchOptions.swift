@@ -12,10 +12,14 @@ import Foundation
 /// probed states only; `checking` is a live launch's pre-probe state and
 /// falls back like an unknown value. `-NapCatScreen settings` opens the
 /// launch on Settings (screenshots); it does not force fixtures.
+/// `-NapCatRequest pending|expired|withdrawn` opens the launch on a fixture
+/// permission prompt in that state (F4, slice S3), answered by a fixture
+/// writer; it leaves the alert list's source alone.
 struct LaunchOptions: Equatable, Sendable {
     static let fixtureKey = "NapCatFixture"
     static let connectionKey = "NapCatConnection"
     static let screenKey = "NapCatScreen"
+    static let requestKey = "NapCatRequest"
 
     /// The screen a launch opens on.
     enum Screen: String, Sendable {
@@ -28,6 +32,8 @@ struct LaunchOptions: Equatable, Sendable {
     /// Whether a recognised fixture value was passed.
     var fixtureRequested = false
     var screen: Screen = .receiver
+    /// The fixture permission prompt to open on, if any.
+    var request: FixtureRequestState?
 
     init() {}
 
@@ -43,6 +49,9 @@ struct LaunchOptions: Equatable, Sendable {
         }
         if let raw = value(Self.screenKey), let screen = Screen(rawValue: raw) {
             self.screen = screen
+        }
+        if let raw = value(Self.requestKey), let request = FixtureRequestState(rawValue: raw) {
+            self.request = request
         }
     }
 

@@ -1,0 +1,237 @@
+import Foundation
+import NapCatWire
+import Observation
+
+/// Where a forwarded permission prompt stands on this phone.
+enum RequestPhase: Equatable, Sendable {
+    /// It may be answered until `until`, on this phone's clock.
+    case pending(until: Date)
+    /// Its window closed before it was answered here. Terminal.
+    case expired
+    /// The Mac took it back: answered at the Mac, its session ended, the
+    /// Mac's switch went off, or the Mac's own clock ran out. Terminal.
+    case withdrawn
+
+    /// Whether the phone may still answer it.
+    var isPending: Bool {
+        if case .pending = self { return true }
+        return false
+    }
+}
+
+/// How far this phone got with its answer to one request.
+enum RequestAnswer: Equatable, Sendable {
+    case none
+    /// Allow is waiting for the biometric match.
+    case confirming
+    case sending(ApprovalWire.Verdict)
+    /// iCloud saved it. The Mac has not said what it did with it.
+    case sent(ApprovalWire.Verdict)
+    /// A decision for this prompt was saved already; nothing new was sent.
+    case answeredElsewhere
+    /// Allow was not confirmed; nothing was sent.
+    case notConfirmed
+    /// Nothing was saved.
+    case unsent(ApprovalWire.Verdict)
+    /// iCloud did not confirm it.
+    case unconfirmed(ApprovalWire.Verdict)
+}
+
+/// The permission prompts the Mac forwarded to this phone, each with its
+/// window and this phone's answer.
+///
+/// A request is answerable only while it is pending: until the Mac's expiry,
+/// and never longer than the TTL after this phone first saw it (a Mac clock
+/// running ahead cannot stretch it). Expired and withdrawn are terminal:
+/// once a request is either, nothing makes it pending again.
+///
+/// Allow asks for a biometric match first, every time (CL-3); Deny never
+/// does. Both re-check the window right before anything is written, and
+/// each answer touches only its own request.
+@MainActor
+@Observable
+final class RequestInbox {
+    struct Entry: Equatable, Sendable {
+        let request: PendingRequest
+        /// When this phone first saw the request.
+        let firstSeen: Date
+        /// The Mac took it back (terminal).
+        var withdrawn = false
+        /// Its window was seen closed (terminal, whatever the clock does next).
+        var expired = false
+        var answer = RequestAnswer.none
+
+        /// The last moment this phone may answer.
+        var answerableUntil: Date {
+            min(request.expiresAt, firstSeen.addingTimeInterval(PendingRequest.timeToLive))
+        }
+    }
+
+    /// The most requests held at once (the Mac forwards far fewer); past it
+    /// the oldest finished ones go first.
+    nonisolated static let capacity = 64
+
+    /// What the biometric prompt says Allow is for (Touch ID shows it; Face
+    /// ID shows the app's usage description the first time). Fixed words:
+    /// nothing from the request reaches the system prompt. The match is
+    /// asked for here, on the phone; the prompt it answers is the Mac's, and
+    /// what Allow does there is the Mac's to decide.
+    nonisolated static let allowReason = "Confirm it's you to send Allow to your Mac's permission prompt."
+
+    private(set) var entries: [PromptID: Entry] = [:]
+    /// Whether Allow can be confirmed here, as last read.
+    private(set) var biometry: BiometricAvailability
+    @ObservationIgnored private let writer: any DecisionWriter
+    @ObservationIgnored private let biometrics: any BiometricGate
+    @ObservationIgnored private let clock: () -> Date
+
+    /// `clock` is this phone's wall clock (a test seam, like the others).
+    init(writer: any DecisionWriter, biometrics: any BiometricGate, clock: @escaping () -> Date = Date.init) {
+        self.writer = writer
+        self.biometrics = biometrics
+        self.clock = clock
+        self.biometry = biometrics.availability()
+    }
+
+    /// The launch's inbox. A recognised `-NapCatRequest` shows that fixture
+    /// request, answered by a fixture writer; otherwise the inbox starts
+    /// empty and writes nothing (no record path reaches the Mac in this
+    /// slice). Both ask the real biometric gate before Allow.
+    static func make(options: LaunchOptions, now: Date) -> RequestInbox {
+        let biometrics = LocalAuthenticationGate()
+        guard let state = options.request else {
+            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics)
+        }
+        return FixtureRequests.inbox(state, now: now, biometrics: biometrics)
+    }
+
+    /// The requests, newest first.
+    var requests: [PendingRequest] {
+        entries.values.map(\.request).sorted { ($0.createdAt, $0.id.hex) > ($1.createdAt, $1.id.hex) }
+    }
+
+    /// Where `id` stands at `now`; nil for a request never held.
+    func phase(of id: PromptID, at now: Date) -> RequestPhase? {
+        guard let entry = entries[id] else { return nil }
+        if entry.withdrawn { return .withdrawn }
+        if entry.expired || now >= entry.answerableUntil { return .expired }
+        return .pending(until: entry.answerableUntil)
+    }
+
+    /// Where `id` stands now.
+    func phase(of id: PromptID) -> RequestPhase? {
+        phase(of: id, at: clock())
+    }
+
+    /// What the request screen shows for `id` at `now`; nil for a request
+    /// never held.
+    func status(of id: PromptID, at now: Date) -> RequestStatus? {
+        guard let entry = entries[id], let phase = phase(of: id, at: now) else { return nil }
+        return RequestStatus(phase: phase, answer: entry.answer)
+    }
+
+    /// What the request screen shows for `id` now.
+    func status(of id: PromptID) -> RequestStatus? {
+        status(of: id, at: clock())
+    }
+
+    // MARK: Receiving
+
+    /// A fetch of every request the Mac still offers. A new one is held from
+    /// now; one held here and missing from the fetch was taken back. A
+    /// request already finished here stays as it is, even if its record
+    /// shows up again.
+    func receive(_ offered: [PendingRequest]) {
+        tick()
+        let now = clock()
+        let offeredIDs = Set(offered.map(\.id))
+        for request in offered where entries[request.id] == nil {
+            entries[request.id] = Entry(request: request, firstSeen: now)
+        }
+        for (id, entry) in entries where !offeredIDs.contains(id) && !entry.expired && !entry.withdrawn {
+            entries[id]?.withdrawn = true
+        }
+        prune()
+    }
+
+    /// One request taken back (its record is gone). Terminal.
+    func withdraw(_ id: PromptID) {
+        tick()
+        guard let entry = entries[id], !entry.expired else { return }
+        entries[id]?.withdrawn = true
+    }
+
+    /// Marks every request whose window has closed as expired, for good.
+    func tick() {
+        let now = clock()
+        for (id, entry) in entries where !entry.expired && !entry.withdrawn && now >= entry.answerableUntil {
+            entries[id]?.expired = true
+        }
+    }
+
+    /// Re-reads whether Allow can be confirmed (the screen does, as it
+    /// appears: the owner may have changed Settings).
+    func refreshBiometry() {
+        let current = biometrics.availability()
+        if current != biometry { biometry = current }
+    }
+
+    // MARK: Answering
+
+    /// Allow: only for an answerable request, and only after a biometric
+    /// match, asked for now (CL-3). The window is checked again after the
+    /// match, since the prompt may have expired or been withdrawn meanwhile.
+    func allow(_ id: PromptID) async {
+        guard isAnswerable(id) else { return }
+        entries[id]?.answer = .confirming
+        let match = await biometrics.confirm(reason: Self.allowReason)
+        guard match == .confirmed else {
+            entries[id]?.answer = .notConfirmed
+            return
+        }
+        await send(.allow, for: id)
+    }
+
+    /// Deny: only for an answerable request. No biometric match: Deny takes
+    /// nothing from the Mac's dialog that the owner could not take at the
+    /// terminal.
+    func deny(_ id: PromptID) async {
+        guard isAnswerable(id) else { return }
+        await send(.deny, for: id)
+    }
+
+    /// Pending, and no answer under way or done.
+    private func isAnswerable(_ id: PromptID) -> Bool {
+        tick()
+        guard let entry = entries[id], phase(of: id)?.isPending == true else { return false }
+        return RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer).isAnswerable
+    }
+
+    /// Writes the decision, if the request is still pending right now.
+    private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {
+        tick()
+        guard phase(of: id)?.isPending == true else {
+            entries[id]?.answer = .none
+            return
+        }
+        entries[id]?.answer = .sending(verdict)
+        let outcome = await writer.write(PhoneDecision(promptID: id, verdict: verdict, decidedAt: clock()))
+        entries[id]?.answer = switch outcome {
+        case .saved: .sent(verdict)
+        case .alreadyAnswered: .answeredElsewhere
+        case .failed: .unsent(verdict)
+        case .unconfirmed: .unconfirmed(verdict)
+        }
+    }
+
+    /// Past `capacity`, finished requests go first, oldest first; a pending
+    /// one is never dropped for a finished one.
+    private func prune() {
+        guard entries.count > Self.capacity else { return }
+        let finished = entries.values.filter { $0.withdrawn || $0.expired }
+            .sorted { ($0.firstSeen, $0.request.id.hex) < ($1.firstSeen, $1.request.id.hex) }
+        for entry in finished.prefix(entries.count - Self.capacity) {
+            entries[entry.request.id] = nil
+        }
+    }
+}
