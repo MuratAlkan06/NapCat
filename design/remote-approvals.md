@@ -405,7 +405,14 @@ this section points at them.
   result decides an operation's outcome (issue #139). The file may name
   CloudKit's record vocabulary only (a deliberate lint amendment); it holds
   no container or database, and only test fakes conform to its database
-  seam.
+  seam. Since the revised gate (S-GATE), the intake's record store
+  (`CloudKitApprovalRecords`) routes the intake to the writer: it is handed
+  the gate's forward answer (the tool and the gate's own copy of the
+  preview, never the relayed text) and writes exactly that, through the one
+  conformer of `GateApprovedPrompt`; every withdrawal (the session's end,
+  the kill switch, the TTL) retracts the record with the decision records
+  read for it, and a read claim does nothing else. Only tests build the
+  store: the app's host keeps the sink that writes nothing.
 - **The phone** (`ios/NapCatPhone`). `RequestInbox` holds each request's
   window: until the Mac's expiry, and never longer than the TTL after the
   phone first saw it. Expired and withdrawn are terminal. The request screen
@@ -426,7 +433,9 @@ this section points at them.
   differs.
 - **Locks.** `ApprovalRecordPathStructureTests` (Mac) and
   `RecordPathStructureTests` (phone), each with planted canaries: the record
-  path names nothing of the verdict API and nothing reaches it; `armed: {
+  path names nothing of the verdict API (on the Mac, but the intake's
+  record-sink protocol, once, as the store's conformance) and nothing
+  reaches it; the store writes the gate's answer as it is handed; `armed: {
   false }` is the approval files' one armed literal; no source on either
   device builds the S0 decision type or names its signature flag; neither
   record path can reach iCloud on its own; the records are written only
@@ -435,6 +444,8 @@ this section points at them.
 - **Owner-owed.** The Production schema deploy for PromptRequest and
   PromptDecision, in the CloudKit Console, before any forwarding slice. No
   operation of this slice ran against either CloudKit environment.
-- **Next.** Routing the intake's forwarded prompts through the writer waits
-  for the revised gate (S-GATE, issue #145); signed decisions (CL-1) come
-  before any decision counts.
+- **Next.** Before any forward is real: a database for the store (after the
+  schema deploy), the writer's outcome reaching the prompt's lifecycle (the
+  prompt stays `saving` until then, so no decision can count), the waiting
+  buzz superseded by the alert lane, the project label, and signed
+  decisions (CL-1) before any decision counts.

@@ -12,10 +12,11 @@ import NapCatWire
 // acceptance of a valid, signed remote decision inside the TTL (lint-locked).
 // Pure over injected I/O: no socket, no CloudKit, no clock of its own.
 
-/// Where NapCat writes a forwarded prompt's record: CloudKit, a later slice.
-/// Nothing reaches it while the feature is unarmed, which it always is until
-/// the iPhone half lands (the S2 host is built never armed, with a sink that
-/// writes nothing).
+/// Where NapCat writes a forwarded prompt's record: CloudKit, through the
+/// record path's store (`CloudKitApprovalRecords`, slice S3, built only by
+/// tests in that slice). Nothing reaches it while the feature is unarmed,
+/// which it always is until the iPhone half lands (the S2 host is built never
+/// armed, with a sink that writes nothing).
 protocol ApprovalRecordSink: AnyObject {
     /// Write the prompt record: the tool the gate forwarded and the gate's
     /// own copy of the preview (`ApprovalGate.forwardedPreview`: no

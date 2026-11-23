@@ -15,14 +15,23 @@ import Testing
 /// 1. the record path names nothing of the verdict API (the seam, the
 ///    intake, the lifecycle, the channel's verdict wire, the gate, the S0
 ///    decision type) — and nothing outside the record path names the record
-///    path, so no production code reaches it at all;
+///    path, so no production code reaches it at all. AMENDED (deliberate,
+///    #146, once S-GATE merged): the record path now holds the intake's
+///    record store, so it names the intake's record-sink protocol exactly
+///    once — that store's own conformance, which carries the gate's forward
+///    answer in and nothing back out; the store is a record-path type, so
+///    the app still builds none of it;
 /// 2. the approval files hold exactly one `armed` literal, `{ false }`, in
 ///    the fail-dark factory;
 /// 3. no Mac source builds the S0 decision type or names its signature flag;
 /// 4. the record path cannot reach iCloud by itself: no container, no
 ///    database, no account check, and nothing in the app conforms to its
 ///    database seam;
-/// 5. the S3 test files touch nothing live.
+/// 5. the S3 test files touch nothing live;
+/// 6. the prompt record is written only through the wire;
+/// 7. (#146) the record store writes the gate's forward answer exactly as
+///    the intake hands it, through the one conformer of the gate's answer,
+///    and a decision read for a prompt only joins its retraction.
 ///
 /// Each lock is a pure function over comment-stripped sources and each
 /// catches planted canaries, so none can pass vacuously.
@@ -32,19 +41,27 @@ struct ApprovalRecordPathStructureTests {
     /// The record path's one Mac file (Sources/NapCat).
     static let recordPathFile = "CloudKitApprovalRecords.swift"
 
-    /// The record path's own types. Outside its file, nothing names them.
+    /// The record path's own types. Outside its file, nothing names them —
+    /// the record store included (#146), so the app's host cannot be handed
+    /// it in this slice.
     static let recordPathTypes = ["ApprovalRecordWriter", "DecisionRecordReader", "GateApprovedPrompt",
-                                  "ApprovalRecordDatabase", "DecisionRecordReading"]
+                                  "ApprovalRecordDatabase", "DecisionRecordReading", "CloudKitApprovalRecords"]
 
     /// The verdict API and everything that leads to it: the seam and its
     /// host, the intake and the lifecycle it drives, the channel's verdict
     /// wire, the category gate, the S0 decision type and its signature flag,
-    /// the toggle, and the armed flag.
+    /// the toggle, and the armed flag. (AMENDED, #146: the intake's
+    /// record-sink protocol left this list for `recordStoreConformance`.)
     static let verdictAPITokens = ["ApprovalChannel", "verdictFrame", "verdictNotification", "sendFrame",
                                    "ApprovalIntake", "ApprovalSeamHost", "ApprovalLifecycle", "ApprovalEvent",
                                    "remoteDecision", "deliverVerdict", "decide(", "ApprovalDecision",
-                                   "signatureVerified", "ApprovalGate", "classify(", "ApprovalRecordSink",
+                                   "signatureVerified", "ApprovalGate", "classify(",
                                    "RemoteApprovalsController", "Seam", "armed"]
+
+    /// The ONE place the record path names the intake's record-sink protocol
+    /// (#146): the record store's own conformance. The protocol carries the
+    /// gate's forward answer and the withdrawals in, and nothing back out.
+    static let recordStoreConformance = "final class CloudKitApprovalRecords: ApprovalRecordSink {"
 
     static func text(_ name: String, in sources: Sources) -> String {
         ApprovalChannelStructureTests.text(name, in: sources)
@@ -68,6 +85,10 @@ struct ApprovalRecordPathStructureTests {
                 failures.append("'\(token)' in \(name) — in this slice nothing outside the record path reaches it")
             }
         }
+        let file = text(recordPathFile, in: sources)
+        if ApprovalChannelStructureTests.count("ApprovalRecordSink", in: file) != 1 || !file.contains(recordStoreConformance) {
+            failures.append("the record path names the intake's record sink only as the record store's own conformance")
+        }
         return failures
     }
 
@@ -75,7 +96,7 @@ struct ApprovalRecordPathStructureTests {
     static func vacuityFailures(_ sources: Sources) -> [String] {
         let file = text(recordPathFile, in: sources)
         return ["final class ApprovalRecordWriter", "enum DecisionRecordReader", "protocol GateApprovedPrompt",
-                "protocol ApprovalRecordDatabase"].filter { !file.contains($0) }
+                "protocol ApprovalRecordDatabase", recordStoreConformance].filter { !file.contains($0) }
             .map { "'\($0)' not found in \(recordPathFile) — the record-path locks would be vacuous" }
     }
 
@@ -101,10 +122,30 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\nlet r = DecisionRecordReader.read(record)" }),
             ("the app builds the writer", Self.mutate(withFile, "NapCatApp.swift") {
                 $0 + "\nlet w = ApprovalRecordWriter(database: d)" }),
+            // #146: the record store, wired behind the intake.
+            ("the record store hands a claim to the intake", Self.mutate(withFile, Self.recordPathFile) {
+                $0 + "\nextension CloudKitApprovalRecords { func f(i: ApprovalIntake, c: DecisionClaim) { i.decide(c) } }" }),
+            ("the record store answers the dialog", Self.mutate(withFile, Self.recordPathFile) {
+                $0 + "\nextension CloudKitApprovalRecords { func f(i: Int, r: ChannelRequestID) { "
+                    + "sendFrame(i, ApprovalChannel.verdictFrame(r, .allow)) } }" }),
+            ("the record store takes its own copy", Self.mutate(withFile, Self.recordPathFile) {
+                $0 + "\nlet c = ApprovalGate.forwardedPreview(toolName: t, inputPreview: p)" }),
+            ("a second record sink in the record path", Self.mutate(withFile, Self.recordPathFile) {
+                $0 + "\nextension ApprovalRecordWriter: ApprovalRecordSink {}" }),
+            ("the record store's conformance dropped", Self.mutate(withFile, Self.recordPathFile) {
+                $0.replacingOccurrences(of: Self.recordStoreConformance, with: "final class CloudKitApprovalRecords {") }),
+            ("the toggle's host handed the record store", Self.mutate(withFile, ApprovalChannelStructureTests.toggleFile) {
+                $0.replacingOccurrences(of: "records: FailDarkApprovalRecords()",
+                                        with: "records: CloudKitApprovalRecords(writer: w)") }),
+            ("the host builds the record store", Self.mutate(withFile, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nlet r = CloudKitApprovalRecords(writer: w)" }),
         ]
         for (name, mutant) in mutants {
             #expect(!Self.verdictReachFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // The toggle canary must really apply (its anchor is the S2 factory).
+        #expect(Self.text(ApprovalChannelStructureTests.toggleFile, in: withFile).contains("records: FailDarkApprovalRecords()"),
+                "vacuity: the fail-dark sink is the toggle's host's record store")
     }
 
     // MARK: - 2. Armed stays false
@@ -196,6 +237,10 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\nlet d = ApprovalDecision.init(promptID: p, verdict: .deny, wireVersion: 1, signatureVerified: true)" }),
             ("the flag named", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
                 $0 + "\nlet v = decision.signatureVerified" }),
+            // #146: a claim the record store reads is never promoted to one.
+            ("the record store promotes a claim", Self.mutate(sources, Self.recordPathFile) {
+                $0 + "\nextension CloudKitApprovalRecords { func f(c: DecisionClaim) -> ApprovalDecision { "
+                    + "ApprovalDecision(promptID: c.promptID, verdict: c.claimedVerdict, wireVersion: 1, signatureVerified: true) } }" }),
         ]
         for (name, mutant) in mutants {
             #expect(!Self.verdictTypeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
@@ -295,10 +340,84 @@ struct ApprovalRecordPathStructureTests {
         }
     }
 
+    // MARK: - 7. The record store writes the gate's answer as it is handed (#146)
+
+    /// The record store is the one road from the gate to the writer (the
+    /// behaviour is ApprovalRecordRoutingTests'; this pins what examples
+    /// cannot): `GateApprovedPrompt` has ONE conformer anywhere, private to
+    /// the record path, built once — in the store's `save`, from exactly the
+    /// tool and the copy the intake handed it, never trimmed, relabelled or
+    /// re-read — and the writer is reached once to write that prompt and
+    /// once to retract it with the decisions read for it. A read claim only
+    /// joins its own pending prompt's retraction.
+    static let gateAnswerConformance = #"\b(class|struct|actor|enum|extension)\b[^{\n]*:[^{\n]*\bGateApprovedPrompt\b"#
+
+    static func recordStoreFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        let conformers = sources.flatMap { name, text in
+            text.split(separator: "\n").filter { $0.range(of: gateAnswerConformance, options: .regularExpression) != nil }
+                .map { (name, MenuPanelStructureTests.flat($0)) }
+        }
+        if conformers.count != 1 || conformers.first?.0 != recordPathFile
+            || conformers.first?.1 != "private struct ForwardedPrompt: GateApprovedPrompt {" {
+            failures.append("the gate's answer has one conformer, private to the record path: \(conformers)")
+        }
+        let file = text(recordPathFile, in: sources)
+        let flat = MenuPanelStructureTests.flat(file)
+        if ApprovalChannelStructureTests.count("ForwardedPrompt(", in: ApprovalChannelStructureTests.constructionSpelling(file)) != 1
+            || !flat.contains("let prompt = ForwardedPrompt(promptID: id, toolName: tool.rawValue, inputPreview: inputPreview, "
+                              + "createdAt: createdAt, ") {
+            failures.append("the gate's answer is built once, in the store's save, from the tool and the copy it was handed")
+        }
+        if ApprovalChannelStructureTests.count("writer.write(", in: file) != 1 || !flat.contains("writer.write(prompt) { _ in }") {
+            failures.append("the store writes exactly the prompt it built, once")
+        }
+        if ApprovalChannelStructureTests.count("writer.retract(", in: file) != 1
+            || !flat.contains("let decisions = pending.removeValue(forKey: id) ?? [] "
+                              + "writer.retract(id, decisions: decisions.sorted()) { _ in }") {
+            failures.append("the store retracts a prompt once, with the decisions read for it")
+        }
+        if !flat.contains("func noteRead(_ claim: DecisionClaim) { pending[claim.promptID]?.insert(claim.recordName) }") {
+            failures.append("a read claim only joins its own pending prompt's retraction")
+        }
+        return failures
+    }
+
+    @Test func theRecordStoreWritesTheGatesAnswerAsItIsHanded() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.recordStoreFailures(sources).isEmpty, "\(Self.recordStoreFailures(sources))")
+        let file = Self.recordPathFile
+        let mutants: [(String, Sources)] = [
+            ("a second conformer", Self.mutate(sources, file) { $0 + "\nextension DecisionClaim: GateApprovedPrompt {}" }),
+            ("a conformer in the app", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nstruct Relayed: GateApprovedPrompt { let inputPreview: String }" }),
+            ("the conformer made visible", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "private struct ForwardedPrompt", with: "struct ForwardedPrompt") }),
+            ("the store trims the copy", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "inputPreview: inputPreview, createdAt",
+                                        with: "inputPreview: String(inputPreview.prefix(64)), createdAt") }),
+            ("the store relabels the tool", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "toolName: tool.rawValue", with: "toolName: \"Bash\"") }),
+            ("a second construction", Self.mutate(sources, file) {
+                $0 + "\nlet p = ForwardedPrompt.init(promptID: i, toolName: t, inputPreview: raw, createdAt: c, expiresAt: e)" }),
+            ("a second write", Self.mutate(sources, file) {
+                $0 + "\nextension CloudKitApprovalRecords { func again(p: ForwardedPrompt) { writer.write(p) { _ in } } }" }),
+            ("the retraction forgets the decisions read", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "decisions: decisions.sorted()", with: "decisions: []") }),
+            ("a claim kept for a prompt never written", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "pending[claim.promptID]?.insert(", with: "pending[claim.promptID, default: []].insert(") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.recordStoreFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - 5. The S3 tests touch nothing live
 
     /// The S3 Mac test files that run anything (this file only reads sources).
-    static let s3TestFiles = ["ApprovalRecordFakes.swift", "ApprovalRecordWriterTests.swift", "DecisionRecordReaderTests.swift"]
+    static let s3TestFiles = ["ApprovalRecordFakes.swift", "ApprovalRecordWriterTests.swift", "DecisionRecordReaderTests.swift",
+                              "ApprovalRecordRoutingTests.swift"]
 
     /// S2's list (defaults, keychain, the real home, processes, the probe,
     /// the toggle's production factory), plus CloudKit's live doors.

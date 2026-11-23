@@ -22,23 +22,31 @@ import os
 // - The READER parses, validates and logs PromptDecision records in a
 //   closed vocabulary, and does nothing else. A decision is UNSIGNED until
 //   pairing (CL-1) exists, so a reading is a claim, never a verdict.
+// - The RECORD STORE (`CloudKitApprovalRecords`, routed through the revised
+//   gate, #145) is the intake's record sink over the writer: it writes the
+//   gate's forward answer as it is handed (the tool and the gate's own copy
+//   of the preview), and every withdrawal retracts the record together with
+//   the decisions read for it.
 //
 // FAIL-DARK (lint-locked): in this slice nothing in the app builds the
-// writer or reads a decision, only test fakes conform to the database seam,
-// and this file names nothing of the verdict API (the seam, the intake, the
-// lifecycle, the channel's verdict wire, the gate). Routing the intake's
-// forwarded prompts through the writer waits for the revised gate (#145).
+// writer or the record store, or reads a decision; only test fakes conform
+// to the database seam; and this file names nothing of the verdict API (the
+// seam, the intake, the lifecycle, the channel's verdict wire, the gate)
+// but the intake's record-sink protocol, once, as the record store's own
+// conformance.
 // UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
 
 /// A prompt the category gate already FORWARDED, as its record carries it.
-/// The writer takes it as it is and never classifies anything: only a value
-/// the gate decided may conform (the gate's own forward answer, once the
-/// revised gate lands).
+/// The writer takes it as it is and never classifies anything: only the
+/// gate's own forward answer conforms (`ForwardedPrompt`, built by the
+/// record store alone; lint-locked).
 protocol GateApprovedPrompt: Sendable {
     var promptID: PromptID { get }
     /// The Claude Code tool name, exactly as the gate classified it.
     var toolName: String { get }
-    /// The tool's arguments, exactly as the gate classified them.
+    /// The gate's own copy of the tool's arguments
+    /// (`ApprovalGate.forwardedPreview`: no description, never the relayed
+    /// text).
     var inputPreview: String { get }
     /// The originating project's label.
     var projectLabel: String { get }
@@ -219,6 +227,75 @@ final class ApprovalRecordWriter: Sendable {
         }
         return .refused(CloudKitMessageSender.diagnosticCode(nsError))
     }
+}
+
+// MARK: - The intake's record store (routed through the revised gate)
+
+/// The record store behind the intake: each prompt the category gate
+/// forwarded becomes one PromptRequest record, and each withdrawal (the
+/// session's end, the kill switch, the TTL) retracts it together with the
+/// decision records read for it. It is handed the gate's forward answer —
+/// the tool and the gate's own copy of the preview, never the relayed text —
+/// and writes exactly that: it never classifies, and it holds no way back to
+/// the dialog. Confined to the seam's queue, like the intake.
+///
+/// In this slice only tests build it (lint-locked): the app's host keeps the
+/// sink that writes nothing, and only test fakes conform to the database
+/// seam.
+final class CloudKitApprovalRecords: ApprovalRecordSink {
+    private let writer: ApprovalRecordWriter
+    private let now: () -> Date
+    /// Every prompt written and not yet retracted, with the names of the
+    /// decision records read for it.
+    private var pending: [PromptID: Set<String>] = [:]
+
+    /// `now`: the wall clock a record states its window in.
+    init(writer: ApprovalRecordWriter, now: @escaping () -> Date = Date.init) {
+        self.writer = writer
+        self.now = now
+    }
+
+    /// The intake saves only as the prompt's lifecycle opens (lint-locked),
+    /// so the record's window is the whole TTL from now: `expiresAt` is that
+    /// same end on the intake's monotonic clock, which a record cannot
+    /// carry. The writer audits the outcome; telling the lifecycle is a later
+    /// slice's (until then the prompt stays `saving`, and no decision can
+    /// count).
+    func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int) {
+        let createdAt = now()
+        let prompt = ForwardedPrompt(promptID: id, toolName: tool.rawValue, inputPreview: inputPreview, createdAt: createdAt,
+                                     expiresAt: createdAt.addingTimeInterval(TimeInterval(ApprovalWire.promptTimeToLiveSeconds)))
+        pending[id] = []
+        writer.write(prompt) { _ in }
+    }
+
+    func retract(_ id: PromptID) {
+        let decisions = pending.removeValue(forKey: id) ?? []
+        writer.retract(id, decisions: decisions.sorted()) { _ in }
+    }
+
+    /// The waiting buzz is the alert lane's to supersede (a later slice).
+    func supersedeWaitingAlert(_ id: PromptID) {}
+
+    /// A decision record read for a pending prompt joins that prompt's
+    /// retraction and does nothing else: a claim is never a verdict. A claim
+    /// for any other prompt is dropped.
+    func noteRead(_ claim: DecisionClaim) {
+        pending[claim.promptID]?.insert(claim.recordName)
+    }
+}
+
+/// The gate's forward answer as the record store hands it to the writer: the
+/// ONE conformance to `GateApprovedPrompt` (lint-locked), built only in
+/// `CloudKitApprovalRecords.save` from what the intake handed it.
+private struct ForwardedPrompt: GateApprovedPrompt {
+    let promptID: PromptID
+    let toolName: String
+    let inputPreview: String
+    /// No project label crosses the seam yet (a later slice).
+    let projectLabel = ""
+    let createdAt: Date
+    let expiresAt: Date
 }
 
 /// Holds each record's own result until the batch result arrives, then says

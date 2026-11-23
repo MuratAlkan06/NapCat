@@ -65,6 +65,15 @@ struct DecisionRecordReaderTests {
         let fields = Mirror(reflecting: claim).children.map { $0.label ?? "" }
         #expect(fields == ["recordName", "promptID", "claimedVerdict", "decidedAt", "signature"])
         #expect(!Mirror(reflecting: claim).children.contains { $0.value is Bool }, "no verified flag")
+        // #146: the intake's record store takes a claim and hands nothing
+        // back; the claim's record only joins its prompt's retraction.
+        let database = ScriptedApprovalDatabase()
+        let store = CloudKitApprovalRecords(writer: ApprovalRecordWriter(database: database, audit: { _ in }))
+        store.save(Self.promptID, tool: .bash, inputPreview: #"{"command":"git status"}"#, expiresAt: 0)
+        store.noteRead(claim)
+        #expect(database.submitted.count == 1, "a claim writes nothing")
+        store.retract(Self.promptID)
+        #expect(database.submitted.last?.recordIDsToDelete?.map(\.recordName) == [Self.promptID.hex, "r"])
     }
 
     // MARK: - Malformed records are not even claims
