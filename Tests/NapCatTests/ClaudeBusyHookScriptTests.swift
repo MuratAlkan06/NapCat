@@ -5,6 +5,44 @@ import AppKit
 import Testing
 @testable import NapCat
 
+/// Writing a hook child's stdin (#119). The child can be gone before the
+/// write lands: the kill switch exits before reading stdin, the capture's
+/// `head -c` stops at the cap, and on a loaded machine any child can exit
+/// first. A write to a pipe nobody reads raises SIGPIPE, whose default action
+/// killed the whole test runner (signal 13). So both suites below ignore
+/// SIGPIPE and write with the THROWING API, tolerating the EPIPE that follows:
+/// what the child did is what each test then checks.
+///
+/// SIG_IGN is PROCESS-GLOBAL: once the first of these suites starts, every
+/// suite in this test runner sees SIGPIPE ignored, not just these two. That
+/// is safe here: the runner is this one test target's own process; no test
+/// asserts the default disposition; and Foundation's `Process` restores the
+/// default dispositions in every child it spawns, so a hook's own pipelines
+/// still die of SIGPIPE as they would under Claude Code. A write elsewhere
+/// in the runner to a closed pipe now fails with EPIPE instead of killing it.
+enum HookChildStdin {
+    /// Evaluated once, when a suite below is first instantiated.
+    static let ignoreSIGPIPE: Void = { _ = signal(SIGPIPE, SIG_IGN) }()
+
+    /// Writes `data` to a child's stdin. EPIPE (the child already exited, or
+    /// stopped reading) is not an error; any other write error is thrown.
+    static func write(_ data: Data, to handle: FileHandle) throws {
+        do {
+            try handle.write(contentsOf: data)
+        } catch where isBrokenPipe(error) {
+            // The child is gone; its exit is what the test checks.
+        }
+    }
+
+    /// Whether `error` is EPIPE, bare or wrapped: Foundation reports it as a
+    /// Cocoa write error whose underlying error is POSIX EPIPE.
+    static func isBrokenPipe(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSPOSIXErrorDomain { return error.code == Int(EPIPE) }
+        return (error.userInfo[NSUnderlyingErrorKey] as? NSError).map(isBrokenPipe) ?? false
+    }
+}
+
 /// The companion hook is the one place a bug could break the user's Claude
 /// Code UX, so it is guarded three ways: a STRUCTURAL LINT (canary-proven),
 /// a BEHAVIORAL run against the shipped script, and a PARITY byte-match of the
@@ -12,6 +50,10 @@ import Testing
 /// precedent applied to Track B).
 @MainActor
 struct ClaudeBusyHookScriptTests {
+    /// SIGPIPE ignored before any test here writes a hook's stdin (#119;
+    /// process-global — see `HookChildStdin`).
+    init() { _ = HookChildStdin.ignoreSIGPIPE }
+
     // MARK: Paths
 
     private static func repoRoot() -> URL {
@@ -147,7 +189,11 @@ struct ClaudeBusyHookScriptTests {
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
         try? process.run()
-        stdin.fileHandleForWriting.write(Data(json.utf8))
+        do {
+            try HookChildStdin.write(Data(json.utf8), to: stdin.fileHandleForWriting)
+        } catch {
+            Issue.record("writing the hook's stdin failed: \(error)")
+        }
         try? stdin.fileHandleForWriting.close()
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -909,7 +955,7 @@ struct ClaudeBusyHookScriptTests {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        stdin.fileHandleForWriting.write(Data(json.utf8))
+        try HookChildStdin.write(Data(json.utf8), to: stdin.fileHandleForWriting)
         try stdin.fileHandleForWriting.close()
         process.waitUntilExit()
         let bytes = try Data(contentsOf: payload).count
@@ -2411,6 +2457,10 @@ struct ClaudeBusyHookScriptTests {
 /// hook run itself. The helpers are copies of `ClaudeBusyHookScriptTests`'
 /// (whose statics are main-actor isolated there).
 struct ClaudeBusyHookSignalWindowTests {
+    /// SIGPIPE ignored before any test here writes a hook's stdin (#119;
+    /// process-global — see `HookChildStdin`).
+    init() { _ = HookChildStdin.ignoreSIGPIPE }
+
     private static var hookScriptURL: URL {
         URL(fileURLWithPath: #filePath)  // Tests/NapCatTests/<this file>
             .deletingLastPathComponent() // Tests/NapCatTests
@@ -2476,7 +2526,11 @@ struct ClaudeBusyHookSignalWindowTests {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return (-1, false, false) }
-        stdin.fileHandleForWriting.write(Data(#"{"hook_event_name":"Stop","#.utf8))
+        do {
+            try HookChildStdin.write(Data(#"{"hook_event_name":"Stop","#.utf8), to: stdin.fileHandleForWriting)
+        } catch {
+            Issue.record("writing the hook's stdin failed: \(error)")
+        }
         let deadline = Date().addingTimeInterval(5)
         var sawPayload = false
         while Date() < deadline {

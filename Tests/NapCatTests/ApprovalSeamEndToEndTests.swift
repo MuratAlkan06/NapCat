@@ -66,9 +66,10 @@ final class SeamWorld: @unchecked Sendable {
         _ = emitted.next()
     }
 
-    /// The relay's notes up to and including `wanted`, or nil on timeout.
-    func waitForNote(_ wanted: ChannelNote) -> Bool {
-        while let note = notes.next() { if note == wanted { return true } }
+    /// The relay's notes up to and including the first of `wanted`, or false
+    /// once the next note takes longer than `seconds` to arrive.
+    func waitForNote(_ wanted: ChannelNote..., within seconds: Double = 5) -> Bool {
+        while let note = notes.next(within: seconds) { if wanted.contains(note) { return true } }
         return false
     }
 }
@@ -129,6 +130,17 @@ struct ApprovalSeamEndToEndTests {
 
     /// The host refuses a peer that fails the check before reading its frame;
     /// the server's prompt stays local.
+    ///
+    /// Any of three orderings is correct (#129), and each gives a fixed run
+    /// of the relay's notes:
+    /// - the frame is written before the refusal: `.relayed`, then
+    ///   `.seamClosed` once the end of stream reaches the server (this can lag
+    ///   on a loaded CI VM);
+    /// - the refusal lands before the write: `.seamClosed` (the EPIPE closes
+    ///   the link), then `.heldSendFailed`;
+    /// - the refusal lands before the server's own check of NapCat, whose
+    ///   audit token is then unreadable: the server refuses in turn, the link
+    ///   never opens, and the note is `.heldNoSeam`.
     @Test func aServerFailingThePeerCheckIsRefusedUnread() throws {
         let world = try SeamWorld(hostPeerReader: { _ in ApprovalSeamTests.foreign })
         #expect(world.host.start())
@@ -136,7 +148,8 @@ struct ApprovalSeamEndToEndTests {
         world.handshake()
         world.stdin(RelayHarness.permissionRequest("abcde"))
         #expect(world.audits.next() == "seam.peerRefused")
-        #expect(world.waitForNote(.seamClosed), "the server sees the link end")
+        #expect(world.waitForNote(.seamClosed, .heldNoSeam, within: ApprovalSeamTests.closeObservationSeconds),
+                "the server sees the link end, or never opens it")
         #expect(world.sink.saved.next(within: 0.2) == nil)
         #expect(world.audits.next(within: 0.2) == nil, "no frame from the refused peer was read")
     }
@@ -163,7 +176,7 @@ struct ApprovalSeamEndToEndTests {
         world.host.withIntake { $0.apply(.saveAccepted, to: saved.id) }
         world.host.stop()
         #expect(world.sink.retracted.next() == saved.id)
-        #expect(world.waitForNote(.seamClosed))
+        #expect(world.waitForNote(.seamClosed, within: ApprovalSeamTests.closeObservationSeconds))
         #expect(!FileManager.default.fileExists(atPath: world.fixture.socketPath))
         world.host.withIntake {
             $0.decide(ApprovalDecision(promptID: saved.id, verdict: .allow, wireVersion: 1, signatureVerified: true))
@@ -185,7 +198,7 @@ struct ApprovalSeamEndToEndTests {
         #expect(queue.sync { client.send(frame) })
         let saved = try #require(world.sink.saved.next())
         queue.sync { client.close() }
-        #expect(world.sink.retracted.next() == saved.id)
+        #expect(world.sink.retracted.next(within: ApprovalSeamTests.closeObservationSeconds) == saved.id)
         #expect(world.audits.all.last == "prompt=\(saved.id.hex) retracted.sessionEnded")
     }
 }

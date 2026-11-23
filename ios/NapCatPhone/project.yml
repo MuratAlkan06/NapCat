@@ -22,6 +22,10 @@ settings:
     # TestFlight builds get no vX.Y.Z tag.
     MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "2"
+    # Team ID is public (appears in notarized release TeamIdentifier);
+    # required for clean-checkout archive.
+    DEVELOPMENT_TEAM: HJSC985877
+    CODE_SIGN_STYLE: Automatic
 packages:
   # The repository root. Only its `NapCatWire` product (the wire contract
   # and the pure approval core: zero imports, no I/O) is linked; the Mac
