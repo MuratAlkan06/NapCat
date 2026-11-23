@@ -153,12 +153,27 @@ public enum SeamSocket {
         return true
     }
 
-    /// Creates the socket's directory (0700) when missing; refuses one that
-    /// is not a real directory of this user's, and tightens its mode to 0700.
+    /// Creates the socket's directory (0700) when missing, and any missing
+    /// folder above it first; refuses one that is not a real directory of
+    /// this user's, and tightens its mode to 0700.
     static func prepareDirectory(_ directory: String, ownUID: uid_t) -> Bool {
+        guard makeMissingAncestors(of: directory) else { return false }
         if mkdir(directory, 0o700) != 0 && errno != EEXIST { return false }
         guard let info = lstatInfo(directory), isDirectory(info), info.st_uid == ownUID else { return false }
         return info.st_mode & 0o077 == 0 || chmod(directory, 0o700) == 0
+    }
+
+    /// Creates every missing folder above `path`, outermost first, like
+    /// `mkdir -p`: with the default mode (0777 less the umask), since they
+    /// are shared app-support folders, not the seam's. An existing one is
+    /// followed like any path component; a non-directory there is a failure.
+    static func makeMissingAncestors(of path: String) -> Bool {
+        let parent = directory(of: path)
+        guard !parent.isEmpty, parent != "." else { return true }
+        var info = stat()
+        if stat(parent, &info) == 0 { return isDirectory(info) }
+        guard errno == ENOENT, makeMissingAncestors(of: parent) else { return false }
+        return mkdir(parent, 0o777) == 0 || errno == EEXIST
     }
 
     static func connect(_ descriptor: Int32, to address: sockaddr_un) -> Bool {

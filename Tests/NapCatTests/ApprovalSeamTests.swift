@@ -237,6 +237,54 @@ struct ApprovalSeamTests {
         #expect(fixture.mode(fixture.directoryPath) == 0o700)
     }
 
+    /// A fresh Mac has no NapCat folder yet: the listener makes the missing
+    /// folders above its directory with the default mode (they are shared
+    /// app-support folders, never tightened), and its own directory 0700.
+    @Test func theListenerMakesTheMissingFoldersAboveItsDirectory() throws {
+        let fixture = try SeamFixture()
+        let top = fixture.root.path + "/s"
+        let napCat = top + "/NapCat"
+        let socketPath = napCat + "/approvals/seam.sock"
+        try #require(socketPath.utf8.count < 104, "the path must fit sun_path: \(socketPath)")
+        #expect(!FileManager.default.fileExists(atPath: top), "the scratch root starts with no folders")
+        let queue = DispatchQueue(label: "test.seam.fresh")
+        let listener = SeamListener(socketPath: socketPath, queue: queue)
+        #expect(queue.sync { listener.start(onConnection: { _ in }) }, "a fresh Mac listens on the first try")
+        defer { queue.sync { listener.stop() } }
+        #expect(fixture.mode(napCat + "/approvals") == 0o700)
+        #expect(fixture.mode(socketPath) == 0o600)
+        let reference = fixture.root.path + "/reference"
+        try FileManager.default.createDirectory(atPath: reference, withIntermediateDirectories: false)
+        let defaultMode = try #require(fixture.mode(reference))
+        #expect(fixture.mode(top) == defaultMode, "a folder above gets the default mode")
+        #expect(fixture.mode(napCat) == defaultMode, "a folder above gets the default mode")
+        let clientQueue = DispatchQueue(label: "test.seam.fresh.client")
+        let connection = clientQueue.sync { SeamClient.connect(socketPath: socketPath, queue: clientQueue) }
+        #expect(connection != nil, "the server reaches the new socket")
+        clientQueue.sync { connection?.close() }
+    }
+
+    /// Making the missing folders loosens no check: a file in the way is a
+    /// failure and left alone, and the socket's directory must still be a
+    /// real directory (a symlink there is refused).
+    @Test func theListenerRefusesAFileInTheWayOrASymlinkedDirectory() throws {
+        let fixture = try SeamFixture()
+        let file = fixture.root.path + "/NapCat"
+        #expect(FileManager.default.createFile(atPath: file, contents: Data("keep".utf8)))
+        let queue = DispatchQueue(label: "test.seam.blocked")
+        for socketPath in [file + "/approvals/seam.sock", file + "/x/approvals/seam.sock"] {
+            let listener = SeamListener(socketPath: socketPath, queue: queue)
+            #expect(!queue.sync { listener.start(onConnection: { _ in }) }, "a file in the way: \(socketPath)")
+        }
+        #expect(FileManager.default.contents(atPath: file) == Data("keep".utf8), "and left untouched")
+        let elsewhere = fixture.root.path + "/elsewhere"
+        try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createSymbolicLink(atPath: fixture.directoryPath, withDestinationPath: elsewhere)
+        #expect(!Server(fixture).start(), "a symlinked directory is refused")
+        #expect(!FileManager.default.fileExists(atPath: elsewhere + "/seam.sock"))
+    }
+
     /// The server never connects to a socket others could reach or plant.
     @Test func theClientRefusesASocketOutsideAPrivateDirectory() throws {
         let fixture = try SeamFixture()
