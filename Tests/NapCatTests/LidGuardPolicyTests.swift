@@ -506,12 +506,15 @@ struct LidGuardPolicyTests {
                 + "and Stay Awake is off.")
     }
 
-    /// Every leaf of a kind's associated values, walked through tuples and
-    /// optionals (`nil` carries nothing). A payload-free case has no leaves.
+    /// Every leaf of a kind's associated values, walked through tuples,
+    /// optionals and structs (`nil` carries nothing). A payload-free case has
+    /// no leaves. F4 slice S2: the waiting buzz's prompt counts are a struct
+    /// of Ints, so the walk descends into structs — a String hidden in one
+    /// is caught like any other.
     static func payloadLeaves(_ kind: LidGuardMessageKind) -> [Any] {
         func leaves(_ value: Any) -> [Any] {
             let mirror = Mirror(reflecting: value)
-            if mirror.displayStyle == .optional || mirror.displayStyle == .tuple {
+            if mirror.displayStyle == .optional || mirror.displayStyle == .tuple || mirror.displayStyle == .struct {
                 return mirror.children.flatMap { leaves($0.value) }
             }
             return [value]
@@ -530,8 +533,10 @@ struct LidGuardPolicyTests {
             (.lidAlert(busySessionCount: 3), 1),
             (.sessionFinished(minutes: 42, folded: 2, stillWorking: 1), 3),
             (.sessionFinished(minutes: nil, folded: 1, stillWorking: 0), 2),
-            (.needsAttention(minutes: 12, stillWorking: 1), 2),
-            (.needsAttention(minutes: nil, stillWorking: 0), 1),
+            // F4 slice S2: + the five prompt counts (a struct of Ints).
+            (.needsAttention(minutes: 12, stillWorking: 1), 7),
+            (.needsAttention(minutes: nil, stillWorking: 0), 6),
+            (.needsAttention(minutes: 3, stillWorking: 0, prompts: WaitingPromptCounts(bash: 1, write: 2)), 7),
             (.connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 1), 4),
         ]
         for (kind, leafCount) in kinds {

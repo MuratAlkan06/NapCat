@@ -611,6 +611,9 @@ struct MenuPanelStructureTests {
             // delivery settings, so its twin joins theirs.
             ("model.phoneAlertStatus(", lidTwins),
             ("model.lockScreenStatus", generalTwins),
+            // F4 slice S2: the channel-policy reading lives in Settings ›
+            // Claude, so its twin joins the Claude ones.
+            ("model.remoteApprovalsPolicyLine", claudeTwins),
         ]
         for (accessor, twinHome) in pairs {
             #expect(Self.occurrences(of: accessor, in: views) == 1, "\(accessor) must render exactly once in the panel")
@@ -728,14 +731,16 @@ struct MenuPanelStructureTests {
     /// card — no group header: its first line, the "Battery N%" headline,
     /// names it (the "Power" label was judged redundant) — holds Stay Awake
     /// then Charge Limit; the Alerts card, under its "Alerts" header, holds
-    /// Lid alert then Session alerts. No row sits outside a card.
+    /// Lid alert then Session alerts, then (F4 slice S2) Remote approvals.
+    /// No row sits outside a card.
     @Test func theCardsHoldStayAwakeChargeLimitThenLidAndSession() throws {
         let body = try Self.layoutBody()
         let cards = Self.cardBlocks(in: body)
         try #require(cards.count == 2, "the Power card and the Alerts card")
         #expect(Self.rowTitles(body[cards[0]]) == ["Stay Awake", "Charge Limit"], "got \(Self.rowTitles(body[cards[0]]))")
-        #expect(Self.rowTitles(body[cards[1]]) == ["Lid alert", "Session alerts"], "got \(Self.rowTitles(body[cards[1]]))")
-        #expect(Self.rowTitles(body) == ["Stay Awake", "Charge Limit", "Lid alert", "Session alerts"],
+        #expect(Self.rowTitles(body[cards[1]]) == ["Lid alert", "Session alerts", "Remote approvals"],
+                "got \(Self.rowTitles(body[cards[1]]))")
+        #expect(Self.rowTitles(body) == ["Stay Awake", "Charge Limit", "Lid alert", "Session alerts", "Remote approvals"],
                 "no row outside the cards")
         #expect(body[cards[0]].hasPrefix("PanelCard {"), "the Power card has no group header")
         #expect(body[cards[1]].hasPrefix("PanelGroup(title: \"Alerts\") {"), "the Alerts card has its header")

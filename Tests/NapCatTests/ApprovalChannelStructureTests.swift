@@ -21,6 +21,9 @@ struct ApprovalChannelStructureTests {
     static let intakeFile = "ApprovalIntake.swift"
     static let hostFile = "ApprovalSeamHost.swift"
     static let probeFile = "ChannelPolicyProbe.swift"
+    /// Slice S2: the Mac toggle, the only place the host is built and the
+    /// probe run.
+    static let toggleFile = "RemoteApprovalsController.swift"
     /// The I/O files S1 added.
     static let s1Files = [seamFile, relayFile, serverFile, intakeFile, hostFile, probeFile]
 
@@ -257,8 +260,25 @@ struct ApprovalChannelStructureTests {
         if wire.contains("\"tools\"") || wire.contains("\\\"tools\\\"") || wire.contains("instructions") {
             failures.append("the handshake must declare the two channel capabilities only")
         }
-        for (name, text) in sources where name != serverFile && text.contains("SeamPaths.homeDirectory(") {
-            failures.append("\(name) resolves the real socket path — only the server's entry point may")
+        // The real socket path is resolved by the server's entry point and
+        // (slice S2) by the Mac toggle's one factory — once each, nowhere
+        // else.
+        for (name, text) in sources {
+            let resolutions = count("SeamPaths.homeDirectory(", in: text)
+            let allowed = name == serverFile || name == toggleFile ? 1 : 0
+            if resolutions != allowed {
+                failures.append("\(resolutions) real socket path resolution(s) in \(name) — only the server's entry point "
+                    + "and the toggle's factory may, once each")
+            }
+        }
+        let toggle = text(toggleFile, in: sources)
+        if let factory = toggle.range(of: "static func makeIfEnabled("), let resolve = toggle.range(of: "SeamPaths.homeDirectory("),
+           let builder = toggle.range(of: "static func failDarkHost(") {
+            if !(factory.upperBound < resolve.lowerBound && resolve.upperBound < builder.lowerBound) {
+                failures.append("the toggle resolves the real socket path outside its production factory")
+            }
+        } else {
+            failures.append("the toggle's factory moved (lint would be vacuous)")
         }
         return failures
     }
@@ -274,33 +294,209 @@ struct ApprovalChannelStructureTests {
                 $0 + "\nstatic let m = \"notifications/claude/channel\"" }),
             ("a tools capability", Self.mutate(sources, "ApprovalChannel.swift") { $0 + "\nlet t = \"\\\"tools\\\":{}\"" }),
             ("the host resolves the real path", Self.mutate(sources, Self.hostFile) { $0 + "\nlet h = SeamPaths.homeDirectory()" }),
+            ("the model resolves the real path", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet h = SeamPaths.homeDirectory()" }),
+            ("the toggle resolves it twice", Self.mutate(sources, Self.toggleFile) { $0 + "\nlet h = SeamPaths.homeDirectory()" }),
         ]
         for (name, mutant) in mutants {
             #expect(!Self.serverFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 
-    // MARK: - Dark by default
+    // MARK: - Behind the toggle only (slice S2; replaces S1's dark-by-default lock)
 
-    /// Nothing in the app starts the seam or runs the probe yet: the toggle
-    /// and settings slices amend this lock deliberately when they wire them.
-    static func darkFailures(_ sources: Sources) -> [String] {
+    /// S1 kept the seam host and the probe unwired. Slice S2 wires them —
+    /// behind the Mac toggle, and fail-dark — and this lock replaces the dark
+    /// one without giving up any of it: still nothing but the toggle builds
+    /// the host or runs the probe (S1's two canaries are kept), and now also:
+    ///
+    /// - the host is built in exactly ONE place, `failDarkHost`, never armed
+    ///   (`armed: { false }`) and with the record sink that writes nothing;
+    ///   that sink has empty bodies, and no CloudKit or network token is in
+    ///   any approvals file;
+    /// - the stored factory is invoked in exactly one place, `listen()`, and
+    ///   only after its switched-on guard, and the production factory is the
+    ///   fail-dark one;
+    /// - the probe is named once (the production factory's closure) and run
+    ///   once, as the state machine's `.probe` effect — which it returns only
+    ///   while on (RemoteApprovalsPolicyTests);
+    /// - the controller is built only by its gated factory, and the app calls
+    ///   that factory once;
+    /// - (security pass, N-20) nothing outside the toggle names the fail-dark
+    ///   factory; the toggle's host is private and started only in
+    ///   `listen()`; the seam's listener and intake are built only inside the
+    ///   host, once each; and a construction counts however it is spelled
+    ///   (`T.init(`, a space before the parenthesis — `constructionSpelling`).
+    static func armedGateFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        for (name, text) in sources where name != hostFile && text.contains("ApprovalSeamHost(") {
-            failures.append("\(name) constructs the seam host — it stays unwired until the toggle slice")
+        let spelled: Sources = sources.map { ($0.name, constructionSpelling($0.text)) }
+        for (name, text) in spelled where name != toggleFile && text.contains("ApprovalSeamHost(") {
+            failures.append("\(name) constructs the seam host — only the toggle's fail-dark factory may")
         }
-        for (name, text) in sources where name != probeFile && text.contains("ChannelPolicyProbe.") {
-            failures.append("\(name) runs the probe — it stays unwired until the settings slice")
+        for (name, text) in sources where name != probeFile && name != toggleFile && text.contains("ChannelPolicyProbe.") {
+            failures.append("\(name) runs the probe — only the toggle may, while on")
+        }
+        for (name, text) in spelled where name != toggleFile && text.contains("RemoteApprovalsController(") {
+            failures.append("\(name) builds the toggle around its gated factory")
+        }
+        // The fail-dark factory is the toggle's own: called, or merely
+        // referenced, anywhere else it builds a host the switch never sees.
+        for (name, text) in sources where name != toggleFile && text.contains("failDarkHost") {
+            failures.append("\(name) names the fail-dark factory — only the toggle's production factory may call it")
+        }
+        // The listener and the intake exist only inside the host (built
+        // there once each), so nothing can listen on the seam around it.
+        let hostSpelled = text(hostFile, in: spelled)
+        for token in ["SeamListener(", "ApprovalIntake("] {
+            for (name, text) in spelled where name != hostFile && text.contains(token) {
+                failures.append("'\(token)' in \(name) — only the seam host builds its listener and intake")
+            }
+            if count(token, in: hostSpelled) != 1 { failures.append("the host must build exactly one '\(token)'") }
+        }
+        let app = text("NapCatApp.swift", in: sources)
+        if count("RemoteApprovalsController.makeIfEnabled(", in: app) != 1 {
+            failures.append("the app must build the toggle exactly once, through its gated factory")
+        }
+        let toggle = text(toggleFile, in: sources)
+        let toggleSpelled = text(toggleFile, in: spelled)
+        let flat = toggle.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if count("ApprovalSeamHost(", in: toggleSpelled) != 1 { failures.append("the host must be built in exactly one place") }
+        // The toggle's host is private and handed out by nothing (no other
+        // stored, computed or returned host), and it is started in one place:
+        // listen(), after the switched-on guard.
+        if count("var host", in: toggle) != 1 || !flat.contains(" private var host: ApprovalSeamHost? ")
+            || count(": ApprovalSeamHost", in: toggle) != 1 || count("-> ApprovalSeamHost", in: toggle) != 2 {
+            failures.append("the toggle's host must stay private — handed out, it could be started behind the switch")
+        }
+        if count(".start(", in: toggleSpelled) != 1
+            || !flat.contains("private func listen() { guard state.enabled else { return } "
+                              + "let host = self.host ?? makeHost(socketPath) self.host = host let started = host.start() ") {
+            failures.append("the host must be started only in listen(), after its switched-on guard")
+        }
+        if !flat.contains("-> ApprovalSeamHost { ApprovalSeamHost(socketPath: socketPath, armed: { false }, secrets: secrets, "
+                          + "records: FailDarkApprovalRecords(), audit: audit, peerReader: peerReader) }") {
+            failures.append("the one host must be built never armed, with the sink that writes nothing")
+        }
+        if !flat.contains("final class FailDarkApprovalRecords: ApprovalRecordSink { "
+                          + "func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int) {} "
+                          + "func retract(_ id: PromptID) {} func supersedeWaitingAlert(_ id: PromptID) {} }") {
+            failures.append("the fail-dark sink must write nothing")
+        }
+        for name in [toggleFile, hostFile, intakeFile, "RemoteApprovalsPolicy.swift"] {
+            for token in ["CloudKit", "CKContainer", "CKDatabase", "CKRecord", "URLSession", "MessageSender"]
+            where text(name, in: sources).contains(token) {
+                failures.append("'\(token)' in \(name) — nothing in this slice can send a prompt anywhere")
+            }
+        }
+        if count("failDarkHost(", in: toggleSpelled) != 2 || count("failDarkHost", in: toggle) != 2
+            || !flat.contains("makeHost: { Self.failDarkHost(socketPath: $0, ") {
+            failures.append("the production factory must be the fail-dark one, and nothing else may call it")
+        }
+        if count("makeHost(", in: toggle) != 1 { failures.append("the host factory must be invoked in exactly one place") }
+        if let listen = toggle.range(of: "private func listen() {"), let guarded = toggle.range(of: "guard state.enabled else { return }"),
+           let build = toggle.range(of: "makeHost(socketPath)") {
+            if !(listen.upperBound < guarded.lowerBound && guarded.upperBound < build.lowerBound
+                 && toggle[listen.upperBound..<guarded.lowerBound].allSatisfy(\.isWhitespace)) {
+                failures.append("listen() must open with its switched-on guard, before it builds the host")
+            }
+        } else {
+            failures.append("listen(), its guard or its build moved (lint would be vacuous)")
+        }
+        if count("listen()", in: toggle) != 2 || !flat.contains("case .startListening: listen()") {
+            failures.append("listen() must run only as the state machine's .startListening effect")
+        }
+        if count("ChannelPolicyProbe.", in: toggle) != 1 || !flat.contains("probe: { ChannelPolicyProbe.probe() })") {
+            failures.append("the probe must be named once, as the production factory's closure")
+        }
+        if count("probe()", in: toggle) != 2 || !flat.contains("case .probe: run(.probed(probe()))") {
+            failures.append("the probe must run only as the state machine's .probe effect")
         }
         return failures
     }
 
-    @Test func nothingWiresTheSeamOrTheProbeYet() throws {
+    /// A construction token however it is spelled: `T.init(` and `T (`
+    /// (whitespace before the parenthesis, or around `.init`) read as `T(`.
+    /// For the construction checks only — the shape checks match the source
+    /// as written.
+    static func constructionSpelling(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\s*\.\s*init\s*\("#, with: "(", options: .regularExpression)
+            .replacingOccurrences(of: #"([A-Za-z0-9_])\s+\("#, with: "$1(", options: .regularExpression)
+    }
+
+    @Test func theSeamAndTheProbeRunOnlyBehindTheToggle() throws {
         let sources = try Self.sources()
-        #expect(Self.darkFailures(sources).isEmpty, "\(Self.darkFailures(sources))")
-        #expect(!Self.darkFailures(Self.mutate(sources, "NapCatApp.swift") {
-            $0 + "\nlet h = ApprovalSeamHost(socketPath: p, armed: { true }, secrets: { [] }, records: r)" }).isEmpty)
-        #expect(!Self.darkFailures(Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet f = ChannelPolicyProbe.probe()" }).isEmpty)
+        #expect(Self.armedGateFailures(sources).isEmpty, "\(Self.armedGateFailures(sources))")
+        let mutants: [(String, Sources)] = [
+            // S1's canaries, kept.
+            ("the app builds the host", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet h = ApprovalSeamHost(socketPath: p, armed: { true }, secrets: { [] }, records: r)" }),
+            ("the model probes", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet f = ChannelPolicyProbe.probe()" }),
+            // S2's.
+            ("armed", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "armed: { false }", with: "armed: { true }") }),
+            ("a sink that saves", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "records: FailDarkApprovalRecords()", with: "records: CloudKitApprovalRecords()") }),
+            ("the fail-dark sink writes", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "    func retract(_ id: PromptID) {}",
+                                        with: "    func retract(_ id: PromptID) { store.delete(id) }") }),
+            ("a second host", Self.mutate(sources, Self.toggleFile) {
+                $0 + "\nlet h = ApprovalSeamHost(socketPath: p, armed: { false }, secrets: { [] }, records: r)" }),
+            ("CloudKit in the toggle", Self.mutate(sources, Self.toggleFile) { $0 + "\nlet c = CKContainer.default()" }),
+            ("a sender in the intake", Self.mutate(sources, Self.intakeFile) { $0 + "\nlet s: MessageSender? = nil" }),
+            ("the guard dropped", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "guard state.enabled else { return }", with: "") }),
+            ("built before the guard", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "    private func listen() {\n        guard state.enabled else { return }",
+                                        with: "    private func listen() {\n        _ = makeHost(socketPath)\n        guard state.enabled else { return }") }),
+            ("listened at launch", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "    func reconcile() {\n", with: "    func reconcile() {\n        listen()\n") }),
+            ("probed at launch", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "    func reconcile() {\n", with: "    func reconcile() {\n        _ = probe()\n") }),
+            ("an armed production factory", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "makeHost: { Self.failDarkHost(socketPath: $0, ",
+                                        with: "makeHost: { Self.armedHost(socketPath: $0, ") }),
+            ("the toggle built twice", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet t = RemoteApprovalsController.makeIfEnabled(debugBattery: false, lidGuard: nil)" }),
+            ("the toggle built around its factory", Self.mutate(sources, "MenuContentView.swift") {
+                $0 + "\nlet t = RemoteApprovalsController(socketPath: p, readStored: r, writeStored: w, makeHost: m, probe: q)" }),
+            // N-20 (security pass): the four gaps, each closed.
+            // (1) The fail-dark factory outside the toggle.
+            ("the fail-dark factory called elsewhere", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet h = RemoteApprovalsController.failDarkHost(socketPath: p, secrets: { nil })" }),
+            ("the fail-dark factory referenced elsewhere", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet f = RemoteApprovalsController.failDarkHost" }),
+            // (2) The toggle's host handed out, or started again.
+            ("the host readable", Self.mutate(sources, Self.toggleFile) {
+                $0.replacingOccurrences(of: "    private var host: ApprovalSeamHost?",
+                                        with: "    private(set) var host: ApprovalSeamHost?") }),
+            ("the host handed out", Self.mutate(sources, Self.toggleFile) {
+                $0 + "\nextension RemoteApprovalsController { var seamHost: ApprovalSeamHost? { host } }" }),
+            ("the host started again", Self.mutate(sources, Self.toggleFile) {
+                $0 + "\nextension RemoteApprovalsController { func relisten() { _ = host?.start() } }" }),
+            // (3) A listener or an intake outside the host, or a second one in it.
+            ("a listener outside the host", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet l = SeamListener(socketPath: p, queue: q)" }),
+            ("an intake outside the host", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet i = ApprovalIntake(armed: { true }, secrets: { [] }, newPromptID: n, now: c, records: r, "
+                    + "sendFrame: s, closeConnection: k, audit: a)" }),
+            ("a second listener in the host", Self.mutate(sources, Self.hostFile) {
+                $0 + "\nlet l = SeamListener(socketPath: p, queue: q)" }),
+            // (4) Any spelling of a construction.
+            ("the init spelling", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet h = ApprovalSeamHost.init(socketPath: p, armed: { true }, secrets: { [] }, records: r)" }),
+            ("a spaced call", Self.mutate(sources, "MenuContentView.swift") {
+                $0 + "\nlet h = ApprovalSeamHost (socketPath: p, armed: { true }, secrets: { [] }, records: r)" }),
+            ("a second host by init in the toggle", Self.mutate(sources, Self.toggleFile) {
+                $0 + "\nlet h = ApprovalSeamHost\n    .init(socketPath: p, armed: { false }, secrets: { [] }, records: r)" }),
+            ("a listener by init in the toggle", Self.mutate(sources, Self.toggleFile) {
+                $0 + "\nlet l = SeamListener.init(socketPath: p, queue: q)" }),
+            ("the toggle by init", Self.mutate(sources, "MenuContentView.swift") {
+                $0 + "\nlet t = RemoteApprovalsController.init(socketPath: p, readStored: r, writeStored: w, makeHost: m, "
+                    + "probe: q)" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(!Self.armedGateFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
     }
 
     // MARK: - The S1 tests touch nothing live

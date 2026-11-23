@@ -933,3 +933,39 @@ enum SleepStateControllerMirrorProbe {
         return mirror.value
     }
 }
+
+// MARK: - F4: the secrets the remote-approvals gate looks for
+
+/// The lid guard owns the topic, so it answers what the category gate must
+/// keep on the Mac: the in-memory topic, nothing when none is configured —
+/// and nil (fail closed) while a topic exists that the startup read could not
+/// get, until a new one is saved.
+struct LidGuardApprovalSecretsTests {
+    @Test func theTopicIsTheSecretAndNoTopicIsNone() {
+        withLidGuardHarness(topicStore: FakeTopicStore("napcat-lid-8f3k2p")) { harness in
+            #expect(harness.controller.approvalSecrets == ["napcat-lid-8f3k2p"])
+        }
+        withLidGuardHarness(topicStore: FakeTopicStore()) { harness in
+            #expect(harness.controller.approvalSecrets == [], "no topic configured: nothing to withhold, not nil")
+        }
+    }
+
+    @Test(arguments: [errSecDecode, errSecUserCanceled, errSecInteractionNotAllowed, errSecAuthFailed])
+    func anUnreadableTopicFailsClosedUntilANewOneIsSaved(_ status: OSStatus) {
+        let store = FakeTopicStore("napcat-lid-8f3k2p")
+        store.setReadAnswer(.failed(status: status))
+        withLidGuardHarness(topicStore: store) { harness in
+            #expect(harness.controller.storedTopic == "", "the session starts without the topic")
+            #expect(harness.controller.approvalSecrets == nil, "the gate cannot look for a topic it does not know")
+
+            store.setFailWrites(true)
+            harness.controller.setTopic("napcat-new-2m8x4k")
+            #expect(harness.controller.topicSaveFailed)
+            #expect(harness.controller.approvalSecrets == nil, "a refused save changes nothing")
+
+            store.setFailWrites(false)
+            harness.controller.setTopic("napcat-new-2m8x4k")
+            #expect(harness.controller.approvalSecrets == ["napcat-new-2m8x4k"], "a saved topic is known again")
+        }
+    }
+}

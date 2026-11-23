@@ -219,14 +219,42 @@ enum LidGuardMessageKind: Equatable, Sendable {
     /// still busy (session lane).
     case sessionFinished(minutes: Int?, folded: Int, stillWorking: Int)
     /// Track C waiting buzz: a session stopped to ask for approval/input
-    /// `minutes` into its run (session lane).
-    case needsAttention(minutes: Int?, stillWorking: Int)
+    /// `minutes` into its run (session lane). F4 slice S2: while remote
+    /// approvals are on, `prompts` counts the permission prompts wired
+    /// sessions had just relayed — Int counts per kind, nothing else.
+    case needsAttention(minutes: Int?, stillWorking: Int, prompts: WaitingPromptCounts = .none)
     /// Alert healing (issue #23): the ONE push after a connectivity outage
     /// healed — how many `minutes` the connection was down (rounded up, at
     /// least 1), how many held session alerts were `deliveredLate` or
     /// `dropped` (past the held digest's max age), and how many lid alerts
     /// were `lidMissed` while offline (session lane).
     case connectionRestored(minutes: Int, deliveredLate: Int, dropped: Int, lidMissed: Int)
+}
+
+/// F4 slice S2: what a waiting buzz may say about the permission prompts that
+/// wired sessions had just relayed to NapCat while remote approvals are on —
+/// Int COUNTS per tool kind, nothing else: never a tool name as Claude Code
+/// sent it, a preview, a path or a command. Only prompts the category gate
+/// would forward are counted; one it keeps on the Mac never shows here (the
+/// phone never learns of it). `.none` — the feature off, an unwired
+/// session — leaves the buzz exactly as it was.
+struct WaitingPromptCounts: Equatable, Sendable {
+    var bash = 0
+    var write = 0
+    var edit = 0
+    var notebookEdit = 0
+    var read = 0
+
+    static let none = WaitingPromptCounts()
+
+    var total: Int { bash + write + edit + notebookEdit + read }
+
+    /// Each non-zero count with its kind's FIXED display word, in a fixed
+    /// order.
+    var kinds: [(word: String, count: Int)] {
+        [("Bash", bash), ("Write", write), ("Edit", edit), ("NotebookEdit", notebookEdit), ("Read", read)]
+            .filter { $0.1 > 0 }
+    }
 }
 
 /// The two per-kind ntfy headers. Both values are FIXED ASCII constants from
@@ -512,6 +540,9 @@ enum LidGuardPolicy {
     ///   still working" (minutes deliberately omitted — they differ per session);
     /// - `needsAttention` (any wait — permission, elicitation, input, quota):
     ///   "Claude is waiting for you — 12 min in"
+    ///   (F4 slice S2, with prompt counts: + " — 1 Bash permission prompt" /
+    ///   " — 2 Bash permission prompts" / " — 3 permission prompts" for
+    ///   mixed kinds)
     ///   (+ " — 1 other still working" / " — N others still working");
     /// - `connectionRestored` (alert healing): "Connection was down 14 min."
     ///   plus one segment per non-zero count, singular or plural — "1 session
@@ -532,15 +563,16 @@ enum LidGuardPolicy {
             }
             let after = knownMinutes(minutes).map { " after \($0) min" } ?? ""
             return "A Claude session finished" + after + " — " + stillWorkingPhrase(stillWorking)
-        case .needsAttention(let minutes, let stillWorking):
+        case .needsAttention(let minutes, let stillWorking, let prompts):
             let elapsed = knownMinutes(minutes).map { " — \($0) min in" } ?? ""
+            let context = promptsPhrase(prompts).map { " — " + $0 } ?? ""
             let others: String
             switch stillWorking {
             case ..<1: others = ""
             case 1: others = " — 1 other still working"
             default: others = " — \(stillWorking) others still working"
             }
-            return "Claude is waiting for you" + elapsed + others
+            return "Claude is waiting for you" + elapsed + context + others
         case .connectionRestored(let minutes, let deliveredLate, let dropped, let lidMissed):
             // A count below 1 adds no segment; 1 is singular.
             func segment(_ count: Int, _ one: String, _ many: String) -> String? {
@@ -561,6 +593,17 @@ enum LidGuardPolicy {
     static func knownMinutes(_ minutes: Int?) -> Int? {
         guard let minutes, minutes > 0 else { return nil }
         return minutes
+    }
+
+    /// F4 slice S2: the prompt counts → phrase, or nil for none. One kind
+    /// names it ("1 Bash permission prompt"); mixed kinds only count. The
+    /// word is the kind's fixed display word, never input.
+    static func promptsPhrase(_ prompts: WaitingPromptCounts) -> String? {
+        let total = prompts.total
+        guard total > 0 else { return nil }
+        let noun = total == 1 ? "permission prompt" : "permission prompts"
+        let kinds = prompts.kinds
+        return kinds.count == 1 ? "\(total) \(kinds[0].word) \(noun)" : "\(total) \(noun)"
     }
 
     /// Still-busy count → phrase. A negative count cannot happen but degrades

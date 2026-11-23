@@ -87,6 +87,9 @@ enum SettingsRow: Equatable, Sendable {
     /// The automatic-check checkbox and its disclosure of what the request
     /// exposes.
     case updateAuto(isOn: Bool, disclosure: String)
+    /// F4 slice S2: the remote-approvals switch (the panel row's twin; off is
+    /// the kill switch), its status while on, and what it does.
+    case remoteApprovals(isOn: Bool, caption: PanelLine?, hint: String)
 }
 
 /// One titled group of rows.
@@ -232,30 +235,44 @@ extension MenuStateModel {
     var claudePane: SettingsPaneContent {
         Self.claudePane(status: Self.claudeFooterLabel(inFlight: claudeTaskInFlight, paused: claudeDetectionPaused),
                         hook: hookStatus, hookVersion: hookVersionStatus, awake: claudeAwakeLine,
-                        paused: claudeDetectionPaused)
+                        paused: claudeDetectionPaused,
+                        approvals: remoteApprovalsVisible
+                            ? (isOn: remoteApprovalsEnabled, status: remoteApprovalsStatus,
+                               policy: remoteApprovalsPolicyLine) : nil)
     }
 
     /// Detection (the Claude status — the footer label's own words — the
     /// hook liveness and version lines, the holding-awake fact, then the
-    /// Pause detection switch with its cost), and the busy hook's installer
-    /// pointer with the full command.
+    /// Pause detection switch with its cost), the busy hook's installer
+    /// pointer with the full command, and (F4 slice S2, while the toggle
+    /// exists — not in debugBattery mode) Remote approvals: the switch with
+    /// its status while on and its hint, then the channel-policy line while
+    /// a reading exists.
     nonisolated static func claudePane(
         status: PanelLine,
         hook: PanelLine,
         hookVersion: PanelLine?,
         awake: PanelLine?,
-        paused: Bool
+        paused: Bool,
+        approvals: (isOn: Bool, status: PanelLine, policy: PanelLine?)? = nil
     ) -> SettingsPaneContent {
         var detection: [SettingsRow] = [.line(status), .line(hook)]
         if let hookVersion { detection.append(.line(hookVersion)) }
         if let awake { detection.append(.line(awake)) }
         detection.append(.pauseDetection(isOn: paused, caption: pauseDetectionCaption))
-        return SettingsPaneContent(sections: [
+        var sections = [
             SettingsSection(title: "Detection", rows: detection),
             SettingsSection(title: "Busy hook", rows: [
                 .hookInstall(intro: claudeHookInstallIntro, command: claudeHookInstallCommand,
                              note: claudeHookInstallNote),
             ]),
-        ], footnote: nil)
+        ]
+        if let approvals {
+            var rows: [SettingsRow] = [.remoteApprovals(isOn: approvals.isOn, caption: approvals.isOn ? approvals.status : nil,
+                                                        hint: remoteApprovalsHint)]
+            if let policy = approvals.policy { rows.append(.line(policy)) }
+            sections.append(SettingsSection(title: remoteApprovalsToggleTitle, rows: rows))
+        }
+        return SettingsPaneContent(sections: sections, footnote: nil)
     }
 }

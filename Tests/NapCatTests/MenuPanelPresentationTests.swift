@@ -5,6 +5,7 @@ import AppKit
 import ServiceManagement
 import Testing
 @testable import NapCat
+@testable import NapCatWire
 
 /// Menu-panel redesign (2026-10-18, re-shaped by Panel 2.0): the pure
 /// mappings the panel renders — the Claude status (the footer's caption),
@@ -705,7 +706,7 @@ struct MenuPanelPresentationTests {
     /// label — "Busy hook:", "Topic:" — since no row title sits above them.)
     static let rowCaptionStateWords = ["Off", "Armed", "Not armed", "Cannot fire", "Failed", "Held", "Offline",
                                        "Unknown", "Turning on…", "Charging", "Paused", "Setup needed", "Unavailable",
-                                       "Waiting for approval", "Not found"]
+                                       "Waiting for approval", "Not found", "Local only", "Not listening"]
 
     static func everyRowCaption() -> [PanelLine] {
         var lines: [PanelLine] = []
@@ -727,19 +728,23 @@ struct MenuPanelPresentationTests {
         for status: SMAppService.Status in [.notRegistered, .enabled, .requiresApproval, .notFound] {
             if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
         }
+        // F4 slice S2: the Remote approvals row, every phase.
+        for phase: RemoteApprovalsPhase in [.off, .listening, .unavailable] {
+            lines.append(MenuStateModel.remoteApprovalsStatus(phase: phase))
+        }
         return lines
     }
 
     @Test func rowCaptionsAreStateFirstFragments() {
         let lines = Self.everyRowCaption()
         // Charge Limit contributes 4 (#84: `.controlUnavailable` has no caption — its row is hidden).
-        #expect(lines.count == 4 + 4 + 40 + 72 + 2, "vacuity guard — update when the input set changes")
+        #expect(lines.count == 4 + 4 + 40 + 72 + 2 + 3, "vacuity guard — update when the input set changes")
         for line in lines {
             #expect(Self.rowCaptionStateWords.contains { line.text == $0 || line.text.hasPrefix($0 + " ") },
                     "'\(line.text)' does not open with a state word")
             #expect(!line.text.hasSuffix("."), "'\(line.text)' is a sentence, not a fragment")
             for title in ["Stay Awake", "Charge Limit", "Charge limit", "Lid alert", "Session alerts", "Launch at Login",
-                          "Login item"] {
+                          "Login item", "Remote approvals"] {
                 #expect(!line.text.hasPrefix(title), "'\(line.text)' repeats its row title")
             }
         }
@@ -853,6 +858,11 @@ struct MenuPanelPresentationTests {
                 }
             }
         }
+        // F4 slice S2: the channel-policy line, every reading (no reading
+        // is no line).
+        for finding: ChannelPolicyFinding? in [nil] + ChannelPolicyFinding.allCases {
+            if let line = MenuStateModel.remoteApprovalsPolicyLine(finding: finding) { lines.append(line) }
+        }
         // The Claude status is NOT a Settings-home line: it is the footer's
         // own caption, always visible (`claudeFooterLabelTable`).
         return lines
@@ -864,8 +874,9 @@ struct MenuPanelPresentationTests {
         // + 6 server + 10 last-send + 30 last-session-alert + 2 login captions
         // + 1 holding-awake + 2 lock-screen + 9 hook-version (S7: 10 rows, one
         // of which — no stamp, no dir — is no line) + 20 phone transport (F3:
-        // 2 entitlement states × 5 outcomes × 2 timestamps).
-        #expect(lines.count == 117, "vacuity guard — update when the input set changes")
+        // 2 entitlement states × 5 outcomes × 2 timestamps) + 6 channel-policy
+        // readings (F4 slice S2).
+        #expect(lines.count == 123, "vacuity guard — update when the input set changes")
         var surfaced = 0
         var quietHook = 0
         for line in lines {
@@ -948,7 +959,8 @@ struct MenuPanelPresentationTests {
     @Test func leadingSymbolsFitTheSymbolColumn() throws {
         let config = NSImage.SymbolConfiguration(pointSize: PanelMetrics.symbolSize, weight: .regular)
         let leading = [PanelSymbol.stayAwake, PanelSymbol.chargeLimit, PanelSymbol.lidAlert,
-                       PanelSymbol.sessionAlerts, PanelSymbol.info, PanelSymbol.warning, PanelSymbol.error]
+                       PanelSymbol.sessionAlerts, PanelSymbol.remoteApprovals, PanelSymbol.info, PanelSymbol.warning,
+                       PanelSymbol.error]
         #expect(PanelSymbol.all.contains(PanelSymbol.lockScreen), "the header's lock glyph must still resolve")
         for name in leading {
             let image = try #require(NSImage(systemSymbolName: name, accessibilityDescription: nil)?

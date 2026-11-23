@@ -213,6 +213,22 @@ struct SettingsRowView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        case let .remoteApprovals(isOn, caption, hint):
+            // F4 slice S2: the panel row's twin — the same model action.
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                Toggle(MenuStateModel.remoteApprovalsSettingsToggleTitle, isOn: Binding(
+                    get: { isOn },
+                    set: { model.setRemoteApprovalsEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                if let caption {
+                    PanelCaptionLine(line: caption)
+                }
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case let .hookInstall(intro, command, note):
             VStack(alignment: .leading, spacing: PanelMetrics.tight) {
                 Text(intro)

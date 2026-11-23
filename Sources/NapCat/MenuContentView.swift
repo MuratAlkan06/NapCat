@@ -53,6 +53,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// Issue #111 update check; nil in debugBattery mode. Checks only from a
     /// user action — see `menuWillOpen` / `settingsWindowBecameKey`.
     private let updateCheck: UpdateCheckController?
+    /// F4 slice S2 remote approvals; nil in debugBattery mode. Refreshed on
+    /// menu open and when Settings becomes key — never polled.
+    private let remoteApprovals: RemoteApprovalsController?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// The Settings window (slice W, issue #78) — built on first use, opened
     /// by ⌘, (`showSettings(_:)`), refreshed every time it becomes key.
@@ -77,6 +80,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         finishAlert: FinishAlertController? = nil,
         phoneTransport: CompositeMessageSender? = nil,
         updateCheck: UpdateCheckController? = nil,
+        remoteApprovals: RemoteApprovalsController? = nil,
         defaults: UserDefaults = .standard,
         settingsHooks: SettingsWindowHooks = .live
     ) {
@@ -92,6 +96,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.finishAlert = finishAlert
         self.phoneTransport = phoneTransport
         self.updateCheck = updateCheck
+        self.remoteApprovals = remoteApprovals
         self.model = MenuStateModel(
             power: power,
             sleep: sleep,
@@ -103,7 +108,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             lidGuard: lidGuard,
             finishAlert: finishAlert,
             phoneTransport: phoneTransport,
-            updateCheck: updateCheck
+            updateCheck: updateCheck,
+            remoteApprovals: remoteApprovals
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -177,6 +183,11 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         updateCheck?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
         }
+        // F4 slice S2: a toggle transition (listening, the kill switch, a
+        // new policy reading) republishes the same way.
+        remoteApprovals?.setChangeHandler { [weak self] in
+            Task { @MainActor in self?.model.refresh() }
+        }
         // A pause toggle (the DISABLED flag) re-gates the finish alert at
         // once: pausing disarms it, resuming re-arms it with a fresh baseline.
         model.onDetectionPausedChange = { [weak self] in self?.finishAlert?.reconcile() }
@@ -208,6 +219,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // the pause flag and the dir (a re-arm takes a fresh baseline — never
         // a send).
         finishAlert?.reconcile()
+        // F4: the stored toggle again, and while on a fresh policy reading
+        // (and a retry of a socket that could not be opened).
+        remoteApprovals?.refresh()
         // Alert healing: the menu-open reconcile is a flush trigger — an
         // OFFLINE session lane attempts its held alerts once (coalesced).
         finishAlert?.menuOpened()
@@ -635,6 +649,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         detection?.sample()
         lidGuard?.refreshArming()
         finishAlert?.reconcile()
+        remoteApprovals?.refresh()
         updateCheck?.checkIfDue()
         model.refresh()
     }

@@ -56,6 +56,11 @@ final class LidGuardController: @unchecked Sendable {
     /// Whether the last `setTopic` could not save to the store (it then kept
     /// the previous topic). In-memory; the editor reads it right after Save.
     private var lastTopicSaveFailed = false
+    /// A topic exists in the store but the startup read could not get it (a
+    /// keychain error, a refused access, bytes that are not text) — so this
+    /// session's in-memory topic is not the real one. Cleared once a new
+    /// topic is saved. Remote approvals then keep every prompt on the Mac.
+    private var topicUnreadable = false
     /// In-memory ONLY. Persisting it would cache intent across relaunches.
     private var lastFiredAt: Double?
     private var sendInFlight = false
@@ -86,7 +91,9 @@ final class LidGuardController: @unchecked Sendable {
         self.stayAwakeMirror = stayAwakeMirror
         self.busyProvider = busyProvider
         self.now = now
-        topic = Self.startupTopic(defaults: defaults, store: topicStore)
+        let startup = Self.startupTopic(defaults: defaults, store: topicStore)
+        topic = startup.topic
+        topicUnreadable = startup.unreadable
     }
 
     /// The ONE startup read of the topic (issue #103). First the one-time
@@ -94,16 +101,17 @@ final class LidGuardController: @unchecked Sendable {
     /// verify, then delete the old key); its verified read-back doubles as
     /// this read. Otherwise one keychain read — which, on the first launch
     /// of an ad-hoc rebuild, waits for the user's answer to the keychain's
-    /// Allow dialog. An unreadable item starts the session with no topic;
+    /// Allow dialog. An unreadable item starts the session with no topic —
+    /// and says so (`unreadable`), so remote approvals can fail closed;
     /// nothing is deleted or rewritten because of it.
-    private static func startupTopic(defaults: UserDefaults, store: TopicStore) -> String {
+    private static func startupTopic(defaults: UserDefaults, store: TopicStore) -> (topic: String, unreadable: Bool) {
         switch TopicKeychainMigration.run(defaults: defaults, store: store) {
         case .moved(let value):
             Self.logger.notice("startup: moved the ntfy setting into the keychain and deleted the plaintext copy")
-            return value
+            return (value, false)
         case .kept(let value):
             Self.logger.error("startup: could not move the ntfy setting into the keychain — kept in place, retrying next launch")
-            return value
+            return (value, false)
         case .discardedJunk:
             Self.logger.notice("startup: deleted an unusable legacy ntfy value (not a string)")
         case .nothingToMove:
@@ -111,12 +119,12 @@ final class LidGuardController: @unchecked Sendable {
         }
         switch store.read() {
         case .found(let value):
-            return value
+            return (value, false)
         case .notFound:
-            return ""
+            return ("", false)
         case .failed(let status):
             Self.logger.error("startup: the keychain did not return the ntfy setting (OSStatus \(status, privacy: .public)) — starting without it")
-            return ""
+            return ("", true)
         }
     }
 
@@ -212,6 +220,18 @@ final class LidGuardController: @unchecked Sendable {
         return topic
     }
 
+    /// F4: the strings the remote-approvals category gate must keep on the
+    /// Mac — the topic, from memory (never the store) — or nil while a topic
+    /// exists that this session could not read: the gate cannot look for a
+    /// secret it does not know, so every prompt then stays local (fail
+    /// closed). No topic configured is an empty list, not nil.
+    var approvalSecrets: [String]? {
+        lock.lock()
+        defer { lock.unlock() }
+        if topicUnreadable { return nil }
+        return topic.isEmpty ? [] : [topic]
+    }
+
     /// True when the last `setTopic` could not save the topic to the keychain
     /// and kept the previous one — the editor reports it instead of closing.
     var topicSaveFailed: Bool {
@@ -273,7 +293,10 @@ final class LidGuardController: @unchecked Sendable {
     private func commitTopic(_ newTopic: String) {
         let saved = newTopic.isEmpty ? topicStore.delete() : topicStore.write(newTopic)
         lock.lock()
-        if saved { topic = newTopic }
+        if saved {
+            topic = newTopic
+            topicUnreadable = false
+        }
         lastTopicSaveFailed = !saved
         lock.unlock()
         guard saved else {

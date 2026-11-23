@@ -69,9 +69,14 @@ public enum SeamPeerPolicy {
 
 /// The seam's socket calls.
 public enum SeamSocket {
-    /// How long a write may wait for the peer to read before the connection
-    /// is given up (a stuck peer can never hold NapCat's queue).
+    /// How long writing one frame may take, all of it, before the connection
+    /// is given up (a stuck or slow-reading peer can never hold NapCat's
+    /// queue): a deadline per frame, not per write call.
     public static let sendTimeoutSeconds = 2
+    /// How long part of a frame may sit unfinished before the connection is
+    /// given up: a peer writes a frame at once, so a stalled one holds a
+    /// buffer and a slot for nothing.
+    public static let stallTimeoutSeconds: Double = 5
     static let listenBacklog: Int32 = 8
 
     /// The credentials of the peer of a connected socket, or nil.
@@ -112,16 +117,18 @@ public enum SeamSocket {
         return descriptor
     }
 
-    /// A connected socket's options: close-on-exec, blocking, no SIGPIPE on
-    /// a closed peer, and the send timeout.
+    /// A connected socket's options: close-on-exec, NON-blocking, and no
+    /// SIGPIPE on a closed peer. Non-blocking because a blocking write is not
+    /// bounded by a send timeout while the peer keeps reading a little (the
+    /// kernel restarts that wait on every bit of progress, and ignores
+    /// MSG_DONTWAIT on these sockets): every wait is a bounded poll instead
+    /// (`SeamConnection.send`), and a read only ever follows readiness.
     static func configureConnected(_ descriptor: Int32) -> Bool {
         var on: Int32 = 1
-        var timeout = timeval(tv_sec: sendTimeoutSeconds, tv_usec: 0)
         let flags = fcntl(descriptor, F_GETFL)
         return fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0
-            && flags >= 0 && fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK) == 0
+            && flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0
             && setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0
-            && setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0
     }
 
     static func directory(of path: String) -> String {
@@ -146,12 +153,27 @@ public enum SeamSocket {
         return true
     }
 
-    /// Creates the socket's directory (0700) when missing; refuses one that
-    /// is not a real directory of this user's, and tightens its mode to 0700.
+    /// Creates the socket's directory (0700) when missing, and any missing
+    /// folder above it first; refuses one that is not a real directory of
+    /// this user's, and tightens its mode to 0700.
     static func prepareDirectory(_ directory: String, ownUID: uid_t) -> Bool {
+        guard makeMissingAncestors(of: directory) else { return false }
         if mkdir(directory, 0o700) != 0 && errno != EEXIST { return false }
         guard let info = lstatInfo(directory), isDirectory(info), info.st_uid == ownUID else { return false }
         return info.st_mode & 0o077 == 0 || chmod(directory, 0o700) == 0
+    }
+
+    /// Creates every missing folder above `path`, outermost first, like
+    /// `mkdir -p`: with the default mode (0777 less the umask), since they
+    /// are shared app-support folders, not the seam's. An existing one is
+    /// followed like any path component; a non-directory there is a failure.
+    static func makeMissingAncestors(of path: String) -> Bool {
+        let parent = directory(of: path)
+        guard !parent.isEmpty, parent != "." else { return true }
+        var info = stat()
+        if stat(parent, &info) == 0 { return isDirectory(info) }
+        guard errno == ENOENT, makeMissingAncestors(of: parent) else { return false }
+        return mkdir(parent, 0o777) == 0 || errno == EEXIST
     }
 
     static func connect(_ descriptor: Int32, to address: sockaddr_un) -> Bool {
@@ -197,17 +219,26 @@ public final class SeamConnection: @unchecked Sendable {
     private var reader = ChannelLineReader(limit: ApprovalChannel.maxFrameBytes)
     private var onLine: (([UInt8]) -> Void)?
     private var onClose: (() -> Void)?
+    /// Runs while part of a frame is buffered (`stallTimeout`).
+    private var stallTimer: DispatchSourceTimer?
+    private let stallTimeout: Double
+    /// The whole-frame write deadline, in seconds.
+    private let sendTimeout: Double
     public private(set) var isOpen = true
     /// Who connected (checked before this object existed).
     public let peer: SeamPeer
 
-    init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue) {
+    init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue, stallTimeout: Double = SeamSocket.stallTimeoutSeconds,
+         sendTimeout: Double = Double(SeamSocket.sendTimeoutSeconds)) {
         self.descriptor = descriptor
         self.peer = peer
         self.queue = queue
+        self.stallTimeout = stallTimeout
+        self.sendTimeout = sendTimeout
     }
 
     deinit {
+        stallTimer?.cancel()
         // An owner that drops an open connection must not leak the descriptor.
         guard isOpen else { return }
         if let source {
@@ -218,8 +249,9 @@ public final class SeamConnection: @unchecked Sendable {
     }
 
     /// Starts reading. Each complete line goes to `onLine`; an over-long
-    /// frame, end of stream or a read error closes the connection, and
-    /// `onClose` runs once, whoever closed it.
+    /// frame, part of a frame left unfinished for `stallTimeout`, end of
+    /// stream or a read error closes the connection, and `onClose` runs once,
+    /// whoever closed it.
     public func start(onLine: @escaping ([UInt8]) -> Void, onClose: @escaping () -> Void) {
         guard isOpen, source == nil else { return }
         self.onLine = onLine
@@ -247,23 +279,61 @@ public final class SeamConnection: @unchecked Sendable {
             case .overlong: close()
             }
         }
+        guard isOpen else { return }
+        if reader.hasPartialLine {
+            armStallTimer()
+        } else {
+            stallTimer?.cancel()
+            stallTimer = nil
+        }
     }
 
-    /// Writes one line and its newline. A failed or timed-out write closes
-    /// the connection and returns false.
+    /// Armed once per unfinished frame: the clock starts when the frame
+    /// does, and only finishing it stops it.
+    private func armStallTimer() {
+        guard stallTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.setEventHandler { [weak self] in self?.close() }
+        timer.schedule(deadline: .now() + stallTimeout)
+        stallTimer = timer
+        timer.resume()
+    }
+
+    /// Writes one line and its newline, all of it inside the frame's
+    /// deadline. The socket is non-blocking (`configureConnected`): each
+    /// piece goes out at once, and the wait for room is a poll bounded by
+    /// what is left of the deadline — so a peer that reads a little at a time
+    /// cannot stretch one frame out. A failed write, or a frame not written
+    /// in time, closes the connection and returns false.
     @discardableResult
     public func send(_ line: String) -> Bool {
         guard isOpen else { return false }
         let bytes = Array(line.utf8) + [0x0A]
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(sendTimeout * 1_000_000_000)
         var offset = 0
         while offset < bytes.count {
-            let written = bytes[offset...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
-            if written < 0 && errno == EINTR { continue }
-            guard written > 0 else {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else {
                 close()
                 return false
             }
-            offset += written
+            let written = bytes[offset...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+            if written > 0 {
+                offset += written
+                continue
+            }
+            if written < 0 && errno == EINTR { continue }
+            guard written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else {
+                close()
+                return false
+            }
+            // No room right now: wait for some, at most until the deadline.
+            var room = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+            let milliseconds = Int32(clamping: max(1, (deadline - now) / 1_000_000))
+            if poll(&room, 1, milliseconds) < 0 && errno != EINTR {
+                close()
+                return false
+            }
         }
         return true
     }
@@ -272,6 +342,8 @@ public final class SeamConnection: @unchecked Sendable {
     public func close() {
         guard isOpen else { return }
         isOpen = false
+        stallTimer?.cancel()
+        stallTimer = nil
         if let source {
             source.cancel()
         } else {
@@ -291,19 +363,29 @@ public final class SeamListener: @unchecked Sendable {
     private let queue: DispatchQueue
     private let peerReader: (Int32) -> SeamPeer?
     private let ownUID: uid_t
+    private let stallTimeout: Double
     private var source: DispatchSourceRead?
 
     /// `peerReader` and `ownUID` are injectable so tests can present a
-    /// foreign peer; production uses the real credentials.
+    /// foreign peer; production uses the real credentials. `stallTimeout`
+    /// applies to every accepted connection.
     public init(socketPath: String, queue: DispatchQueue, peerReader: @escaping (Int32) -> SeamPeer? = SeamSocket.peer(of:),
-                ownUID: uid_t = geteuid()) {
+                ownUID: uid_t = geteuid(), stallTimeout: Double = SeamSocket.stallTimeoutSeconds) {
         self.path = socketPath
         self.queue = queue
         self.peerReader = peerReader
         self.ownUID = ownUID
+        self.stallTimeout = stallTimeout
     }
 
     public var isListening: Bool { source != nil }
+
+    /// A listener released while listening stops: its source is cancelled
+    /// (closing the socket) and its socket file removed — never left for a
+    /// server to find with nobody behind it.
+    deinit {
+        stop()
+    }
 
     /// Starts listening. False (and nothing listening) when the directory is
     /// not this user's own, something other than a stale socket of this
@@ -327,6 +409,7 @@ public final class SeamListener: @unchecked Sendable {
         let peerReader = self.peerReader
         let ownUID = self.ownUID
         let queue = self.queue
+        let stallTimeout = self.stallTimeout
         source.setEventHandler {
             let client = Darwin.accept(descriptor, nil, nil)
             guard client >= 0 else { return }
@@ -336,7 +419,7 @@ public final class SeamListener: @unchecked Sendable {
                 onRefused()
                 return
             }
-            onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue))
+            onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue, stallTimeout: stallTimeout))
         }
         source.setCancelHandler { Darwin.close(descriptor) }
         self.source = source

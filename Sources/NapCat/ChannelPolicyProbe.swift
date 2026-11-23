@@ -13,8 +13,9 @@ import NapCatWire
 /// claude.ai or server-managed (remote) settings) and an MDM profile rank above the file
 /// tier, and on a Pro, Max or Ultra plan without an organization Claude Code
 /// skips these checks entirely, so there the development flag stays needed
-/// whatever the files say. Nothing calls it yet; surfacing it belongs to the
-/// settings slice.
+/// whatever the files say. It runs only while the Mac toggle is on (slice
+/// S2: the toggle's `.probe` effect, lint-locked), and Settings › Claude
+/// shows the finding.
 enum ChannelPolicyProbe {
     /// Claude Code's system directory for managed settings on macOS.
     static let systemDirectory = "/Library/Application Support/ClaudeCode"
@@ -51,10 +52,28 @@ enum ChannelPolicyProbe {
         return documents
     }
 
-    /// One document as text: at most `maxDocumentBytes`, valid UTF-8.
+    /// One document as text: a regular file of at most `maxDocumentBytes`,
+    /// valid UTF-8. The size is checked on the open file BEFORE anything is
+    /// read, and the read itself is bounded too (a file that grew since
+    /// counts as too large). Opened non-blocking, so a FIFO or a device at
+    /// the path is refused at once instead of waiting on it.
     static func read(_ path: String) -> String? {
-        guard let data = FileManager.default.contents(atPath: path), data.count <= maxDocumentBytes else { return nil }
-        let bytes = [UInt8](data)
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size >= 0, info.st_size <= maxDocumentBytes else { return nil }
+        var bytes: [UInt8] = []
+        var chunk = [UInt8](repeating: 0, count: 65_536)
+        while bytes.count <= maxDocumentBytes {
+            let count = Darwin.read(descriptor, &chunk, min(chunk.count, maxDocumentBytes + 1 - bytes.count))
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0 else { return nil }
+            if count == 0 { break }
+            bytes += chunk[0..<count]
+        }
+        guard bytes.count <= maxDocumentBytes else { return nil }
         let text = String(decoding: bytes, as: UTF8.self)
         return text.utf8.elementsEqual(bytes) ? text : nil
     }

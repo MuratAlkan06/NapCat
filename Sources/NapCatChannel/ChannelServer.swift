@@ -7,8 +7,10 @@ import os
 /// F4 slice S1: `napcat-channel`, the channel server Claude Code spawns for a
 /// session wired for remote approvals. It speaks MCP over its stdin and
 /// stdout (one message per line), reaches NapCat over the authenticated seam
-/// (only when a prompt opens; nothing is held while idle), and exits when
-/// Claude Code closes its stdin. Everything it decides is in `ChannelRelay`;
+/// (it connects when its first prompt opens and keeps the link until either
+/// end closes it — NapCat lets go of one quiet for a minute with nothing
+/// waiting on the phone — then connects again with its next prompt), and
+/// exits when Claude Code closes its stdin. Everything it decides is in `ChannelRelay`;
 /// this file only moves bytes. Registration is the owner's own, by user-run
 /// rails (a later slice); nothing here reads or writes any Claude Code
 /// configuration.

@@ -133,6 +133,9 @@ struct FinishAlertDigest: Equatable, Sendable {
     var firstWaitingMinutes: Int? = nil
     /// The LATEST observation's `stillWorking` (fresh tracked count).
     var stillWorking = 0
+    /// F4 slice S2: the prompt counts of the LATEST folded waiting event (the
+    /// seam's recent prompts, read once per diff) — `.none` without one.
+    var prompts = WaitingPromptCounts.none
     /// Epoch of the FIRST folded event — the retry age anchor. Meaningful
     /// only when `!isEmpty`.
     var originatedAt: Double = 0
@@ -144,8 +147,10 @@ struct FinishAlertDigest: Equatable, Sendable {
     var eventCount: Int { finishedCount + waitingCount }
 
     /// Fold one event observed at `now`. Keeps the FIRST minutes per kind and
-    /// the first event's time; `stillWorking` is always the latest.
-    mutating func fold(_ event: FinishAlertEvent, stillWorking: Int, at now: Double) {
+    /// the first event's time; `stillWorking` is always the latest, and so
+    /// are a waiting event's `prompts` (F4 slice S2).
+    mutating func fold(_ event: FinishAlertEvent, stillWorking: Int, prompts: WaitingPromptCounts = .none,
+                       at now: Double) {
         if isEmpty { originatedAt = now }
         switch event {
         case .finished(let minutes):
@@ -154,6 +159,7 @@ struct FinishAlertDigest: Equatable, Sendable {
         case .waiting(let minutes):
             if waitingCount == 0 { firstWaitingMinutes = minutes }
             waitingCount += 1
+            self.prompts = prompts
         }
         self.stillWorking = stillWorking
     }
@@ -179,8 +185,12 @@ struct FinishAlertDigest: Equatable, Sendable {
             let count = max(1, folded)
             if finishedCount == 0 { firstFinishMinutes = count == 1 ? minutes : nil }
             finishedCount += count
-        case .needsAttention(let minutes, _):
-            if waitingCount == 0 { firstWaitingMinutes = minutes }
+        case .needsAttention(let minutes, _, let prompts):
+            // A newer fold's prompt counts win over the absorbed message's.
+            if waitingCount == 0 {
+                firstWaitingMinutes = minutes
+                self.prompts = prompts
+            }
             waitingCount += 1
         case .lidAlert, .test, .connectionRestored:
             return
@@ -209,7 +219,7 @@ struct FinishAlertDigest: Equatable, Sendable {
         var out: [LidGuardMessageKind] = []
         if waitingCount > 0 {
             out.append(.needsAttention(minutes: waitingCount == 1 ? firstWaitingMinutes : nil,
-                                       stillWorking: max(0, stillWorking - 1)))
+                                       stillWorking: max(0, stillWorking - 1), prompts: prompts))
         }
         if finishedCount > 0 {
             out.append(.sessionFinished(minutes: finishedCount == 1 ? firstFinishMinutes : nil,

@@ -1,0 +1,169 @@
+// AppKit, not Foundation: an explicit `import Foundation` next to `import
+// Testing` triggers the _Testing_Foundation cross-import overlay, which the
+// CLT frameworks dir does not ship (see PLAN.md decision log 2026-07-09).
+import AppKit
+import Testing
+@testable import NapCat
+@testable import NapCatWire
+
+/// F4 slice S2: what the panel row and Settings › Claude say about remote
+/// approvals — the pure mappings, table-tested. (Their USE in the views is
+/// locked in RemoteApprovalsStructureTests; the iron rule and C2 checks in
+/// MenuPanelPresentationTests and SettingsWindowTests include these lines.)
+struct RemoteApprovalsPresentationTests {
+    static let localOnly = PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
+    static let notListening = PanelLine(text: "Not listening — could not start; reopen the menu to retry", severity: .warning)
+
+    // MARK: - The row's caption
+
+    @Test func theRowCaptionPerPhase() {
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .off) == PanelLine(text: "Off", severity: .nominal))
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .listening) == Self.localOnly)
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .unavailable) == Self.notListening)
+        // The warning in user words with its next step (a menu or Settings
+        // open retries: anUnusableSocketIsUnavailableAndRetriedOnRefresh), as
+        // short as the panel's other warnings.
+        let warning = Self.notListening.text
+        #expect(!warning.contains("socket") && warning.hasSuffix("reopen the menu to retry"))
+        #expect(warning.split(separator: " ").filter { $0 != "—" }.count <= 10, "'\(warning)' is longer than the others")
+    }
+
+    /// Off is a choice, so it stays out of the card; on — in this build
+    /// always local only, or not even listening — shows under the row: the
+    /// switch never sits ON in the panel without saying what it does.
+    @Test(arguments: [RemoteApprovalsPhase.off, .listening, .unavailable])
+    func onIsNeverSilentInThePanel(_ phase: RemoteApprovalsPhase) {
+        let line = MenuStateModel.remoteApprovalsStatus(phase: phase)
+        #expect((line.severity == .nominal) == (phase == .off), "\(phase): \(line)")
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == (phase == .off ? .settings : .topLevel))
+    }
+
+    // MARK: - The channel-policy line
+
+    struct PolicyRow: Sendable, CustomTestStringConvertible {
+        let finding: ChannelPolicyFinding
+        let text: String
+        let severity: PanelSeverity
+        var testDescription: String { finding.rawValue }
+    }
+
+    /// Every reading is a Settings fact in this slice (nominal: nothing in
+    /// the panel), in plain words — the development flag is "the preview
+    /// option" (`remoteApprovalsPolicyLine` says why none is a problem yet).
+    static let policyRows: [PolicyRow] = [
+        PolicyRow(finding: .noFilePolicy,
+                  text: "Claude Code policy: no file on this Mac — each session must start with the preview option",
+                  severity: .nominal),
+        PolicyRow(finding: .defaultAllowlist,
+                  text: "Claude Code policy: Anthropic's channel list applies — each session must start with the "
+                      + "preview option", severity: .nominal),
+        PolicyRow(finding: .allowlistOmitsNapCat,
+                  text: "Claude Code policy: the organization's channel list leaves out NapCat — each session must "
+                      + "start with the preview option", severity: .nominal),
+        PolicyRow(finding: .allowlistNamesNapCat,
+                  text: "Claude Code policy: the organization's channel list includes NapCat — on that plan, sessions "
+                      + "need no preview option", severity: .nominal),
+        PolicyRow(finding: .channelsNotEnabled,
+                  text: "Claude Code policy: channels turned off — on an organization plan, no session can reach NapCat",
+                  severity: .nominal),
+        PolicyRow(finding: .unreadable,
+                  text: "Claude Code policy: unclear to NapCat — each session must start with the preview option",
+                  severity: .nominal),
+    ]
+
+    @Test(arguments: policyRows)
+    func thePolicyLinePerReading(_ row: PolicyRow) throws {
+        let line = try #require(MenuStateModel.remoteApprovalsPolicyLine(finding: row.finding))
+        #expect(line == PanelLine(text: row.text, severity: row.severity))
+        // Honest about the option: only the allowlist that names NapCat says
+        // it is not needed — and then only on that organization's plan.
+        #expect(line.text.contains("each session must start with the preview option")
+                == (row.finding.developmentFlagNeeded && row.finding != .channelsNotEnabled))
+        // Settings only: the panel's twin never renders a reading in this
+        // slice, and the gear badge does not count one.
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .settings)
+        // Plain words: none of the admin and command-line jargon.
+        for jargon in ["flag", "allowlist", "managed settings", "Channel policy", "relay"] {
+            #expect(!line.text.contains(jargon), "'\(line.text)' says '\(jargon)'")
+        }
+    }
+
+    @Test func noReadingIsNoLine() {
+        #expect(MenuStateModel.remoteApprovalsPolicyLine(finding: nil) == nil)
+        #expect(Set(Self.policyRows.map(\.finding)) == Set(ChannelPolicyFinding.allCases)
+                && Self.policyRows.count == ChannelPolicyFinding.allCases.count, "vacuity: every reading has one row")
+    }
+
+    // MARK: - Settings › Claude
+
+    static let status = PanelLine(text: "Claude: idle", severity: .nominal)
+    static let hook = PanelLine(text: "Busy hook: last seen 1m ago", severity: .nominal)
+
+    static func pane(_ approvals: (isOn: Bool, status: PanelLine, policy: PanelLine?)?) -> SettingsPaneContent {
+        MenuStateModel.claudePane(status: Self.status, hook: Self.hook, hookVersion: nil, awake: nil, paused: false,
+                                  approvals: approvals)
+    }
+
+    /// The group comes last, titled like the row; off shows the switch and
+    /// what it does, on adds its status, and a reading adds its line.
+    @Test func theRemoteApprovalsGroup() throws {
+        let hint = MenuStateModel.remoteApprovalsHint
+        let without = Self.pane(nil)
+        #expect(without.sections.map(\.title) == ["Detection", "Busy hook"], "no toggle (debugBattery): no group")
+
+        let off = Self.pane((isOn: false, status: PanelLine(text: "Off", severity: .nominal), policy: nil))
+        #expect(off.sections.map(\.title) == ["Detection", "Busy hook", "Remote approvals"])
+        #expect(off.sections.last?.rows == [.remoteApprovals(isOn: false, caption: nil, hint: hint)])
+
+        let policy = try #require(MenuStateModel.remoteApprovalsPolicyLine(finding: .noFilePolicy))
+        let on = Self.pane((isOn: true, status: Self.localOnly, policy: policy))
+        #expect(on.sections.last?.rows == [.remoteApprovals(isOn: true, caption: Self.localOnly, hint: hint), .line(policy)])
+        #expect(Array(on.sections.prefix(2)) == Array(without.sections), "the rest of the pane is unchanged")
+        #expect(on.footnote == nil)
+    }
+
+    /// The words: what it does today, the one change it makes you can see,
+    /// what never leaves the Mac, that the terminal keeps working, and that
+    /// off is the kill switch. Never the alert topic's lane (ntfy carries no
+    /// approval semantics). Honest while OFF: no switch name and no hint
+    /// sentence promises the iPhone half this build does not have.
+    @Test func theCopy() {
+        #expect(MenuStateModel.remoteApprovalsToggleTitle == "Remote approvals")
+        #expect(MenuStateModel.remoteApprovalsSettingsToggleTitle == "Mac-only preview",
+                "the Settings switch says what it turns on today, not the group title again")
+        #expect(MenuStateModel.remoteApprovalsAccessibilityLabel == "Remote approvals, Mac-only preview")
+        let hint = MenuStateModel.remoteApprovalsHint
+        #expect(hint == "NapCat listens for permission prompts from Claude Code sessions set up for it, and keeps "
+                + "every one on this Mac. A waiting push can count some of them by kind (“— 1 Bash permission "
+                + "prompt”); privileged, settings, and secret prompts are never counted, and would never leave this "
+                + "Mac even if a later version let the iPhone app answer. The terminal dialog always stays "
+                + "answerable. Off withdraws every prompt at once.")
+        for phrase in ["keeps every one on this Mac", "A waiting push can count some of them", "1 Bash permission prompt",
+                       "privileged, settings, and secret prompts are never counted", "never leave this Mac",
+                       "even if a later version", "terminal dialog always stays answerable", "Off withdraws every prompt"] {
+            #expect(hint.contains(phrase), "the hint must say '\(phrase)'")
+        }
+        // The promise must not come back: no present-tense iPhone answering
+        // in the names or the hint.
+        for text in [hint, MenuStateModel.remoteApprovalsAccessibilityLabel, MenuStateModel.remoteApprovalsSettingsToggleTitle] {
+            for promise in ["from iPhone", "from your iPhone", "Lets the NapCat iPhone app answer", "Answer permission"] {
+                #expect(!text.contains(promise), "'\(text)' promises '\(promise)'")
+            }
+        }
+        let texts = [hint, MenuStateModel.remoteApprovalsAccessibilityLabel, MenuStateModel.remoteApprovalsSettingsToggleTitle,
+                     Self.localOnly.text, Self.notListening.text]
+            + Self.policyRows.map(\.text)
+        for text in texts {
+            #expect(!text.lowercased().contains("ntfy"), "'\(text)' — approvals never ride the ntfy lane")
+            #expect(!text.contains("CloudKit"), "'\(text)' — user words, not the transport")
+        }
+        #expect(MenuStateModel.remoteApprovalsToggleTitle.split(separator: " ").count == 2,
+                "C1: the panel row adds two words")
+    }
+
+    @Test func theRowSymbolResolvesAndIsItsOwn() {
+        #expect(PanelSymbol.all.contains(PanelSymbol.remoteApprovals))
+        #expect(NSImage(systemSymbolName: PanelSymbol.remoteApprovals, accessibilityDescription: nil) != nil)
+        #expect(![PanelSymbol.lidAlert, PanelSymbol.sessionAlerts].contains(PanelSymbol.remoteApprovals))
+    }
+}

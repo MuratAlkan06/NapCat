@@ -14,7 +14,8 @@ import NapCatWire
 
 /// Where NapCat writes a forwarded prompt's record: CloudKit, a later slice.
 /// Nothing reaches it while the feature is unarmed, which it always is until
-/// the toggles land.
+/// the iPhone half lands (the S2 host is built never armed, with a sink that
+/// writes nothing).
 protocol ApprovalRecordSink: AnyObject {
     /// Write the prompt record: the tool and the preview exactly as the gate
     /// classified them, nothing else from the session.
@@ -37,12 +38,25 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     case duplicateRequest
     /// `ApprovalIntake.maxPrompts` are held already: the prompt stays local.
     case capacityReached
+    /// `ApprovalIntake.maxPromptsPerConnection` are held for this server
+    /// already: the prompt stays local.
+    case connectionPromptLimit
     /// No prompt ID could be drawn: the prompt stays local.
     case promptIDUnavailable
     /// An event for a prompt that is not held (never, or no longer).
     case unknownPrompt
     /// A peer failed the seam's check and was closed unread.
     case peerRefused
+    /// The Mac toggle went on and the seam is listening (slice S2).
+    case listening
+    /// The Mac toggle is on but the seam's socket could not be opened:
+    /// nothing listens and every prompt stays local.
+    case listenFailed
+    /// The kill switch: the Mac toggle went off (or NapCat quit).
+    case stopped
+    /// `ApprovalSeamHost.Limits.maxConnections` servers are connected
+    /// already: the new one is closed unread, and its prompts stay local.
+    case connectionLimit
 
     /// The log line's text.
     var code: String {
@@ -51,9 +65,14 @@ enum ApprovalAuditEvent: Equatable, Sendable {
         case .frameRefused: return "seam.frameRefused"
         case .duplicateRequest: return "seam.duplicateRequest"
         case .capacityReached: return "seam.capacityReached"
+        case .connectionPromptLimit: return "seam.connectionPromptLimit"
         case .promptIDUnavailable: return "seam.promptIDUnavailable"
         case .unknownPrompt: return "seam.unknownPrompt"
         case .peerRefused: return "seam.peerRefused"
+        case .listening: return "seam.listening"
+        case .listenFailed: return "seam.listenFailed"
+        case .stopped: return "seam.stopped"
+        case .connectionLimit: return "seam.connectionLimit"
         }
     }
 
@@ -72,6 +91,20 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     }
 }
 
+extension ApprovalClassification {
+    /// Fail closed: without the secrets the gate must look for, every prompt
+    /// is kept on the Mac as secret access.
+    func failingClosed(secretsKnown: Bool) -> ApprovalClassification {
+        secretsKnown ? self : .suppress(.forbidden(.secretAccess))
+    }
+
+    /// The tool the gate forwards this prompt as, or nil when it keeps it.
+    var forwardedTool: ApprovalTool? {
+        if case .forward(let tool) = self { return tool }
+        return nil
+    }
+}
+
 /// The prompts relayed over the seam, one lifecycle each. Confined to the
 /// seam's queue (the host's).
 final class ApprovalIntake {
@@ -82,14 +115,29 @@ final class ApprovalIntake {
         let connection: ConnectionKey
         let request: ChannelRequestID
         var lifecycle: ApprovalLifecycle
+        /// The tool the gate would forward this prompt as, or nil (kept on
+        /// the Mac, or its session has ended). Slice S2: what a waiting buzz
+        /// may count — never its preview.
+        var forwardable: ApprovalTool? = nil
     }
+
+    /// Slice S2: how far back a waiting buzz looks for the prompts that
+    /// caused it. The hook's waiting marker and the relayed prompt come from
+    /// the same dialog within a second; the buzz is folded after the finish
+    /// alert's 2 s debounce.
+    static let waitingContextSeconds = 30
 
     /// Prompts held at once, finished ones included until their TTL ends;
     /// a prompt beyond them stays local.
     static let maxPrompts = 256
+    /// Of those, the most one server may hold, so one session cannot take
+    /// every slot: twice the requests a server keeps open at once, leaving
+    /// room for prompts answered at the terminal inside one TTL (NapCat does
+    /// not see those answers).
+    static let maxPromptsPerConnection = 2 * ApprovalChannel.maxOpenRequests
 
     private let armed: () -> Bool
-    private let secrets: () -> [String]
+    private let secrets: () -> [String]?
     private let newPromptID: () -> PromptID?
     private let now: () -> Int
     private let records: ApprovalRecordSink
@@ -103,9 +151,11 @@ final class ApprovalIntake {
     private(set) var prompts: [PromptID: Entry] = [:]
 
     /// `armed`: whether the feature is enabled on both devices (always false
-    /// until the toggles land). `secrets`: strings that must never leave the
-    /// Mac (the alert topic). `now`: monotonic seconds.
-    init(armed: @escaping () -> Bool, secrets: @escaping () -> [String], newPromptID: @escaping () -> PromptID?,
+    /// until the iPhone half lands). `secrets`: strings that must never leave the
+    /// Mac (the alert topic) — nil while one exists that could not be read,
+    /// and then every prompt stays local (fail closed). `now`: monotonic
+    /// seconds.
+    init(armed: @escaping () -> Bool, secrets: @escaping () -> [String]?, newPromptID: @escaping () -> PromptID?,
          now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,
          closeConnection: @escaping (ConnectionKey) -> Void, audit: @escaping (ApprovalAuditEvent) -> Void) {
         self.armed = armed
@@ -130,12 +180,19 @@ final class ApprovalIntake {
         guard !prompts.values.contains(where: { $0.connection == connection && $0.request == request.requestID }) else {
             return audit(.duplicateRequest)
         }
+        guard prompts.values.filter({ $0.connection == connection }).count < Self.maxPromptsPerConnection else {
+            return audit(.connectionPromptLimit)
+        }
         guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }
         guard let id = newPromptID(), prompts[id] == nil else { return audit(.promptIDUnavailable) }
+        // A secret that exists but could not be read is one the gate cannot
+        // look for: the prompt is then secret access, whatever it is.
+        let known = secrets()
         let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,
-                                                   secrets: secrets())
+                                                   secrets: known ?? []).failingClosed(secretsKnown: known != nil)
         let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())
-        prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle)
+        prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,
+                            forwardable: classification.forwardedTool)
         perform(opened.transition, for: id, classified: (classification, request.inputPreview))
     }
 
@@ -154,11 +211,21 @@ final class ApprovalIntake {
     }
 
     /// The server went away: its session ended, so its open prompts are
-    /// withdrawn (never answered).
+    /// withdrawn (never answered), and none of its prompts counts for a
+    /// waiting buzz any more.
     func connectionClosed(_ connection: ConnectionKey) {
-        for (id, item) in prompts where item.connection == connection && !item.lifecycle.phase.isTerminal {
-            apply(.sessionEnded, to: id)
+        for (id, item) in prompts where item.connection == connection {
+            prompts[id]?.forwardable = nil
+            if !item.lifecycle.phase.isTerminal { apply(.sessionEnded, to: id) }
         }
+    }
+
+    /// Slice S2: the tools of the prompts the gate would forward that opened
+    /// in the last `seconds`, from sessions still connected — what a waiting
+    /// buzz may count. Kinds only, never a preview.
+    func recentForwardableTools(within seconds: Int) -> [ApprovalTool] {
+        let moment = now()
+        return prompts.values.filter { moment - $0.lifecycle.createdAt <= seconds }.compactMap(\.forwardable)
     }
 
     /// The Mac toggle went off: every open prompt is withdrawn.
@@ -166,6 +233,12 @@ final class ApprovalIntake {
         for (id, item) in prompts where !item.lifecycle.phase.isTerminal {
             apply(.killSwitch, to: id)
         }
+    }
+
+    /// Whether a prompt from this server still waits on the phone: its link
+    /// must stay up (closing it would withdraw the prompt).
+    func holdsOpenPrompt(from connection: ConnectionKey) -> Bool {
+        prompts.values.contains { $0.connection == connection && !$0.lifecycle.phase.isTerminal }
     }
 
     /// Lets the TTL run out, then forgets finished prompts past it.

@@ -24,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Track C finish alert + waiting buzz; nil in debugBattery mode. Watches
     /// the marker dir only while armed.
     private var finishAlert: FinishAlertController?
+    /// F4 slice S2: the remote-approvals toggle and kill switch; nil in
+    /// debugBattery mode. Off (the default), nothing of it runs.
+    private var remoteApprovals: RemoteApprovalsController?
     private var signalSources: [DispatchSourceSignal] = []
     private var didRevertOnShutdown = false
 
@@ -105,6 +108,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.lidGuard = lidGuard
 
+        // F4 slice S2 (remote approvals). Same wiring-predicate gate, and it
+        // needs the lid guard (which holds the alert topic, a secret the
+        // category gate keeps on the Mac). Construction does no I/O: the seam
+        // host is built and the policy probed only once the stored toggle is
+        // on (`reconcile()` below), and nothing is ever forwarded in this
+        // slice.
+        let approvals = RemoteApprovalsController.makeIfEnabled(
+            debugBattery: isDebugBattery,
+            lidGuard: lidGuard,
+            defaults: defaults
+        )
+        remoteApprovals = approvals
+
         // Track C (finish alert + waiting buzz). Same wiring-predicate gate;
         // shares the lid guard's destination/priming and the ONE sender. The
         // kqueue watcher exists only while armed. Every lid-guard arming
@@ -119,7 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lidGuard: lidGuard,
             sender: sender,
             connectivity: ConnectivityWiring.makeInterface(debugBattery: isDebugBattery),
-            stayAwakeMirror: sleepController.observedMirror
+            stayAwakeMirror: sleepController.observedMirror,
+            // F4 slice S2: while remote approvals are on, the waiting buzz
+            // carries the counts of the prompts wired sessions just relayed.
+            waitingPrompts: { approvals?.waitingPrompts() ?? .none }
         )
         self.finishAlert = finishAlert
         lidGuard?.setArmingRefreshHook { [weak finishAlert] in
@@ -149,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             finishAlert: finishAlert,
             phoneTransport: sender,
             updateCheck: updateCheck,
+            remoteApprovals: approvals,
             defaults: defaults
         )
         statusItemController = StatusItemController(menuContent: menuContent)
@@ -161,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // so the mirror the fire gate reads is primed before we may arm.
         lidGuard?.refreshArming()
         finishAlert?.reconcile()
+        // F4: listen only if the stored toggle is on.
+        approvals?.reconcile()
         // After the menu is wired (limiter.onChange set) so the first
         // evaluation is already visible in the UI.
         limiter.start()
@@ -205,6 +227,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Track C: stop watching the marker dir; cancel any pending debounce,
         // flush or retry.
         finishAlert?.disarmForShutdown()
+        // F4: quitting is a hard stop — the kill switch, final: every open
+        // prompt withdrawn, every channel server disconnected, the socket
+        // removed.
+        remoteApprovals?.shutdown()
         watchdogController.stop()
     }
 

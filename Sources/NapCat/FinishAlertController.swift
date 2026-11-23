@@ -128,6 +128,11 @@ final class FinishAlertController {
     /// Read at EVERY marker diff — never cached — so a change in the ntfy
     /// settings applies to the next diff, with no restart and no re-arm.
     private let readMinimumRunSeconds: () -> Int
+    /// F4 slice S2: the permission prompts wired sessions just relayed, as
+    /// counts per kind (`RemoteApprovalsController.waitingPrompts`; `.none`
+    /// while remote approvals are off). Read only for a diff that folds a
+    /// waiting event.
+    private let waitingPrompts: () -> WaitingPromptCounts
 
     // MARK: State (main actor only)
 
@@ -209,7 +214,8 @@ final class FinishAlertController {
         now: @escaping () -> Double,
         connectivity: ConnectivityInterface? = nil,
         stayAwakeOn: @escaping () -> Bool = { false },
-        minimumRunSeconds: @escaping () -> Int = { FinishAlertTuning.minimumRunSeconds }
+        minimumRunSeconds: @escaping () -> Int = { FinishAlertTuning.minimumRunSeconds },
+        waitingPrompts: @escaping () -> WaitingPromptCounts = { .none }
     ) {
         self.store = store
         self.markerDirURL = markerDirURL
@@ -222,6 +228,7 @@ final class FinishAlertController {
         self.connectivity = connectivity
         self.stayAwakeOn = stayAwakeOn
         self.readMinimumRunSeconds = minimumRunSeconds
+        self.waitingPrompts = waitingPrompts
     }
 
     /// The single construction site, gated by the debug-sim wiring predicate
@@ -240,7 +247,8 @@ final class FinishAlertController {
         sender: MessageSender?,
         connectivity: ConnectivityInterface,
         stayAwakeMirror: ObservedStayAwakeMirror,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        waitingPrompts: @escaping () -> WaitingPromptCounts = { .none }
     ) -> FinishAlertController? {
         guard FinishAlertPolicy.finishAlertMayBeConstructed(debugBattery: debugBattery) else { return nil }
         guard let lidGuard, let sender else { return nil }
@@ -257,7 +265,8 @@ final class FinishAlertController {
             stayAwakeOn: { stayAwakeMirror.value == true },
             minimumRunSeconds: {
                 FinishAlertPolicy.minimumRunSeconds(stored: defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds))
-            }
+            },
+            waitingPrompts: waitingPrompts
         )
     }
 
@@ -404,8 +413,12 @@ final class FinishAlertController {
             // A held digest past its max age is dropped BEFORE the new events
             // join it, so they are never dropped with it.
             expireHeldIfNeeded()
+            // F4 slice S2: the prompt context is read once, and only for a
+            // diff with a waiting event (zero hops otherwise).
+            let prompts = events.contains { if case .waiting = $0 { return true }; return false }
+                ? waitingPrompts() : .none
             for event in events {
-                digest.fold(event, stillWorking: observation.stillWorking, at: observedAt)
+                digest.fold(event, stillWorking: observation.stillWorking, prompts: prompts, at: observedAt)
             }
         }
         // Healing re-gates on the new tracked count AFTER the fold: an alert
