@@ -295,14 +295,17 @@ import Testing
     /// body is exactly "build the record, hand its operation to the seam".
     /// And nothing in the CloudKit file runs an operation itself: no `start`
     /// or `main`, no queue, no database `add`, no dynamic message (whole
-    /// words, so `addingTimeInterval` passes).
+    /// words, so `addingTimeInterval` passes). AMENDED after the security
+    /// re-check (N1): `start` and `main` are banned as words, dot or no dot,
+    /// since an extension on the operation calls `start()` on its implicit
+    /// self.
     static let decisionFactories = ["makeDecisionRecord", "makeDecisionSaveOperation"]
     static let writerHead = "struct CloudKitDecisionWriter: DecisionWriter {"
     static let writeHead = "func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome {"
     static let writeBody = "let record = CloudKitAlertSource.makeDecisionRecord(decision) "
         + "return await withCheckedContinuation { continuation in "
         + "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) { continuation.resume(returning: $0) }) }"
-    static let operationRunPatterns = [#"\.\s*start\b"#, #"\.\s*main\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#,
+    static let operationRunPatterns = [#"\bstart\b"#, #"\bmain\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#,
                                        #"\.\s*add\b"#, #"\bperform\b"#, #"#selector\b"#, #"\bSelector\b"#,
                                        #"\bNSSelectorFromString\b"#]
 
@@ -372,6 +375,11 @@ import Testing
             ("an operation run by hand", Self.mutate(app, ck) { $0 + "\nfunc f(o: CKOperation) { o.main() }" }),
             ("an operation messaged dynamically", Self.mutate(app, ck) {
                 $0 + "\nfunc f(o: CKOperation) { o.perform(NSSelectorFromString(\"start\")) }" }),
+            // The security re-check (N1): started on the operation's implicit self.
+            ("an operation started on its implicit self (N1)", Self.mutate(app, ck) {
+                $0 + "\nextension CKModifyRecordsOperation {\n    func go() { start() }\n}" }),
+            ("an operation run by hand on its implicit self", Self.mutate(app, ck) {
+                $0 + "\nextension CKOperation {\n    func go() { main() }\n}" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

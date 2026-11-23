@@ -59,8 +59,10 @@ protocol GateApprovedPrompt: Sendable {
 }
 
 /// THE seam over CloudKit I/O for the record path: run this operation
-/// against the owner's private database. In this slice ONLY test fakes
-/// conform (lint-locked), so no operation built here can run.
+/// against the owner's private database. It is the only thing that runs an
+/// operation built here: this file never starts or runs one itself, on a
+/// receiver or on `self`, never queues one and never adds one to a database;
+/// and in this slice ONLY test fakes conform (both lint-locked).
 protocol ApprovalRecordDatabase: AnyObject, Sendable {
     func submit(_ operation: CKModifyRecordsOperation)
 }

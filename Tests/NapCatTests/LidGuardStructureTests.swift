@@ -408,9 +408,11 @@ struct LidGuardStructureTests {
     /// An import of the CloudKit module in ANY form: `import CloudKit`,
     /// `@_exported import CloudKit`, `internal import CloudKit`, a scoped
     /// `import class CloudKit.CKFetchRecordsOperation`, split over lines or
-    /// with a block comment between the words (security review G2).
+    /// with a block comment between the words (security review G2), or with
+    /// a trailing `//` comment ending a line inside it (`import // note`,
+    /// then `CloudKit` on the next line: the security re-check, N2).
     static let cloudKitImport: String = {
-        let gap = #"(?:\s|/\*[\s\S]*?\*/)+"#
+        let gap = #"(?:\s|/\*[\s\S]*?\*/|//[^\n]*)+"#
         return #"\bimport"# + gap + #"(?:\w+"# + gap + #")?`?CloudKit\b"#
     }()
 
@@ -475,6 +477,11 @@ struct LidGuardStructureTests {
             ("a scoped import over three lines", mutate("MenuStateModel.swift") { "import\n    enum\n    CloudKit.CKError\n" + $0 }),
             ("a block comment inside the import", mutate("LidGuardController.swift") {
                 "import /* zones */ struct CloudKit.CKRecordZone\n" + $0 }),
+            // The security re-check (#146), N2: a trailing comment inside the import.
+            ("a third CloudKit file, trailing-comment import (N2)", sources + [("ZZN2Fetch.swift",
+                "import // fetch only\n    CloudKit\nfunc n2() { CKFetchRecordsOperation(recordIDs: []).start() }")]),
+            ("a trailing comment after the import's kind", mutate("MessageSender.swift") {
+                "import class // one type only\n    CloudKit.CKFetchRecordsOperation\n" + $0 }),
             ("a record token in a third file", mutate("MessageSender.swift") { $0 + "\nlet canary: CKRecord? = nil" }),
             ("the approvals file takes a container", mutate(Self.approvalRecordsFile) { $0 + "\nlet canary = CKContainer.default()" }),
         ]

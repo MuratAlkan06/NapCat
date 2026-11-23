@@ -25,7 +25,8 @@ import Testing
 ///    the fail-dark factory;
 /// 3. no Mac source builds the S0 decision type or names its signature flag
 ///    — nor reaches its constructor unnamed: an unapplied `.init`, the
-///    metatype or an alias (security review 2, G4);
+///    metatype or an alias (security review 2, G4), or an extension of the
+///    type (the security re-check, N3);
 /// 4. the record path cannot reach iCloud by itself: no container, no
 ///    database, no account check, no CloudKit identifier off its allow-list,
 ///    no way to run an operation but the database seam (security review 2,
@@ -236,8 +237,13 @@ struct ApprovalRecordPathStructureTests {
     /// constructor reached unnamed is banned too — an unapplied `.init`, the
     /// metatype (`ApprovalDecision.self`, the road to a generic `T.init`),
     /// and an alias of the type (`= ApprovalDecision`, then `Alias.init`).
+    ///
+    /// AMENDED after the security re-check (#146, N3): an extension of the
+    /// type reaches the constructor as `Self.init` or a bare `.init`, naming
+    /// neither, so no extension of it is allowed outside NapCatWire.
     static let indirectConstruction =
         #"\bApprovalDecision\s*\.\s*(?:init|self)\b|=\s*(?:NapCatWire\s*\.\s*)?ApprovalDecision\b"#
+            + #"|\bextension\s+(?:NapCatWire\s*\.\s*)?ApprovalDecision\b"#
 
     /// `sources`: `uncutSources()`. The original two checks read the
     /// comment-stripped code, as they always did.
@@ -302,15 +308,24 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\ntypealias Claimed = ApprovalDecision\nlet make = Claimed.init" }),
             ("an unapplied init behind a URL", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + "\nfunc f() { let u = \"https://www.icloud.com\"; let make = ApprovalDecision.init; _ = (u, make) }" }),
+            // The security re-check (#146), N3: the constructor reached from an extension.
+            ("an extension's Self.init (N3)", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nextension ApprovalDecision {\n    static let claimed = Self.init\n}\n\n"
+                    + "func n3(i: ApprovalIntake, p: PromptID) {\n    i.decide(ApprovalDecision.claimed(p, .allow, 1, true))\n}" }),
+            ("a module-qualified extension", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nextension NapCatWire . ApprovalDecision {\n    static var claimed: Any { Self.init }\n}" }),
         ]
         for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.verdictTypeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
-        // Over-match control: the intake's own parameter, and the doc comment
+        // Over-match control: the intake's own parameter, an extension of a
+        // type whose name only starts with the S0 type's, and the doc comment
         // that names what it rules out, pass.
         #expect(Self.verdictTypeFailures(Self.mutate(sources, "NapCatApp.swift") {
-            $0 + "\nfunc f(_ d: ApprovalDecision?, _ all: [ApprovalDecision]) {}"
-                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never ApprovalDecision.init, never = ApprovalDecision")
+            $0 + "\nfunc f(_ d: ApprovalDecision?, _ all: [ApprovalDecision]) {}\nextension ApprovalDecisionLog {}"
+                + LidGuardStructureTests.wholeLineCommentsRemoved(
+                    "\n/// never ApprovalDecision.init, never = ApprovalDecision, never extension ApprovalDecision")
         }).isEmpty)
     }
 
@@ -341,8 +356,10 @@ struct ApprovalRecordPathStructureTests {
     /// started or run by hand, queued, added to a database, pointed at a
     /// database or a container (the writer's own `self.database` is the
     /// seam), or messaged dynamically. Whole words, so `startIndex` or
-    /// `addingTimeInterval` pass.
-    static let operationRunPatterns = [#"\.\s*start\b"#, #"\.\s*main\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#,
+    /// `addingTimeInterval` pass. AMENDED after the security re-check (#146,
+    /// N1): `start` and `main` are banned as words, dot or no dot, since an
+    /// extension on the operation calls `start()` on its implicit self.
+    static let operationRunPatterns = [#"\bstart\b"#, #"\bmain\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#,
                                        #"\.\s*add\b"#, #"(?<!\bself)\.\s*database\b"#, #"\.\s*container\b"#,
                                        #"\bperform\b"#, #"#selector\b"#, #"\bSelector\b"#, #"\bNSSelectorFromString\b"#]
 
@@ -436,6 +453,13 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\nfunc f(c: CKOperation.Configuration) { c.container = .default() }" }),
             ("the operation messaged dynamically", Self.mutate(withFile, record) {
                 $0 + "\nfunc f(o: CKOperation) { o.perform(NSSelectorFromString(\"start\")) }" }),
+            // The security re-check (#146), N1: started on the operation's implicit self.
+            ("the operation started on its implicit self (N1)", Self.mutate(withFile, record) {
+                $0 + "\nextension CKModifyRecordsOperation {\n    func go() { start() }\n}\n\n"
+                    + "extension ApprovalRecordWriter {\n    static func n1(_ r: CKRecord) {\n"
+                    + "        makeOperation(saving: [r], deleting: []) { _ in }.go()\n    }\n}" }),
+            ("the operation run by hand on its implicit self", Self.mutate(withFile, record) {
+                $0 + "\nextension CKOperation {\n    func go() { main() }\n}" }),
             // … and a CloudKit door off the allow-list.
             ("a zone operation", Self.mutate(withFile, record) {
                 $0 + "\nlet z = CKModifyRecordZonesOperation(recordZonesToSave: [], recordZoneIDsToDelete: nil)" }),
@@ -448,6 +472,9 @@ struct ApprovalRecordPathStructureTests {
                 "import class CloudKit.CKFetchRecordsOperation\nfunc f() { CKFetchRecordsOperation(recordIDs: []).start() }")]),
             ("CloudKit re-exported by the seam's target", Self.mutate(withFile, "SeamSocket.swift") {
                 "@_exported import CloudKit\n" + $0 }),
+            // The security re-check (#146), N2: a trailing comment inside the import.
+            ("a third CloudKit file, trailing-comment import (N2)", withFile + [("ZZN2Fetch.swift",
+                "import // fetch only\n    CloudKit\nfunc n2() { CKFetchRecordsOperation(recordIDs: []).start() }")]),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != withFile.map { $0.text }, "canary '\(name)' did not apply")

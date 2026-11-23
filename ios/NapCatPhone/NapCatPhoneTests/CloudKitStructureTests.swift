@@ -67,10 +67,12 @@ import Testing
 
     /// An import of the CloudKit module in ANY form: `import CloudKit`,
     /// `@_exported import CloudKit`, a scoped `import class CloudKit.X`, split
-    /// over lines or with a block comment between the words. The literal
-    /// "import CloudKit" missed the scoped form (security review 2, G2).
+    /// over lines, with a block comment between the words, or with a trailing
+    /// `//` comment ending a line inside it (`import // note`, then `CloudKit`
+    /// on the next line: the security re-check, N2). The literal "import
+    /// CloudKit" missed the scoped form (security review 2, G2).
     static let cloudKitImport: String = {
-        let gap = #"(?:\s|/\*[\s\S]*?\*/)+"#
+        let gap = #"(?:\s|/\*[\s\S]*?\*/|//[^\n]*)+"#
         return #"\bimport"# + gap + #"(?:\w+"# + gap + #")?`?CloudKit\b"#
     }()
 
@@ -210,9 +212,11 @@ import Testing
         // CloudKit imported elsewhere in the app.
         let leaked = receiver.map { $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, "import CloudKit\n" + $0.text) : $0 }
         #expect(!Self.containerFailures(receiver: leaked, tests: tests).isEmpty)
-        // … in any form (security review 2, G2): scoped, re-exported, split.
+        // … in any form (security review 2, G2): scoped, re-exported, split;
+        // and split by a trailing comment (the security re-check, N2).
         for importLine in ["import class CloudKit.CKModifyRecordsOperation", "@_exported import CloudKit",
-                           "import\n    struct\n    CloudKit.CKRecordZone", "import /* ops */ CloudKit"] {
+                           "import\n    struct\n    CloudKit.CKRecordZone", "import /* ops */ CloudKit",
+                           "import // fetch only\n    CloudKit", "import class // one type only\n    CloudKit.CKFetchRecordsOperation"] {
             let scoped = receiver.map { $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, importLine + "\n" + $0.text) : $0 }
             #expect(!Self.containerFailures(receiver: scoped, tests: tests).isEmpty, "canary '\(importLine)' was NOT caught")
         }
