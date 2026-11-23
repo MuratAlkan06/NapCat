@@ -41,16 +41,34 @@ import UIKit
     // MARK: The cap
 
     /// The cap is said once the list is full, and only then, in words
-    /// built from the limit. A nominal line: VoiceOver reads it as written.
+    /// built from the limit and in the caption register. A nominal line:
+    /// VoiceOver reads it as written.
     @Test func theCapIsSaidOnceTheListIsFull() throws {
         for count in [0, 1, AlertFeed.listLimit - 1] {
             #expect(ReceiverScreen.capLine(rowCount: count) == nil, "\(count) rows")
         }
         let line = try #require(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit))
         #expect(AlertFeed.listLimit == 50)
-        #expect(line == PhoneLine(text: "Last 50 alerts — older ones aren't shown.", severity: .nominal))
+        #expect(line == PhoneLine(text: "Capped — the list keeps the latest 50 alerts", severity: .nominal))
         #expect(line.spoken == line.text)
         #expect(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit + 1) == line)
+        #expect(ListStateTests.captionRegisterFailures(line.text).isEmpty,
+                "\(ListStateTests.captionRegisterFailures(line.text))")
+        #expect(!ListStateTests.captionRegisterFailures("Last 50 alerts — older ones aren't shown.").isEmpty)
+    }
+
+    /// Words that would claim alerts exist beyond the list.
+    static func claimsMoreAlerts(_ text: String) -> Bool {
+        ["older", "aren't shown", "hidden", "more"].contains { text.localizedCaseInsensitiveContains($0) }
+    }
+
+    /// At exactly the limit there may be nothing older (the query asks for
+    /// at most that many), so the cap never claims older alerts exist.
+    @Test func theCapNeverClaimsOlderAlertsExist() throws {
+        let line = try #require(ReceiverScreen.capLine(rowCount: AlertFeed.listLimit))
+        #expect(!Self.claimsMoreAlerts(line.text))
+        // Not vacuous: the old line made the claim.
+        #expect(Self.claimsMoreAlerts("Last 50 alerts — older ones aren't shown."))
     }
 
     /// A feed that fills up ends on the cap: 60 records fetched, 50 listed.

@@ -26,12 +26,14 @@ struct ReceiverScreen: View {
         ListState(connection: connection, fetch: fetch, hasAlerts: !alerts.isEmpty)
     }
 
-    /// The full list's last line: the cap, said, state word first. Only
-    /// once the list holds `AlertFeed.listLimit` rows, the most it keeps;
-    /// VoiceOver reads it like any other line.
+    /// The full list's last line: the cap, said in the caption register.
+    /// Only once the list holds `AlertFeed.listLimit` rows, the most it
+    /// keeps. It states the rule, not that older alerts exist: the query
+    /// asks for at most that many, so a list of exactly that many may have
+    /// none older. VoiceOver reads it like any other line.
     nonisolated static func capLine(rowCount: Int) -> PhoneLine? {
         guard rowCount >= AlertFeed.listLimit else { return nil }
-        return PhoneLine(text: "Last \(AlertFeed.listLimit) alerts — older ones aren't shown.", severity: .nominal)
+        return PhoneLine(text: "Capped — the list keeps the latest \(AlertFeed.listLimit) alerts", severity: .nominal)
     }
 
     /// Themed cards on the theme's own ground, in a plain vertical scroll

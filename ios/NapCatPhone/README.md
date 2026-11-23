@@ -167,8 +167,8 @@ A live launch:
    reads "Stale — couldn't check for new alerts just now"; with none,
    the empty state reads "Couldn't check for alerts just now. Pull down to
    try again." The next fetch that answers clears it. The list keeps at
-   most 50 rows; a full list ends with "Last 50 alerts — older ones aren't
-   shown."
+   most 50 rows; a full list ends with "Capped — the list keeps the latest
+   50 alerts" (it says the rule; it can't know whether older ones exist).
 
 The notification itself is rendered by iOS from the subscription: title
 "NapCat", the record's body as the text, default sound. The app schedules no
