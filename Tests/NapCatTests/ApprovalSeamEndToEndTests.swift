@@ -85,10 +85,10 @@ struct ApprovalSeamEndToEndTests {
         #expect(world.host.start())
         defer { world.host.stop() }
         world.handshake()
-        let preview = #"{"file_path":"/Users/someone/project/notes.md","content":"hello"}"#
-        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Write", preview: preview, description: "Write a file"))
+        let preview = #"{"file_path":"/Users/someone/project/notes.md"}"#
+        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Read", preview: preview, description: "Read a file"))
         let saved = try #require(world.sink.saved.next(), "the forwardable prompt must reach the record store")
-        #expect(saved.tool == .write)
+        #expect(saved.tool == .read)
         #expect(saved.inputPreview == preview, "exactly what the gate classified")
         #expect(world.emitted.next(within: 0.2) == nil, "nothing is answered while the prompt waits")
         world.host.withIntake { intake in
@@ -100,6 +100,22 @@ struct ApprovalSeamEndToEndTests {
         #expect(world.sink.superseded.next() == saved.id)
         #expect(world.sink.retracted.next() == saved.id)
         #expect(world.emitted.next(within: 0.2) == nil, "exactly one verdict")
+    }
+
+    /// A Bash preview carries the model's own description as a member; what
+    /// reaches the record store is the gate's copy without it, and neither
+    /// description (the relay's field or the member) is anywhere in it.
+    @Test func whatReachesTheRecordStoreIsTheGatesCopy() throws {
+        let world = try SeamWorld()
+        #expect(world.host.start())
+        defer { world.host.stop() }
+        world.handshake()
+        let preview = #"{ "command": "git status", "description": "MEMBER-SENTINEL" }"#
+        world.stdin(RelayHarness.permissionRequest("abcde", preview: preview, description: "FIELD-SENTINEL"))
+        let saved = try #require(world.sink.saved.next(), "the forwardable prompt must reach the record store")
+        #expect(saved.tool == .bash)
+        #expect(saved.inputPreview == #"{"command":"git status"}"#)
+        #expect(!saved.inputPreview.contains("SENTINEL"))
     }
 
     @Test func aForbiddenPromptCrossesTheSeamButNeverLeavesTheMac() throws {

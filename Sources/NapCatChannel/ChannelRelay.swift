@@ -13,6 +13,9 @@ protocol ChannelLink: AnyObject {
 enum ChannelNote: String, CaseIterable, Sendable {
     /// A permission request before `initialize` was answered.
     case heldBeforeInitialize
+    /// A permission request in a session whose client is not one of
+    /// `ApprovalChannel.confirmedClients` (or did not name itself).
+    case heldUnconfirmedClient
     /// Claude Code reused a request ID: its verdicts would be dropped.
     case heldRepeatedID
     /// `ApprovalChannel.maxOpenRequests` already wait for a verdict.
@@ -41,8 +44,9 @@ enum ChannelNote: String, CaseIterable, Sendable {
 /// design/remote-approvals.md.
 ///
 /// It answers the MCP handshake, relays each permission request to NapCat as
-/// a prompt frame, and relays NapCat's verdict back to Claude Code — but only
-/// for a request it relayed and that is still open, once. Nothing it
+/// a prompt frame (only when the session's client is a confirmed Claude Code
+/// build), and relays NapCat's verdict back to Claude Code — but only for a
+/// request it relayed and that is still open, once. Nothing it
 /// receives ever becomes a verdict on its own, and a missing or failed seam
 /// only keeps prompts local: the terminal dialog stays open and fully
 /// answerable whatever happens here.
@@ -57,9 +61,11 @@ final class ChannelRelay: @unchecked Sendable {
     private let connect: Connector
     private let note: (ChannelNote) -> Void
 
-    /// Whether `initialize` was answered. A permission request before that is
-    /// held local.
-    private var initialized = false
+    /// Nil until `initialize` is answered (a permission request before that
+    /// is held local); then whether every `initialize` so far named a
+    /// confirmed client (`ApprovalChannel.confirms`). Once false it stays
+    /// false: that session's prompts all stay local.
+    private var clientConfirmed: Bool?
     /// Every request ID seen this session. Claude Code drops any verdict for
     /// an ID it issued twice, so a repeated ID is never relayed.
     private var seen: Set<ChannelRequestID> = []
@@ -80,8 +86,8 @@ final class ChannelRelay: @unchecked Sendable {
     /// One complete line from Claude Code.
     func receive(stdinLine line: [UInt8]) {
         switch ApprovalChannel.message(line) {
-        case .initialize(let id, let version):
-            initialized = true
+        case .initialize(let id, let version, let client):
+            clientConfirmed = (clientConfirmed ?? true) && ApprovalChannel.confirms(client)
             emit(ApprovalChannel.initializeResult(id: id, requestedVersion: version))
         case .ping(let id):
             emit(ApprovalChannel.pingResult(id: id))
@@ -111,7 +117,8 @@ final class ChannelRelay: @unchecked Sendable {
     }
 
     private func relay(_ request: ChannelPermissionRequest) {
-        guard initialized else { return note(.heldBeforeInitialize) }
+        guard let confirmed = clientConfirmed else { return note(.heldBeforeInitialize) }
+        guard confirmed else { return note(.heldUnconfirmedClient) }
         guard seen.insert(request.requestID).inserted else { return note(.heldRepeatedID) }
         guard open.count < ApprovalChannel.maxOpenRequests else { return note(.heldTooManyOpen) }
         guard let frame = ApprovalChannel.promptFrame(request) else { return note(.heldTooLarge) }
