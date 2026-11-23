@@ -135,7 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lidGuard: lidGuard,
             sender: sender,
             connectivity: ConnectivityWiring.makeInterface(debugBattery: isDebugBattery),
-            stayAwakeMirror: sleepController.observedMirror
+            stayAwakeMirror: sleepController.observedMirror,
+            // F4 slice S2: while remote approvals are on, the waiting buzz
+            // carries the counts of the prompts wired sessions just relayed.
+            waitingPrompts: { approvals?.waitingPrompts() ?? .none }
         )
         self.finishAlert = finishAlert
         lidGuard?.setArmingRefreshHook { [weak finishAlert] in

@@ -118,7 +118,7 @@ struct RemoteApprovalsStructureTests {
 
     /// The S2 test files that run anything (this file only reads sources).
     static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift",
-                              "RemoteApprovalsPresentationTests.swift"]
+                              "RemoteApprovalsPresentationTests.swift", "WaitingPromptContextTests.swift"]
 
     /// S1's list, plus what S2 could reach: the toggle's production factory
     /// (it resolves the real socket path and reads the real defaults), the

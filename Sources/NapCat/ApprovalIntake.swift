@@ -83,6 +83,14 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     }
 }
 
+extension ApprovalClassification {
+    /// The tool the gate forwards this prompt as, or nil when it keeps it.
+    var forwardedTool: ApprovalTool? {
+        if case .forward(let tool) = self { return tool }
+        return nil
+    }
+}
+
 /// The prompts relayed over the seam, one lifecycle each. Confined to the
 /// seam's queue (the host's).
 final class ApprovalIntake {
@@ -93,7 +101,17 @@ final class ApprovalIntake {
         let connection: ConnectionKey
         let request: ChannelRequestID
         var lifecycle: ApprovalLifecycle
+        /// The tool the gate would forward this prompt as, or nil (kept on
+        /// the Mac, or its session has ended). Slice S2: what a waiting buzz
+        /// may count — never its preview.
+        var forwardable: ApprovalTool? = nil
     }
+
+    /// Slice S2: how far back a waiting buzz looks for the prompts that
+    /// caused it. The hook's waiting marker and the relayed prompt come from
+    /// the same dialog within a second; the buzz is folded after the finish
+    /// alert's 2 s debounce.
+    static let waitingContextSeconds = 30
 
     /// Prompts held at once, finished ones included until their TTL ends;
     /// a prompt beyond them stays local.
@@ -146,7 +164,8 @@ final class ApprovalIntake {
         let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,
                                                    secrets: secrets())
         let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())
-        prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle)
+        prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,
+                            forwardable: classification.forwardedTool)
         perform(opened.transition, for: id, classified: (classification, request.inputPreview))
     }
 
@@ -165,11 +184,21 @@ final class ApprovalIntake {
     }
 
     /// The server went away: its session ended, so its open prompts are
-    /// withdrawn (never answered).
+    /// withdrawn (never answered), and none of its prompts counts for a
+    /// waiting buzz any more.
     func connectionClosed(_ connection: ConnectionKey) {
-        for (id, item) in prompts where item.connection == connection && !item.lifecycle.phase.isTerminal {
-            apply(.sessionEnded, to: id)
+        for (id, item) in prompts where item.connection == connection {
+            prompts[id]?.forwardable = nil
+            if !item.lifecycle.phase.isTerminal { apply(.sessionEnded, to: id) }
         }
+    }
+
+    /// Slice S2: the tools of the prompts the gate would forward that opened
+    /// in the last `seconds`, from sessions still connected — what a waiting
+    /// buzz may count. Kinds only, never a preview.
+    func recentForwardableTools(within seconds: Int) -> [ApprovalTool] {
+        let moment = now()
+        return prompts.values.filter { moment - $0.lifecycle.createdAt <= seconds }.compactMap(\.forwardable)
     }
 
     /// The Mac toggle went off: every open prompt is withdrawn.

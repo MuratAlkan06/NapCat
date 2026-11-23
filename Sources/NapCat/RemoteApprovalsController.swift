@@ -29,6 +29,23 @@ final class FailDarkApprovalRecords: ApprovalRecordSink {
     func supersedeWaitingAlert(_ id: PromptID) {}
 }
 
+extension WaitingPromptCounts {
+    /// Counts per kind. Exhaustive on purpose: a new gate tool does not
+    /// compile until it has its own count.
+    init(_ tools: [ApprovalTool]) {
+        self.init()
+        for tool in tools {
+            switch tool {
+            case .bash: bash += 1
+            case .write: write += 1
+            case .edit: edit += 1
+            case .notebookEdit: notebookEdit += 1
+            case .read: read += 1
+            }
+        }
+    }
+}
+
 @MainActor
 final class RemoteApprovalsController {
     /// Builds the seam host for a socket path (the production factory is
@@ -99,6 +116,16 @@ final class RemoteApprovalsController {
     var enabled: Bool { state.enabled }
     /// The managed-settings reading, while on.
     var finding: ChannelPolicyFinding? { state.finding }
+
+    /// What a waiting buzz may say about the permission prompts wired
+    /// sessions just relayed: counts per kind of those the gate would
+    /// forward, opened in the last `ApprovalIntake.waitingContextSeconds`.
+    /// Nothing while not listening — off, the host is never even reached.
+    func waitingPrompts() -> WaitingPromptCounts {
+        guard state.phase == .listening, let host else { return .none }
+        let tools = host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? []
+        return WaitingPromptCounts(tools)
+    }
 
     /// Called (on the main actor) after every change the menu renders.
     func setChangeHandler(_ handler: (() -> Void)?) {
