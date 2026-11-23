@@ -1362,7 +1362,8 @@ final class MenuStateModel: ObservableObject {
     ///   ceiling, like "accepted by ntfy": the push to the phone is async);
     /// - unconfirmed → warning (it may have landed; ntfy was NOT used — the
     ///   double-buzz rule);
-    /// - failed → warning (nothing was saved; ntfy carried the alert instead).
+    /// - failed → warning (iCloud refused the alert or did not confirm it;
+    ///   ntfy was used instead).
     nonisolated static func phoneAlertLine(
         enabled: Bool,
         available: Bool,
