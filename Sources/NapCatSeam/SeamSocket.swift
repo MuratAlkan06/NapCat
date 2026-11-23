@@ -72,6 +72,10 @@ public enum SeamSocket {
     /// How long a write may wait for the peer to read before the connection
     /// is given up (a stuck peer can never hold NapCat's queue).
     public static let sendTimeoutSeconds = 2
+    /// How long part of a frame may sit unfinished before the connection is
+    /// given up: a peer writes a frame at once, so a stalled one holds a
+    /// buffer and a slot for nothing.
+    public static let stallTimeoutSeconds: Double = 5
     static let listenBacklog: Int32 = 8
 
     /// The credentials of the peer of a connected socket, or nil.
@@ -197,17 +201,22 @@ public final class SeamConnection: @unchecked Sendable {
     private var reader = ChannelLineReader(limit: ApprovalChannel.maxFrameBytes)
     private var onLine: (([UInt8]) -> Void)?
     private var onClose: (() -> Void)?
+    /// Runs while part of a frame is buffered (`stallTimeout`).
+    private var stallTimer: DispatchSourceTimer?
+    private let stallTimeout: Double
     public private(set) var isOpen = true
     /// Who connected (checked before this object existed).
     public let peer: SeamPeer
 
-    init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue) {
+    init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue, stallTimeout: Double = SeamSocket.stallTimeoutSeconds) {
         self.descriptor = descriptor
         self.peer = peer
         self.queue = queue
+        self.stallTimeout = stallTimeout
     }
 
     deinit {
+        stallTimer?.cancel()
         // An owner that drops an open connection must not leak the descriptor.
         guard isOpen else { return }
         if let source {
@@ -218,8 +227,9 @@ public final class SeamConnection: @unchecked Sendable {
     }
 
     /// Starts reading. Each complete line goes to `onLine`; an over-long
-    /// frame, end of stream or a read error closes the connection, and
-    /// `onClose` runs once, whoever closed it.
+    /// frame, part of a frame left unfinished for `stallTimeout`, end of
+    /// stream or a read error closes the connection, and `onClose` runs once,
+    /// whoever closed it.
     public func start(onLine: @escaping ([UInt8]) -> Void, onClose: @escaping () -> Void) {
         guard isOpen, source == nil else { return }
         self.onLine = onLine
@@ -247,6 +257,24 @@ public final class SeamConnection: @unchecked Sendable {
             case .overlong: close()
             }
         }
+        guard isOpen else { return }
+        if reader.hasPartialLine {
+            armStallTimer()
+        } else {
+            stallTimer?.cancel()
+            stallTimer = nil
+        }
+    }
+
+    /// Armed once per unfinished frame: the clock starts when the frame
+    /// does, and only finishing it stops it.
+    private func armStallTimer() {
+        guard stallTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.setEventHandler { [weak self] in self?.close() }
+        timer.schedule(deadline: .now() + stallTimeout)
+        stallTimer = timer
+        timer.resume()
     }
 
     /// Writes one line and its newline. A failed or timed-out write closes
@@ -272,6 +300,8 @@ public final class SeamConnection: @unchecked Sendable {
     public func close() {
         guard isOpen else { return }
         isOpen = false
+        stallTimer?.cancel()
+        stallTimer = nil
         if let source {
             source.cancel()
         } else {
@@ -291,16 +321,19 @@ public final class SeamListener: @unchecked Sendable {
     private let queue: DispatchQueue
     private let peerReader: (Int32) -> SeamPeer?
     private let ownUID: uid_t
+    private let stallTimeout: Double
     private var source: DispatchSourceRead?
 
     /// `peerReader` and `ownUID` are injectable so tests can present a
-    /// foreign peer; production uses the real credentials.
+    /// foreign peer; production uses the real credentials. `stallTimeout`
+    /// applies to every accepted connection.
     public init(socketPath: String, queue: DispatchQueue, peerReader: @escaping (Int32) -> SeamPeer? = SeamSocket.peer(of:),
-                ownUID: uid_t = geteuid()) {
+                ownUID: uid_t = geteuid(), stallTimeout: Double = SeamSocket.stallTimeoutSeconds) {
         self.path = socketPath
         self.queue = queue
         self.peerReader = peerReader
         self.ownUID = ownUID
+        self.stallTimeout = stallTimeout
     }
 
     public var isListening: Bool { source != nil }
@@ -327,6 +360,7 @@ public final class SeamListener: @unchecked Sendable {
         let peerReader = self.peerReader
         let ownUID = self.ownUID
         let queue = self.queue
+        let stallTimeout = self.stallTimeout
         source.setEventHandler {
             let client = Darwin.accept(descriptor, nil, nil)
             guard client >= 0 else { return }
@@ -336,7 +370,7 @@ public final class SeamListener: @unchecked Sendable {
                 onRefused()
                 return
             }
-            onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue))
+            onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue, stallTimeout: stallTimeout))
         }
         source.setCancelHandler { Darwin.close(descriptor) }
         self.source = source

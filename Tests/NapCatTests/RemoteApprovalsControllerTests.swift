@@ -374,7 +374,7 @@ struct RemoteApprovalsControllerTests {
 
     /// The toggle's own audit lines join the S1 vocabulary: closed codes, a
     /// random prompt ID at most — never prompt text, a request ID or a path.
-    static let toggleCodes: Set<String> = ["seam.listening", "seam.listenFailed", "seam.stopped"]
+    static let toggleCodes: Set<String> = ["seam.listening", "seam.listenFailed", "seam.stopped", "seam.connectionLimit"]
 
     @Test func everyAuditLineIsAClosedCode() throws {
         let world = try ApprovalsWorld()
@@ -398,7 +398,7 @@ struct RemoteApprovalsControllerTests {
             #expect(vocabulary.contains(String(words)), "'\(line)' is outside the audit vocabulary")
             #expect(!line.contains("sudo") && !line.contains("abcde") && !line.contains("/"), "'\(line)' carries prompt data")
         }
-        #expect(Set([ApprovalAuditEvent.listening, .listenFailed, .stopped].map(\.code)) == Self.toggleCodes)
+        #expect(Set([ApprovalAuditEvent.listening, .listenFailed, .stopped, .connectionLimit].map(\.code)) == Self.toggleCodes)
     }
 
     /// The production sink writes nothing — and the production host never

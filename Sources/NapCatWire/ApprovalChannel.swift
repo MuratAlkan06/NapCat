@@ -366,6 +366,9 @@ public struct ChannelLineReader: Sendable {
         self.limit = limit
     }
 
+    /// Whether part of a line is buffered, waiting for the rest of it.
+    public var hasPartialLine: Bool { !pending.isEmpty }
+
     public mutating func feed(_ bytes: [UInt8]) -> [ChannelLine] {
         var lines: [ChannelLine] = []
         var start = bytes.startIndex

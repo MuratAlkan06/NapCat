@@ -160,15 +160,16 @@ struct RemoteApprovalsStructureTests {
     /// The S2 test files that run anything (this file only reads sources).
     static let s2TestFiles = ["RemoteApprovalsPolicyTests.swift", "RemoteApprovalsControllerTests.swift",
                               "RemoteApprovalsPresentationTests.swift", "WaitingPromptContextTests.swift",
-                              "ApprovalSecretsFailClosedTests.swift"]
+                              "ApprovalSecretsFailClosedTests.swift", "ApprovalSeamLimitsTests.swift"]
 
-    /// S1's list, plus what S2 could reach: the toggle's production factory
-    /// (it resolves the real socket path and reads the real defaults), the
-    /// real keychain, and any defaults store at all.
+    /// S1's list (it bans any defaults store at all), plus what S2 could
+    /// reach: the toggle's production factory (it resolves the real socket
+    /// path and reads the real defaults), the real keychain, and the real
+    /// Application Support folders.
     static let liveTokens = ApprovalChannelStructureTests.liveTokens
         // The keychain names are split so no test file spells them
         // (KeychainTopicStoreTests.noTestFileCanReachTheRealKeychain).
-        + ["makeIfEnabled(", "login" + "Keychain", "Sec" + "Item", ".standard", "/Library/Application Support"]
+        + ["makeIfEnabled(", "login" + "Keychain", "Sec" + "Item", "/Library/Application Support", "~/Library"]
 
     static func liveFailures(_ tests: Sources) -> [String] {
         tests.flatMap { name, text in

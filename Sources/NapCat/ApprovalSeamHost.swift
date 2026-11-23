@@ -41,10 +41,28 @@ enum ApprovalSources {
 }
 
 final class ApprovalSeamHost: @unchecked Sendable {
+    /// What one host holds at most, and for how long a server may sit idle.
+    struct Limits: Sendable {
+        /// Servers connected at once; one more is closed unread.
+        var maxConnections = 64
+        /// A server that sends nothing for this long while none of its
+        /// prompts waits on the phone is disconnected (it reconnects with its
+        /// next prompt); while one waits, the TTL is checked instead.
+        var idleSeconds: Double = 60
+        /// Part of a frame left unfinished this long closes the connection.
+        var stallSeconds: Double = SeamSocket.stallTimeoutSeconds
+
+        static let standard = Limits()
+    }
+
     let queue = DispatchQueue(label: "com.muratalkan.napcat.approvals.seam")
     private let listener: SeamListener
     private let audit: (ApprovalAuditEvent) -> Void
+    private let limits: Limits
     private var connections: [ApprovalIntake.ConnectionKey: SeamConnection] = [:]
+    /// One one-shot timer per connection, re-armed by every frame: there is
+    /// nothing scheduled while nobody is connected.
+    private var idleTimers: [ApprovalIntake.ConnectionKey: DispatchSourceTimer] = [:]
     private var nextKey = 0
     private var intake: ApprovalIntake?
 
@@ -53,9 +71,11 @@ final class ApprovalSeamHost: @unchecked Sendable {
          records: ApprovalRecordSink, audit: @escaping (ApprovalAuditEvent) -> Void = ApprovalAuditLog.record,
          newPromptID: @escaping () -> PromptID? = ApprovalSources.randomPromptID,
          now: @escaping () -> Int = ApprovalSources.monotonicSeconds,
-         peerReader: @escaping (Int32) -> SeamPeer? = SeamSocket.peer(of:)) {
-        listener = SeamListener(socketPath: socketPath, queue: queue, peerReader: peerReader)
+         peerReader: @escaping (Int32) -> SeamPeer? = SeamSocket.peer(of:), limits: Limits = .standard) {
+        listener = SeamListener(socketPath: socketPath, queue: queue, peerReader: peerReader,
+                                stallTimeout: limits.stallSeconds)
         self.audit = audit
+        self.limits = limits
         intake = ApprovalIntake(armed: armed, secrets: secrets, newPromptID: newPromptID, now: now, records: records,
                                 sendFrame: { [unowned self] key, line in connections[key]?.send(line) },
                                 closeConnection: { [unowned self] key in connections[key]?.close() },
@@ -79,6 +99,8 @@ final class ApprovalSeamHost: @unchecked Sendable {
             let open = Array(connections.values)
             connections.removeAll()
             for connection in open { connection.close() }
+            for timer in idleTimers.values { timer.cancel() }
+            idleTimers.removeAll()
             listener.stop()
         }
     }
@@ -90,13 +112,50 @@ final class ApprovalSeamHost: @unchecked Sendable {
     }
 
     private func accept(_ connection: SeamConnection) {
+        guard connections.count < limits.maxConnections else {
+            connection.close()
+            audit(.connectionLimit)
+            return
+        }
         nextKey += 1
         let key = nextKey
         connections[key] = connection
-        connection.start(onLine: { [unowned self] in intake?.receive($0, from: key) },
-                         onClose: { [unowned self] in
-                             connections[key] = nil
-                             intake?.connectionClosed(key)
+        connection.start(onLine: { [weak self] in
+                             self?.intake?.receive($0, from: key)
+                             self?.armIdleTimer(key)
+                         },
+                         onClose: { [weak self] in
+                             self?.idleTimers.removeValue(forKey: key)?.cancel()
+                             self?.connections[key] = nil
+                             self?.intake?.connectionClosed(key)
                          })
+        armIdleTimer(key)
+    }
+
+    /// (Re)starts the connection's idle clock.
+    private func armIdleTimer(_ key: ApprovalIntake.ConnectionKey) {
+        guard connections[key] != nil else { return }
+        let timer: DispatchSourceTimer
+        if let existing = idleTimers[key] {
+            timer = existing
+        } else {
+            timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.setEventHandler { [weak self] in self?.idleTimerFired(key) }
+            idleTimers[key] = timer
+            timer.resume()
+        }
+        timer.schedule(deadline: .now() + limits.idleSeconds)
+    }
+
+    /// Idle: let the TTL withdraw what it may, then keep the link only while
+    /// one of its prompts still waits on the phone.
+    private func idleTimerFired(_ key: ApprovalIntake.ConnectionKey) {
+        guard let connection = connections[key] else { return }
+        intake?.tick()
+        if intake?.holdsOpenPrompt(from: key) == true {
+            armIdleTimer(key)
+        } else {
+            connection.close()
+        }
     }
 }

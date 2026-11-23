@@ -311,9 +311,11 @@ struct ApprovalIntakeTests {
         #expect(harness.codes == ["seam.promptIDUnavailable"])
         #expect(harness.intake.prompts.isEmpty)
 
+        // Spread over servers, so no one of them meets its own cap (slice S2:
+        // `maxPromptsPerConnection`) before the intake meets its global one.
         let full = IntakeHarness()
         let ids = IntakeHarness.requestIDs(ApprovalIntake.maxPrompts + 1)
-        for request in ids { full.receive(request) }
+        for (index, request) in ids.enumerated() { full.receive(request, from: index % 8 + 1) }
         #expect(full.intake.prompts.count == ApprovalIntake.maxPrompts)
         #expect(full.codes == ["seam.capacityReached"])
     }
@@ -328,8 +330,8 @@ struct ApprovalIntakeTests {
         let audits: [ApprovalAudit] = suppressions.map { .suppressed(.gate($0)) } + [.suppressed(.notArmed), .forwarded, .forwardFailed]
             + ApprovalWire.Verdict.allCases.map { .decided(.remote($0)) } + [.decided(.local), .expired]
             + ApprovalIgnoreReason.allCases.map { .ignored($0) } + ApprovalRetraction.allCases.map { .retracted($0) }
-        let seam: [ApprovalAuditEvent] = [.frameRefused, .duplicateRequest, .capacityReached, .promptIDUnavailable,
-                                          .unknownPrompt, .peerRefused]
+        let seam: [ApprovalAuditEvent] = [.frameRefused, .duplicateRequest, .capacityReached, .connectionPromptLimit,
+                                          .promptIDUnavailable, .unknownPrompt, .peerRefused]
         return Set(audits.map(ApprovalAuditEvent.code) + seam.map(\.code))
     }
 
@@ -355,6 +357,6 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 15 + 3 + 4 + 7 + 2 + 6, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 15 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
     }
 }

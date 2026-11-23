@@ -38,6 +38,9 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     case duplicateRequest
     /// `ApprovalIntake.maxPrompts` are held already: the prompt stays local.
     case capacityReached
+    /// `ApprovalIntake.maxPromptsPerConnection` are held for this server
+    /// already: the prompt stays local.
+    case connectionPromptLimit
     /// No prompt ID could be drawn: the prompt stays local.
     case promptIDUnavailable
     /// An event for a prompt that is not held (never, or no longer).
@@ -51,6 +54,9 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     case listenFailed
     /// The kill switch: the Mac toggle went off (or NapCat quit).
     case stopped
+    /// `ApprovalSeamHost.Limits.maxConnections` servers are connected
+    /// already: the new one is closed unread, and its prompts stay local.
+    case connectionLimit
 
     /// The log line's text.
     var code: String {
@@ -59,12 +65,14 @@ enum ApprovalAuditEvent: Equatable, Sendable {
         case .frameRefused: return "seam.frameRefused"
         case .duplicateRequest: return "seam.duplicateRequest"
         case .capacityReached: return "seam.capacityReached"
+        case .connectionPromptLimit: return "seam.connectionPromptLimit"
         case .promptIDUnavailable: return "seam.promptIDUnavailable"
         case .unknownPrompt: return "seam.unknownPrompt"
         case .peerRefused: return "seam.peerRefused"
         case .listening: return "seam.listening"
         case .listenFailed: return "seam.listenFailed"
         case .stopped: return "seam.stopped"
+        case .connectionLimit: return "seam.connectionLimit"
         }
     }
 
@@ -122,6 +130,11 @@ final class ApprovalIntake {
     /// Prompts held at once, finished ones included until their TTL ends;
     /// a prompt beyond them stays local.
     static let maxPrompts = 256
+    /// Of those, the most one server may hold, so one session cannot take
+    /// every slot: twice the requests a server keeps open at once, leaving
+    /// room for prompts answered at the terminal inside one TTL (NapCat does
+    /// not see those answers).
+    static let maxPromptsPerConnection = 2 * ApprovalChannel.maxOpenRequests
 
     private let armed: () -> Bool
     private let secrets: () -> [String]?
@@ -166,6 +179,9 @@ final class ApprovalIntake {
         prune()
         guard !prompts.values.contains(where: { $0.connection == connection && $0.request == request.requestID }) else {
             return audit(.duplicateRequest)
+        }
+        guard prompts.values.filter({ $0.connection == connection }).count < Self.maxPromptsPerConnection else {
+            return audit(.connectionPromptLimit)
         }
         guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }
         guard let id = newPromptID(), prompts[id] == nil else { return audit(.promptIDUnavailable) }
@@ -217,6 +233,12 @@ final class ApprovalIntake {
         for (id, item) in prompts where !item.lifecycle.phase.isTerminal {
             apply(.killSwitch, to: id)
         }
+    }
+
+    /// Whether a prompt from this server still waits on the phone: its link
+    /// must stay up (closing it would withdraw the prompt).
+    func holdsOpenPrompt(from connection: ConnectionKey) -> Bool {
+        prompts.values.contains { $0.connection == connection && !$0.lifecycle.phase.isTerminal }
     }
 
     /// Lets the TTL run out, then forgets finished prompts past it.
