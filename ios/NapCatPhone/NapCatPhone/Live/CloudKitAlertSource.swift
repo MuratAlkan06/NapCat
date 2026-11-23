@@ -189,6 +189,52 @@ actor CloudKitAlertSource: AlertSource {
         return PhoneAlert(body: body, lane: lane, firedAt: firedAt, recordName: record.recordID.recordName)
     }
 
+    // MARK: - F4 permission prompts (slice S3; pure, fixture-tested)
+
+    /// The dedicated approvals zone of the owner's private database, where
+    /// the Mac writes prompt records (never the default zone the alerts use).
+    static var approvalsZoneID: CKRecordZone.ID {
+        CKRecordZone.ID(zoneName: ApprovalWire.zoneName, ownerName: CKCurrentUserDefaultName)
+    }
+
+    /// One PromptRequest record as a pending request, or nil when it is not
+    /// a well-formed one: another record type or zone, a name that is not a
+    /// prompt ID, a field outside the wire, a field stored in the clear that
+    /// the wire encrypts (or the reverse), another wire version, a missing or
+    /// mistyped value, or an unfit window (`PendingRequest.init`). Encrypted
+    /// fields are read from the encrypted values only.
+    static func pendingRequest(from record: CKRecord) -> PendingRequest? {
+        typealias Field = ApprovalWire.PromptField
+        guard record.recordType == ApprovalWire.RecordType.prompt.rawValue,
+              record.recordID.zoneID.zoneName == ApprovalWire.zoneName,
+              let id = PromptID(hex: record.recordID.recordName) else { return nil }
+        let encrypted = Set(record.encryptedValues.allKeys())
+        let plain = Set(record.allKeys()).subtracting(encrypted)
+        guard encrypted == Set(ApprovalWire.encryptedPromptFields.map(\.rawValue)),
+              plain.union(encrypted) == Set(Field.allCases.map(\.rawValue)),
+              record[Field.wireVersion.rawValue] as? Int == ApprovalWire.wireVersion,
+              let toolName = record.encryptedValues[Field.toolName.rawValue] as? String,
+              let inputPreview = record.encryptedValues[Field.inputPreview.rawValue] as? String,
+              let projectLabel = record.encryptedValues[Field.projectLabel.rawValue] as? String,
+              let createdAt = record[Field.createdAt.rawValue] as? Date,
+              let expiresAt = record[Field.expiresAt.rawValue] as? Date else { return nil }
+        return PendingRequest(id: id, toolName: toolName, inputPreview: inputPreview, projectLabel: projectLabel,
+                              createdAt: createdAt, expiresAt: expiresAt)
+    }
+
+    /// The prompt a push from the phone's prompt subscription announces: only
+    /// a query notification from `ApprovalWire.promptSubscriptionID` for a
+    /// record in the approvals zone whose name is a prompt ID counts. The
+    /// alert subscription's pushes are never read as prompts, nor the reverse
+    /// (`pushedRecordName`).
+    static func pushedPromptID(in userInfo: [AnyHashable: Any]) -> PromptID? {
+        guard let notification = CKNotification(fromRemoteNotificationDictionary: userInfo) as? CKQueryNotification,
+              notification.subscriptionID == ApprovalWire.promptSubscriptionID,
+              let recordID = notification.recordID,
+              recordID.zoneID.zoneName == ApprovalWire.zoneName else { return nil }
+        return PromptID(hex: recordID.recordName)
+    }
+
     /// Accounts other than `available` cannot receive anything.
     static func availability(_ status: CKAccountStatus) -> AccountAvailability {
         status == .available ? .available : .unavailable
