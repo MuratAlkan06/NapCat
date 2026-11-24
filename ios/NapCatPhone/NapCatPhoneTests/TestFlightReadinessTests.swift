@@ -15,11 +15,19 @@ import Testing
     }
 
     /// Face ID refuses an app that does not say why it asks (F4, CL-3:
-    /// Allow on a forwarded prompt asks for a match). The generated
-    /// Info.plist carries the reason, in plain words.
+    /// every answer to a forwarded prompt asks for a match, Deny included,
+    /// since S-PAIR-B signs both). The generated Info.plist carries the
+    /// reason, in plain words.
     @Test func theAppSaysWhyItAsksForFaceID() throws {
         let reason = try #require(Self.info["NSFaceIDUsageDescription"] as? String)
-        #expect(reason == "NapCat asks for Face ID before it sends Allow to your Mac.")
+        #expect(reason == "NapCat asks for Face ID before it sends anything to your Mac.")
+    }
+
+    /// The camera refuses an app that does not say why it asks (F4,
+    /// S-PAIR-B: the pairing screen scans the code the Mac shows).
+    @Test func theAppSaysWhyItAsksForTheCamera() throws {
+        let reason = try #require(Self.info["NSCameraUsageDescription"] as? String)
+        #expect(reason == "NapCat uses the camera only to scan the pairing code your Mac shows.")
     }
 
     /// The marketing version is three dot-separated integers. The build

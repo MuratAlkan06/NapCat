@@ -24,7 +24,8 @@ interactive Claude Code sessions, away from the keyboard.
 2. The phone gets an actionable notification: tool name, input preview and
    originating project.
 3. The owner taps Deny (works from the lock screen) or opens the app and taps
-   Allow (biometric, in-app only; see CL-3).
+   Allow (biometric, in-app only; see CL-3). Since the uniform-signing
+   ruling (below), both answers are in-app and ask for the biometric match.
 4. The Mac resolves the real, open dialog with that decision within seconds,
    and the session continues.
 5. If the owner does nothing, or is at the Mac, the terminal dialog behaves
@@ -100,6 +101,13 @@ interactive Claude Code sessions, away from the keyboard.
   forwarded in the MVP.
 - **CL-3: Allow is in-app and biometric-only.** Deny stays a lock-screen
   notification action.
+- **Uniform signing (owner ruling, 2026-11-24, during S-PAIR).** Deny is
+  signed like Allow, so it asks for the same biometric match, in-app: both
+  verdicts need a match of the biometrics enrolled now, and both produce a
+  signed decision. This withdraws CL-3's lock-screen Deny and every "Deny
+  never asks" statement below. The Mac's verifier is unchanged (one key,
+  blind to the verdict). Relaxing Deny later would be a design slice of its
+  own, never a default.
 
 ## Technical rulings
 
@@ -120,7 +128,8 @@ interactive Claude Code sessions, away from the keyboard.
   on the phone before anything is forwarded.
 - **Trust anchor.** The same iCloud account (private database), hardened by
   CL-1 pairing. Stated limit: whoever can unlock the paired phone and pass its
-  biometric check holds Allow; Deny needs only the phone in hand.
+  biometric check holds Allow and Deny (since the uniform-signing ruling;
+  before it, Deny needed only the phone in hand).
 - **Decision validation.** A decision is checked for record type, prompt
   match, signature and freshness; stale or duplicate decisions are discarded.
 - **Never-forwarded categories, enforced on the Mac** (the phone never sees
@@ -422,12 +431,13 @@ this section points at them.
   for a line break (`VisibleWhitespace`), in a box that scrolls past a third
   of the screen so the answers stay in reach. Allow asks for a
   biometric match every time (CL-3: biometrics only, no passcode fallback);
-  Deny never asks; both re-check the window right before the one write. A
-  saved answer reads "Sent", never "Allowed". The decision record is named
-  after its prompt (one per prompt: a second save is refused as already
-  answered) and carries no signature. Only a `-NapCatRequest` launch shows
-  a request (a fixture, answered in memory); no app source builds the
-  CloudKit decision writer.
+  Deny never asks (S3; since S-PAIR-B Deny asks too); both re-check the
+  window right before the one write. A saved answer reads "Sent", never
+  "Allowed". The decision record is named after its prompt (one per prompt:
+  a second save is refused as already answered) and carries no signature
+  (S3; since S-PAIR-B it carries the paired key's). Only a
+  `-NapCatRequest` launch shows a request (a fixture, answered in memory);
+  no app source builds the CloudKit decision writer.
 - **The records.** Both types live in the approvals zone, with the readable
   fields encrypted as `ApprovalWire` lists them. The readers on both sides
   refuse a record whose type, zone, field set, encryption or version
@@ -491,8 +501,9 @@ arms anything.
 
 - **The key.** The phone holds the only private key: a P-256 key in its
   Secure Enclave, usable only after a match of the biometrics enrolled now,
-  with no passcode fallback (CL-3), never exported. One match per Allow
-  covers both the in-app gate and the signature. The Mac keeps only the
+  with no passcode fallback (CL-3), never exported. One match per answer,
+  Allow or Deny alike (the uniform-signing ruling), covers both the in-app
+  gate and the signature, and signs that answer only. The Mac keeps only the
   public key, in its local keychain, never synchronized through iCloud (a
   synced item could be written from any device on the account).
 - **What is signed.** Six lines of UTF-8, each ending in a line feed, built
@@ -592,7 +603,7 @@ arms anything.
   | `pairProofDomain` | `napcat-pair-proof-v1` | the proof message (signed by the new key): `nonce` and `publicKey`, length-prefixed the same way |
   | `pairNameLabel` | `napcat-pair-name-v1` | the pairing record's name: SHA-256 of the label followed by the nonce, as 64 lowercase hex digits |
 
-- **S-PAIR-A** (this slice). The pure core, run on CI. The builders above
+- **S-PAIR-A.** The pure core, run on CI. The builders above
   live in `NapCatWire/ApprovalSigning.swift` (byte assembly only; the
   hashing, the MACs and the signatures stay in the apps, with CryptoKit),
   and the verifier runs over injected software keys. The vector suite
@@ -609,10 +620,80 @@ arms anything.
   file is exempt from the scan. Nothing is wired: no reader, intake or
   lifecycle hands the verifier a claim, no key is stored, and the approval
   files' one armed literal is still `armed: { false }`.
-- **Next.** S-PAIR-B (the phone signs), then the owner-run Production
-  schema deploy of the new PairingResponse record type, then S-PAIR-C1
-  (the ceremony, the key store and Unpair on the Mac) and S-PAIR-C2 (the
-  verifier wired as the only road from a reading to the lifecycle, and
-  "paired" as a precondition for arming). Owed live drill: a forwarded
-  prompt with an NFD file name and non-ASCII text verifies end to end on
-  real CloudKit, which also proves the whole-second time's round trip.
+- **S-PAIR-B** (this slice). The phone signs. Nothing on the Mac changes:
+  no Mac holds a paired key, the verifier is still unwired, and the
+  approval files' one armed literal is still `armed: { false }`.
+  - *The key* (`PhoneKeyring`, `SecureEnclaveSigner`,
+    `KeychainSigningKeyStore`). Made in the Secure Enclave under one access
+    control: for signing, after a match of the biometrics enrolled now,
+    while the phone is unlocked, on this device only, with no passcode or
+    other fallback anywhere (lint-locked). Its encrypted block is a generic
+    password in the data-protection keychain, never synchronized, kept with
+    the enrollment's state hash. Two slots: the committed key, the only one
+    that signs a decision, and a pairing's provisional key. The phone
+    unpairs itself only when the committed key fails after a good match
+    AND the enrollment changed since it was made; a cancel or a lockout
+    never unpairs. A changed enrollment shows on the request screen with no
+    prompt; the answers stay on offer (the enclave decides), and a key that
+    still signs brings the stored hash up to date.
+  - *One match, one signature.* The context a match was made in restores
+    the key for exactly one signature and is invalidated right after it,
+    before anything is written. Nothing keeps a match, a context or a key
+    (lint-locked: three context sites, each a local, one evaluation, one
+    restore). Deny carries the same biometric glyph and words as Allow
+    ("Deny with Face ID"), and an unpaired phone offers no answer at all.
+    While the biometric prompt is up, the request's line names the answer
+    the match will sign ("Confirming — Deny, waiting for Face ID").
+  - *The signer* (`DecisionSigner`). It builds the decision message with
+    the shared builder, in whole seconds, with the `shown` digest over the
+    three fields exactly as decoded from the prompt record, and signs it
+    with the committed key. The decision record's encrypted `signature`
+    field carries the 64 raw bytes. One signer, one write site, the window
+    re-checked before the signature.
+  - *Whole prompts only.* A prompt record missing any field is refused,
+    field by field, and only the strict reader builds a request.
+  - *Pairing, the phone's half* (`PairingCeremony`, the pairing screen).
+    The phone scans the Mac's code once (VisionKit's scanner, QR codes
+    only, the first code read), reads it strictly, makes a provisional key,
+    asks for the ceremony's one match to sign the proof, and writes one
+    pairing response through a seam: the record name, the key, the
+    confirmation MAC and the proof. It then shows its own code (the first 48
+    bits of SHA-256 over its key's x9.63 form, 12 hex digits in groups of
+    four, read out character by character) under "Waiting — confirm the
+    code on your Mac", and commits the key only on its own "Codes Match".
+    A cancel, the five-minute window or any failure discards the
+    provisional key and keeps the earlier pairing; a response already saved
+    for the code fails the pairing, and nothing of it is shown. The camera
+    asks once, in the app's own words; turned off, the screen says so and
+    links to Settings. A phone whose biometric match can't happen (none
+    enrolled, locked out) takes no scan: the screen names the cause and
+    where to set it up, with no retry to loop on. The comparison's hint
+    says what to do either way (codes that differ: cancel on both devices).
+    A swipe down can't close the sheet while a ceremony is under way (Close
+    cancels it), and VoiceOver hears the code appear and every end.
+  - *Not live yet.* The PairingResponse record type is not in the schema.
+    Its record names belong to NapCatWire with the deploy, and its CloudKit
+    writer arrives with them; until then only fixtures conform to the seam,
+    and the pairing screen opens for a `-NapCatPairing` fixture launch only.
+    Fixture launches sign with software keys held in memory.
+  - *Verification split.* The simulator and CI have no Secure Enclave. CI
+    proves the protocol over software P-256 keys behind the enclave seam:
+    the slots, the self-unpair rule, one match per signature, the canonical
+    bytes and signatures the Mac's verifier accepts (rebuilt in the tests
+    from the wire alone, Unicode-hostile fields included), the ceremony's
+    states and refusals, and the lint locks over the enclave, keychain and
+    biometric files. The enclave half is proven on the owner's device only,
+    in drills that need the live ceremony: a key made with no prompt, one
+    biometric prompt per answer with a signature the Mac verifies, a
+    cancelled match that sends nothing and keeps the pairing, a
+    re-enrollment that shows as changed with no prompt and then unpairs the
+    phone on its next answer, no passcode fallback ever offered, and a
+    restored or new phone that arrives unpaired.
+- **Next.** The PairingResponse record names in NapCatWire and the phone's
+  CloudKit writer for them, then the owner-run Production schema deploy of
+  the new PairingResponse record type, then S-PAIR-C1 (the ceremony, the key
+  store and Unpair on the Mac) and S-PAIR-C2 (the verifier wired as the
+  only road from a reading to the lifecycle, and "paired" as a precondition
+  for arming). Owed live drill: a forwarded prompt with an NFD file name
+  and non-ASCII text verifies end to end on real CloudKit, which also
+  proves the whole-second time's round trip.

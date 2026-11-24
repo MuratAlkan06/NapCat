@@ -3,8 +3,10 @@ import NapCatWire
 
 /// Why a pending request carries a note: the last answer did not go out.
 enum RequestNote: Equatable, CaseIterable, Sendable {
-    /// Allow was not confirmed by the biometric match.
+    /// The answer was not confirmed by the biometric match.
     case notConfirmed
+    /// The paired key did not sign the answer.
+    case unsigned
     /// Nothing was saved.
     case unsent
     /// iCloud did not confirm the answer.
@@ -18,7 +20,9 @@ enum RequestNote: Equatable, CaseIterable, Sendable {
 /// it is the Mac's to say.
 enum RequestStatus: Equatable, Sendable {
     case pending(until: Date, note: RequestNote?)
-    case confirming
+    /// The answer named is waiting for the biometric match: the line says
+    /// which one the match will sign.
+    case confirming(ApprovalWire.Verdict)
     case sending(ApprovalWire.Verdict)
     case sent(ApprovalWire.Verdict)
     case answered
@@ -35,15 +39,16 @@ enum RequestStatus: Equatable, Sendable {
         case (.sending(let verdict), _): self = .sending(verdict)
         case (_, .withdrawn): self = .withdrawn
         case (_, .expired): self = .expired
-        case (.confirming, .pending): self = .confirming
+        case (.confirming(let verdict), .pending): self = .confirming(verdict)
         case (.none, .pending(let until)): self = .pending(until: until, note: nil)
         case (.notConfirmed, .pending(let until)): self = .pending(until: until, note: .notConfirmed)
+        case (.unsigned, .pending(let until)): self = .pending(until: until, note: .unsigned)
         case (.unsent, .pending(let until)): self = .pending(until: until, note: .unsent)
         case (.unconfirmed, .pending(let until)): self = .pending(until: until, note: .unconfirmed)
         }
     }
 
-    /// Whether Allow and Deny are on offer.
+    /// Whether Allow and Deny can be on offer.
     var isAnswerable: Bool {
         if case .pending = self { return true }
         return false
@@ -52,14 +57,17 @@ enum RequestStatus: Equatable, Sendable {
     /// The state line, in the caption register: one state word, an em dash,
     /// the cause, no closing period. The last minute of a pending request
     /// is a warning (glyph, tint and "Warning:" for VoiceOver); nothing
-    /// counts down.
-    func line(at now: Date) -> PhoneLine {
+    /// counts down. While the match is asked for, the line names the answer
+    /// it will sign and `biometric`, the one this phone has (the screen
+    /// passes it; without one, "the biometric match").
+    func line(at now: Date, biometric: BiometryKind? = nil) -> PhoneLine {
         switch self {
         case .pending(let until, _):
             let severity: PhoneSeverity = Self.minutesLeft(until: until, now: now) >= 1 ? .nominal : .warning
             return PhoneLine(text: "Pending — " + Self.expiry(until: until, now: now), severity: severity)
-        case .confirming:
-            return PhoneLine(text: "Confirming — waiting for the biometric match", severity: .nominal)
+        case .confirming(let verdict):
+            let match = biometric?.name ?? "the biometric match"
+            return PhoneLine(text: "Confirming — \(Self.name(verdict)), waiting for \(match)", severity: .nominal)
         case .sending(let verdict):
             return PhoneLine(text: "Sending — saving \(Self.name(verdict)) to iCloud", severity: .nominal)
         case .sent(let verdict):
@@ -79,7 +87,10 @@ enum RequestStatus: Equatable, Sendable {
         guard case .pending(_, let note?) = self else { return nil }
         switch note {
         case .notConfirmed:
-            return PhoneLine(text: "Unverified — Allow wasn't confirmed, so nothing was sent", severity: .warning)
+            return PhoneLine(text: "Unverified — your answer wasn't confirmed, so nothing was sent", severity: .warning)
+        case .unsigned:
+            return PhoneLine(text: "Unsigned — this iPhone couldn't sign your answer, so nothing was sent; try again",
+                             severity: .warning)
         case .unsent:
             return PhoneLine(text: "Unsent — couldn't save your answer to iCloud; try again", severity: .warning)
         case .unconfirmed:

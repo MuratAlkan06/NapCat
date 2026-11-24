@@ -3,15 +3,14 @@ import SwiftUI
 
 /// One forwarded permission prompt, answered on the phone (F4, slice S3):
 /// the tool and project, the input exactly as the Mac's gate read it, the
-/// request's state in words and, only while it is answerable, Allow (after a
-/// biometric match, CL-3) and Deny. An expired or withdrawn request says why
+/// request's state in words and, only while it is answerable, Allow and Deny,
+/// each after a biometric match (CL-3, and the owner's uniform-signing
+/// ruling: every answer is signed). An expired or withdrawn request says why
 /// and offers no answer. Everything visual comes from the environment's
 /// `Theme`; nothing on it moves.
 struct PendingRequestScreen: View {
     nonisolated static let title = "Permission prompt"
     nonisolated static let inputHeader = "Input"
-    nonisolated static let denyTitle = "Deny"
-    nonisolated static let denySymbol = "xmark"
     nonisolated static let closeTitle = "Close"
     nonisolated static let footnote = "The dialog on your Mac stays open, and you can answer it there instead."
     /// Under the input when it is taller than its box.
@@ -19,18 +18,44 @@ struct PendingRequestScreen: View {
     /// Beside the Sent line: the answer went out, nothing more.
     nonisolated static let sentSymbol = "paperplane"
 
-    /// Why Allow is not on offer, naming the biometric this phone has.
-    nonisolated static func allowUnavailable(_ kind: BiometryKind?) -> PhoneLine {
+    /// Why no answer is on offer, naming the biometric this phone has.
+    nonisolated static func answersUnavailable(_ kind: BiometryKind?) -> PhoneLine {
         guard let kind else {
-            return PhoneLine(text: "Unavailable — this phone can't confirm Allow with biometrics; Deny still works",
+            return PhoneLine(text: "Unavailable — this phone can't confirm answers with biometrics; answer on your Mac",
                              severity: .warning)
         }
-        return PhoneLine(text: "Unavailable — Allow needs \(kind.name) turned on; Deny still works", severity: .warning)
+        return PhoneLine(text: "Unavailable — answering needs \(kind.name) turned on; answer on your Mac", severity: .warning)
     }
 
-    /// What the answers say and show. Allow names the biometric it asks for.
+    /// Why no answer is on offer on an unpaired phone: every answer is
+    /// signed by the paired key, and there is none. Names the biometric
+    /// when it is what changed.
+    nonisolated static func unpaired(_ reason: PhoneKeyring.UnpairedReason, _ kind: BiometryKind?) -> PhoneLine {
+        switch reason {
+        case .neverPaired:
+            return PhoneLine(text: "Unpaired — pair this iPhone with your Mac to answer here; answer on your Mac", severity: .warning)
+        case .enrollmentChanged:
+            let what = kind.map { "\($0.name) changed" } ?? "your biometrics changed"
+            return PhoneLine(text: "Unpaired — \(what), so this iPhone's key stopped working; pair again with your Mac",
+                             severity: .warning)
+        case .unreadable:
+            return PhoneLine(text: "Unpaired — this iPhone couldn't read its key; answer on your Mac", severity: .warning)
+        }
+    }
+
+    /// Over the answers while the pairing still stands but the enrolled
+    /// biometrics changed since it was made: the answers stay (the key
+    /// decides), and the owner learns why one may fail.
+    nonisolated static func enrollmentChanged(_ kind: BiometryKind) -> PhoneLine {
+        PhoneLine(text: "Changed — \(kind.name) changed since pairing; if answering fails, pair again with your Mac",
+                  severity: .warning)
+    }
+
+    /// What the answers say and show. Both name the biometric they ask for,
+    /// and carry its glyph: neither answer goes out without it.
     nonisolated static func allowTitle(_ kind: BiometryKind) -> String { "Allow with \(kind.name)" }
-    nonisolated static func allowHint(_ kind: BiometryKind) -> String { "Asks for \(kind.name) first." }
+    nonisolated static func denyTitle(_ kind: BiometryKind) -> String { "Deny with \(kind.name)" }
+    nonisolated static func answerHint(_ kind: BiometryKind) -> String { "Asks for \(kind.name) first." }
 
     /// The tool's glyph: one per tool the Mac's gate can forward, and a
     /// neutral tool mark for a name it does not know. Each has the filled
@@ -91,21 +116,28 @@ struct PendingRequestScreen: View {
         return new.line(at: now).spoken
     }
 
-    /// Which answers the screen offers.
+    /// Which answers the screen offers: both or neither, since both ask for
+    /// the same match.
     struct Offer: Equatable, Sendable {
-        /// Allow, with the biometric it asks for; nil when not on offer.
-        let allow: BiometryKind?
-        let deny: Bool
+        /// Allow and Deny, with the biometric they ask for; nil when neither
+        /// is on offer.
+        let answers: BiometryKind?
+        /// Said where the answers go: why there are none.
+        let caption: PhoneLine?
 
-        static let none = Offer(allow: nil, deny: false)
+        static let none = Offer(answers: nil, caption: nil)
     }
 
-    /// Nothing unless the request is answerable; then Deny, and Allow only
-    /// where a biometric match is possible.
-    nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability) -> Offer {
+    /// Nothing unless the request is answerable; then nothing but the
+    /// reason on an unpaired phone (no key signs), both answers where a
+    /// biometric match is possible, and otherwise the reason there are none.
+    /// A changed enrollment keeps the answers and says so over them.
+    nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability,
+                                  key: PhoneKeyring.Health) -> Offer {
         guard status.isAnswerable else { return .none }
-        guard case .available(let kind) = biometry else { return Offer(allow: nil, deny: true) }
-        return Offer(allow: kind, deny: true)
+        if case .unpaired(let reason) = key { return Offer(answers: nil, caption: unpaired(reason, biometry.kind)) }
+        guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }
+        return Offer(answers: kind, caption: key == .enrollmentChanged ? enrollmentChanged(kind) : nil)
     }
 
     /// The footnote is true only while an answer from here can still go
@@ -127,6 +159,8 @@ struct PendingRequestScreen: View {
     let status: RequestStatus
     let now: Date
     let biometry: BiometricAvailability
+    /// Where this phone's pairing stands.
+    let key: PhoneKeyring.Health
     let allow: () -> Void
     let deny: () -> Void
 
@@ -220,9 +254,10 @@ struct PendingRequestScreen: View {
     }
 
     /// The state in words. Sent is a confirmation: its glyph and its words
-    /// in the ink; every other state is a caption.
+    /// in the ink; every other state is a caption. While the match is asked
+    /// for, the line names the answer and this phone's biometric.
     @ViewBuilder private var stateLine: some View {
-        let line = status.line(at: now)
+        let line = status.line(at: now, biometric: biometry.kind)
         if let symbol = Self.confirmationSymbol(status) {
             HStack(alignment: .firstTextBaseline, spacing: theme.innerGap) {
                 Image(systemName: symbol)
@@ -241,22 +276,24 @@ struct PendingRequestScreen: View {
         }
     }
 
+    /// Allow in the accent, Deny in the ink, each with the biometric's
+    /// glyph and words; or the reason there are none.
     @ViewBuilder private var answers: some View {
-        let offer = Self.offer(for: status, biometry: biometry)
-        if offer.deny {
-            if let kind = offer.allow {
-                Button(action: allow) {
-                    Label(Self.allowTitle(kind), systemImage: kind.symbol)
-                }
-                .buttonStyle(RequestButtonStyle(emphasis: .accent))
-                .accessibilityHint(Self.allowHint(kind))
-            } else {
-                CaptionLine(line: Self.allowUnavailable(biometry.kind))
+        let offer = Self.offer(for: status, biometry: biometry, key: key)
+        if let caption = offer.caption {
+            CaptionLine(line: caption)
+        }
+        if let kind = offer.answers {
+            Button(action: allow) {
+                Label(Self.allowTitle(kind), systemImage: kind.symbol)
             }
+            .buttonStyle(RequestButtonStyle(emphasis: .accent))
+            .accessibilityHint(Self.answerHint(kind))
             Button(action: deny) {
-                Label(Self.denyTitle, systemImage: Self.denySymbol)
+                Label(Self.denyTitle(kind), systemImage: kind.symbol)
             }
             .buttonStyle(RequestButtonStyle(emphasis: .ink))
+            .accessibilityHint(Self.answerHint(kind))
         }
     }
 }
@@ -296,17 +333,24 @@ struct InputDrawing: View, Equatable {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
                          status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
-                         biometry: .available(.faceID), allow: {}, deny: {})
+                         biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
 }
 
 #Preview("Expired") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-660)),
-                         status: .expired, now: now, biometry: .available(.faceID), allow: {}, deny: {})
+                         status: .expired, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
 }
 
 #Preview("Withdrawn") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-120)),
-                         status: .withdrawn, now: now, biometry: .available(.faceID), allow: {}, deny: {})
+                         status: .withdrawn, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+}
+
+#Preview("Unpaired") {
+    let now = Date.now
+    PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
+                         status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
+                         biometry: .available(.faceID), key: .unpaired(.enrollmentChanged), allow: {}, deny: {})
 }

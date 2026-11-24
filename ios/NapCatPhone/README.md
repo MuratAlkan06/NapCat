@@ -70,7 +70,8 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 | `-NapCatConnection` | `connected`, `iCloudUnavailable`, `notificationsOff`, `pushNotSetUp` | `connected` |
 | `-palette` | `nightGroom`, `deepCream`, `neutral` | the stored choice |
 | `-NapCatScreen` | `receiver`, `settings` | `receiver` |
-| `-NapCatRequest` | `pending`, `expired`, `withdrawn` | none |
+| `-NapCatRequest` | `pending`, `expired`, `withdrawn`, `unpaired`, `changed` | none |
+| `-NapCatPairing` | `scan`, `camera`, `cameraOff`, `code`, `stray`, `taken` | none |
 
 The chosen palette is kept in the app's defaults under the key `palette`.
 Passing `-palette` picks one for that launch only and leaves the stored
@@ -78,9 +79,22 @@ choice alone. `-NapCatScreen settings` opens the launch on Settings (for
 screenshots). Neither forces fixtures on a device build.
 
 `-NapCatRequest` opens the launch on a fixture permission prompt (remote
-approvals, slice S3) in that state, answered in memory: nothing leaves the
-phone. Allow asks for Face ID or Touch ID; with none enrolled it is withheld
-and Deny still works. It leaves the alert list's source alone.
+approvals, slice S3) in that state, answered in memory and signed by a
+software fixture key: nothing leaves the phone. Allow and Deny each ask for
+Face ID or Touch ID (slice S-PAIR-B: every answer is signed); with none
+enrolled neither is offered. `unpaired` shows a pending prompt on a phone
+with no paired key (no answer is offered), and `changed` one whose
+biometrics changed since it paired. It leaves the alert list's source alone.
+
+`-NapCatPairing` opens the launch on the pairing screen (slice S-PAIR-B)
+over a fixture ceremony: a software key in memory, a fixture writer and a
+fixture camera (the simulator has no camera, so the viewfinder is drawn
+empty). `scan`, `camera` and `cameraOff` wait for a scan with the camera
+allowed, not yet asked, or off; `code` scans the fixture code at launch
+(the simulator's Face ID asks, then the screen shows this iPhone's code to
+compare); `stray` scans a code that is not NapCat's; `taken` scans the
+fixture code when a response for it is saved already. Until the pairing
+record exists in iCloud, this launch is the pairing screen's only way in.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it. Nor is a failed

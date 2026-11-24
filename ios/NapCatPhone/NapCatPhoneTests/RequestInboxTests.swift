@@ -36,11 +36,19 @@ enum RequestFixtures {
 
     static func id(_ low: UInt64) -> PromptID { PromptID(high: 0xabcd_ef01_2345_6789, low: low)! }
 
-    /// An inbox on `clock` whose answers go nowhere: a recording writer and
-    /// a biometric gate that confirms (answering has its own tests).
+    /// An inbox on `clock` whose answers go nowhere: a recording writer, a
+    /// biometric gate that confirms and a paired software key (answering
+    /// has its own tests).
     @MainActor
     static func inbox(_ clock: TestClock) -> RequestInbox {
-        RequestInbox(writer: RecordingDecisionWriter(), biometrics: ScriptedBiometricGate(), clock: { clock.now })
+        RequestInbox(writer: RecordingDecisionWriter(), biometrics: ScriptedBiometricGate(), keyring: pairedKeyring(),
+                     clock: { clock.now })
+    }
+
+    /// A keyring holding one committed software key (the fixtures' own).
+    @MainActor
+    static func pairedKeyring() -> PhoneKeyring {
+        FixtureRequests.keyring(.pending)
     }
 
     /// A Bash request the Mac forwarded at `createdAt`.

@@ -22,15 +22,17 @@ enum RequestPhase: Equatable, Sendable {
 /// How far this phone got with its answer to one request.
 enum RequestAnswer: Equatable, Sendable {
     case none
-    /// Allow is waiting for the biometric match.
-    case confirming
+    /// The answer is waiting for the biometric match.
+    case confirming(ApprovalWire.Verdict)
     case sending(ApprovalWire.Verdict)
     /// iCloud saved it. The Mac has not said what it did with it.
     case sent(ApprovalWire.Verdict)
     /// A decision for this prompt was saved already; nothing new was sent.
     case answeredElsewhere
-    /// Allow was not confirmed; nothing was sent.
+    /// The answer was not confirmed; nothing was sent.
     case notConfirmed
+    /// The paired key did not sign it; nothing was sent.
+    case unsigned
     /// Nothing was saved.
     case unsent(ApprovalWire.Verdict)
     /// iCloud did not confirm it.
@@ -45,9 +47,15 @@ enum RequestAnswer: Equatable, Sendable {
 /// running ahead cannot stretch it). Expired and withdrawn are terminal:
 /// once a request is either, nothing makes it pending again.
 ///
-/// Allow asks for a biometric match first, every time (CL-3); Deny never
-/// does. Both re-check the window right before anything is written, and
-/// each answer touches only its own request.
+/// Allow and Deny alike ask for a biometric match first, every time (CL-3,
+/// and the owner's uniform-signing ruling: every answer is signed, and the
+/// key signs only after a match). Both re-check the window right before
+/// anything is written, and each answer touches only its own request.
+///
+/// Every answer is signed by the phone's committed key (`PhoneKeyring`,
+/// `DecisionSigner`) between the window's re-check and the write: an
+/// unpaired phone offers no answer, and a phone whose key stopped signing
+/// after its biometrics changed unpairs itself and says so.
 @MainActor
 @Observable
 final class RequestInbox {
@@ -71,36 +79,54 @@ final class RequestInbox {
     /// the oldest finished ones go first.
     nonisolated static let capacity = 64
 
-    /// What the biometric prompt says Allow is for (Touch ID shows it; Face
-    /// ID shows the app's usage description the first time). Fixed words:
-    /// nothing from the request reaches the system prompt. The match is
-    /// asked for here, on the phone; the prompt it answers is the Mac's, and
-    /// what Allow does there is the Mac's to decide.
+    /// What the biometric prompt says each answer is for (Touch ID shows
+    /// it; Face ID shows the app's usage description the first time). Fixed
+    /// words: nothing from the request reaches the system prompt. The match
+    /// is asked for here, on the phone; the prompt it answers is the Mac's,
+    /// and what the answer does there is the Mac's to decide.
     nonisolated static let allowReason = "Confirm it's you to send Allow to your Mac's permission prompt."
+    nonisolated static let denyReason = "Confirm it's you to send Deny to your Mac's permission prompt."
+
+    nonisolated static func reason(for verdict: ApprovalWire.Verdict) -> String {
+        switch verdict {
+        case .allow: return allowReason
+        case .deny: return denyReason
+        }
+    }
 
     private(set) var entries: [PromptID: Entry] = [:]
-    /// Whether Allow can be confirmed here, as last read.
+    /// Whether an answer can be confirmed here, as last read.
     private(set) var biometry: BiometricAvailability
+    /// Where this phone's pairing stands, as last read (with no prompt).
+    private(set) var keyHealth: PhoneKeyring.Health
     @ObservationIgnored private let writer: any DecisionWriter
     @ObservationIgnored private let biometrics: any BiometricGate
+    @ObservationIgnored private let keyring: PhoneKeyring
     @ObservationIgnored private let clock: () -> Date
 
     /// `clock` is this phone's wall clock (a test seam, like the others).
-    init(writer: any DecisionWriter, biometrics: any BiometricGate, clock: @escaping () -> Date = Date.init) {
+    init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring,
+         clock: @escaping () -> Date = Date.init) {
         self.writer = writer
         self.biometrics = biometrics
+        self.keyring = keyring
         self.clock = clock
         self.biometry = biometrics.availability()
+        self.keyHealth = keyring.health()
     }
 
     /// The launch's inbox. A recognised `-NapCatRequest` shows that fixture
-    /// request, answered by a fixture writer; otherwise the inbox starts
-    /// empty and writes nothing (no record path reaches the Mac in this
-    /// slice). Both ask the real biometric gate before Allow.
+    /// request, answered by a fixture writer and signed by a fixture key;
+    /// otherwise the inbox starts empty, signs with this phone's own key
+    /// (the Secure Enclave, the keychain) and writes nothing (no record path
+    /// reaches the Mac yet). Both ask the real biometric gate before every
+    /// answer.
     static func make(options: LaunchOptions, now: Date) -> RequestInbox {
         let biometrics = LocalAuthenticationGate()
         guard let state = options.request else {
-            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics)
+            let keyring = PhoneKeyring(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(),
+                                       enrollment: LocalAuthenticationEnrollment())
+            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring)
         }
         return FixtureRequests.inbox(state, now: now, biometrics: biometrics)
     }
@@ -169,53 +195,77 @@ final class RequestInbox {
         }
     }
 
-    /// Re-reads whether Allow can be confirmed (the screen does, as it
+    /// Re-reads whether an answer can be confirmed (the screen does, as it
     /// appears: the owner may have changed Settings).
     func refreshBiometry() {
         let current = biometrics.availability()
         if current != biometry { biometry = current }
     }
 
+    /// Re-reads where the pairing stands, asking for nothing (the screen
+    /// does, as it appears and as the app returns to the foreground: a
+    /// changed enrollment shows before anything is answered).
+    func refreshKeyHealth() {
+        let current = keyring.health()
+        if current != keyHealth { keyHealth = current }
+    }
+
     // MARK: Answering
 
     /// Allow: only for an answerable request, and only after a biometric
-    /// match, asked for now (CL-3). The window is checked again after the
-    /// match, since the prompt may have expired or been withdrawn meanwhile.
+    /// match, asked for now (CL-3).
     func allow(_ id: PromptID) async {
         guard isAnswerable(id) else { return }
-        entries[id]?.answer = .confirming
-        let match = await biometrics.confirm(reason: Self.allowReason)
-        guard match == .confirmed else {
+        await confirmAndSend(.allow, for: id)
+    }
+
+    /// Deny: exactly as Allow (the owner's uniform-signing ruling: a Deny is
+    /// signed like an Allow, so it asks for the same match).
+    func deny(_ id: PromptID) async {
+        guard isAnswerable(id) else { return }
+        await confirmAndSend(.deny, for: id)
+    }
+
+    /// Asks for the match for this one answer, and sends only with it. The
+    /// window is checked again after the match, since the prompt may have
+    /// expired or been withdrawn meanwhile.
+    private func confirmAndSend(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {
+        entries[id]?.answer = .confirming(verdict)
+        guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {
             entries[id]?.answer = .notConfirmed
             return
         }
-        await send(.allow, for: id)
+        await send(verdict, for: id, match: match)
     }
 
-    /// Deny: only for an answerable request. No biometric match: Deny takes
-    /// nothing from the Mac's dialog that the owner could not take at the
-    /// terminal.
-    func deny(_ id: PromptID) async {
-        guard isAnswerable(id) else { return }
-        await send(.deny, for: id)
-    }
-
-    /// Pending, and no answer under way or done.
+    /// Pending, no answer under way or done, and a key to sign with: an
+    /// unpaired phone asks for no match it could not use.
     private func isAnswerable(_ id: PromptID) -> Bool {
         tick()
+        refreshKeyHealth()
+        if case .unpaired = keyHealth { return false }
         guard let entry = entries[id], phase(of: id)?.isPending == true else { return false }
         return RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer).isAnswerable
     }
 
-    /// Writes the decision, if the request is still pending right now.
-    private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {
+    /// Signs and writes the decision, if the request is still pending right
+    /// now. The match ends here, whatever happens: the signature spends it,
+    /// and it is never kept for another answer.
+    private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {
+        defer { match.invalidate() }
         tick()
-        guard phase(of: id)?.isPending == true else {
+        guard phase(of: id)?.isPending == true, let request = entries[id]?.request else {
             entries[id]?.answer = .none
             return
         }
+        let signing = DecisionSigner.sign(verdict, for: request, at: clock(), with: keyring, match: match)
+        guard case .signed(let decision) = signing else {
+            entries[id]?.answer = signing == .notSigned ? .unsigned : .none
+            refreshKeyHealth()
+            return
+        }
         entries[id]?.answer = .sending(verdict)
-        let outcome = await writer.write(PhoneDecision(promptID: id, verdict: verdict, decidedAt: clock()))
+        let outcome = await writer.write(decision)
         entries[id]?.answer = switch outcome {
         case .saved: .sent(verdict)
         case .alreadyAnswered: .answeredElsewhere

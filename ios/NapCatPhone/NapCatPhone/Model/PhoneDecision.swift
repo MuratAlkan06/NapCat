@@ -2,14 +2,34 @@ import Foundation
 import NapCatWire
 
 /// What the phone sends the Mac for one request: the prompt, the owner's
-/// answer and when. A REQUEST to the Mac, never a verdict: before pairing
-/// (CL-1) it carries no signature, and the Mac reads an unsigned decision
-/// as a claim it does not act on.
+/// answer, when, and the paired key's signature over exactly that (CL-1,
+/// slice S-PAIR-B). A REQUEST to the Mac, never a verdict: the Mac counts
+/// it only when the signature verifies with the key it paired, over the
+/// message it rebuilds from its own copy of the prompt. Built in the app by
+/// `DecisionSigner` only (lint-locked).
 struct PhoneDecision: Equatable, Sendable {
     let promptID: PromptID
     let verdict: ApprovalWire.Verdict
-    /// This phone's clock (the Mac judges freshness on its own).
+    /// This phone's clock, in whole seconds: the signed line has no
+    /// fraction, and the Mac refuses one. (The Mac judges freshness on its
+    /// own clock.)
     let decidedAt: Date
+    /// ECDSA P-256 over SHA-256 of the canonical decision message
+    /// (`ApprovalSigning.decisionMessage`), in its raw form: exactly 64
+    /// bytes.
+    let signature: Data
+
+    /// nil unless `decidedAt` is a whole, non-negative second a Double
+    /// holds exactly, and `signature` is exactly 64 bytes.
+    init?(promptID: PromptID, verdict: ApprovalWire.Verdict, decidedAt: Date, signature: Data) {
+        let seconds = decidedAt.timeIntervalSince1970
+        guard seconds.isFinite, seconds >= 0, seconds <= DecisionSigner.latestDecidedAt, seconds == seconds.rounded(.down),
+              signature.count == ApprovalSigning.signatureByteCount else { return nil }
+        self.promptID = promptID
+        self.verdict = verdict
+        self.decidedAt = decidedAt
+        self.signature = signature
+    }
 }
 
 /// What writing one decision came to.
@@ -28,9 +48,10 @@ enum DecisionWriteOutcome: String, Equatable, Sendable {
     case unconfirmed
 }
 
-/// THE seam behind Allow and Deny. The CloudKit one, `CloudKitDecisionWriter`,
-/// is built by no app source in this slice (lint-locked): a fixture launch
-/// writes to `FixtureDecisionWriter` and a live launch to `UnsentDecisionWriter`.
+/// THE seam behind Allow and Deny: it writes a decision already signed. The
+/// CloudKit one, `CloudKitDecisionWriter`, is built by no app source yet
+/// (lint-locked): a fixture launch writes to `FixtureDecisionWriter` and a
+/// live launch to `UnsentDecisionWriter`.
 protocol DecisionWriter: Sendable {
     func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome
 }

@@ -17,7 +17,9 @@ import UIKit
         .pending(until: now.addingTimeInterval(540), note: .notConfirmed),
         .pending(until: now.addingTimeInterval(540), note: .unsent),
         .pending(until: now.addingTimeInterval(540), note: .unconfirmed),
-        .confirming, .sending(.allow), .sending(.deny), .sent(.allow), .sent(.deny), .answered, .expired, .withdrawn,
+        .pending(until: now.addingTimeInterval(540), note: .unsigned),
+        .confirming(.allow), .confirming(.deny), .sending(.allow), .sending(.deny), .sent(.allow), .sent(.deny), .answered, .expired,
+        .withdrawn,
     ]
 
     // MARK: The words
@@ -25,11 +27,16 @@ import UIKit
     /// Every line the screen can show is in the caption register: one state
     /// word, an em dash, the cause, no closing period.
     static let everyUnavailableLine = (BiometryKind.allCases.map { Optional($0) } + [nil])
-        .map(PendingRequestScreen.allowUnavailable)
+        .map(PendingRequestScreen.answersUnavailable)
+    /// Every pairing line: unpaired for each reason, and changed.
+    static let everyPairingLine = [PhoneKeyring.UnpairedReason.neverPaired, .enrollmentChanged, .unreadable]
+        .flatMap { reason in (BiometryKind.allCases.map { Optional($0) } + [nil]).map { PendingRequestScreen.unpaired(reason, $0) } }
+        + BiometryKind.allCases.map(PendingRequestScreen.enrollmentChanged)
 
     @Test func everyLineIsInTheCaptionRegister() {
         var lines = Self.everyStatus.map { $0.line(at: Self.now) } + Self.everyStatus.compactMap(\.note)
-        lines += Self.everyUnavailableLine
+        lines += Self.everyUnavailableLine + Self.everyPairingLine
+        lines += Self.everyStatus.flatMap { status in BiometryKind.allCases.map { status.line(at: Self.now, biometric: $0) } }
         lines.append(RequestStatus.pending(until: Self.now.addingTimeInterval(30), note: nil).line(at: Self.now))
         lines.append(PendingRequestScreen.longInput)
         for line in lines {
@@ -41,7 +48,13 @@ import UIKit
     @Test func theLinesSayExactlyThis() {
         func text(_ status: RequestStatus) -> String { status.line(at: Self.now).text }
         #expect(text(.pending(until: Self.now.addingTimeInterval(540), note: nil)) == "Pending — expires in 9 min")
-        #expect(text(.confirming) == "Confirming — waiting for the biometric match")
+        #expect(RequestStatus.confirming(.allow).line(at: Self.now, biometric: .faceID).text
+                == "Confirming — Allow, waiting for Face ID")
+        #expect(RequestStatus.confirming(.deny).line(at: Self.now, biometric: .faceID).text
+                == "Confirming — Deny, waiting for Face ID")
+        #expect(RequestStatus.confirming(.deny).line(at: Self.now, biometric: .touchID).text
+                == "Confirming — Deny, waiting for Touch ID")
+        #expect(text(.confirming(.allow)) == "Confirming — Allow, waiting for the biometric match")
         #expect(text(.sending(.allow)) == "Sending — saving Allow to iCloud")
         #expect(text(.sent(.allow)) == "Sent — Allow is saved; your Mac hasn't confirmed it")
         #expect(text(.sent(.deny)) == "Sent — Deny is saved; your Mac hasn't confirmed it")
@@ -50,10 +63,27 @@ import UIKit
         #expect(text(.withdrawn) == "Withdrawn — your Mac took this prompt back")
         #expect(PendingRequestScreen.allowTitle(.faceID) == "Allow with Face ID")
         #expect(PendingRequestScreen.allowTitle(.touchID) == "Allow with Touch ID")
-        #expect(PendingRequestScreen.allowUnavailable(.faceID).text
-                == "Unavailable — Allow needs Face ID turned on; Deny still works")
-        #expect(PendingRequestScreen.allowUnavailable(nil).text
-                == "Unavailable — this phone can't confirm Allow with biometrics; Deny still works")
+        #expect(PendingRequestScreen.denyTitle(.faceID) == "Deny with Face ID")
+        #expect(PendingRequestScreen.denyTitle(.opticID) == "Deny with Optic ID")
+        #expect(PendingRequestScreen.answerHint(.faceID) == "Asks for Face ID first.")
+        #expect(PendingRequestScreen.answersUnavailable(.faceID).text
+                == "Unavailable — answering needs Face ID turned on; answer on your Mac")
+        #expect(PendingRequestScreen.answersUnavailable(nil).text
+                == "Unavailable — this phone can't confirm answers with biometrics; answer on your Mac")
+        #expect(RequestStatus.pending(until: Self.now, note: .notConfirmed).note?.text
+                == "Unverified — your answer wasn't confirmed, so nothing was sent")
+        #expect(RequestStatus.pending(until: Self.now, note: .unsigned).note?.text
+                == "Unsigned — this iPhone couldn't sign your answer, so nothing was sent; try again")
+        #expect(PendingRequestScreen.unpaired(.neverPaired, .faceID).text
+                == "Unpaired — pair this iPhone with your Mac to answer here; answer on your Mac")
+        #expect(PendingRequestScreen.unpaired(.enrollmentChanged, .faceID).text
+                == "Unpaired — Face ID changed, so this iPhone's key stopped working; pair again with your Mac")
+        #expect(PendingRequestScreen.unpaired(.enrollmentChanged, nil).text
+                == "Unpaired — your biometrics changed, so this iPhone's key stopped working; pair again with your Mac")
+        #expect(PendingRequestScreen.unpaired(.unreadable, .faceID).text
+                == "Unpaired — this iPhone couldn't read its key; answer on your Mac")
+        #expect(PendingRequestScreen.enrollmentChanged(.faceID).text
+                == "Changed — Face ID changed since pairing; if answering fails, pair again with your Mac")
         #expect(PendingRequestScreen.longInput.text == "Long — the input scrolls inside its box")
     }
 
@@ -61,13 +91,40 @@ import UIKit
     /// other: never "Face ID or Touch ID".
     @Test(arguments: BiometryKind.allCases)
     func theUnavailableLineNamesThePhonesBiometric(_ kind: BiometryKind) {
-        let text = PendingRequestScreen.allowUnavailable(kind).text
+        let text = PendingRequestScreen.answersUnavailable(kind).text
         #expect(text.contains(kind.name))
         for other in BiometryKind.allCases where other != kind {
             #expect(!text.contains(other.name), "'\(text)' names \(other.name)")
         }
-        let unnamed = PendingRequestScreen.allowUnavailable(nil).text
+        let unnamed = PendingRequestScreen.answersUnavailable(nil).text
         #expect(!unnamed.contains(kind.name), "'\(unnamed)' names \(kind.name) on a phone without it")
+    }
+
+    /// While the biometric prompt is up, the line says which answer the
+    /// match will sign, and the biometric it waits for: Allow and Deny never
+    /// read alike, and only this phone's biometric is named. The wait is
+    /// nominal (nothing is wrong yet), and like every state word it claims
+    /// nothing of the Mac.
+    @Test(arguments: BiometryKind.allCases)
+    func theConfirmingLineNamesTheAnswerBeingSigned(_ kind: BiometryKind) {
+        let allow = RequestStatus.confirming(.allow).line(at: Self.now, biometric: kind)
+        let deny = RequestStatus.confirming(.deny).line(at: Self.now, biometric: kind)
+        #expect(allow.text != deny.text)
+        for (line, named, other) in [(allow, "Allow", "Deny"), (deny, "Deny", "Allow")] {
+            #expect(line.text.hasPrefix("Confirming — \(named), "), "\(line.text)")
+            #expect(!line.text.contains(other), "\(line.text)")
+            #expect(line.text.hasSuffix("waiting for \(kind.name)"), "\(line.text)")
+            for elsewhere in BiometryKind.allCases where elsewhere != kind {
+                #expect(!line.text.contains(elsewhere.name), "'\(line.text)' names \(elsewhere.name)")
+            }
+            #expect(line.severity == .nominal)
+            #expect(line.spoken == line.text, "VoiceOver reads the line as it is")
+        }
+        // The biometric changes only the confirming line.
+        for status in Self.everyStatus {
+            if case .confirming = status { continue }
+            #expect(status.line(at: Self.now, biometric: kind) == status.line(at: Self.now), "\(status)")
+        }
     }
 
     /// Never "Allowed" or "Approved": a saved answer is sent, and only the
@@ -124,22 +181,45 @@ import UIKit
 
     // MARK: The offer
 
-    /// Only an answerable request offers anything; Allow only where a
-    /// biometric match is possible; Deny whenever the request is answerable.
+    /// Only an answerable request offers anything; then both answers where
+    /// a biometric match is possible (each asks for one: the owner's
+    /// uniform-signing ruling), and neither where it is not, with the
+    /// reason said instead. Deny is never on offer without the match.
     @Test func answersAreOfferedOnlyWhileAnswerable() {
         for status in Self.everyStatus {
-            let offer = PendingRequestScreen.offer(for: status, biometry: .available(.faceID))
+            let offer = PendingRequestScreen.offer(for: status, biometry: .available(.faceID), key: .paired)
             if status.isAnswerable {
-                #expect(offer == PendingRequestScreen.Offer(allow: .faceID, deny: true), "\(status)")
+                #expect(offer == PendingRequestScreen.Offer(answers: .faceID, caption: nil), "\(status)")
                 for unavailable in [BiometricAvailability.unavailable(.faceID), .unavailable(nil)] {
-                    #expect(PendingRequestScreen.offer(for: status, biometry: unavailable)
-                            == PendingRequestScreen.Offer(allow: nil, deny: true), "\(status)")
+                    #expect(PendingRequestScreen.offer(for: status, biometry: unavailable, key: .paired)
+                            == PendingRequestScreen.Offer(answers: nil,
+                                                          caption: PendingRequestScreen.answersUnavailable(unavailable.kind)),
+                            "\(status)")
                 }
             } else {
                 #expect(offer == .none, "\(status)")
+                #expect(PendingRequestScreen.offer(for: status, biometry: .unavailable(.faceID), key: .paired) == .none, "\(status)")
+                #expect(PendingRequestScreen.offer(for: status, biometry: .available(.faceID), key: .unpaired(.neverPaired)) == .none)
             }
         }
         #expect(!RequestStatus.expired.isAnswerable && !RequestStatus.withdrawn.isAnswerable)
+    }
+
+    /// Every answer is signed by the paired key, so an unpaired phone
+    /// offers none (and says why, whatever its biometrics); a changed
+    /// enrollment keeps both answers (the key decides) and says so.
+    @Test func thePairingDecidesTheOffer() {
+        let pending = RequestStatus.pending(until: Self.now.addingTimeInterval(540), note: nil)
+        for reason in [PhoneKeyring.UnpairedReason.neverPaired, .enrollmentChanged, .unreadable] {
+            for biometry in [BiometricAvailability.available(.faceID), .unavailable(.touchID), .unavailable(nil)] {
+                #expect(PendingRequestScreen.offer(for: pending, biometry: biometry, key: .unpaired(reason))
+                        == PendingRequestScreen.Offer(answers: nil, caption: PendingRequestScreen.unpaired(reason, biometry.kind)))
+            }
+        }
+        #expect(PendingRequestScreen.offer(for: pending, biometry: .available(.opticID), key: .enrollmentChanged)
+                == PendingRequestScreen.Offer(answers: .opticID, caption: PendingRequestScreen.enrollmentChanged(.opticID)))
+        #expect(PendingRequestScreen.offer(for: pending, biometry: .unavailable(.faceID), key: .enrollmentChanged)
+                == PendingRequestScreen.Offer(answers: nil, caption: PendingRequestScreen.answersUnavailable(.faceID)))
     }
 
     /// "The dialog on your Mac stays open" is said only while an answer from
@@ -158,8 +238,7 @@ import UIKit
     /// The glyphs exist in the system's set.
     @Test func theGlyphsAreSystemSymbols() {
         let tools = ApprovalTool.allCases.map { PendingRequestScreen.toolSymbol($0.rawValue) }
-        for name in BiometryKind.allCases.map(\.symbol) + tools + [PendingRequestScreen.denySymbol,
-                                                                    PendingRequestScreen.sentSymbol,
+        for name in BiometryKind.allCases.map(\.symbol) + tools + [PendingRequestScreen.sentSymbol,
                                                                     PendingRequestScreen.toolSymbol("Other")] {
             #expect(UIImage(systemName: name) != nil, "\(name)")
         }
@@ -317,7 +396,8 @@ import UIKit
 
     static func reading(_ inbox: RequestInbox, _ id: PromptID, at moment: Date) -> Reading? {
         guard let status = inbox.status(of: id, at: moment) else { return nil }
-        return Reading(line: status.line(at: moment), offer: PendingRequestScreen.offer(for: status, biometry: inbox.biometry))
+        return Reading(line: status.line(at: moment),
+                       offer: PendingRequestScreen.offer(for: status, biometry: inbox.biometry, key: inbox.keyHealth))
     }
 
     /// Runs the open sheet's clock for `id` to its end, as the sheet does:
@@ -329,7 +409,7 @@ import UIKit
         return drawn
     }
 
-    static let answerable = PendingRequestScreen.Offer(allow: .faceID, deny: true)
+    static let answerable = PendingRequestScreen.Offer(answers: .faceID, caption: nil)
 
     /// The review's case: opened with 70 s left, the screen reads "1 min",
     /// turns into the under-a-minute warning as the last minute starts, and
@@ -390,7 +470,7 @@ import UIKit
         let clock = TestClock()
         let sent = RequestFixtures.inbox(clock)
         let answered = RequestInbox(writer: RecordingDecisionWriter(.alreadyAnswered), biometrics: ScriptedBiometricGate(),
-                                    clock: { clock.now })
+                                    keyring: RequestFixtures.pairedKeyring(), clock: { clock.now })
         let request = RequestFixtures.request(1, createdAt: clock.now)
         for inbox in [sent, answered] {
             inbox.receive([request])
@@ -507,9 +587,17 @@ import UIKit
                                           clock: { Self.now })
         let status = inbox.status(of: FixtureRequests.id)
         switch state {
-        case .pending: #expect(status?.isAnswerable == true)
+        case .pending:
+            #expect(status?.isAnswerable == true)
+            #expect(inbox.keyHealth == .paired)
         case .expired: #expect(status == .expired)
         case .withdrawn: #expect(status == .withdrawn)
+        case .unpaired:
+            #expect(status?.isAnswerable == true)
+            #expect(inbox.keyHealth == .unpaired(.neverPaired))
+        case .changed:
+            #expect(status?.isAnswerable == true)
+            #expect(inbox.keyHealth == .enrollmentChanged)
         }
     }
 
@@ -524,10 +612,10 @@ import UIKit
         return try #require(app.first { $0.path == path }).text
     }
 
-    /// The screen offers answers only through `offer(for:biometry:)`, hands
-    /// them to its two closures and never reaches the inbox, the writer or
-    /// the gate itself; the sheet routes Allow to `inbox.allow` and Deny to
-    /// `inbox.deny`, nothing else.
+    /// The screen offers answers only through `offer(for:biometry:)`, both
+    /// or neither (each asks for the match), hands them to its two closures
+    /// and never reaches the inbox, the writer or the gate itself; the sheet
+    /// routes Allow to `inbox.allow` and Deny to `inbox.deny`, nothing else.
     static func wiringFailures(screen: String, sheet: String) -> [String] {
         let screenCode = SettingsReachabilityTests.flat(screen)
         let sheetCode = SettingsReachabilityTests.flat(sheet)
@@ -536,8 +624,9 @@ import UIKit
         where screenCode.contains(token) {
             failures.append("'\(token)' in the screen — it only hands answers to its closures")
         }
-        for shape in ["let offer = Self.offer(for: status, biometry: biometry) if offer.deny {",
-                      "if let kind = offer.allow { Button(action: allow)", "Button(action: deny)"]
+        for shape in ["let offer = Self.offer(for: status, biometry: biometry, key: key) if let caption = offer.caption { "
+                        + "CaptionLine(line: caption) } if let kind = offer.answers { Button(action: allow)",
+                      ".accessibilityHint(Self.answerHint(kind)) Button(action: deny)"]
         where !screenCode.contains(shape) {
             failures.append("the screen lost '\(shape)'")
         }
@@ -562,9 +651,12 @@ import UIKit
             ("Allow wired to Deny", screen, sheet.replacingOccurrences(of: "allow: { Task { await inbox.allow(id) } }",
                                                                       with: "allow: { Task { await inbox.deny(id) } }")),
             ("the screen writes", screen + "\nlet w: (any DecisionWriter)? = nil", sheet),
-            ("answers offered always", screen.replacingOccurrences(of: "if offer.deny {", with: "if true {"), sheet),
-            ("Allow without the offer", screen.replacingOccurrences(of: "if let kind = offer.allow {",
-                                                                    with: "if let kind = Optional(BiometryKind.faceID) {"), sheet),
+            ("answers offered always", screen.replacingOccurrences(of: "if let kind = offer.answers {",
+                                                                   with: "if let kind = Optional(BiometryKind.faceID) {"), sheet),
+            ("Deny outside the offer", screen.replacingOccurrences(
+                of: "            .accessibilityHint(Self.answerHint(kind))\n            Button(action: deny) {",
+                with: "            .accessibilityHint(Self.answerHint(kind))\n        }\n        if true {\n            Button(action: deny) {"),
+             sheet),
             ("a third button", screen + "\nlet b = Button(action: {}) { Text(\"x\") }", sheet),
         ]
         for (name, mutantScreen, mutantSheet) in mutants {
@@ -592,7 +684,8 @@ import UIKit
     ///   baseline, so a tall glyph never moves the name;
     /// - Sent gets its confirmation glyph, and the change to Sent is
     ///   announced to VoiceOver at high priority;
-    /// - the unavailable line names this phone's biometric;
+    /// - both answers carry the biometric's glyph and name (each asks for
+    ///   the match), and the unavailable line names this phone's biometric;
     /// - the answers' height comes from the theme's touch target.
     static let compositionShapes = [
         "VStack(alignment: .leading, spacing: theme.rowGap) { promptCard if let note = status.note { CaptionLine(line: note) } "
@@ -617,12 +710,14 @@ import UIKit
             + ".overlay(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) { "
             + "Image(systemName: Self.toolSymbol(request.toolName))",
         ".foregroundStyle(muted ? theme.inkSecondary : theme.accent)",
-        "if let symbol = Self.confirmationSymbol(status) {",
+        "let line = status.line(at: now, biometric: biometry.kind) if let symbol = Self.confirmationSymbol(status) {",
         "} else { CaptionLine(line: line) }",
         ".onChange(of: status) { old, new in guard let text = Self.announcement(from: old, to: new, at: now) else { return } "
             + "var spoken = AttributedString(text) spoken.accessibilitySpeechAnnouncementPriority = .high "
             + "AccessibilityNotification.Announcement(spoken).post() }",
-        "CaptionLine(line: Self.allowUnavailable(biometry.kind))",
+        "Label(Self.allowTitle(kind), systemImage: kind.symbol)",
+        "Label(Self.denyTitle(kind), systemImage: kind.symbol) } .buttonStyle(RequestButtonStyle(emphasis: .ink))",
+        "guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }",
     ]
 
     static func compositionFailures(screen: String, buttonStyle: String) -> [String] {
@@ -681,12 +776,17 @@ import UIKit
                 of: "            .padding(.leading, glyphColumn + theme.innerGap * 2)\n", with: ""), style),
             ("a finished card still raised", screen.replacingOccurrences(
                 of: ".themedCard(castsShadow: !muted)", with: ".themedCard()"), style),
+            ("the confirming line without the biometric", screen.replacingOccurrences(
+                of: "let line = status.line(at: now, biometric: biometry.kind)", with: "let line = status.line(at: now)"), style),
             ("Sent as a plain caption", screen.replacingOccurrences(
                 of: "if let symbol = Self.confirmationSymbol(status) {", with: "if let symbol = Optional<String>.none {"), style),
             ("Sent not announced", screen.replacingOccurrences(
                 of: "AccessibilityNotification.Announcement(spoken).post()", with: ""), style),
-            ("the old unavailable line", screen.replacingOccurrences(
-                of: "Self.allowUnavailable(biometry.kind)", with: "Self.allowUnavailable(nil)"), style),
+            ("the unavailable line unnamed", screen.replacingOccurrences(
+                of: "answersUnavailable(biometry.kind)) }", with: "answersUnavailable(nil)) }"), style),
+            ("Deny without the biometric's glyph", screen.replacingOccurrences(
+                of: "Label(Self.denyTitle(kind), systemImage: kind.symbol)", with: "Label(Self.denyTitle(kind), systemImage: \"xmark\")"),
+             style),
             ("a hard-coded touch target", screen, style.replacingOccurrences(
                 of: "minHeight: theme.minTouchTarget", with: "minHeight: 44")),
         ]

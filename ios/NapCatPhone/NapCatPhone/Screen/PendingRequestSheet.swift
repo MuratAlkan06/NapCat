@@ -26,6 +26,7 @@ struct PendingRequestSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
     /// The moment the screen is drawn for, kept current by `follow`.
     @State private var now: Date
 
@@ -80,11 +81,20 @@ struct PendingRequestSheet: View {
         }
     }
 
+    /// What the screen re-reads as it appears and as the app returns to the
+    /// foreground: the biometrics and the pairing, asking for nothing (the
+    /// owner may have changed Settings, or re-enrolled Face ID, meanwhile).
+    static func refresh(_ inbox: RequestInbox) {
+        inbox.refreshBiometry()
+        inbox.refreshKeyHealth()
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 if let request = inbox.entries[id]?.request, let status = inbox.status(of: id, at: now) {
                     PendingRequestScreen(request: request, status: status, now: now, biometry: inbox.biometry,
+                                         key: inbox.keyHealth,
                                          allow: { Task { await inbox.allow(id) } },
                                          deny: { Task { await inbox.deny(id) } })
                 }
@@ -99,7 +109,10 @@ struct PendingRequestSheet: View {
             }
         }
         .tint(theme.accent)
-        .onAppear { inbox.refreshBiometry() }
+        .onAppear { Self.refresh(inbox) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Self.refresh(inbox) }
+        }
         .task { await Self.follow(clock: clock, closes: { Self.closes(inbox, id, at: $0) }, redraw: { now = $0 }) }
     }
 }

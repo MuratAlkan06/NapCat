@@ -5,8 +5,9 @@ import NapCatWire
 import Testing
 
 /// F4 slice S3: a PromptRequest record (as the Mac's writer builds it) and a
-/// prompt push, as the phone reads them. CKRecords are plain values here;
-/// nothing talks to iCloud.
+/// prompt push, as the phone reads them; since S-PAIR-B (whole prompts
+/// only), a record missing any field is refused, field by field. CKRecords
+/// are plain values here; nothing talks to iCloud.
 @Suite struct CloudKitRequestRecordTests {
     static let id = RequestFixtures.id(0x42)
     static let createdAt = Date(timeIntervalSince1970: 1_800_000_000)
@@ -78,9 +79,11 @@ import Testing
         Row(name: "no tool") { macRecord(values: [.toolName: nil]) },
         Row(name: "an empty tool") { macRecord(values: [.toolName: "" as NSString]) },
         Row(name: "a preview that is not text") { macRecord(values: [.inputPreview: 7 as NSNumber]) },
+        Row(name: "no preview") { macRecord(values: [.inputPreview: nil]) },
         Row(name: "no project") { macRecord(values: [.projectLabel: nil]) },
         Row(name: "no creation time") { macRecord(values: [.createdAt: nil]) },
         Row(name: "an expiry as text") { macRecord(values: [.expiresAt: "soon" as NSString]) },
+        Row(name: "no expiry") { macRecord(values: [.expiresAt: nil]) },
         Row(name: "a window past the TTL") {
             macRecord(values: [.expiresAt: createdAt.addingTimeInterval(PendingRequest.timeToLive + 1) as NSDate])
         },
@@ -90,6 +93,69 @@ import Testing
     @Test(arguments: malformed)
     func aMalformedRecordIsNotARequest(_ row: Row) {
         #expect(CloudKitAlertSource.pendingRequest(from: row.record()) == nil)
+    }
+
+    // MARK: Whole prompts only: a record missing any field is never shown or answered
+
+    /// S-PAIR-B (whole prompts only): the phone signs what it shows, so it
+    /// shows only a whole prompt. A record missing ANY of the wire's fields,
+    /// each one in turn, is not a request: nothing of it is drawn, and
+    /// nothing can answer it.
+    @Test(arguments: Field.allCases)
+    func aRecordMissingAnyFieldIsNotARequest(_ field: Field) {
+        let record = Self.macRecord(values: [field: nil])
+        #expect(!Set(record.allKeys()).contains(field.rawValue), "vacuity: the field really is missing")
+        #expect(Set(record.allKeys()).count == Field.allCases.count - 1)
+        #expect(CloudKitAlertSource.pendingRequest(from: record) == nil, "a record without \(field.rawValue) was read")
+    }
+
+    /// Any two fields missing, and a record holding nothing at all.
+    @Test func aRecordMissingSeveralFieldsIsNotARequest() {
+        for first in Field.allCases {
+            for second in Field.allCases where second != first {
+                #expect(CloudKitAlertSource.pendingRequest(from: Self.macRecord(values: [first: nil, second: nil])) == nil,
+                        "\(first.rawValue) and \(second.rawValue) missing")
+            }
+        }
+        let empty = CKRecord(recordType: ApprovalWire.RecordType.prompt.rawValue,
+                             recordID: CKRecord.ID(recordName: Self.id.hex,
+                                                   zoneID: CKRecordZone.ID(zoneName: ApprovalWire.zoneName,
+                                                                           ownerName: CKCurrentUserDefaultName)))
+        #expect(CloudKitAlertSource.pendingRequest(from: empty) == nil)
+    }
+
+    /// Nothing reaches the inbox, and so the screen, but through the strict
+    /// reader: every malformed or incomplete record leaves it empty.
+    @MainActor
+    @Test func noIncompleteRecordReachesTheInbox() {
+        let inbox = RequestFixtures.inbox(TestClock())
+        let records = Self.malformed.map { $0.record() } + Field.allCases.map { Self.macRecord(values: [$0: nil]) }
+        inbox.receive(records.compactMap(CloudKitAlertSource.pendingRequest(from:)))
+        #expect(inbox.requests.isEmpty)
+        inbox.receive([Self.macRecord()].compactMap(CloudKitAlertSource.pendingRequest(from:)))
+        #expect(inbox.requests.map(\.id) == [Self.id], "vacuity: a whole record is read")
+    }
+
+    /// In the app, a request is built only by the strict reader (and by the
+    /// fixtures): no other source can put a partial prompt on screen.
+    static func requestBuilders(_ app: [CloudKitStructureTests.Source]) -> [String] {
+        app.compactMap { path, text in
+            let code = RecordPathStructureTests.constructionSpelling(CloudKitStructureTests.codeOnly(text))
+            let count = CloudKitStructureTests.occurrences(of: "PendingRequest(", in: code)
+            let allowed = [CloudKitStructureTests.cloudKitFile, "\(CloudKitStructureTests.appDir)/Fixtures/FixtureRequests.swift"]
+            return count == (allowed.contains(path) ? 1 : 0) ? nil : "\(path) builds a request \(count) time(s)"
+        }
+    }
+
+    @Test func onlyTheStrictReaderBuildsARequest() throws {
+        let app = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
+        #expect(Self.requestBuilders(app).isEmpty, "\(Self.requestBuilders(app))")
+        let inbox = "\(CloudKitStructureTests.appDir)/Model/RequestInbox.swift"
+        for plant in ["let r = PendingRequest(id: i, toolName: t, inputPreview: \"\", projectLabel: \"\", createdAt: c, expiresAt: e)",
+                      "let r = PendingRequest.init(id: i, toolName: t, inputPreview: p, projectLabel: l, createdAt: c, expiresAt: e)"] {
+            let mutant = app.map { $0.path == inbox ? ($0.path, $0.text + "\n" + plant) : $0 }
+            #expect(!Self.requestBuilders(mutant).isEmpty, "canary '\(plant)' was NOT caught")
+        }
     }
 
     // MARK: The prompt push
