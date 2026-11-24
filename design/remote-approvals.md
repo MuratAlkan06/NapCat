@@ -6,7 +6,8 @@ the design tracked on issue #98; slice S0 (issue #122) lands it together with
 the pure core described at the end, slice S1 (issue #125) adds the server
 side, slice S2 (issue #134) the Mac's control surface, slice S3 (issue
 #146) the CloudKit record path and the phone's request screen, and the
-S-PAIR slices (issue #161) pairing and signed decisions (CL-1).
+S-PAIR slices (issue #161) pairing and signed decisions (CL-1); S-PAIR-C1
+(issue #168) is the Mac's half of pairing.
 
 ## Problem
 
@@ -620,7 +621,7 @@ arms anything.
   file is exempt from the scan. Nothing is wired: no reader, intake or
   lifecycle hands the verifier a claim, no key is stored, and the approval
   files' one armed literal is still `armed: { false }`.
-- **S-PAIR-B** (this slice). The phone signs. Nothing on the Mac changes:
+- **S-PAIR-B**. The phone signs. Nothing on the Mac changes:
   no Mac holds a paired key, the verifier is still unwired, and the
   approval files' one armed literal is still `armed: { false }`.
   - *The key* (`PhoneKeyring`, `SecureEnclaveSigner`,
@@ -689,11 +690,71 @@ arms anything.
     re-enrollment that shows as changed with no prompt and then unpairs the
     phone on its next answer, no passcode fallback ever offered, and a
     restored or new phone that arrives unpaired.
-- **Next.** The PairingResponse record names in NapCatWire and the phone's
-  CloudKit writer for them, then the owner-run Production schema deploy of
-  the new PairingResponse record type, then S-PAIR-C1 (the ceremony, the key
-  store and Unpair on the Mac) and S-PAIR-C2 (the verifier wired as the
-  only road from a reading to the lifecycle, and "paired" as a precondition
-  for arming). Owed live drill: a forwarded prompt with an NFD file name
-  and non-ASCII text verifies end to end on real CloudKit, which also
-  proves the whole-second time's round trip.
+- **S-PAIR-C1** (this slice, issue #168). The Mac pairs. Nothing arms:
+  the approval files' one armed literal is still `armed: { false }`, and
+  the verifier is still unwired (no reader, intake or lifecycle names it,
+  and it names no stored key).
+  - *The wire.* `ApprovalWire` gains the third record type,
+    `PairingResponse`, with its four fields (`wireVersion`, `publicKey`,
+    `confirmation`, `proof`), every one but the version encrypted.
+    `PairingFingerprint` (NapCatWire) renders the code both devices show:
+    the first six bytes of a key's SHA-256 digest as `XXXX XXXX XXXX`,
+    and its spoken form, one character at a time with a pause between the
+    groups. `PairingFingerprintVectorTests` pins it on both devices, row
+    for row (a Mac test keeps the twins alike), and holds the phone's own
+    code to the same rows.
+  - *The slot* (`PairedKeyStore`). One keychain item holds the paired
+    phone's public key, its code and when it was paired. It is the topic
+    store's kind of item: the login keychain, this Mac only, never
+    synchronized (the file-based login keychain does not sync through
+    iCloud, and the item asks for no synchronization). The frozen proposal
+    named the data-protection keychain; an ad-hoc `make` build has no
+    keychain entitlement to use it, and the property the design needs
+    holds here. A pairing replaces the item in place, in one write, so the
+    Mac holds the old key or the new one, never a mix; Unpair deletes it.
+    A stored text in any other form reads as no pairing.
+  - *The ceremony* (`PairingCeremonyState`, a pure state machine, and
+    `PairingController`, its shell). Pair iPhone… in Settings › Claude
+    makes a fresh nonce, remembers the record's name (never the nonce) for
+    the next launch's cleanup, and shows the code on a sheet for five
+    minutes. While the sheet is up the Mac fetches the record by that
+    name every few seconds; nothing ticks or fetches while no ceremony
+    runs. The first response read is checked at once: the confirmation
+    MAC keyed by the nonce, then the proof signed by the delivered key.
+    A response that fails either, or a record that fails the strict
+    reading (`PairingResponseReader`: type, zone, the derived name, the
+    exact field set with every field but the version encrypted, each
+    value's size), ends the ceremony as refused. The first response that
+    passes is frozen: the QR never returns, and any later poll that reads
+    anything else (another response, or none) refuses too. The owner
+    compares the codes; only Codes Match writes the key (lint-locked: no
+    other road reaches the slot's one write), then the record is deleted.
+    They Don't Match, Cancel, Esc, closing the window, the five minutes,
+    a refusal or a failed write each burn the nonce and delete the record.
+    A ceremony over a paired phone leaves the old key working until the
+    new one is written.
+  - *The sheet.* Five states: the code (with the countdown and the
+    pair-in-private note; hidden while the sheet is not the key window or
+    is covered, without ending anything), the comparison (the code large
+    and monospaced, "confirm here first, then on your iPhone"), paired
+    (no auto-close), and four closed ends: expired, refused, stopped (no
+    Start Over) and save failed. The QR payload is drawn and never spoken,
+    copied, logged or shown as a tooltip; VoiceOver hears each state's
+    line as it changes, the code character by character, and the
+    countdown at one minute and ten seconds only. No motion beyond the
+    Settings buttons' press. Unpair… asks first, then deletes the key and
+    turns Remote approvals off through its kill switch.
+  - *Not live yet.* The app's record seam (`NoPairingRecords`) finds
+    nothing and deletes nothing: no CloudKit operation for the pairing
+    record exists on either device, so a ceremony shows its code and ends
+    with its window. The live fetch and delete, and the phone's CloudKit
+    writer, arrive with the owner-run Production schema deploy of the
+    PairingResponse type. Tests play CloudKit's part with records built
+    in memory and touch no keychain, defaults or iCloud.
+- **Next.** The phone's CloudKit writer and the Mac's live fetch and
+  delete for the pairing record, the owner-run Production schema deploy
+  of the PairingResponse record type, then S-PAIR-C2 (the verifier wired
+  as the only road from a reading to the lifecycle, and "paired" as a
+  precondition for arming). Owed live drill: a forwarded prompt with an
+  NFD file name and non-ASCII text verifies end to end on real CloudKit,
+  which also proves the whole-second time's round trip.

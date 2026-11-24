@@ -105,7 +105,7 @@ is active. It reopens on the pane you used last:
 |---|---|
 | **General** | Launch at Login · the charge limit (its switch, the 50–100% slider and its status) · whether Lock Screen is available on this macOS · Updates: **Check for Updates…** and **Check for updates automatically** |
 | **Alerts** | the ntfy server and topic (the topic itself is never shown), **ntfy settings…** and **Send test message** · how long a Claude run must last before a session alert · History: the last lid alert, session alert and phone alert · Phone alerts (beta) |
-| **Claude** | the Claude status, when the busy hook last ran and whether its installed copy is current, whether Claude is holding the Mac awake · **Pause detection** · the command that installs the busy hook |
+| **Claude** | the Claude status, when the busy hook last ran and whether its installed copy is current, whether Claude is holding the Mac awake · **Pause detection** · the command that installs the busy hook · Remote approvals: the **Mac-only preview** switch and the iPhone pairing (**Pair iPhone…**, the paired phone's code, **Unpair…**; nothing is armed by pairing, and the pairing does not reach iCloud yet) |
 
 The Alerts and Claude panes are absent in the
 [debug battery simulator](#debug-battery-simulator) mode, like the Alerts card
@@ -476,6 +476,13 @@ security delete-generic-password -s com.muratalkan.napcat -a ntfy-topic >/dev/nu
 Don't skip the last two lines. The keychain item is the ntfy topic, a bearer
 credential (anyone who has it can read and post to your feed), and an older
 install's settings may still hold a plaintext copy.
+
+If you paired an iPhone (Settings › Claude), NapCat also keeps that phone's
+public key in the login keychain (the **NapCat paired iPhone key** item; a
+public key, not a secret). `uninstall.sh` does not remove it yet: click
+**Unpair…** in Settings › Claude before uninstalling, or run
+`security delete-generic-password -s com.muratalkan.napcat -a paired-iphone-key >/dev/null`
+as yourself.
 
 ## Debug battery simulator
 
