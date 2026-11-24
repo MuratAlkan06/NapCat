@@ -98,6 +98,16 @@ enum DefaultsKey {
     /// permission prompts; nothing is forwarded until the iPhone half of the
     /// feature exists and is switched on too.
     static let remoteApprovalsEnabled = "remoteApprovalsEnabled"
+
+    // MARK: F4 slice S-PAIR-C1 — the pairing ceremony (the only key it adds;
+    // the paired key itself is a keychain item, `KeychainItemName.pairedPhone`)
+
+    /// The NAME of the pairing record a live ceremony expects (a SHA-256
+    /// derived from its nonce — never the nonce), kept from the moment the
+    /// code shows until the record is deleted, so a ceremony NapCat never
+    /// ended (a quit or a crash mid-pairing) is cleaned up at the next
+    /// launch. Absent while no ceremony is live.
+    static let pairingRecordToDelete = "pairingRecordToDelete"
 }
 
 /// Keys NapCat used to write and no longer does. They are listed here — rather

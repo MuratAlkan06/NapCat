@@ -56,6 +56,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// F4 slice S2 remote approvals; nil in debugBattery mode. Refreshed on
     /// menu open and when Settings becomes key — never polled.
     private let remoteApprovals: RemoteApprovalsController?
+    /// F4 slice S-PAIR-C1 pairing; nil wherever the toggle is. Its sheet
+    /// hangs off the Settings window.
+    private let pairing: PairingController?
     private let hostingView: MenuPanelHostingView<MenuPanelView>
     /// The Settings window (slice W, issue #78) — built on first use, opened
     /// by ⌘, (`showSettings(_:)`), refreshed every time it becomes key.
@@ -81,6 +84,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         phoneTransport: CompositeMessageSender? = nil,
         updateCheck: UpdateCheckController? = nil,
         remoteApprovals: RemoteApprovalsController? = nil,
+        pairing: PairingController? = nil,
         defaults: UserDefaults = .standard,
         settingsHooks: SettingsWindowHooks = .live
     ) {
@@ -97,6 +101,7 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         self.phoneTransport = phoneTransport
         self.updateCheck = updateCheck
         self.remoteApprovals = remoteApprovals
+        self.pairing = pairing
         self.model = MenuStateModel(
             power: power,
             sleep: sleep,
@@ -109,7 +114,8 @@ final class MenuContentView: NSObject, NSMenuDelegate {
             finishAlert: finishAlert,
             phoneTransport: phoneTransport,
             updateCheck: updateCheck,
-            remoteApprovals: remoteApprovals
+            remoteApprovals: remoteApprovals,
+            pairing: pairing
         )
         self.menu = NSMenu()
         self.hostingView = MenuPanelHostingView(rootView: MenuPanelView(model: model))
@@ -187,6 +193,25 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // new policy reading) republishes the same way.
         remoteApprovals?.setChangeHandler { [weak self] in
             Task { @MainActor in self?.model.refresh() }
+        }
+        // F4 slice S-PAIR-C1: the ceremony's sheet hangs off the Settings
+        // window — shown as a ceremony begins, taken off as it closes; the
+        // window's own close is the sheet's Cancel, and the sheet's key /
+        // occlusion state hides the code (S1b). Unpair… asks first.
+        if let pairing {
+            pairing.onSheetChange = { [weak self] showing in
+                guard let self else { return }
+                if showing {
+                    settingsWindow.presentSheet(PairingSheetView(pairing: pairing))
+                } else {
+                    settingsWindow.dismissSheet()
+                }
+            }
+            pairing.onPaneChange = { [weak self] in self?.model.refresh() }
+            pairing.announce = { PairingAnnouncer.post($0) }
+            settingsWindow.onSheetVisible = { [weak pairing] in pairing?.setVisible($0) }
+            settingsWindow.onWillClose = { [weak pairing] in pairing?.cancel() }
+            model.requestUnpair = { [weak self] in self?.confirmUnpair() }
         }
         // A pause toggle (the DISABLED flag) re-gates the finish alert at
         // once: pausing disarms it, resuming re-arms it with a fresh baseline.
@@ -651,6 +676,20 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         finishAlert?.reconcile()
         remoteApprovals?.refresh()
         updateCheck?.checkIfDue()
+        pairing?.refreshPaired()
+        model.refresh()
+    }
+
+    /// S-PAIR-C1: Unpair always asks first. Confirmed, the slot is deleted
+    /// and the remote-approvals toggle goes off through its kill switch.
+    private func confirmUnpair() {
+        let alert = NSAlert()
+        alert.messageText = MenuStateModel.unpairAlertTitle
+        alert.informativeText = MenuStateModel.unpairAlertText
+        alert.addButton(withTitle: MenuStateModel.unpairAlertConfirm)
+        alert.addButton(withTitle: MenuStateModel.unpairAlertCancel)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        pairing?.unpair()
         model.refresh()
     }
 }
