@@ -28,7 +28,8 @@ struct ApprovalChannelStructureTests {
     static let s1Files = [seamFile, relayFile, serverFile, intakeFile, hostFile, probeFile]
 
     /// Every Swift source of the four targets, comment-stripped (`strip`).
-    /// (File names are unique across them.)
+    /// (File names are unique across them.) The top level only — which is
+    /// the whole target because `everyFolderALockListsIsFlat` holds.
     static func sources(_ strip: (String) -> String = LidGuardStructureTests.codeOnly) throws -> Sources {
         let root = LidGuardStructureTests.repoRoot()
         return try directories.flatMap { directory -> Sources in
@@ -45,6 +46,101 @@ struct ApprovalChannelStructureTests {
     }
 
     static func count(_ token: String, in text: String) -> Int { text.components(separatedBy: token).count - 1 }
+
+    // MARK: - Every folder a lock lists is flat (R6)
+
+    /// SwiftPM compiles every Swift file BELOW a target's folder too, but
+    /// `sources()` — like every lock that lists a folder — reads its top
+    /// level only, so a file in a subfolder would compile in with no lock
+    /// ever reading it. The flat layout is itself the lock: each folder a
+    /// lock lists (the four targets, and the test folder the keychain lock
+    /// lists) holds plain files only — no folder, no link (which could stand
+    /// for one), so no nested Swift file — and Swift files at its top.
+    static let flatRoots = directories + ["Tests/NapCatTests"]
+
+    static func nestingFailures(under root: URL) -> [String] {
+        var isFolder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isFolder), isFolder.boolValue,
+              let walker = FileManager.default.enumerator(atPath: root.path) else {
+            return ["\(root.path) is not a folder (the lock would be vacuous)"]
+        }
+        var failures: [String] = []
+        var topLevelSources = 0
+        // Paths relative to the root; links are reported, never followed.
+        // One entry at a time, so `fileAttributes` describes this one.
+        while let entry = walker.nextObject() as? String {
+            let type = walker.fileAttributes?[.type] as? FileAttributeType
+            let isSwift = entry.hasSuffix(".swift")
+            if type == .typeDirectory {
+                failures.append("\(entry)/ is a folder in \(root.path) — its files would compile unread")
+            } else if type != .typeRegular {
+                failures.append("\(entry) in \(root.path) is not a plain file — a link could stand for a folder")
+            }
+            if entry.contains("/") {
+                if isSwift { failures.append("\(entry) is nested in \(root.path) — no structure lock reads it") }
+            } else if isSwift && type == .typeRegular {
+                topLevelSources += 1
+            }
+        }
+        if topLevelSources == 0 { failures.append("no Swift file at the top of \(root.path) (the lock would be vacuous)") }
+        return failures
+    }
+
+    @Test func everyFolderALockListsIsFlat() throws {
+        let repo = LidGuardStructureTests.repoRoot()
+        for directory in Self.flatRoots {
+            let failures = Self.nestingFailures(under: repo.appendingPathComponent(directory))
+            #expect(failures.isEmpty, "\(directory): \(failures)")
+        }
+        // Canaries in a scratch folder — never in the repo tree.
+        let manager = FileManager.default
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("ncf-" + UUID().uuidString.prefix(8).lowercased(), isDirectory: true)
+        try manager.createDirectory(at: scratch, withIntermediateDirectories: false)
+        defer { try? manager.removeItem(at: scratch) }
+        /// A folder holding `entries` (a trailing `/` makes an empty folder).
+        func layout(_ name: String, _ entries: [String]) throws -> URL {
+            let folder = scratch.appendingPathComponent(name, isDirectory: true)
+            try manager.createDirectory(at: folder, withIntermediateDirectories: false)
+            for entry in entries {
+                let url = folder.appendingPathComponent(entry)
+                if entry.hasSuffix("/") {
+                    try manager.createDirectory(at: url, withIntermediateDirectories: true)
+                } else {
+                    try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data("// canary\n".utf8).write(to: url)
+                }
+            }
+            return folder
+        }
+        let flat = try layout("flat", ["A.swift", "B.swift"])
+        #expect(Self.nestingFailures(under: flat).isEmpty, "a flat folder must pass: \(Self.nestingFailures(under: flat))")
+        // The reviewer's shape (R6), and its variants.
+        let nested = try layout("nested", ["A.swift", "ZZHidden/ZZPlantShadow.swift"])
+        let nestedFailures = Self.nestingFailures(under: nested)
+        #expect(nestedFailures.contains { $0.hasPrefix("ZZHidden/ZZPlantShadow.swift is nested") },
+                "canary: the nested Swift file was NOT named: \(nestedFailures)")
+        #expect(nestedFailures.contains { $0.hasPrefix("ZZHidden/ is a folder") }, "canary: the subfolder was NOT named: \(nestedFailures)")
+        let mutants: [(name: String, entries: [String])] = [
+            ("a deep file", ["A.swift", "B/C/D.swift"]),
+            ("a hidden folder", ["A.swift", ".hidden/E.swift"]),
+            ("an empty folder", ["A.swift", "Empty/"]),
+            ("a folder of non-Swift files", ["A.swift", "Data/notes.txt"]),
+        ]
+        for (name, entries) in mutants {
+            let folder = try layout(name, entries)
+            #expect(!Self.nestingFailures(under: folder).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // A link to a folder outside the root: never followed, so caught as a link.
+        let elsewhere = try layout("elsewhere", ["F.swift"])
+        let linked = try layout("linked", ["A.swift"])
+        try manager.createSymbolicLink(at: linked.appendingPathComponent("Link"), withDestinationURL: elsewhere)
+        #expect(!Self.nestingFailures(under: linked).isEmpty, "canary 'a link to a folder' was NOT caught")
+        // Vacuity: a missing root, and a root with no Swift file at its top.
+        #expect(!Self.nestingFailures(under: scratch.appendingPathComponent("missing")).isEmpty, "a missing root must fail")
+        let noSwift = try layout("no-swift", ["notes.txt"])
+        #expect(!Self.nestingFailures(under: noSwift).isEmpty, "a root with no Swift file at its top must fail")
+    }
 
     // MARK: - The seam's socket calls live in one file
 
