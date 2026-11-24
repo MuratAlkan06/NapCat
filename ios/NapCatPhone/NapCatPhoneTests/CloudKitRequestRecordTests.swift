@@ -5,9 +5,9 @@ import NapCatWire
 import Testing
 
 /// F4 slice S3: a PromptRequest record (as the Mac's writer builds it) and a
-/// prompt push, as the phone reads them; since S-PAIR-B (I4), a record
-/// missing any field is refused, field by field. CKRecords are plain values
-/// here; nothing talks to iCloud.
+/// prompt push, as the phone reads them; since S-PAIR-B (whole prompts
+/// only), a record missing any field is refused, field by field. CKRecords
+/// are plain values here; nothing talks to iCloud.
 @Suite struct CloudKitRequestRecordTests {
     static let id = RequestFixtures.id(0x42)
     static let createdAt = Date(timeIntervalSince1970: 1_800_000_000)
@@ -95,9 +95,9 @@ import Testing
         #expect(CloudKitAlertSource.pendingRequest(from: row.record()) == nil)
     }
 
-    // MARK: I4: a record missing any field is never shown or answered
+    // MARK: Whole prompts only: a record missing any field is never shown or answered
 
-    /// S-PAIR-B (the register's I4): the phone signs what it shows, so it
+    /// S-PAIR-B (whole prompts only): the phone signs what it shows, so it
     /// shows only a whole prompt. A record missing ANY of the wire's fields,
     /// each one in turn, is not a request: nothing of it is drawn, and
     /// nothing can answer it.
