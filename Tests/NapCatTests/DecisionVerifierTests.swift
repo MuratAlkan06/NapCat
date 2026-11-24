@@ -157,8 +157,17 @@ struct DecisionVerifierTests {
     @Test func thePromptIDHasOneSpelling() throws {
         let base = try Self.signed()
         let hex = Self.promptID.hex
-        for spelled in [hex.uppercased(), String(hex.dropLast()), hex + "0", String(repeating: "0", count: 32),
-                        " " + hex.dropFirst(), String(hex.dropLast()) + "g", "0x" + hex.dropFirst(2), ""] {
+        // Typed element by element: the mixed String/Substring `+` overloads in a
+        // single array literal exceed the macos-15 compiler's type-check budget.
+        let uppercased: String = hex.uppercased()
+        let short: String = String(hex.dropLast())
+        let long: String = hex + "0"
+        let zeros: String = String(repeating: "0", count: 32)
+        let padded: String = " " + String(hex.dropFirst())
+        let misdigit: String = String(hex.dropLast()) + "g"
+        let prefixed: String = "0x" + String(hex.dropFirst(2))
+        let spellings: [String] = [uppercased, short, long, zeros, padded, misdigit, prefixed, ""]
+        for spelled in spellings {
             #expect(Self.verification(Self.evidence(base, promptID: spelled)) == .unverified(.malformedPromptID), "'\(spelled)'")
         }
         // Another real prompt, with the Mac's copy of it: the signature binds the prompt.
