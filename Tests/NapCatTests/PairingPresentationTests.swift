@@ -14,6 +14,7 @@ import Testing
 /// words, exactly); the QR as drawn (decoded back to its payload, its quiet
 /// zone and its pixel grid); and the Settings window's managed sheet seam
 /// over recording hooks — no window on screen, nothing activated.
+@MainActor
 struct PairingPresentationTests {
     static let start = PairingCeremonyTests.start
 
