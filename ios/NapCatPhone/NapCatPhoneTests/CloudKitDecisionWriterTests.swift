@@ -36,7 +36,10 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
 @Suite struct CloudKitDecisionWriterTests {
     static let promptID = RequestFixtures.id(0x77)
     static let decidedAt = Date(timeIntervalSince1970: 1_800_000_321)
-    static let decision = PhoneDecision(promptID: promptID, verdict: .allow, decidedAt: decidedAt)
+    /// The writer only writes: any 64 bytes stand for the signature here
+    /// (the signature's own tests are `DecisionSignerTests`).
+    static let signature = Data((0..<64).map { UInt8($0) })
+    static let decision = PhoneDecision(promptID: promptID, verdict: .allow, decidedAt: decidedAt, signature: signature)!
     typealias Field = ApprovalWire.DecisionField
 
     static func ck(_ code: CKError.Code, _ underlying: NSError? = nil) -> NSError {
@@ -45,17 +48,18 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
 
     // MARK: The record
 
-    /// The wire's PromptDecision, in the approvals zone: the prompt ID and
-    /// the verdict encrypted, the version and the time in the clear, and no
-    /// signature (there is no paired key before CL-1).
-    @Test func theRecordIsTheWiresUnsignedDecision() {
+    /// The wire's PromptDecision, in the approvals zone: the prompt ID, the
+    /// verdict and the 64-byte signature encrypted (S-PAIR-B), the version
+    /// and the time in the clear.
+    @Test func theRecordIsTheWiresSignedDecision() {
         let record = CloudKitAlertSource.makeDecisionRecord(Self.decision)
         #expect(record.recordType == ApprovalWire.RecordType.decision.rawValue)
         #expect(record.recordID.zoneID.zoneName == ApprovalWire.zoneName)
         #expect(record.recordID.zoneID.ownerName == CKCurrentUserDefaultName)
         let encrypted = Set(record.encryptedValues.allKeys())
         let plain = Set(record.allKeys()).subtracting(encrypted)
-        #expect(encrypted == [Field.promptID.rawValue, Field.verdict.rawValue])
+        #expect(encrypted == [Field.promptID.rawValue, Field.verdict.rawValue, Field.signature.rawValue])
+        #expect(encrypted == Set(ApprovalWire.encryptedDecisionFields.map(\.rawValue)))
         #expect(plain == [Field.wireVersion.rawValue, Field.decidedAt.rawValue])
         #expect(encrypted.isSubset(of: Set(ApprovalWire.encryptedDecisionFields.map(\.rawValue))))
         #expect(plain.isDisjoint(with: Set(ApprovalWire.encryptedDecisionFields.map(\.rawValue))))
@@ -63,16 +67,18 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
         #expect(record.encryptedValues[Field.promptID.rawValue] as? String == Self.promptID.hex)
         #expect(record.encryptedValues[Field.verdict.rawValue] as? String == "allow")
         #expect(record[Field.decidedAt.rawValue] as? Date == Self.decidedAt)
-        #expect(record.encryptedValues[Field.signature.rawValue] == nil && record[Field.signature.rawValue] == nil,
-                "unsigned: no signature field at all")
+        #expect(record.encryptedValues[Field.signature.rawValue] as? Data == Self.signature)
+        #expect(Set(record.allKeys()) == Set(Field.allCases.map(\.rawValue)), "every wire field, nothing else")
     }
 
     /// One decision record per prompt: a retry names the same record, any
     /// other prompt another one, and none is the prompt's own record.
     @Test func eachPromptHasOneDecisionRecord() {
-        let deny = PhoneDecision(promptID: Self.promptID, verdict: .deny, decidedAt: Self.decidedAt.addingTimeInterval(5))
+        let deny = PhoneDecision(promptID: Self.promptID, verdict: .deny, decidedAt: Self.decidedAt.addingTimeInterval(5),
+                                 signature: Self.signature)!
         #expect(CloudKitAlertSource.makeDecisionRecord(deny).recordID == CloudKitAlertSource.makeDecisionRecord(Self.decision).recordID)
-        let other = PhoneDecision(promptID: RequestFixtures.id(0x78), verdict: .allow, decidedAt: Self.decidedAt)
+        let other = PhoneDecision(promptID: RequestFixtures.id(0x78), verdict: .allow, decidedAt: Self.decidedAt,
+                                  signature: Self.signature)!
         #expect(CloudKitAlertSource.makeDecisionRecord(other).recordID != CloudKitAlertSource.makeDecisionRecord(Self.decision).recordID)
         #expect(CloudKitAlertSource.decisionRecordID(for: Self.promptID).recordName != Self.promptID.hex)
     }
@@ -138,8 +144,9 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
 
     // MARK: Through the inbox
 
-    /// The whole phone half: an answer goes from the inbox through the real
-    /// record and operation, and CloudKit's answer decides what it shows.
+    /// The whole phone half: an answer goes from the inbox through the
+    /// signer and the real record and operation, and CloudKit's answer
+    /// decides what it shows. The record's signature is one the Mac counts.
     @MainActor
     @Test(arguments: [(DecisionWriteOutcome.saved, RequestStatus.sent(.deny)),
                       (.alreadyAnswered, .answered)])
@@ -148,8 +155,11 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
             ? [.saved(0), .batchSucceeded] : [.saveFailed(0, Self.ck(.serverRecordChanged)), .batchSucceeded]
         let database = ScriptedApprovalDatabase(ModifyOperationScript(steps))
         let clock = TestClock()
+        let keys = PhoneKeyringTests.World()
+        let publicKey = try #require(keys.keyring.makeProvisional())
+        #expect(keys.keyring.commitProvisional())
         let inbox = RequestInbox(writer: CloudKitDecisionWriter(database: database), biometrics: ScriptedBiometricGate(),
-                                 clock: { clock.now })
+                                 keyring: keys.keyring, clock: { clock.now })
         let request = RequestFixtures.request(5, createdAt: clock.now)
         inbox.receive([request])
         await inbox.deny(request.id)
@@ -157,5 +167,9 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
         let record = try #require(database.submitted.first?.recordsToSave?.first)
         #expect(record.encryptedValues[Field.verdict.rawValue] as? String == "deny")
         #expect(record.encryptedValues[Field.promptID.rawValue] as? String == request.id.hex)
+        let signature = try #require(record.encryptedValues[Field.signature.rawValue] as? Data)
+        let decidedAt = try #require(record[Field.decidedAt.rawValue] as? Date)
+        let read = try #require(PhoneDecision(promptID: request.id, verdict: .deny, decidedAt: decidedAt, signature: signature))
+        #expect(MacCheck.verifies(read, copy: request, publicKey: publicKey))
     }
 }

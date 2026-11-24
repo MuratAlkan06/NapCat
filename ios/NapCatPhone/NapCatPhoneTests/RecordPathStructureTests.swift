@@ -19,7 +19,8 @@ import Testing
 ///    ruling: Deny asks too, every answer being signed), the match ends in
 ///    the one write site, and that site re-checks the window first (CL-3);
 /// 5. the decision record is built once, only through the wire's keys and
-///    encryption table, and carries no signature before pairing;
+///    encryption table, and (AMENDED in S-PAIR-B) carries the decision's own
+///    signature, from the decision the signer built;
 /// 6. (security review 2) the decision's record and its save operation are
 ///    each reached once, in `CloudKitDecisionWriter.write`, which hands the
 ///    operation to the seam, and nothing in the CloudKit file runs an
@@ -194,7 +195,8 @@ import Testing
     /// only then sends with it. The gate is asked in one place and the
     /// writer reached in one place, `send`, whose first acts are to end the
     /// match on every path out and to re-check that the request is still
-    /// pending.
+    /// pending. (S-PAIR-B: the signature sits between that re-check and the
+    /// write; `DecisionSignerTests` pins the order.)
     static func allowPathFailures(_ inbox: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(inbox)
         var failures: [String] = []
@@ -218,7 +220,8 @@ import Testing
             failures.append("confirmAndSend must ask for the match, return without one, and only then send with it")
         }
         let sendFlat = SettingsReachabilityTests.flat(send)
-        if !sendFlat.hasPrefix("defer { match.invalidate() } tick() guard phase(of: id)?.isPending == true else {") {
+        if !sendFlat.hasPrefix("defer { match.invalidate() } tick() "
+                               + "guard phase(of: id)?.isPending == true, let request = entries[id]?.request else {") {
             failures.append("send must end the match on every path and re-check that the request is still pending first")
         }
         for (token, count) in [("biometrics.confirm(", 1), ("writer.write(", 1), ("confirmAndSend(.allow", 1),
@@ -250,8 +253,8 @@ import Testing
                 of: "    func deny(_ id: PromptID) async {\n        guard isAnswerable(id) else { return }\n",
                 with: "    func deny(_ id: PromptID) async {\n")),
             ("send skips the re-check", inbox.replacingOccurrences(
-                of: "        tick()\n        guard phase(of: id)?.isPending == true else {\n            entries[id]?.answer = .none\n            return\n        }\n        entries[id]?.answer = .sending(verdict)",
-                with: "        entries[id]?.answer = .sending(verdict)")),
+                of: "        tick()\n        guard phase(of: id)?.isPending == true, let request = entries[id]?.request else {\n",
+                with: "        guard let request = entries[id]?.request else {\n")),
             ("the match outlives its answer", inbox.replacingOccurrences(of: "        defer { match.invalidate() }\n", with: "")),
             ("a second write site", inbox + "\nextension RequestInbox { func f() async { _ = await writer.write(d) } }"),
         ]
@@ -266,7 +269,9 @@ import Testing
     /// As the Mac's records: ONE record construction in the receiver (the
     /// decision), every key an `ApprovalWire` field (no literal key, no bulk
     /// setter, no asset or reference), the encrypted-or-clear choice read
-    /// from the wire's own table, and no signature before pairing (CL-1).
+    /// from the wire's own table, and (AMENDED in S-PAIR-B, CL-1) the
+    /// signature written is the decision's own, which only the signer
+    /// builds (`PhoneDecision` holds exactly 64 bytes).
     static func decisionSchemaFailures(_ file: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(file)
         var failures: [String] = []
@@ -287,8 +292,8 @@ import Testing
         if !flat.contains(shape) {
             failures.append("the decision's fields must be the wire's, encrypted as the wire's table says")
         }
-        if !flat.contains("case .signature: return nil") {
-            failures.append("a decision carries no signature before pairing (CL-1)")
+        if !flat.contains("case .signature: return decision.signature as NSData") {
+            failures.append("a decision carries its own signature, as the signer made it (CL-1)")
         }
         return failures
     }
@@ -297,8 +302,10 @@ import Testing
         let file = try #require(try Self.app().first { $0.path == Self.cloudKitFile }).text
         #expect(Self.decisionSchemaFailures(file).isEmpty, "\(Self.decisionSchemaFailures(file))")
         let mutants: [(String, String)] = [
-            ("a signature written", file.replacingOccurrences(of: "case .signature: return nil",
-                                                              with: "case .signature: return Data([1]) as NSData")),
+            ("the signature left out", file.replacingOccurrences(of: "case .signature: return decision.signature as NSData",
+                                                                 with: "case .signature: return nil")),
+            ("a signature made up", file.replacingOccurrences(of: "case .signature: return decision.signature as NSData",
+                                                              with: "case .signature: return Data(count: 64) as NSData")),
             ("everything in the clear", file.replacingOccurrences(of: "if ApprovalWire.encryptedDecisionFields.contains(field) {",
                                                                   with: "if false {")),
             ("a literal key", file + "\nfunc f(r: CKRecord) { r[\"note\"] = \"x\" as NSString }"),

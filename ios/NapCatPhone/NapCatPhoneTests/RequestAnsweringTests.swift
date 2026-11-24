@@ -53,6 +53,23 @@ actor RecordingDecisionWriter: DecisionWriter {
     }
 }
 
+/// A decision writer that notes, as each write begins, what `check` says
+/// (on the main actor, where the matches live).
+@MainActor
+final class WatchingDecisionWriter: DecisionWriter {
+    private let check: () -> Bool
+    private(set) var seen: [Bool] = []
+
+    init(_ check: @escaping () -> Bool) {
+        self.check = check
+    }
+
+    func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome {
+        seen.append(check())
+        return .saved
+    }
+}
+
 /// Allow and Deny on the phone (CL-3, and the owner's uniform-signing
 /// ruling): each needs a biometric match of its own, every time, and spends
 /// it; neither answers an expired or withdrawn request; each answer touches
@@ -66,13 +83,19 @@ actor RecordingDecisionWriter: DecisionWriter {
         let clock = TestClock()
         let gate: ScriptedBiometricGate
         let writer: RecordingDecisionWriter
+        /// The phone's keys: one committed software key unless `paired` is
+        /// false.
+        let keys = PhoneKeyringTests.World()
+        let publicKey: [UInt8]
         let inbox: RequestInbox
         let request: PendingRequest
 
-        init(confirms: Bool = true, outcome: DecisionWriteOutcome = .saved) {
+        init(confirms: Bool = true, outcome: DecisionWriteOutcome = .saved, paired: Bool = true) {
             gate = ScriptedBiometricGate(confirms: confirms)
             writer = RecordingDecisionWriter(outcome)
-            inbox = RequestInbox(writer: writer, biometrics: gate, clock: { [clock] in clock.now })
+            publicKey = paired ? keys.keyring.makeProvisional() ?? [] : []
+            if paired { _ = keys.keyring.commitProvisional() }
+            inbox = RequestInbox(writer: writer, biometrics: gate, keyring: keys.keyring, clock: { [clock] in clock.now })
             request = F.request(1, createdAt: clock.now)
             inbox.receive([request])
         }
@@ -87,14 +110,105 @@ actor RecordingDecisionWriter: DecisionWriter {
 
     // MARK: Every answer needs its own match
 
+    /// Allow and Deny alike: a match, then the decision signed by the
+    /// paired key over the prompt as received, in whole seconds, then the
+    /// write. The Mac would count it.
     @Test(arguments: ApprovalWire.Verdict.allCases)
-    func anAnswerAsksForAMatchThenSends(_ verdict: ApprovalWire.Verdict) async {
+    func anAnswerAsksForAMatchThenSendsItSigned(_ verdict: ApprovalWire.Verdict) async throws {
         let world = World()
+        world.clock.advance(0.6)
         await world.answer(verdict)
         #expect(world.gate.requests == [RequestInbox.reason(for: verdict)])
-        #expect(await world.writer.written == [PhoneDecision(promptID: world.request.id, verdict: verdict,
-                                                             decidedAt: world.clock.now)])
+        let written = await world.writer.written
+        try #require(written.count == 1)
+        #expect(written[0].promptID == world.request.id && written[0].verdict == verdict)
+        #expect(written[0].decidedAt == DecisionSigner.wholeSecond(world.clock.now))
+        #expect(MacCheck.verifies(written[0], copy: world.request, publicKey: world.publicKey))
         #expect(world.inbox.status(of: world.request.id) == .sent(verdict))
+    }
+
+    /// The signature spends the match before anything is written: one
+    /// signature per match, and no live match while the write is under way.
+    @Test func theSignatureSpendsTheMatchBeforeTheWrite() async {
+        let gate = ScriptedBiometricGate()
+        let writer = WatchingDecisionWriter { gate.matches.allSatisfy { !$0.isValid } }
+        let keyring = RequestFixtures.pairedKeyring()
+        let clock = TestClock()
+        let inbox = RequestInbox(writer: writer, biometrics: gate, keyring: keyring, clock: { clock.now })
+        let request = F.request(1, createdAt: clock.now)
+        inbox.receive([request])
+        await inbox.deny(request.id)
+        #expect(writer.seen == [true], "the match was spent when the write began")
+        #expect(gate.matches.count == 1 && !gate.matches[0].isValid)
+    }
+
+    // MARK: No key, no answer; a dead key after a changed enrollment unpairs
+
+    /// An unpaired phone asks for no match it could not use, and writes
+    /// nothing.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func anUnpairedPhoneAsksForNothing(_ verdict: ApprovalWire.Verdict) async {
+        let world = World(paired: false)
+        #expect(world.inbox.keyHealth == .unpaired(.neverPaired))
+        await world.answer(verdict)
+        #expect(world.gate.requests.isEmpty)
+        #expect(await world.writer.written.isEmpty)
+        #expect(world.inbox.status(of: world.request.id) == .pending(until: world.request.expiresAt, note: nil))
+    }
+
+    /// The key stopped signing after a good match, and the enrollment had
+    /// changed: the phone unpairs itself, writes nothing, says why, and
+    /// asks for nothing more.
+    @Test func aDeadKeyAfterAChangedEnrollmentUnpairsThePhone() async throws {
+        let world = World()
+        world.keys.enclave.killed = [try #require(world.keys.committed()).keyData]
+        world.keys.enrolled = PhoneKeyringTests.after
+        await world.inbox.allow(world.request.id)
+        #expect(world.gate.requests.count == 1)
+        #expect(await world.writer.written.isEmpty)
+        #expect(world.inbox.keyHealth == .unpaired(.enrollmentChanged))
+        #expect(world.keys.committed() == nil)
+        #expect(world.inbox.status(of: world.request.id) == .pending(until: world.request.expiresAt, note: nil))
+        await world.inbox.deny(world.request.id)
+        #expect(world.gate.requests.count == 1, "nothing left to sign with: no second prompt")
+    }
+
+    /// A key that would not sign while the enrollment is unchanged stays:
+    /// the answer says it was not signed, and a retry can go out.
+    @Test func aKeyThatDidNotSignLeavesANoteAndStays() async throws {
+        let world = World()
+        let key = try #require(world.keys.committed())
+        world.keys.enclave.killed = [key.keyData]
+        await world.inbox.deny(world.request.id)
+        #expect(await world.writer.written.isEmpty)
+        #expect(world.inbox.status(of: world.request.id) == .pending(until: world.request.expiresAt, note: .unsigned))
+        #expect(world.inbox.keyHealth == .paired)
+        #expect(world.keys.committed() == key)
+        world.keys.enclave.killed = []
+        await world.inbox.deny(world.request.id)
+        #expect(await world.writer.written.map(\.verdict) == [.deny])
+    }
+
+    /// A cancel or a lockout at the key never unpairs, even with the
+    /// enrollment changed.
+    @Test func aCancelAtTheKeyNeverUnpairs() async {
+        let world = World()
+        world.keys.enclave.forced = .notAuthorized
+        world.keys.enrolled = PhoneKeyringTests.after
+        await world.inbox.allow(world.request.id)
+        #expect(world.inbox.keyHealth == .enrollmentChanged)
+        #expect(world.keys.committed() != nil)
+        #expect(world.inbox.status(of: world.request.id) == .pending(until: world.request.expiresAt, note: .unsigned))
+    }
+
+    /// The health check asks for nothing and reads a changed enrollment.
+    @Test func theInboxReadsThePairingWithNoPrompt() {
+        let world = World()
+        #expect(world.inbox.keyHealth == .paired)
+        world.keys.enrolled = PhoneKeyringTests.after
+        world.inbox.refreshKeyHealth()
+        #expect(world.inbox.keyHealth == .enrollmentChanged)
+        #expect(world.gate.requests.isEmpty && world.keys.enclave.signed.isEmpty)
     }
 
     /// No match, no answer, Deny included: nothing is written, and the
@@ -131,7 +245,7 @@ actor RecordingDecisionWriter: DecisionWriter {
         await world.inbox.deny(world.request.id)
         #expect(world.gate.matches.count == 3)
         #expect(Set(world.gate.matches.map(ObjectIdentifier.init)).count == 3, "never the same match twice")
-        #expect(world.gate.matches.allSatisfy { $0.invalidations == 1 })
+        #expect(world.gate.matches.allSatisfy { !$0.isValid })
         #expect(await world.writer.written.map(\.verdict) == [.deny, .allow, .deny])
     }
 
@@ -265,7 +379,7 @@ actor RecordingDecisionWriter: DecisionWriter {
 
     @Test func theInboxReadsTheGatesAvailability() {
         let gate = ScriptedBiometricGate(available: .unavailable(.touchID))
-        let inbox = RequestInbox(writer: RecordingDecisionWriter(), biometrics: gate)
+        let inbox = RequestInbox(writer: RecordingDecisionWriter(), biometrics: gate, keyring: F.pairedKeyring())
         #expect(inbox.biometry == .unavailable(.touchID))
         gate.available = .available(.touchID)
         inbox.refreshBiometry()

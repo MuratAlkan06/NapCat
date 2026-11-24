@@ -31,6 +31,8 @@ enum RequestAnswer: Equatable, Sendable {
     case answeredElsewhere
     /// The answer was not confirmed; nothing was sent.
     case notConfirmed
+    /// The paired key did not sign it; nothing was sent.
+    case unsigned
     /// Nothing was saved.
     case unsent(ApprovalWire.Verdict)
     /// iCloud did not confirm it.
@@ -49,6 +51,11 @@ enum RequestAnswer: Equatable, Sendable {
 /// and the owner's uniform-signing ruling: every answer is signed, and the
 /// key signs only after a match). Both re-check the window right before
 /// anything is written, and each answer touches only its own request.
+///
+/// Every answer is signed by the phone's committed key (`PhoneKeyring`,
+/// `DecisionSigner`) between the window's re-check and the write: an
+/// unpaired phone offers no answer, and a phone whose key stopped signing
+/// after its biometrics changed unpairs itself and says so.
 @MainActor
 @Observable
 final class RequestInbox {
@@ -90,26 +97,36 @@ final class RequestInbox {
     private(set) var entries: [PromptID: Entry] = [:]
     /// Whether an answer can be confirmed here, as last read.
     private(set) var biometry: BiometricAvailability
+    /// Where this phone's pairing stands, as last read (with no prompt).
+    private(set) var keyHealth: PhoneKeyring.Health
     @ObservationIgnored private let writer: any DecisionWriter
     @ObservationIgnored private let biometrics: any BiometricGate
+    @ObservationIgnored private let keyring: PhoneKeyring
     @ObservationIgnored private let clock: () -> Date
 
     /// `clock` is this phone's wall clock (a test seam, like the others).
-    init(writer: any DecisionWriter, biometrics: any BiometricGate, clock: @escaping () -> Date = Date.init) {
+    init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring,
+         clock: @escaping () -> Date = Date.init) {
         self.writer = writer
         self.biometrics = biometrics
+        self.keyring = keyring
         self.clock = clock
         self.biometry = biometrics.availability()
+        self.keyHealth = keyring.health()
     }
 
     /// The launch's inbox. A recognised `-NapCatRequest` shows that fixture
-    /// request, answered by a fixture writer; otherwise the inbox starts
-    /// empty and writes nothing (no record path reaches the Mac in this
-    /// slice). Both ask the real biometric gate before every answer.
+    /// request, answered by a fixture writer and signed by a fixture key;
+    /// otherwise the inbox starts empty, signs with this phone's own key
+    /// (the Secure Enclave, the keychain) and writes nothing (no record path
+    /// reaches the Mac yet). Both ask the real biometric gate before every
+    /// answer.
     static func make(options: LaunchOptions, now: Date) -> RequestInbox {
         let biometrics = LocalAuthenticationGate()
         guard let state = options.request else {
-            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics)
+            let keyring = PhoneKeyring(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(),
+                                       enrollment: LocalAuthenticationEnrollment())
+            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring)
         }
         return FixtureRequests.inbox(state, now: now, biometrics: biometrics)
     }
@@ -185,6 +202,14 @@ final class RequestInbox {
         if current != biometry { biometry = current }
     }
 
+    /// Re-reads where the pairing stands, asking for nothing (the screen
+    /// does, as it appears and as the app returns to the foreground: a
+    /// changed enrollment shows before anything is answered).
+    func refreshKeyHealth() {
+        let current = keyring.health()
+        if current != keyHealth { keyHealth = current }
+    }
+
     // MARK: Answering
 
     /// Allow: only for an answerable request, and only after a biometric
@@ -213,25 +238,34 @@ final class RequestInbox {
         await send(verdict, for: id, match: match)
     }
 
-    /// Pending, and no answer under way or done.
+    /// Pending, no answer under way or done, and a key to sign with: an
+    /// unpaired phone asks for no match it could not use.
     private func isAnswerable(_ id: PromptID) -> Bool {
         tick()
+        refreshKeyHealth()
+        if case .unpaired = keyHealth { return false }
         guard let entry = entries[id], phase(of: id)?.isPending == true else { return false }
         return RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer).isAnswerable
     }
 
-    /// Writes the decision, if the request is still pending right now. The
-    /// match ends here, whatever happens: it is never kept for another
-    /// answer.
+    /// Signs and writes the decision, if the request is still pending right
+    /// now. The match ends here, whatever happens: the signature spends it,
+    /// and it is never kept for another answer.
     private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {
         defer { match.invalidate() }
         tick()
-        guard phase(of: id)?.isPending == true else {
+        guard phase(of: id)?.isPending == true, let request = entries[id]?.request else {
             entries[id]?.answer = .none
             return
         }
+        let signing = DecisionSigner.sign(verdict, for: request, at: clock(), with: keyring, match: match)
+        guard case .signed(let decision) = signing else {
+            entries[id]?.answer = signing == .notSigned ? .unsigned : .none
+            refreshKeyHealth()
+            return
+        }
         entries[id]?.answer = .sending(verdict)
-        let outcome = await writer.write(PhoneDecision(promptID: id, verdict: verdict, decidedAt: clock()))
+        let outcome = await writer.write(decision)
         entries[id]?.answer = switch outcome {
         case .saved: .sent(verdict)
         case .alreadyAnswered: .answeredElsewhere

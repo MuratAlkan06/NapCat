@@ -12,9 +12,11 @@ import Foundation
 /// probed states only; `checking` is a live launch's pre-probe state and
 /// falls back like an unknown value. `-NapCatScreen settings` opens the
 /// launch on Settings (screenshots); it does not force fixtures.
-/// `-NapCatRequest pending|expired|withdrawn` opens the launch on a fixture
-/// permission prompt in that state (F4, slice S3), answered by a fixture
-/// writer; it leaves the alert list's source alone.
+/// `-NapCatRequest pending|expired|withdrawn|unpaired|changed` opens the
+/// launch on a fixture permission prompt in that state (F4, slice S3; the
+/// last two since S-PAIR-B: the phone unpaired, or its biometrics changed
+/// since pairing), answered by a fixture writer and signed by a fixture
+/// key; it leaves the alert list's source alone.
 struct LaunchOptions: Equatable, Sendable {
     static let fixtureKey = "NapCatFixture"
     static let connectionKey = "NapCatConnection"

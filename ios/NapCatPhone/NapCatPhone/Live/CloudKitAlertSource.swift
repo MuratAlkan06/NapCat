@@ -248,9 +248,9 @@ actor CloudKitAlertSource: AlertSource {
 
     /// THE one place a PromptDecision record is built: the wire's fields,
     /// each stored encrypted exactly when the wire lists it in
-    /// `encryptedDecisionFields`. The signature is left out: there is no
-    /// paired key before CL-1, so the decision is unsigned, and the Mac reads
-    /// it as a claim it does not act on.
+    /// `encryptedDecisionFields`. Since S-PAIR-B the decision carries the
+    /// paired key's 64-byte signature (CL-1), encrypted like the verdict;
+    /// the Mac still reads every decision as a claim until it verifies it.
     static func makeDecisionRecord(_ decision: PhoneDecision) -> CKRecord {
         let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,
                               recordID: decisionRecordID(for: decision.promptID))
@@ -265,16 +265,15 @@ actor CloudKitAlertSource: AlertSource {
         return record
     }
 
-    /// One field's value; nil for a field this slice does not write.
-    /// Exhaustive on purpose: a new wire field does not compile until it is
-    /// decided here.
+    /// One field's value. Exhaustive on purpose: a new wire field does not
+    /// compile until it is decided here.
     static func decisionValue(_ field: ApprovalWire.DecisionField, of decision: PhoneDecision) -> CKRecordValue? {
         switch field {
         case .wireVersion: return ApprovalWire.wireVersion as NSNumber
         case .promptID: return decision.promptID.hex as NSString
         case .verdict: return decision.verdict.rawValue as NSString
         case .decidedAt: return decision.decidedAt as NSDate
-        case .signature: return nil
+        case .signature: return decision.signature as NSData
         }
     }
 
@@ -444,9 +443,9 @@ protocol CloudKitApprovalDatabase: Sendable {
     func submit(_ operation: CKModifyRecordsOperation)
 }
 
-/// The CloudKit `DecisionWriter`: one decision record per answer
+/// The CloudKit `DecisionWriter`: one signed decision record per answer
 /// (`CloudKitAlertSource.makeDecisionRecord`), saved through the seam. Built
-/// by no app source in this slice (lint-locked).
+/// by no app source yet (lint-locked).
 struct CloudKitDecisionWriter: DecisionWriter {
     let database: any CloudKitApprovalDatabase
 

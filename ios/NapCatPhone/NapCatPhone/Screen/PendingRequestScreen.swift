@@ -27,6 +27,30 @@ struct PendingRequestScreen: View {
         return PhoneLine(text: "Unavailable — answering needs \(kind.name) turned on; answer on your Mac", severity: .warning)
     }
 
+    /// Why no answer is on offer on an unpaired phone: every answer is
+    /// signed by the paired key, and there is none. Names the biometric
+    /// when it is what changed.
+    nonisolated static func unpaired(_ reason: PhoneKeyring.UnpairedReason, _ kind: BiometryKind?) -> PhoneLine {
+        switch reason {
+        case .neverPaired:
+            return PhoneLine(text: "Unpaired — pair this iPhone with your Mac to answer here; answer on your Mac", severity: .warning)
+        case .enrollmentChanged:
+            let what = kind.map { "\($0.name) changed" } ?? "your biometrics changed"
+            return PhoneLine(text: "Unpaired — \(what), so this iPhone's key stopped working; pair again with your Mac",
+                             severity: .warning)
+        case .unreadable:
+            return PhoneLine(text: "Unpaired — this iPhone couldn't read its key; answer on your Mac", severity: .warning)
+        }
+    }
+
+    /// Over the answers while the pairing still stands but the enrolled
+    /// biometrics changed since it was made: the answers stay (the key
+    /// decides), and the owner learns why one may fail.
+    nonisolated static func enrollmentChanged(_ kind: BiometryKind) -> PhoneLine {
+        PhoneLine(text: "Changed — \(kind.name) changed since pairing; if answering fails, pair again with your Mac",
+                  severity: .warning)
+    }
+
     /// What the answers say and show. Both name the biometric they ask for,
     /// and carry its glyph: neither answer goes out without it.
     nonisolated static func allowTitle(_ kind: BiometryKind) -> String { "Allow with \(kind.name)" }
@@ -104,12 +128,16 @@ struct PendingRequestScreen: View {
         static let none = Offer(answers: nil, caption: nil)
     }
 
-    /// Nothing unless the request is answerable; then both answers where a
+    /// Nothing unless the request is answerable; then nothing but the
+    /// reason on an unpaired phone (no key signs), both answers where a
     /// biometric match is possible, and otherwise the reason there are none.
-    nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability) -> Offer {
+    /// A changed enrollment keeps the answers and says so over them.
+    nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability,
+                                  key: PhoneKeyring.Health) -> Offer {
         guard status.isAnswerable else { return .none }
+        if case .unpaired(let reason) = key { return Offer(answers: nil, caption: unpaired(reason, biometry.kind)) }
         guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }
-        return Offer(answers: kind, caption: nil)
+        return Offer(answers: kind, caption: key == .enrollmentChanged ? enrollmentChanged(kind) : nil)
     }
 
     /// The footnote is true only while an answer from here can still go
@@ -131,6 +159,8 @@ struct PendingRequestScreen: View {
     let status: RequestStatus
     let now: Date
     let biometry: BiometricAvailability
+    /// Where this phone's pairing stands.
+    let key: PhoneKeyring.Health
     let allow: () -> Void
     let deny: () -> Void
 
@@ -248,7 +278,7 @@ struct PendingRequestScreen: View {
     /// Allow in the accent, Deny in the ink, each with the biometric's
     /// glyph and words; or the reason there are none.
     @ViewBuilder private var answers: some View {
-        let offer = Self.offer(for: status, biometry: biometry)
+        let offer = Self.offer(for: status, biometry: biometry, key: key)
         if let caption = offer.caption {
             CaptionLine(line: caption)
         }
@@ -302,17 +332,24 @@ struct InputDrawing: View, Equatable {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
                          status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
-                         biometry: .available(.faceID), allow: {}, deny: {})
+                         biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
 }
 
 #Preview("Expired") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-660)),
-                         status: .expired, now: now, biometry: .available(.faceID), allow: {}, deny: {})
+                         status: .expired, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
 }
 
 #Preview("Withdrawn") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-120)),
-                         status: .withdrawn, now: now, biometry: .available(.faceID), allow: {}, deny: {})
+                         status: .withdrawn, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+}
+
+#Preview("Unpaired") {
+    let now = Date.now
+    PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
+                         status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
+                         biometry: .available(.faceID), key: .unpaired(.enrollmentChanged), allow: {}, deny: {})
 }

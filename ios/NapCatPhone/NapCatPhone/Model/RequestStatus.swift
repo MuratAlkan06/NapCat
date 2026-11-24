@@ -5,6 +5,8 @@ import NapCatWire
 enum RequestNote: Equatable, CaseIterable, Sendable {
     /// The answer was not confirmed by the biometric match.
     case notConfirmed
+    /// The paired key did not sign the answer.
+    case unsigned
     /// Nothing was saved.
     case unsent
     /// iCloud did not confirm the answer.
@@ -38,6 +40,7 @@ enum RequestStatus: Equatable, Sendable {
         case (.confirming, .pending): self = .confirming
         case (.none, .pending(let until)): self = .pending(until: until, note: nil)
         case (.notConfirmed, .pending(let until)): self = .pending(until: until, note: .notConfirmed)
+        case (.unsigned, .pending(let until)): self = .pending(until: until, note: .unsigned)
         case (.unsent, .pending(let until)): self = .pending(until: until, note: .unsent)
         case (.unconfirmed, .pending(let until)): self = .pending(until: until, note: .unconfirmed)
         }
@@ -80,6 +83,9 @@ enum RequestStatus: Equatable, Sendable {
         switch note {
         case .notConfirmed:
             return PhoneLine(text: "Unverified — your answer wasn't confirmed, so nothing was sent", severity: .warning)
+        case .unsigned:
+            return PhoneLine(text: "Unsigned — this iPhone couldn't sign your answer, so nothing was sent; try again",
+                             severity: .warning)
         case .unsent:
             return PhoneLine(text: "Unsent — couldn't save your answer to iCloud; try again", severity: .warning)
         case .unconfirmed:
