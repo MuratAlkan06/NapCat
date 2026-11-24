@@ -11,9 +11,10 @@ import Security
 /// only when it is below 248 (= 4 × 62), so every symbol owns exactly 4 of
 /// the 248 accepted byte values; 248…255 are discarded. A plain `% 62` over
 /// all 256 values would favour the first eight symbols (5/256 against
-/// 4/256). Bytes come from `SecRandomCopyBytes` — this file is its only user
-/// (lint-locked) — and the pure half takes them injected, so the mapping is
-/// tested deterministically.
+/// 4/256). Bytes come from `SecRandomCopyBytes`, which has two users, each
+/// pinned (lint-locked): this file and the pairing controller's
+/// `secureNonce`. The pure half takes them injected, so the mapping is tested
+/// deterministically.
 enum NtfyTopicGenerator {
     static let prefix = "napcat-"
     static let suffixLength = 22

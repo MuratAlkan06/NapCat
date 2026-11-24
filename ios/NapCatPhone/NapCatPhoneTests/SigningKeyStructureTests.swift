@@ -306,6 +306,11 @@ import Testing
     /// Fixtures/ included (`CloudKitStructureTests.seamNames`) — are scanned
     /// like the seam: outside Fixtures/, nothing adopts one. (A fixture alias
     /// adopted by a live type was a software key no scan read.)
+    ///
+    /// AMENDED (the S-PAIR-C1 security review's R2): and inside Fixtures/, a
+    /// key seam is adopted only by a type nothing inherits from
+    /// (`CloudKitStructureTests.fixtureConformerFailures`) — a live subclass
+    /// of a fixture class was a software key with no seam in its clause.
     static func softwareFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         let aliases = seamAdoptions.flatMap { CloudKitStructureTests.seamNames($0.seam, in: app).subtracting([$0.seam]) }.sorted()
@@ -326,6 +331,11 @@ import Testing
                     failures.append("\(path) adopts \(seam) beyond its live conformer — a software key's shape; only fixtures (and tests) may")
                 }
             }
+        }
+        // The S-PAIR-C1 security review's R2: and no fixture conformer a live
+        // class could inherit a key seam from.
+        for (seam, _, _) in seamAdoptions {
+            failures += CloudKitStructureTests.fixtureConformerFailures(seam, in: app)
         }
         return CloudKitStructureTests.unique(failures)
     }
@@ -382,6 +392,22 @@ import Testing
                 $0 + "\nprotocol SoftSigning: SigningEnclave {}" }, Self.inboxFile) { $0 + "\nstruct SpareEnclave: SoftSigning {}" }),
             ("an alias of a fixture alias, adopted live", Self.mutate(Self.mutate(app, fixture) {
                 $0 + "\ntypealias Hash = EnrollmentState\ntypealias Hash2 = Hash" }, keyring) { $0 + "\nextension PhoneKeyring: Hash2 {}" }),
+            // The S-PAIR-C1 security review's R2: its P4, as planted — a
+            // fixture CLASS conforming to the key store, subclassed live —
+            // and the class route's neighbours: the fixture store made
+            // subclassable, a fixture extension handing the enrollment seam
+            // to a class a live one subclasses, and a plain class adopting
+            // the enclave through a fixture refining protocol.
+            ("P4: a fixture class conforming to the key store, subclassed live", Self.mutate(Self.mutate(app, fixture) {
+                $0 + "\nclass ReviewerFixtureStore: SigningKeyStore, @unchecked Sendable {}" }, keyring) {
+                $0 + "\nfinal class ReviewerLiveStore: ReviewerFixtureStore, @unchecked Sendable {}" }),
+            ("the fixture store made subclassable", Self.mutate(app, fixture) {
+                $0.replacingOccurrences(of: "final class MemorySigningKeyStore: SigningKeyStore,", with: "class MemorySigningKeyStore: SigningKeyStore,") }),
+            ("the enrollment seam handed to a fixture class by an extension, subclassed live", Self.mutate(Self.mutate(app, fixture) {
+                $0 + "\nclass SpareBase {}\nextension SpareBase: EnrollmentState {\n    func current() -> Data? { nil }\n}" }, keyring) {
+                $0 + "\nfinal class SpareLive: SpareBase {}" }),
+            ("a plain fixture class adopting a fixture protocol refining the enclave", Self.mutate(app, fixture) {
+                $0 + "\nprotocol SpareSigning: SigningEnclave {}\nclass SpareBase: SpareSigning {}" }),
         ]
         for (name, mutant) in aliasShapes {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -390,6 +416,15 @@ import Testing
         // A fixture may still name a seam another way, and use it there.
         #expect(Self.softwareFailures(Self.mutate(app, fixture) {
             $0 + "\ntypealias FixtureStore = SigningKeyStore\nstruct SpareFixtureStore: FixtureStore {}"
+        }).isEmpty)
+        // R2's over-match controls: fixture key seams in every shape nothing
+        // inherits from, a protocol extension (no adoption), and a plain
+        // fixture class that adopts no seam.
+        #expect(Self.softwareFailures(Self.mutate(app, fixture) {
+            $0 + "\nfinal class SpareA: SigningKeyStore, @unchecked Sendable {}"
+                + "\nfinal public class SpareB:\n    SigningEnclave, @unchecked Sendable {}"
+                + "\nenum SpareC: EnrollmentState {}\nactor SpareD: EnrollmentState {}"
+                + "\nextension SigningKeyStore where Self: Sendable {}\nclass SpareHelper: NSObject {}"
         }).isEmpty)
         // The live conformer renamed in its own file is a new shape too.
         #expect(!Self.softwareFailures(Self.mutate(app, Self.enclaveFile) {

@@ -751,11 +751,18 @@ import Testing
     /// the CloudKit file's), through `Self(` / `Self.init` (an extension's
     /// own constructor, the review's G3), or through an operator of the app's
     /// own (G9 built a decision with `0 ~> .init(…)`): no source declares an
-    /// operator at all.
+    /// operator at all. AMENDED (the S-PAIR-C1 security review's R1): nor
+    /// through a dynamic type — no source takes `type(of:)`.
     static let guardedTypes = ["PhoneDecision", "PendingRequest", "PairingCeremony", "PhoneKeyring", "KeyFingerprint",
                                "LocalAuthenticationMatch"]
     static let selfInit = #"\bSelf\s*(?:\(|\.\s*init\b)"#
     static let operatorDeclaration = #"\boperator\b"#
+    /// AMENDED (the S-PAIR-C1 security review's R1): a value's dynamic type,
+    /// taken at all. `type(of: d).init(…)` built a decision (P1) and a code
+    /// (P2) with no type named; a pattern for `type(of:)` followed by
+    /// `.init` would still miss `let t = type(of: d)` and a later `t.init(…)`,
+    /// so the app — which takes none — takes no dynamic type anywhere.
+    static let dynamicType = #"\btype\s*\(\s*of\s*:"#
 
     static func unnamedConstructionFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
@@ -769,6 +776,9 @@ import Testing
                 }
                 if CloudKitStructureTests.hits(operatorDeclaration, in: copy) {
                     failures.append("\(path) declares an operator — none hides what it builds")
+                }
+                if CloudKitStructureTests.hits(dynamicType, in: copy) {
+                    failures.append("\(path) takes a dynamic type (type(of:)) — the road to a constructor with no type named")
                 }
             }
         }
@@ -796,6 +806,20 @@ import Testing
                 $0 + "\nfunc spare(_ p: PromptID) -> PhoneDecision? { 0 ~> .init(promptID: p) }" }),
             ("an operator declared alone", Self.mutate(app, keyring) { $0 + "\nprefix operator ^^" }),
             ("Self.init in an extension", Self.mutate(app, keyring) { $0 + "\nextension PhoneKeyring { static func spare() -> Self { Self.init() } }" }),
+            // The S-PAIR-C1 security review's R1: its P1 and P2, as planted,
+            // and their neighbours — the dynamic type kept and used later,
+            // spaced, backticked, module-qualified, and unapplied.
+            ("P1: a decision built through type(of:).init", Self.mutate(app, inbox) {
+                $0 + "\nextension RequestInbox {\n    func reviewerDynamicInit(_ d: PhoneDecision, _ p: PromptID) -> PhoneDecision? {\n"
+                    + "        type(of: d).init(promptID: p, verdict: .allow, decidedAt: Date(timeIntervalSince1970: 0), signature: Data(count: 64))\n    }\n}" }),
+            ("P2: a fingerprint built through type(of:).init", Self.mutate(app, inbox) {
+                $0 + "\nfunc reviewerCode(_ f: KeyFingerprint, _ k: [UInt8]) -> KeyFingerprint? { type(of: f).init(publicKey: k) }" }),
+            ("the dynamic type kept, its init called later", Self.mutate(app, keyring) {
+                $0 + "\nfunc spare(_ f: KeyFingerprint, _ k: [UInt8]) -> KeyFingerprint? {\n    let made = type(of: f)\n    return made.init(publicKey: k)\n}" }),
+            ("a spaced dynamic type", Self.mutate(app, keyring) { $0 + "\nfunc spare(_ f: KeyFingerprint) -> Any { type ( of : f ) }" }),
+            ("a backticked dynamic type", Self.mutate(app, keyring) { $0 + "\nfunc spare(_ f: KeyFingerprint) -> Any { `type`(of: f) }" }),
+            ("a module-qualified dynamic type", Self.mutate(app, keyring) { $0 + "\nfunc spare(_ f: KeyFingerprint) -> Any { Swift.type(of: f) }" }),
+            ("an unapplied type(of:)", Self.mutate(app, keyring) { $0 + "\nlet spare: (Int) -> Int.Type = type(of:)" }),
         ]
         for type in Self.guardedTypes {
             mutants += [
@@ -816,7 +840,13 @@ import Testing
             $0 + "\nfunc spare(k: [UInt8]) -> KeyFingerprint? { KeyFingerprint(publicKey: k) }"
                 + "\nfunc spare2(p: PairingCeremony.Phase, r: PendingRequest?) -> Bool { p == .scanning && r == nil }"
                 + "\nlet spareCooperator = 1, Selfish = 2\nlet spareReason = PairingCeremony.reason"
-                + "\n/// never Self(…), never infix operator, never PhoneDecision.init"
+                + "\n/// never Self(…), never infix operator, never PhoneDecision.init, never type(of: d).init"
+        }).isEmpty)
+        // R1's over-match controls: a `type` that is a name, a member or part
+        // of a word, and a function whose name only ends in `Type(of:)`.
+        #expect(Self.unnamedConstructionFailures(Self.mutate(app, keyring) {
+            $0 + "\nlet type = 1, recordType = 2, subtype = 3, types = [4]\nfunc spare(r: SpareRecord) -> Int { r.typeCode + types.count }"
+                + "\nfunc spareType(of x: Int) -> Int { x }\nlet spare3 = spareType(of: 1)"
         }).isEmpty)
         #expect(Self.unnamedConstructionFailures([("x", "init(a: Int) { self.init(b: a) }\nlet r = Self.reason")]).isEmpty)
         for probe in ["0 ~> .init(x)", "a == .init(x)", "f(x) ?? .init()"] {

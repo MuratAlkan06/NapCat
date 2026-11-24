@@ -221,9 +221,7 @@ import Testing
             grew = false
             for name in names.sorted() {
                 let word = #"\b"# + name + #"\b"#
-                // One declaration at a time: the right-hand side may run onto
-                // the next line, but never into another declaration.
-                let rest = #"(?:(?!\b(?:typealias|protocol|struct|class|actor|enum|extension|func|var|let)\b)[^{};])*?"#
+                let rest = oneDeclaration
                 for pattern in [#"\btypealias\s+(\w+)\b[^=]*="# + rest + word,
                                 #"\bprotocol\s+(\w+)\b[^{]*?:"# + rest + word] {
                     guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
@@ -237,6 +235,52 @@ import Testing
             }
         }
         return names
+    }
+
+    /// One declaration at a time: a right-hand side or a clause may run onto
+    /// the next line, but never into another declaration.
+    static let oneDeclaration = #"(?:(?!\b(?:typealias|protocol|struct|class|actor|enum|extension|func|var|let)\b)[^{};])*?"#
+
+    /// The class route to a seam, banned outright (the S-PAIR-C1 security
+    /// review's R2). Fixtures/ may adopt `seam` — or any other name for it
+    /// (`seamNames`) — only in the declaration of a type nothing can inherit
+    /// from: a `struct`, an `enum`, an `actor` or a `final class`. A plain
+    /// class there let a live `final class` subclass it and inherit the seam
+    /// with no seam in its own clause (P3, P4); an extension there could hand
+    /// the seam to a class declared anywhere, live ones included. (Banned at
+    /// the source rather than chased by name: no spelling of the live
+    /// subclass — an alias, a generic, a module prefix — matters then.)
+    /// Every fixture conformer is an actor, a struct or a final class.
+    /// Read in every constructor scan copy: a `final` in a block comment is
+    /// no `final`.
+    static func fixtureConformerFailures(_ seam: String, in app: [Source]) -> [String] {
+        let names = seamNames(seam, in: app).sorted()
+        // A class's own `final`, an access level between them at most.
+        let finalClass = #"\bfinal\s+(?:(?:public|package|internal|fileprivate|private)\s+)?$"#
+        var failures: [String] = []
+        for (path, text) in app where path.hasPrefix("\(appDir)/Fixtures/") {
+            for copy in constructorScanCopies(codeOnly(text)) {
+                for name in names {
+                    // Each header on its own, `oneDeclaration` at a time, so no
+                    // other declaration's match swallows it (`class func` and
+                    // its kin declare a member, not a class).
+                    let clause = oneDeclaration + ":" + oneDeclaration + #"\b"# + name + #"\b"#
+                    let classHead = #"\bclass\s+(?!(?:func|var|let|subscript|override|final)\b)\w+"# + clause
+                    let extensionHead = #"\bextension\b"# + clause
+                    if hits(extensionHead, in: copy) {
+                        failures.append("\(path) adopts \(name) by an extension — it could hand the seam to any class; "
+                                        + "a fixture adopts a seam in its own declaration")
+                    }
+                    guard let regex = try? NSRegularExpression(pattern: classHead) else { continue }
+                    for match in regex.matches(in: copy, range: NSRange(copy.startIndex..., in: copy)) {
+                        guard let range = Range(match.range, in: copy), !hits(finalClass, in: String(copy[..<range.lowerBound])) else { continue }
+                        failures.append("\(path) adopts \(name) in a class that is not final — a live subclass would inherit "
+                                        + "the seam unseen; a fixture conformer is a struct, an enum, an actor or a final class")
+                    }
+                }
+            }
+        }
+        return unique(failures)
     }
 
     /// `failures` without repeats, in order.

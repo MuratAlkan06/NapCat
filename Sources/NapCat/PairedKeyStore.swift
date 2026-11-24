@@ -58,7 +58,14 @@ enum PairedPhoneRead: Equatable, Sendable {
 /// The paired-phone slot over a keychain text item (`TopicStore`: the app
 /// hands it `KeychainTopicStore.pairedPhoneKeychain`; tests a fake).
 struct PairedKeyStore: Sendable {
-    let items: any TopicStore
+    /// Private (the C1 security review's R3): nothing but the slot's own
+    /// `read`, `commit` and `unpair` reaches the item — no alias of it and no
+    /// key path to it (PairingStructureTests).
+    private let items: any TopicStore
+
+    init(items: any TopicStore) {
+        self.items = items
+    }
 
     /// The stored text's first line.
     static let header = "napcat-paired-v1"
