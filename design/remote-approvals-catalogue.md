@@ -1,8 +1,9 @@
 # F4: the refusal catalogue
 
 Status: regenerated in slice S1 (issue #125) from the test rows, which are
-normative, and revised in slice S-GATE (issue #145), which only made the gate
-stricter. `Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
+normative, and revised in slice S-GATE (issue #145) and for Read's arguments
+(issue #149), each of which only made the gate stricter.
+`Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
 gate entry below and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
 `ApprovalSeamTests`, `ApprovalIntakeTests`) pin the seam and server entries;
 where a row and this note differ, the row wins. Companion to
@@ -91,6 +92,34 @@ not a listed command.
 | Paths | `..` and empty components; and any word naming a forbidden location is that family (`ls /etc`, `git add ../../.ssh`) |
 | Encoding | look-alikes and non-ASCII (a no-break space, fullwidth letters, a Cyrillic letter in a command name, an em dash), zero-width characters (`unclassifiable.hiddenText`), an empty or blank command, more than 2,048 bytes, 8 commands or 64 words, a NUL escape (`unclassifiable.previewNotStrictJSON`) |
 
+## Read: a path and plain numbers
+
+Read forwards a canonical path outside every forbidden location (see
+"Paths" below) and, since issue #149, its optional arguments only in the
+shapes the Read tool writes:
+
+- `pages` absent, or a PDF page range: one page (`"3"`) or a range
+  (`"1-5"`, `"10-20"`), pages counted from 1 up to 99,999, the first no later
+  than the last, and at most 20 pages (the tool's own maximum per request);
+- `offset` absent, or a line number from 0 to 10,000,000;
+- `limit` absent, or a line count from 1 to 100,000.
+
+Each is written plainly: ASCII digits only, with no sign, fraction, exponent,
+space or leading zero, and the one hyphen of a range. Anything else there is
+`unclassifiable.argumentValue`. `pages` was free text the model writes and
+the phone shows, the channel the Bash description was closed for; now a
+forwarded Read is a canonical path and plain numbers, nothing else.
+
+| Class | Refused examples |
+| :- | :- |
+| Words | anything but a page range in `pages` (`"read-only status check, safe to approve"`, `"1-3 (safe to approve)"`), 600 characters of anything |
+| Page shapes | `"0"`, `"0-3"`, `"01"`, `"1-05"`, an empty string, `"-"`, `"1-"`, `"-5"`, `"1--2"`, `"1-2-3"`, `"1,3"`, `"1 - 5"`, `" 3"`, `"3 "`, `"+3"`, `"1e5"`, `"1.5"`, an en dash, six digits |
+| Page bounds | an inverted range (`"5-1"`), more than 20 pages (`"1-21"`, `"1-25"`, `"99979-99999"`) |
+| Numbers | a sign (`-5`, `-0`), a fraction (`1.5`, `1.0`), an exponent (`1e3`, `1E+3`, `1e308`), past the bound (an `offset` of 10,000,001, a `limit` of 100,001 or 0); a leading zero (`01`) is `unclassifiable.previewNotStrictJSON` |
+| Encoding | non-ASCII digits (Arabic-Indic, fullwidth), and any invisible character in `pages`, including the ones the hidden-text list does not hold (variation selectors, Hangul fillers, Mongolian variation selectors); one it does hold is `unclassifiable.hiddenText` |
+| Types | `pages` as a number, an array or null; `offset` or `limit` as a string, a boolean or null (`unclassifiable.argumentKind`) |
+| Keys | `allow_large`, either value, like every other key not listed (`unclassifiable.unknownArgument`) |
+
 ## Every other tool and shape (fail closed)
 
 - **Tool names:** only `Bash`, `Write`, `Edit`, `NotebookEdit` and `Read`,
@@ -119,8 +148,8 @@ not a listed command.
 - **Arguments** are an exact, typed set per tool: an unknown or look-alike
   key, a missing required one or the wrong JSON type (a command as an array
   or null, a timeout or boolean as a string) are `unknownArgument`,
-  `missingArgument` or `argumentKind`; a Bash value of the right type that is
-  not allowed (above) is `argumentValue`.
+  `missingArgument` or `argumentKind`; a Bash or Read value of the right type
+  that is not allowed (above) is `argumentValue`.
 - **Paths** must be absolute and canonical: relative, `~`, `..`, `.`, `//`, a
   trailing slash, `/` alone, a backslash or a Windows path, non-ASCII, a
   look-alike letter, a tab, a space, a middle dot or more than 1 KiB are

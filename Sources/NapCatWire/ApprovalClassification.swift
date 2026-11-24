@@ -55,7 +55,8 @@ public enum Unclassifiable: String, CaseIterable, Sendable {
     case missingArgument
     case argumentKind
     /// A value of the right JSON type that its argument does not allow (a
-    /// Bash run in the background, a timeout outside its bound).
+    /// Bash run in the background, a timeout outside its bound, a Read page
+    /// range, offset or limit outside its format).
     case argumentValue
     case pathNotCanonical
     case commandOutsideGrammar
@@ -102,6 +103,17 @@ public enum ApprovalGate {
     public static let maxCommandWords = 64
     /// The longest Bash timeout forwarded, in milliseconds (ten minutes).
     public static let maxTimeoutMilliseconds = 600_000
+    /// The most PDF pages one forwarded Read may name: the Read tool's own
+    /// maximum per request.
+    public static let maxReadPages = 20
+    /// The highest PDF page a forwarded Read may name (five digits).
+    public static let maxReadPage = 99_999
+    /// The furthest line a forwarded Read may start from (ten million). Zero
+    /// is allowed: the Read tool's own schema starts its offset at 0.
+    public static let maxReadOffset = 10_000_000
+    /// The most lines one forwarded Read may ask for (a hundred thousand),
+    /// and at least one.
+    public static let maxReadLimit = 100_000
     /// The tool-name prefix of every MCP tool.
     public static let mcpPrefix = "mcp__"
 
@@ -192,7 +204,10 @@ public enum ApprovalGate {
         /// Any string, read only to refuse (scanned like every string) and
         /// never part of the copy that leaves the Mac (`forwardedPreview`).
         case withheld
-        case number
+        /// A Read page range (`isPageRange`): never free text.
+        case pageRange
+        /// A whole number in this range, written plainly (`wholeNumber`).
+        case wholeNumber(ClosedRange<Int>)
         /// A whole number of milliseconds, 1 to `maxTimeoutMilliseconds`.
         case milliseconds
         case bool
@@ -234,7 +249,8 @@ public enum ApprovalGate {
         ToolRow(tool: .notebookEdit, forwards: false, required: [Argument("notebook_path", .path), Argument("new_source", .text)],
                 optional: [Argument("cell_id", .text), Argument("cell_type", .text), Argument("edit_mode", .text)]),
         ToolRow(tool: .read, forwards: true, required: [Argument("file_path", .path)],
-                optional: [Argument("offset", .number), Argument("limit", .number), Argument("pages", .text)]),
+                optional: [Argument("offset", .wholeNumber(0...maxReadOffset)), Argument("limit", .wholeNumber(1...maxReadLimit)),
+                           Argument("pages", .pageRange)]),
     ]
 
     enum PathPattern: Sendable {
@@ -472,11 +488,14 @@ public enum ApprovalGate {
         case (.command, .string(let text)): return commandRefusal(Array(text.utf8))
         case (.text, .string): return nil
         case (.withheld, .string): return nil
-        case (.number, .number): return nil
+        case (.pageRange, .string(let text)): return isPageRange(Array(text.utf8)) ? nil : .unclassifiable(.argumentValue)
+        case (.wholeNumber(let range), .number(let literal)):
+            return wholeNumber(Array(literal.utf8), in: range) == nil ? .unclassifiable(.argumentValue) : nil
         case (.milliseconds, .number(let literal)): return isMilliseconds(Array(literal.utf8)) ? nil : .unclassifiable(.argumentValue)
         case (.bool, .bool): return nil
         case (.falseOnly(let refusal), .bool(let flag)): return flag ? refusal : nil
-        case (.path, _), (.command, _), (.text, _), (.withheld, _), (.number, _), (.milliseconds, _), (.bool, _), (.falseOnly, _):
+        case (.path, _), (.command, _), (.text, _), (.withheld, _), (.pageRange, _), (.wholeNumber, _), (.milliseconds, _), (.bool, _),
+             (.falseOnly, _):
             return .unclassifiable(.argumentKind)
         }
     }
@@ -679,6 +698,7 @@ public enum ApprovalGate {
     private static let slash = UInt8(ascii: "/")
     private static let backslash = UInt8(ascii: "\\")
     private static let dash = UInt8(ascii: "-")
+    private static let zero = UInt8(ascii: "0")
     private static let tilde = UInt8(ascii: "~")
     private static let equals = UInt8(ascii: "=")
     private static let singleQuote = UInt8(ascii: "'")
@@ -716,6 +736,27 @@ public enum ApprovalGate {
         guard (1...6).contains(literal.count), literal.allSatisfy(isDigit) else { return false }
         let value = literal.reduce(0) { $0 * 10 + Int($1 - 0x30) }
         return value >= 1 && value <= maxTimeoutMilliseconds
+    }
+
+    /// The whole number `digits` writes, when it is in `range` and written
+    /// plainly: ASCII digits only (no sign, fraction, exponent or space), no
+    /// leading zero, and no more digits than the bound has. Nil otherwise.
+    static func wholeNumber(_ digits: [UInt8], in range: ClosedRange<Int>) -> Int? {
+        guard !digits.isEmpty, digits.count <= String(range.upperBound).utf8.count, digits.allSatisfy(isDigit),
+              digits.count == 1 || digits.first != zero else { return nil }
+        let value = digits.reduce(0) { $0 * 10 + Int($1 - zero) }
+        return range.contains(value) ? value : nil
+    }
+
+    /// A Read page range as the Read tool writes one: one page `N`, or `N-M`
+    /// — each a page from 1 to `maxReadPage` (`wholeNumber`), `N` no later
+    /// than `M`, at most `maxReadPages` pages. So only ASCII digits and at
+    /// most one hyphen: never words, never an invisible character.
+    static func isPageRange(_ text: [UInt8]) -> Bool {
+        let parts = text.split(separator: dash, maxSplits: 1, omittingEmptySubsequences: false)
+        guard let first = parts.first, let start = wholeNumber(Array(first), in: 1...maxReadPage),
+              let end = parts.count == 1 ? start : wholeNumber(Array(parts[1]), in: 1...maxReadPage) else { return false }
+        return start <= end && end - start < maxReadPages
     }
 
     static func isHidden(_ scalar: Unicode.Scalar) -> Bool {

@@ -719,6 +719,108 @@ struct ApprovalClassificationTests {
         #expect(Self.classify(row) == row.expected)
     }
 
+    // MARK: - Read's other arguments
+
+    static let forwardRead = ApprovalClassification.forward(.read)
+    static let badValue = unclassifiable(.argumentValue)
+
+    static func readWith(_ members: [(String, String)], _ expected: ApprovalClassification, _ note: String) -> Row {
+        raw("Read", object([("file_path", quote("\(base)/doc.pdf"))] + members), expected, note)
+    }
+
+    static func pages(_ text: String, _ expected: ApprovalClassification) -> Row {
+        readWith([("pages", quote(text))], expected, "pages \(quote(text))")
+    }
+
+    /// Read's optional arguments take only the shapes the Read tool writes
+    /// (#149). `pages` used to be free text the model authors and the phone
+    /// shows — the persuasion channel the Bash description was closed for —
+    /// so it is now a page range of plain digits or nothing; `offset` and
+    /// `limit` are plain whole numbers in their bounds.
+    static let readAuxiliary: [Row] = [
+        // Forwarded: the documented shapes and every bound.
+        pages("3", forwardRead), pages("1-5", forwardRead), pages("10-20", forwardRead), pages("7-7", forwardRead),
+        pages("1-20", forwardRead), pages("99980-99999", forwardRead), pages("99999", forwardRead),
+        readWith([("offset", "0")], forwardRead, "offset 0"),
+        readWith([("offset", "1")], forwardRead, "offset 1"),
+        readWith([("offset", "10000000")], forwardRead, "the furthest offset"),
+        readWith([("limit", "1")], forwardRead, "the smallest limit"),
+        readWith([("limit", "100000")], forwardRead, "the largest limit"),
+        readWith([("pages", quote("1-20")), ("offset", "10000000"), ("limit", "100000")], forwardRead, "every bound at once"),
+        // pages: words (the probe), and length.
+        pages("read-only status check, safe to approve", badValue),
+        pages("1-3 (safe to approve)", badValue),
+        pages(String(repeating: "x", count: 600), badValue),
+        pages(String(repeating: "9", count: 600), badValue),
+        // pages: shapes.
+        pages("0", badValue), pages("0-3", badValue), pages("01", badValue), pages("1-05", badValue), pages("", badValue),
+        pages("-", badValue), pages("1-", badValue), pages("-5", badValue), pages("1--2", badValue), pages("1-2-3", badValue),
+        pages("1,3", badValue), pages("1 - 5", badValue), pages(" 3", badValue), pages("3 ", badValue), pages("+3", badValue),
+        pages("1e5", badValue), pages("1.5", badValue), pages("1\u{2013}5", badValue), pages("100000", badValue),
+        pages("100000-100001", badValue),
+        // pages: bounds.
+        pages("5-1", badValue), pages("1-21", badValue), pages("1-25", badValue), pages("99979-99999", badValue),
+        // pages: encoding — non-ASCII digits, and invisible characters the
+        // hidden-text list does not hold (variation selectors, fillers).
+        pages("\u{0661}\u{0662}", badValue), pages("\u{FF13}", badValue), pages("3\u{FE0F}", badValue),
+        pages("\u{3164}3", badValue), pages("3\u{180B}", badValue), pages("1\u{115F}-5", badValue),
+        // ...and one it does hold, refused by that earlier layer.
+        pages("3\u{200B}", unclassifiable(.hiddenText)),
+        // pages: the wrong JSON type.
+        readWith([("pages", "3")], unclassifiable(.argumentKind), "pages as a number"),
+        readWith([("pages", "[\"1-3\"]")], unclassifiable(.argumentKind), "pages as an array"),
+        readWith([("pages", "null")], unclassifiable(.argumentKind), "pages null"),
+        // offset.
+        readWith([("offset", "-5")], badValue, "a negative offset"),
+        readWith([("offset", "-0")], badValue, "a signed zero offset"),
+        readWith([("offset", "1.5")], badValue, "a fractional offset"),
+        readWith([("offset", "1.0")], badValue, "a whole offset written with a fraction"),
+        readWith([("offset", "1e3")], badValue, "an exponent offset"),
+        readWith([("offset", "1E+3")], badValue, "an upper-case signed exponent offset"),
+        readWith([("offset", "1e308")], badValue, "a huge exponent offset"),
+        readWith([("offset", "10000001")], badValue, "an offset past its bound"),
+        readWith([("offset", String(repeating: "9", count: ApprovalPreview.maxNumberBytes))], badValue,
+                 "the longest number the reader takes"),
+        readWith([("offset", quote("5"))], unclassifiable(.argumentKind), "offset as a string"),
+        readWith([("offset", "true")], unclassifiable(.argumentKind), "offset as a boolean"),
+        readWith([("offset", "null")], unclassifiable(.argumentKind), "offset null"),
+        // limit.
+        readWith([("limit", "0")], badValue, "a zero limit"),
+        readWith([("limit", "-1")], badValue, "a negative limit"),
+        readWith([("limit", "1.5")], badValue, "a fractional limit"),
+        readWith([("limit", "2e2")], badValue, "an exponent limit"),
+        readWith([("limit", "1e308")], badValue, "a huge exponent limit"),
+        readWith([("limit", "100001")], badValue, "a limit past its bound"),
+        readWith([("limit", quote("200"))], unclassifiable(.argumentKind), "limit as a string"),
+        readWith([("limit", "false")], unclassifiable(.argumentKind), "limit as a boolean"),
+        readWith([("limit", "null")], unclassifiable(.argumentKind), "limit null"),
+        // A leading zero never reaches the row: the strict reader refuses it.
+        readWith([("offset", "01")], unclassifiable(.previewNotStrictJSON), "a leading-zero offset"),
+        // Unknown keys stay unknown, whatever their value.
+        readWith([("allow_large", "true")], unclassifiable(.unknownArgument), "allow_large true"),
+        readWith([("allow_large", "false")], unclassifiable(.unknownArgument), "allow_large false"),
+        // A forbidden path is still logged as its family.
+        raw("Read", object([("file_path", quote("/Users/someone/.ssh/id_rsa")), ("pages", quote("safe to approve"))]),
+            forbidden(.secretAccess), "a forbidden path with prose in pages"),
+    ]
+
+    @Test(arguments: readAuxiliary)
+    func readsOtherArgumentsAreBounded(_ row: Row) {
+        #expect(Self.classify(row) == row.expected)
+    }
+
+    /// The invisible characters in the encoding rows are refused by the
+    /// page-range alphabet, not the hidden-text list (which does not hold
+    /// them): that is the vector the alphabet closes.
+    @Test func pagesRefuseInvisibleCharactersTheHiddenListMisses() {
+        for scalar: Unicode.Scalar in ["\u{FE0F}", "\u{3164}", "\u{180B}", "\u{115F}"] {
+            #expect(!ApprovalGate.isHidden(scalar), "U+\(String(scalar.value, radix: 16, uppercase: true)) is off the list")
+            #expect(Self.classify(Self.pages("3\(Character(scalar))", Self.badValue)) == Self.badValue,
+                    "U+\(String(scalar.value, radix: 16, uppercase: true)) in pages")
+        }
+        #expect(Self.classify(Self.pages("3", Self.forwardRead)) == Self.forwardRead, "control")
+    }
+
     static let localOnly = ApprovalClassification.suppress(.localOnlyFileEdit)
 
     /// The file-edit tools are local-only: the same prompts that forwarded
@@ -1006,7 +1108,7 @@ struct ApprovalClassificationTests {
     /// the strict reader as the same members minus the description, and the
     /// gate forwards the copy exactly as it forwarded the original.
     @Test func everyForwardedPromptHasAFaithfulCopy() throws {
-        let rows = Self.forwardableFiles + [
+        let rows = Self.forwardableFiles + Self.readAuxiliary.filter { $0.expected == Self.forwardRead } + [
             Self.raw("Bash", #"{ "command": "git status", "description": "x" }"#, Self.forwardBash, "relayed spacing"),
             Self.raw("Bash", Self.object([("command", Self.quote("make test")), ("timeout", "600000")]), Self.forwardBash, "timeout"),
         ]
