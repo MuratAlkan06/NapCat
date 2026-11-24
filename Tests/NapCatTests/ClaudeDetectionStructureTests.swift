@@ -27,15 +27,10 @@ struct ClaudeDetectionStructureTests {
 
     /// Strips `//`/`///` line comments so the confinement scan matches only
     /// executable code — doc comments legitimately NAME these symbols to
-    /// document the boundary. (None of these files use `/* */` blocks, and no
-    /// scanned code line contains `//` inside a string literal.)
+    /// document the boundary. The shared, string-literal-aware stripper
+    /// (#155): a `//` inside a string literal cannot hide what follows it.
     private static func codeOnly(_ text: String) -> String {
-        text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line -> Substring in
-                if let range = line.range(of: "//") { return line[..<range.lowerBound] }
-                return line
-            }
-            .joined(separator: "\n")
+        LidGuardStructureTests.codeOnly(text)
     }
 
     /// Each low-level symbol may appear ONLY in its allowed reader file(s).

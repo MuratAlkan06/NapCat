@@ -41,8 +41,8 @@ import Testing
 /// Each lock is a pure function over comment-stripped sources and each
 /// catches planted canaries, so none can pass vacuously. Locks 3 and 4 scan
 /// `uncutSources` (whole-line comments removed only) and strip trailing
-/// comments themselves where they always did, so their security-review-2
-/// checks cannot be hidden behind a `//` inside a string literal.
+/// comments themselves where they always did; since #155 neither form lets
+/// a `//` inside a string literal hide a token.
 struct ApprovalRecordPathStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -50,9 +50,10 @@ struct ApprovalRecordPathStructureTests {
     static let recordPathFile = "CloudKitApprovalRecords.swift"
 
     /// The four targets' sources with WHOLE-LINE comments removed only
-    /// (`LidGuardStructureTests.wholeLineCommentsRemoved`): `codeOnly` cuts a
-    /// line at a `//` inside a string literal (security review L3, tracked
-    /// separately), which would hide whatever follows a URL.
+    /// (`LidGuardStructureTests.wholeLineCommentsRemoved`): trailing comments
+    /// stay in, so this form can only over-match. (Before #155, `codeOnly`
+    /// cut a line at a `//` inside a string literal, security review L3; it
+    /// no longer does.)
     static func uncutSources() throws -> Sources {
         try ApprovalChannelStructureTests.sources(LidGuardStructureTests.wholeLineCommentsRemoved)
     }
@@ -280,6 +281,10 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\nlet d = ApprovalDecision.init(promptID: p, verdict: .deny, wireVersion: 1, signatureVerified: true)" }),
             ("the flag named", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
                 $0 + "\nlet v = decision.signatureVerified" }),
+            // #155: built behind a URL, where only the comment-stripped checks see it.
+            ("a verdict built behind a URL", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nfunc f(i: ApprovalIntake) { let u = \"https://x\"; "
+                    + "i.decide(ApprovalDecision(promptID: p, verdict: .allow, wireVersion: 1, signatureVerified: true)) }" }),
             // #146: a claim the record store reads is never promoted to one.
             ("the record store promotes a claim", Self.mutate(sources, Self.recordPathFile) {
                 $0 + "\nextension CloudKitApprovalRecords { func f(c: DecisionClaim) -> ApprovalDecision { "

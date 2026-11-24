@@ -117,6 +117,10 @@ struct PhoneTransportStructureTests {
                 $0 + "\nlet stray = LiveCloudKitAlertStore(container: c)" }),
             ("factory called elsewhere", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + "\nlet stray = CloudKitMessageSender.makeLiveStore()" }),
+            // #155: a URL in a string literal no longer hides the rest of its line.
+            ("a site behind a URL", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + LidGuardStructureTests.codeOnly(
+                    "\nlet u = \"https://www.icloud.com\"; let stray = CKContainer(identifier: \"x\")") }),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.containerConstructionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")

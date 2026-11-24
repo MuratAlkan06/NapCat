@@ -26,8 +26,9 @@ import Testing
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
-/// whole-line comments only, so a `//` inside a string literal cannot hide
-/// a token from it.
+/// whole-line comments only (trailing comments stay in, so it can only
+/// over-match); since #155 neither stripper lets a `//` inside a string
+/// literal hide a token.
 @Suite struct RecordPathStructureTests {
     typealias Source = CloudKitStructureTests.Source
 
@@ -69,7 +70,9 @@ import Testing
         for planted in ["let d = ApprovalDecision(promptID: p, verdict: .allow, wireVersion: 1, signatureVerified: true)",
                         "let ok = decision.signatureVerified",
                         "var l = ApprovalLifecycle.open(id: i, classification: c, armed: true, now: 0)",
-                        "let e = ApprovalEvent.remoteDecision(d)"] {
+                        "let e = ApprovalEvent.remoteDecision(d)",
+                        // #155: a URL in a string literal no longer hides the rest of its line.
+                        "let u = \"https://x\"; let ok = decision.signatureVerified"] {
             let mutant = Self.mutate(app, Self.cloudKitFile) { $0 + "\n" + planted }
             #expect(!Self.verdictFailures(mutant).isEmpty, "canary '\(planted)' was NOT caught")
         }
