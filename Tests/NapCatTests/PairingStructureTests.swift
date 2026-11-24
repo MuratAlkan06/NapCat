@@ -25,6 +25,7 @@ import Testing
 ///    verdict API or the verifier, and no approval file or the verifier
 ///    names the slot (S-PAIR-C2 wires it, under its own locks).
 /// 4. The C1 tests touch nothing live.
+/// 5. The sheet's keys: Esc ends it in every state; nothing answers Return.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -369,5 +370,81 @@ struct PairingStructureTests {
         // The keychain lock's own binding list covers the new item too.
         #expect(KeychainTopicStoreTests.bindingTokens.contains("pairedPhone" + "Keychain"),
                 "no test file can name the real paired-key item")
+    }
+
+    // MARK: - 5. The sheet's keys: Esc ends it, nothing answers Return
+
+    /// The sheet's key bindings, whole (design review H2): Esc
+    /// (`.cancelAction`, which needs no focus) on the state's Cancel, Done
+    /// or Close and on S1c's faceless Cancel — each only ends the sheet — and
+    /// nothing on Return, so the pairing is committed by a click on Codes
+    /// Match alone and no key meant for one screen lands on the next.
+    static let shortcutSites: [String: [String: Int]] = [
+        sheetFile: ["button.keyboardShortcut(.cancelAction)": 1, ".keyboardShortcut(.cancelAction)": 1],
+    ]
+    static let escapeBindings = [
+        "var isEscape: Bool { [.cancel, .done, .close].contains(self) }",
+        "var escape: Action { actions.first(where: \\.isEscape) ?? .cancel }",
+        "actionButton(action, isEscape: action == content.escape)",
+        "if isEscape { button.keyboardShortcut(.cancelAction) } else { button }",
+        "if !content.actions.contains(content.escape) { Button(content.escape.title) { perform(content.escape) }"
+            + " .keyboardShortcut(.cancelAction) .hidden() .accessibilityHidden(true) }",
+        "case .cancel, .done, .close: pairing.cancel()",
+        ".onExitCommand { pairing.cancel() }",
+    ]
+    /// What else could put a key on the sheet.
+    static let otherKeyTokens = [#"\.defaultAction\b"#, #"\bKeyEquivalent\b"#, #"\bKeyboardShortcut\b"#, #"\.return\b"#,
+                                 #"\bkeyEquivalent\b"#, #"\.onKeyPress\b"#, #"\.onSubmit\b"#, #"\bNSEvent\b"#]
+
+    static func keyboardFailures(_ sources: Sources) -> [String] {
+        let sheet = text(sheetFile, in: sources)
+        guard sheet.contains("struct PairingSheetView") else { return ["the sheet is missing — the keyboard lock would be vacuous"] }
+        var failures: [String] = []
+        for copy in LidGuardStructureTests.constructorScanCopies(sheet) {
+            for token in otherKeyTokens where ApprovalRecordPathStructureTests.hits(token, in: copy) {
+                failures.append("'\(token)' in \(sheetFile) — nothing on the sheet answers Return, or any key but Esc")
+            }
+        }
+        failures += appSiteFailures(#"\bkeyboardShortcut\b"#, in: sources.filter { $0.name == sheetFile }, allowed: shortcutSites,
+                                    rule: "Esc is the only key: on the button that ends the sheet, and on S1c's faceless Cancel")
+        let flat = MenuPanelStructureTests.flat(sheet)
+        for binding in escapeBindings where ApprovalChannelStructureTests.count(binding, in: flat) != 1 {
+            failures.append("Esc's binding moved or is gone: \(binding)")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    @Test func escEndsTheSheetAndNothingAnswersReturn() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.keyboardFailures(sources).isEmpty, "\(Self.keyboardFailures(sources))")
+        let sheet = Self.sheetFile
+        let mutants: [(String, Sources)] = [
+            ("Codes Match the default again", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "actionButton(action, isEscape: action == content.escape)",
+                                        with: "actionButton(action, isEscape: action == content.escape)"
+                                            + ".keyboardShortcut(action == .codesMatch ? .defaultAction : nil)") }),
+            ("the last button the default again", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "            button.keyboardShortcut(.cancelAction)\n        } else {\n            button\n",
+                                        with: "            button.keyboardShortcut(.cancelAction)\n        } else {\n"
+                                            + "            button.keyboardShortcut(KeyboardShortcut(\"\\r\", modifiers: []))\n") }),
+            ("Esc dropped from the escape button", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "            button.keyboardShortcut(.cancelAction)\n", with: "            button\n") }),
+            ("Esc dropped from S1c", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "                        .keyboardShortcut(.cancelAction)\n                        .hidden()",
+                                        with: "                        .hidden()") }),
+            ("Esc on a deciding button", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "[.cancel, .done, .close].contains(self)", with: "[.cancel, .done, .close, .startOver].contains(self)") }),
+            ("S1c's Esc decides", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "actions.first(where: \\.isEscape) ?? .cancel", with: "actions.first(where: \\.isEscape) ?? .theyDontMatch") }),
+            ("Return by a key press", Self.mutate(sources, sheet) {
+                $0.replacingOccurrences(of: "        .onExitCommand { pairing.cancel() }\n",
+                                        with: "        .onExitCommand { pairing.cancel() }\n        .onKeyPress(.return) { .handled }\n") }),
+            ("a backticked default", Self.mutate(sources, sheet) {
+                $0 + "\nlet zz = KeyboardShortcut.`defaultAction`" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.keyboardFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
     }
 }

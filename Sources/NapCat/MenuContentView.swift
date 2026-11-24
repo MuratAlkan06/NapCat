@@ -683,14 +683,25 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     /// S-PAIR-C1: Unpair always asks first. Confirmed, the slot is deleted
     /// and the remote-approvals toggle goes off through its kill switch.
     private func confirmUnpair() {
-        let alert = NSAlert()
-        alert.messageText = MenuStateModel.unpairAlertTitle
-        alert.informativeText = MenuStateModel.unpairAlertText
-        alert.addButton(withTitle: MenuStateModel.unpairAlertConfirm)
-        alert.addButton(withTitle: MenuStateModel.unpairAlertCancel)
+        let alert = Self.unpairAlert()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         pairing?.unpair()
         model.refresh()
+    }
+
+    /// The Unpair question. Unpair is marked destructive and answers no
+    /// key, so it takes a deliberate click; Cancel keeps Esc (AppKit's rule
+    /// for a button titled Cancel). Nothing is the default: a button holds
+    /// one key, and making Cancel answer Return would cost it Esc.
+    static func unpairAlert() -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = MenuStateModel.unpairAlertTitle
+        alert.informativeText = MenuStateModel.unpairAlertText
+        let unpair = alert.addButton(withTitle: MenuStateModel.unpairAlertConfirm)
+        unpair.hasDestructiveAction = true
+        unpair.keyEquivalent = ""
+        alert.addButton(withTitle: MenuStateModel.unpairAlertCancel)
+        return alert
     }
 }
 

@@ -55,7 +55,7 @@ struct PairingPresentationTests {
         #expect(sheet.screen == .compare && sheet.title == "Compare the Codes" && sheet.qrPayload == nil)
         #expect(sheet.fingerprint == candidate.fingerprint)
         #expect(sheet.status.text == "Compare — your iPhone shows a code too. If they match, confirm here first, then on your iPhone.")
-        #expect(sheet.actions == [.theyDontMatch, .codesMatch], "Codes Match last: the default")
+        #expect(sheet.actions == [.theyDontMatch, .codesMatch], "Codes Match last, and not the default: nothing answers Return")
         #expect(sheet.actions.map(\.title) == ["They Don't Match", "Codes Match"])
         #expect(sheet.countdown == "Code expires in 4:57", "the window bounds the comparison too")
         var committing = state
@@ -92,27 +92,60 @@ struct PairingPresentationTests {
             let (text, severity, actions) = expected[end]!
             #expect(line == PanelLine(text: text, severity: severity), "\(end)")
             #expect(severity != .nominal, "\(end): a failure is never nominal")
-            var state = PairingCeremonyState()
-            _ = state.apply(.begin(nonce: PhoneHalf.nonce, rotating: false, now: Self.start))
-            switch end {
-            case .expired: _ = state.apply(.tick(now: Self.start + 300))
-            case .refused:
-                _ = state.apply(.tick(now: Self.start + 2.5))
-                _ = state.apply(.fetched(.found(.malformed(.wrongZone)), now: Self.start + 2.5))
-            case .stoppedMismatch, .saveFailed:
-                _ = state.apply(.tick(now: Self.start + 2.5))
-                _ = state.apply(.fetched(.found(.response(try! PhoneHalf.response())), now: Self.start + 2.5))
-                if end == .stoppedMismatch {
-                    _ = state.apply(.codesDiffer)
-                } else {
-                    _ = state.apply(.codesMatch(now: Self.start + 3))
-                    _ = state.apply(.committed(false))
-                }
-            }
-            let sheet = Self.content(state)
+            let sheet = Self.content(Self.ended(end))
             #expect(sheet.screen == .ended(end) && sheet.status == line && sheet.actions == actions, "\(end)")
-            #expect(sheet.title == "Not Paired" && sheet.qrPayload == nil && sheet.fingerprint == nil && sheet.countdown == nil)
+            #expect(sheet.title == "Not Paired" && sheet.subtitle == nil, "\(end): with no pairing before, none now")
+            #expect(sheet.qrPayload == nil && sheet.fingerprint == nil && sheet.countdown == nil)
         }
+    }
+
+    /// A ceremony begun at `start`, rotating or not, driven to `end`.
+    static func ended(_ end: PairingEnd, rotating: Bool = false) -> PairingCeremonyState {
+        var (state, _) = PairingCeremonyTests.begun(rotating: rotating)
+        switch end {
+        case .expired: _ = state.apply(.tick(now: start + 300))
+        case .refused:
+            _ = state.apply(.tick(now: start + 2.5))
+            _ = state.apply(.fetched(.found(.malformed(.wrongZone)), now: start + 2.5))
+        case .stoppedMismatch, .saveFailed:
+            _ = state.apply(.tick(now: start + 2.5))
+            _ = state.apply(.fetched(.found(.response(try! PhoneHalf.response())), now: start + 2.5))
+            if end == .stoppedMismatch {
+                _ = state.apply(.codesDiffer)
+            } else {
+                _ = state.apply(.codesMatch(now: start + 3))
+                _ = state.apply(.committed(false))
+            }
+        }
+        return state
+    }
+
+    /// Rotation honesty at the end (AC7): a rotation that expires, is
+    /// refused, is stopped or fails to save wrote nothing, so the paired
+    /// phone's key still works — the sheet never says "Not Paired" then. Its
+    /// title stays the rotation's own and the subtitle says the current
+    /// pairing keeps working; the cause's line and buttons are the same as
+    /// for a first pairing. A rotation that commits says "iPhone Paired"
+    /// with no note (the new key replaced the old).
+    @Test func aRotationThatEndsSaysTheCurrentPairingKeepsWorking() throws {
+        for end in PairingEnd.allCases {
+            var state = Self.ended(end, rotating: true)
+            #expect(state.rotating && state.phase == .ended(end), "\(end)")
+            let sheet = Self.content(state)
+            #expect(sheet.screen == .ended(end) && sheet.title == "Pair a New iPhone", "\(end)")
+            #expect(sheet.subtitle == "Your current pairing keeps working.", "\(end)")
+            let first = Self.content(Self.ended(end))
+            #expect(sheet.status == first.status && sheet.actions == first.actions && sheet.notes == first.notes, "\(end)")
+            _ = state.apply(.cancel)
+            #expect(state.phase == .idle, "\(end): Close ends it")
+        }
+        var (rotated, _) = PairingCeremonyTests.begun(rotating: true)
+        _ = rotated.apply(.tick(now: Self.start + 2.5))
+        _ = rotated.apply(.fetched(.found(.response(try PhoneHalf.response())), now: Self.start + 2.5))
+        _ = rotated.apply(.codesMatch(now: Self.start + 3))
+        _ = rotated.apply(.committed(true))
+        let paired = Self.content(rotated)
+        #expect(paired.screen == .paired && paired.title == "iPhone Paired" && paired.subtitle == nil)
     }
 
     /// Rotation honesty: the subtitle says the old key keeps working, on
@@ -125,6 +158,107 @@ struct PairingPresentationTests {
         var hidden = state
         _ = hidden.apply(.visible(false))
         #expect(Self.content(hidden).subtitle == sheet.subtitle)
+    }
+
+    // MARK: - The keyboard
+
+    /// Every state the sheet shows, by name, first pairings and rotations.
+    static func everySheetState() throws -> [(name: String, state: PairingCeremonyState)] {
+        var states: [(name: String, state: PairingCeremonyState)] = []
+        for rotating in [false, true] {
+            let tag = rotating ? " (rotating)" : ""
+            var (state, _) = PairingCeremonyTests.begun(rotating: rotating)
+            states.append(("S1a" + tag, state))
+            var offline = state
+            _ = offline.apply(.tick(now: start + 2.5))
+            _ = offline.apply(.fetched(.unreachable, now: start + 2.5))
+            states.append(("S1a offline" + tag, offline))
+            var hidden = state
+            _ = hidden.apply(.visible(false))
+            states.append(("S1b" + tag, hidden))
+            _ = state.apply(.tick(now: start + 2.5))
+            _ = state.apply(.fetched(.found(.response(try PhoneHalf.response())), now: start + 2.5))
+            states.append(("S1c" + tag, state))
+            _ = state.apply(.codesMatch(now: start + 3))
+            states.append(("S1c committing" + tag, state))
+            _ = state.apply(.committed(true))
+            states.append(("S1d" + tag, state))
+            for end in PairingEnd.allCases { states.append(("S1e \(end)" + tag, ended(end, rotating: rotating))) }
+        }
+        return states
+    }
+
+    /// The keyboard (design review H2): Esc presses each state's Cancel,
+    /// Done or Close — in S1c, whose two buttons each decide something, a
+    /// Cancel with no button of its own — and each of them only ends the
+    /// sheet. No action is the default, so nothing answers Return.
+    @Test func escEndsEveryStateAndNoActionIsTheDefault() throws {
+        #expect(PairingSheetContent.Action.allCases.filter(\.isEscape) == [.cancel, .done, .close])
+        let states = try Self.everySheetState()
+        #expect(states.count == 20 && Set(states.map(\.name)).count == 20)
+        for (name, state) in states {
+            let sheet = Self.content(state)
+            #expect(sheet.escape.isEscape, "\(name)")
+            #expect(sheet.actions.filter(\.isEscape).count <= 1, "\(name): one way out")
+            if sheet.screen == .compare {
+                #expect(sheet.escape == .cancel && !sheet.actions.contains(.cancel), "\(name): the faceless Cancel")
+            } else {
+                #expect(sheet.actions.contains(sheet.escape), "\(name): Esc's button is on the sheet")
+            }
+        }
+    }
+
+    /// The keys on the sheet itself, hosted as the Settings window hosts it
+    /// (in a window never shown; nothing is activated): in every state Return
+    /// does nothing — in S1c it never commits — and Esc ends the ceremony,
+    /// with no control focused.
+    @Test @MainActor func onTheSheetEscEndsAndReturnNeverCommits() async throws {
+        let world = PairingWorld()
+        let window = NSWindow(contentViewController: NSHostingController(rootView: PairingSheetView(pairing: world.controller)))
+        window.isReleasedWhenClosed = false
+        func press(_ characters: String, _ keyCode: UInt16) throws -> Bool {
+            window.contentView?.layoutSubtreeIfNeeded()
+            let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                      windowNumber: window.windowNumber, context: nil,
+                                                      characters: characters, charactersIgnoringModifiers: characters,
+                                                      isARepeat: false, keyCode: keyCode))
+            return window.performKeyEquivalent(with: event)
+        }
+        func returnDoesNothingThenEscEnds(_ name: String) throws {
+            let before = world.controller.state
+            #expect(try !press("\r", 36), "\(name): nothing answers Return")
+            #expect(world.controller.state == before, "\(name): Return changed nothing")
+            #expect(try press("\u{1b}", 53), "\(name): Esc is bound")
+            #expect(world.controller.state.phase == .idle, "\(name): Esc ended it")
+        }
+        let response = try PhoneHalf.response()
+        func compare(at seconds: TimeInterval) async {
+            world.controller.begin()
+            world.records.answer(.found(.response(response)))
+            await world.advance(to: seconds)
+        }
+        // S1a, then S1b.
+        world.controller.begin()
+        try returnDoesNothingThenEscEnds("S1a")
+        world.controller.begin()
+        world.controller.setVisible(false)
+        #expect(world.controller.sheetContent.screen == .hidden)
+        try returnDoesNothingThenEscEnds("S1b")
+        // S1c: Return never reaches Codes Match; Esc is the faceless Cancel.
+        await compare(at: 10)
+        #expect(world.controller.sheetContent.screen == .compare)
+        try returnDoesNothingThenEscEnds("S1c")
+        #expect(!world.audits.contains(.committed) && world.items.writeCount == 0, "nothing was committed")
+        // S1d, after a click on Codes Match.
+        await compare(at: 20)
+        world.controller.codesMatch()
+        #expect(world.controller.sheetContent.screen == .paired && world.items.writeCount == 1)
+        try returnDoesNothingThenEscEnds("S1d")
+        // S1e, a rotation's now: Start Over is not the default either.
+        world.controller.begin()
+        await world.advance(to: 400)
+        #expect(world.controller.sheetContent.screen == .ended(.expired) && world.controller.state.rotating)
+        try returnDoesNothingThenEscEnds("S1e (rotating)")
     }
 
     @Test func theCountdownIsMinutesAndPaddedSeconds() {
@@ -263,6 +397,21 @@ struct PairingPresentationTests {
                     + "approvals through the kill switch. Pairing again takes about two minutes.", "Unpair", "Cancel"])
     }
 
+    /// Unpair takes a deliberate click (design review M4): the alert's Unpair
+    /// is marked destructive and answers no key, Cancel keeps Esc, and
+    /// nothing answers Return. Unpair stays the first button (the owner's
+    /// `.alertFirstButtonReturn`) wherever the alert lays it out.
+    @Test @MainActor func unpairTakesADeliberateClick() throws {
+        let alert = MenuContentView.unpairAlert()
+        #expect(alert.messageText == MenuStateModel.unpairAlertTitle && alert.informativeText == MenuStateModel.unpairAlertText)
+        #expect(alert.buttons.map(\.title) == [MenuStateModel.unpairAlertConfirm, MenuStateModel.unpairAlertCancel])
+        try #require(alert.buttons.count == 2)
+        let (unpair, cancel) = (alert.buttons[0], alert.buttons[1])
+        #expect(unpair.hasDestructiveAction && unpair.keyEquivalent.isEmpty, "Unpair: destructive, a click and never a key")
+        #expect(!cancel.hasDestructiveAction && cancel.keyEquivalent == "\u{1b}", "Esc cancels")
+        #expect(!alert.buttons.contains { $0.keyEquivalent == "\r" }, "nothing answers Return")
+    }
+
     /// The group sits in Remote approvals, after the switch and its policy
     /// line, whatever the switch says (ratified: visible while off).
     @Test func thePairingRowsCloseTheRemoteApprovalsGroup() {
@@ -334,7 +483,8 @@ struct PairingPresentationTests {
                        "settingsWindow.onWillClose = { [weak pairing] in pairing?.cancel() }",
                        "model.requestUnpair = { [weak self] in self?.confirmUnpair() }",
                        "pairing.announce = { Pairing" + "Announcer.post($0) }",
-                       "guard alert.runModal() == .alertFirstButtonReturn else { return } pairing?.unpair() model.refresh()",
+                       "let alert = Self.unpairAlert() guard alert.runModal() == .alertFirstButtonReturn else { return }"
+                        + " pairing?.unpair() model.refresh()",
                        "pairing?.refreshPaired() model.refresh() }"] {
             #expect(owner.contains(wiring), "missing: \(wiring)")
         }

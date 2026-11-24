@@ -13,9 +13,10 @@ import SwiftUI
 // Binding rules kept here: the QR payload is drawn and nothing else — never
 // an accessibility attribute, a tooltip, a log or the pasteboard; the code is
 // spoken one character at a time with a pause between groups; focus lands on
-// each new state's title; Esc always cancels; severity is never color only;
-// no motion beyond the Settings press (`SettingsPressButtonStyle`); the QR's
-// fixed white tile is the one fixed fill, drawn inside its image.
+// each new state's title; Esc always cancels and nothing answers Return (the
+// pairing is committed by a click on Codes Match alone); severity is never
+// color only; no motion beyond the Settings press (`SettingsPressButtonStyle`);
+// the QR's fixed white tile is the one fixed fill, drawn inside its image.
 
 /// What the sheet shows in one state of the ceremony.
 struct PairingSheetContent: Equatable, Sendable {
@@ -46,6 +47,10 @@ struct PairingSheetContent: Equatable, Sendable {
             case .close: return "Close"
             }
         }
+
+        /// Esc's kind of button: it only ends the sheet (all three are the
+        /// ceremony's Cancel), deciding nothing.
+        var isEscape: Bool { [.cancel, .done, .close].contains(self) }
     }
 
     let screen: Screen
@@ -63,15 +68,22 @@ struct PairingSheetContent: Equatable, Sendable {
     let notes: [String]
     /// "Code expires in 4:58", while the window bounds the ceremony.
     let countdown: String?
-    /// In order; the last is the default.
+    /// In order. None is the default: nothing answers Return.
     let actions: [Action]
     /// False while the confirmed key is being written.
     let actionsEnabled: Bool
+
+    /// What Esc presses: the state's Cancel, Done or Close — or, in S1c,
+    /// whose two buttons each decide something, a Cancel with no button of
+    /// its own.
+    var escape: Action { actions.first(where: \.isEscape) ?? .cancel }
 
     // MARK: Copy (the ratified spec's words)
 
     static let qrAccessibilityLabel = "Pairing code — scan it with the NapCat app on your iPhone"
     static let rotationNote = "Your current pairing keeps working until you confirm the new code."
+    /// A rotation's end: nothing new was saved, so the old key still stands.
+    static let rotationEndedNote = "Your current pairing keeps working."
     static let privacyNote = "Pair in private — anyone who can see this code could try to pair while it is up."
     static let waiting = "Waiting — scan this code with the NapCat app on your iPhone"
     static let waitingOffline = "Waiting — iCloud is unreachable; still trying"
@@ -101,7 +113,9 @@ struct PairingSheetContent: Equatable, Sendable {
         case .code, .hidden: return rotating ? "Pair a New iPhone" : "Pair iPhone"
         case .compare: return "Compare the Codes"
         case .paired: return "iPhone Paired"
-        case .ended: return "Not Paired"
+        // A rotation that ends leaves the current pairing standing: never
+        // "Not Paired" while the old key still works.
+        case .ended: return rotating ? "Pair a New iPhone" : "Not Paired"
         }
     }
 
@@ -144,7 +158,8 @@ struct PairingSheetContent: Equatable, Sendable {
                                        fingerprint: fingerprint, status: PanelLine(text: pairedLine, severity: .nominal),
                                        notes: [pairedNote], countdown: nil, actions: [.done], actionsEnabled: true)
         case .ended(let end):
-            return PairingSheetContent(screen: .ended(end), title: title(.ended(end), rotating: false), subtitle: nil,
+            return PairingSheetContent(screen: .ended(end), title: title(.ended(end), rotating: state.rotating),
+                                       subtitle: state.rotating ? rotationEndedNote : nil,
                                        qrPayload: nil, fingerprint: nil, status: endedLine(end), notes: [], countdown: nil,
                                        actions: end == .stoppedMismatch ? [.close] : [.close, .startOver], actionsEnabled: true)
         }
@@ -228,7 +243,17 @@ struct PairingSheetView: View {
             HStack(spacing: PanelMetrics.regular) {
                 Spacer(minLength: 0)
                 ForEach(content.actions, id: \.self) { action in
-                    actionButton(action, isDefault: action == content.actions.last)
+                    actionButton(action, isEscape: action == content.escape)
+                }
+            }
+            .background {
+                // S1c: neither button is Esc's, yet Esc still cancels there —
+                // a Cancel with no face of its own (and no layout space).
+                if !content.actions.contains(content.escape) {
+                    Button(content.escape.title) { perform(content.escape) }
+                        .keyboardShortcut(.cancelAction)
+                        .hidden()
+                        .accessibilityHidden(true)
                 }
             }
             .disabled(!content.actionsEnabled)
@@ -236,18 +261,23 @@ struct PairingSheetView: View {
         .padding(PanelMetrics.loose + PanelMetrics.regular)
         .frame(width: PairingSheetMetrics.width)
         .fixedSize(horizontal: false, vertical: true)
-        // Esc is Cancel in every state (Done and Close end it the same way).
+        // Esc's own route is the `.cancelAction` button above (it needs no
+        // focus); this is a backup for a focused control that takes Esc.
         .onExitCommand { pairing.cancel() }
         .onAppear { titleFocused = true }
         .onChange(of: content.screen) { titleFocused = true }
     }
 
+    /// Esc presses the state's Cancel, Done or Close. No button is the
+    /// default: nothing answers Return, so the pairing is committed by a
+    /// deliberate click on Codes Match and never by a key meant for another
+    /// screen.
     @ViewBuilder
-    private func actionButton(_ action: PairingSheetContent.Action, isDefault: Bool) -> some View {
+    private func actionButton(_ action: PairingSheetContent.Action, isEscape: Bool) -> some View {
         let button = Button(action.title) { perform(action) }
             .buttonStyle(SettingsPressButtonStyle(look: .bezel))
-        if isDefault {
-            button.keyboardShortcut(.defaultAction)
+        if isEscape {
+            button.keyboardShortcut(.cancelAction)
         } else {
             button
         }

@@ -738,12 +738,19 @@ arms anything.
     is covered, without ending anything), the comparison (the code large
     and monospaced, "confirm here first, then on your iPhone"), paired
     (no auto-close), and four closed ends: expired, refused, stopped (no
-    Start Over) and save failed. The QR payload is drawn and never spoken,
+    Start Over) and save failed. A rotation that ends keeps its title,
+    "Pair a New iPhone", and says the current pairing keeps working —
+    never "Not Paired" while the old key works. Esc ends the sheet in
+    every state (in the comparison, whose two buttons each decide
+    something, through a Cancel with no button of its own); no button is
+    the default, so nothing answers Return and only a click on Codes
+    Match writes the key. The QR payload is drawn and never spoken,
     copied, logged or shown as a tooltip; VoiceOver hears each state's
     line as it changes, the code character by character, and the
     countdown at one minute and ten seconds only. No motion beyond the
-    Settings buttons' press. Unpair… asks first, then deletes the key and
-    turns Remote approvals off through its kill switch.
+    Settings buttons' press. Unpair… asks first — its Unpair button is
+    marked destructive and answers no key, and Esc cancels — then deletes
+    the key and turns Remote approvals off through its kill switch.
   - *Not live yet.* The app's record seam (`NoPairingRecords`) finds
     nothing and deletes nothing: no CloudKit operation for the pairing
     record exists on either device, so a ceremony shows its code and ends
