@@ -462,11 +462,15 @@ final class RecordingPairingWriter: PairingResponseWriter {
                       #"\bUserDefaults\b"#, #"\bAppStorage\b"#] where CloudKitStructureTests.hits(token, in: file) {
             failures.append("'\(token)' in the ceremony — nothing of a pairing is logged or kept")
         }
-        let conformance = CloudKitStructureTests.adoptionPattern("PairingResponseWriter")
+        // #168 (the PR #167 review's (c)): and every other name for the
+        // writer seam, declared in any file, Fixtures/ included.
+        let conformances = CloudKitStructureTests.seamNames("PairingResponseWriter", in: app).sorted()
+            .map(CloudKitStructureTests.adoptionPattern)
         for (path, text) in app {
             let code = CloudKitStructureTests.codeOnly(text)
             let fixture = path.hasPrefix("\(appDir)/Fixtures/")
-            if !fixture, CloudKitStructureTests.constructorScanCopies(code).contains(where: { CloudKitStructureTests.hits(conformance, in: $0) }) {
+            if !fixture, CloudKitStructureTests.constructorScanCopies(code).contains(where: { copy in
+                conformances.contains { CloudKitStructureTests.hits($0, in: copy) } }) {
                 failures.append("\(path) conforms to the pairing writer — only fixtures, until the record path exists")
             }
             if !fixture, CloudKitStructureTests.hits(#"\bPairingCeremony\s*(?:\.\s*init\s*)?\("#, in: code) {
@@ -560,6 +564,14 @@ final class RecordingPairingWriter: PairingResponseWriter {
                                         with: "        case .saved: phase = .waiting(fingerprint, until: deadline ?? clock()); _ = keyring.commitProvisional") }),
             ("a code by implicit init", mutate(file) {
                 $0 + "\nextension PairingCeremony { static func spare(k: [UInt8]) -> KeyFingerprint? { .init(publicKey: k) } }" }),
+            // #168 (the PR #167 review's (c)), its G8 shape: a protocol
+            // refining the writer, declared in Fixtures/, with a live
+            // conformer; and an alias there, adopted live.
+            ("G8: a fixture protocol refining the writer, a live conformer", RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\nprotocol ReviewerPairingSeam: PairingResponseWriter {}" }, inbox) {
+                $0 + "\nstruct ReviewerLiveWriter: ReviewerPairingSeam {\n    func write(_ response: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }),
+            ("a fixture alias of the writer, adopted live", RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\ntypealias SpareWriter = PairingResponseWriter" }, inbox) { $0 + "\nactor LiveSpare: SpareWriter {}" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

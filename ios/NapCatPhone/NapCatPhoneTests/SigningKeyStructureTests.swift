@@ -300,9 +300,21 @@ import Testing
     /// on its pinned line: any other type, extension, refining protocol or
     /// typealias adopting one (over any number of lines, in every scan
     /// copy) is a software key by another name.
+    ///
+    /// AMENDED (#168, the PR #167 review's (c)): a seam's other names — a
+    /// typealias of it or a protocol refining it, declared in ANY file,
+    /// Fixtures/ included (`CloudKitStructureTests.seamNames`) — are scanned
+    /// like the seam: outside Fixtures/, nothing adopts one. (A fixture alias
+    /// adopted by a live type was a software key no scan read.)
     static func softwareFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
+        let aliases = seamAdoptions.flatMap { CloudKitStructureTests.seamNames($0.seam, in: app).subtracting([$0.seam]) }.sorted()
         for (path, text) in app where !path.hasPrefix(fixturesDir) {
+            for alias in aliases
+            where CloudKitStructureTests.constructorScanCopies(CloudKitStructureTests.codeOnly(text))
+                .contains(where: { CloudKitStructureTests.hits(CloudKitStructureTests.adoptionPattern(alias), in: $0) }) {
+                failures.append("\(path) adopts \(alias), another name for a key seam — a software key's shape; only fixtures may")
+            }
             let code = CloudKitStructureTests.codeOnly(text)
             for type in softwareTypes where CloudKitStructureTests.hits(#"\b"# + type + #"\b"#, in: code) {
                 failures.append("\(path) names \(type) — software keys are for fixtures and tests only")
@@ -358,6 +370,27 @@ import Testing
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.softwareFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // #168 (the PR #167 review's (c)), the review's G7 shape: an alias of
+        // a key seam declared in Fixtures/, adopted by a live type — and a
+        // refining protocol there, and an alias of an alias.
+        let fixture = Self.softwareFile
+        let aliasShapes: [(String, [Source])] = [
+            ("G7: a fixture alias of the store adopted by a live type", Self.mutate(Self.mutate(app, fixture) {
+                $0 + "\ntypealias ReviewerStoreSeam = SigningKeyStore" }, keyring) {
+                $0 + "\nstruct ReviewerMemoryStore: ReviewerStoreSeam {\n    func read(_ slot: KeySlot) -> SigningKeyRead { .notFound }\n}" }),
+            ("a fixture protocol refining the enclave, adopted live", Self.mutate(Self.mutate(app, fixture) {
+                $0 + "\nprotocol SoftSigning: SigningEnclave {}" }, Self.inboxFile) { $0 + "\nstruct SpareEnclave: SoftSigning {}" }),
+            ("an alias of a fixture alias, adopted live", Self.mutate(Self.mutate(app, fixture) {
+                $0 + "\ntypealias Hash = EnrollmentState\ntypealias Hash2 = Hash" }, keyring) { $0 + "\nextension PhoneKeyring: Hash2 {}" }),
+        ]
+        for (name, mutant) in aliasShapes {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.softwareFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // A fixture may still name a seam another way, and use it there.
+        #expect(Self.softwareFailures(Self.mutate(app, fixture) {
+            $0 + "\ntypealias FixtureStore = SigningKeyStore\nstruct SpareFixtureStore: FixtureStore {}"
+        }).isEmpty)
         // The live conformer renamed in its own file is a new shape too.
         #expect(!Self.softwareFailures(Self.mutate(app, Self.enclaveFile) {
             $0.replacingOccurrences(of: "struct SecureEnclaveSigner: SigningEnclave {", with: "struct SoftSigner: SigningEnclave {")

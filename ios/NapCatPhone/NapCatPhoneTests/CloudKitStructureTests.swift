@@ -206,6 +206,39 @@ import Testing
             + #"|\btypealias\b[^=]*=[^{};]*?"# + word
     }
 
+    /// Every name standing for the protocol `seam` (#168, the PR #167
+    /// review's lock-shape follow-up (c)): the seam itself, and every
+    /// typealias of one of those names and every protocol refining one,
+    /// declared in ANY file given — Fixtures/ included, where adopting a seam
+    /// is allowed but declaring a new name for it would let a live file adopt
+    /// it unseen — collected until nothing new appears, in every constructor
+    /// scan copy. A lock then scans each collected name as it scans the seam.
+    static func seamNames(_ seam: String, in sources: [Source]) -> Set<String> {
+        var names: Set<String> = [seam]
+        let copies = sources.flatMap { constructorScanCopies(codeOnly($0.text)) }
+        var grew = true
+        while grew {
+            grew = false
+            for name in names.sorted() {
+                let word = #"\b"# + name + #"\b"#
+                // One declaration at a time: the right-hand side may run onto
+                // the next line, but never into another declaration.
+                let rest = #"(?:(?!\b(?:typealias|protocol|struct|class|actor|enum|extension|func|var|let)\b)[^{};])*?"#
+                for pattern in [#"\btypealias\s+(\w+)\b[^=]*="# + rest + word,
+                                #"\bprotocol\s+(\w+)\b[^{]*?:"# + rest + word] {
+                    guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                    for copy in copies {
+                        for match in regex.matches(in: copy, range: NSRange(copy.startIndex..., in: copy)) {
+                            guard let range = Range(match.range(at: 1), in: copy) else { continue }
+                            if names.insert(String(copy[range])).inserted { grew = true }
+                        }
+                    }
+                }
+            }
+        }
+        return names
+    }
+
     /// `failures` without repeats, in order.
     static func unique(_ failures: [String]) -> [String] {
         var seen = Set<String>()

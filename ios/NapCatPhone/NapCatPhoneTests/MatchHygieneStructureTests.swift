@@ -31,6 +31,13 @@ import Testing
 /// match stored as `AnyObject`, captured by a stored closure or handed to
 /// a new holder is a new site.
 ///
+/// AMENDED (#168, the PR #167 review's (d), match-hygiene exactness): the
+/// gate's `confirm` is pinned whole, like the enclave's `sign`; every `var`
+/// and `let` in the gate, the carrier and the enclave files is pinned at any
+/// indentation (a local the old four-space scan never read); and the kept
+/// pattern reads a later binding of a declaration and a tuple pattern (the
+/// review's G6, `static var (a, b): (Int, LAContext?)`).
+///
 /// Each lock catches planted canaries, so none can pass vacuously.
 @Suite struct MatchHygieneStructureTests {
     typealias Source = CloudKitStructureTests.Source
@@ -91,8 +98,20 @@ import Testing
         for line in [madeHere, evaluation, handOn] where !confirm.contains(line) {
             failures.append("the confirmation lost '\(line)'")
         }
+        // #168 (d): and nothing else — the confirmation whole, as pinned.
+        if SettingsReachabilityTests.flat(confirm) != confirmBody {
+            failures.append("the gate's confirm must make one local context, evaluate it once and hand it on, nothing else")
+        }
         return failures
     }
+
+    /// The gate's confirmation, whole (#168): a fresh local context with no
+    /// fallback button, one evaluation, the carrier on a match, and the
+    /// context invalidated on every other way out.
+    static let confirmBody = "let context = LAContext() context.localizedFallbackTitle = \"\" "
+        + "do { guard try await context.evaluatePolicy(Self.policy, localizedReason: reason) else { "
+        + "context.invalidate() return .notConfirmed } return .confirmed(LocalAuthenticationMatch(context)) } "
+        + "catch { context.invalidate() return .notConfirmed }"
 
     @Test func aContextIsMadeEvaluatedAndHandedOnInOnePlace() throws {
         let app = try Self.app()
@@ -117,6 +136,15 @@ import Testing
                 $0 + "\nfunc spare() -> Bool { let c: LAContext = .init(); return c.biometryType == .none }" }),
             ("a second carrier by typed implicit init", Self.mutate(app, gate) {
                 $0 + "\nfunc spare(c: LAContext) -> BiometricResult { let m: LocalAuthenticationMatch = .init(c); return .confirmed(m) }" }),
+            // #168 (d): the confirmation pinned whole.
+            ("the fallback button back", Self.mutate(app, gate) {
+                $0.replacingOccurrences(of: "        context.localizedFallbackTitle = \"\"\n", with: "") }),
+            ("the context left valid after a failed match", Self.mutate(app, gate) {
+                $0.replacingOccurrences(of: "                context.invalidate()\n                return .notConfirmed\n",
+                                        with: "                return .notConfirmed\n") }),
+            ("a second statement before the hand-on", Self.mutate(app, gate) {
+                $0.replacingOccurrences(of: "            return .confirmed(LocalAuthenticationMatch(context))\n",
+                                        with: "            Spare.note(reason)\n            return .confirmed(LocalAuthenticationMatch(context))\n") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -243,10 +271,19 @@ import Testing
     /// dictionary's value, a tuple, a closure's result), and a collection or
     /// generic of them built untyped (`[String: LAContext]()`,
     /// `Optional<any BiometricMatch>.none`).
+    ///
+    /// AMENDED (#168, the PR #167 review's (d) and its G6): the declared
+    /// name may be a tuple pattern (`var (a, b): (Int, LAContext?)`), and
+    /// the typed binding may be a LATER one of a declaration
+    /// (`let a = 1, c: LAContext? = nil`: a comma outside any parentheses,
+    /// so a call's labelled argument is not one).
     static let kept: String = {
         let held = #"(?:any\s+)?(?:BiometricMatch|LocalAuthenticationMatch|LAContext)\b"#
-        return #"\b(?:var|let)\s+\w+\s*:[^=;{}\n]*?\b(?:BiometricMatch|LocalAuthenticationMatch|LAContext|"#
+        let heldType = #"\b(?:BiometricMatch|LocalAuthenticationMatch|LAContext|"#
             + #"SecureEnclave\s*\.\s*P256\s*\.\s*Signing\s*\.\s*PrivateKey)\b"#
+        return #"\b(?:var|let)\s+\w+\s*:[^=;{}\n]*?"# + heldType
+            + #"|\b(?:var|let)\s*\([^)\n]*\)\s*:[^=;{}\n]*?"# + heldType
+            + #"|\b(?:var|let)\s+[^\n(]*?,\s*\w+\s*:[^=;{}\n]*?"# + heldType
             + #"|\[\s*"# + held + #"|\[[^\[\]\n]*:\s*"# + held + #"|<\s*"# + held + #"|<[^<>\n]*,\s*"# + held
     }()
     static let carrierProperty = "private(set) var context: LAContext?"
@@ -325,8 +362,36 @@ import Testing
                       "nonisolated static let notAuthorizedCodes: Set<Int> = [": 1] {
             failures.append("the enclave file declares a property beyond its two fixed ones: \(stored)")
         }
+        // #168 (d): every `var` and `let` in the three files, at ANY
+        // indentation — a property, a local, a binding in a guard or a
+        // pattern — on its pinned line.
+        for (file, sites) in bindingSites {
+            failures += CloudKitStructureTests.siteFailures(#"\b(?:var|let)\b"#, in: code(app, file), file: file, allowed: sites,
+                                                           rule: "the gate, the carrier and the enclave bind only at their pinned lines")
+        }
         return failures
     }
+
+    static let enclaveBindings: [String: Int] = [
+        "var isAvailable: Bool { SecureEnclave.isAvailable }": 1,
+        "guard SecureEnclave.isAvailable, let access = Self.accessControl(),": 1,
+        "let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else { return nil }": 1,
+        unwrap: 1,
+        "let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keyData, authenticationContext: context)": 1,
+        "if case CryptoKitError.underlyingCoreCryptoError(let status) = error {": 1,
+        "let nsError = error as NSError": 1,
+        "nonisolated static let notAuthorizedCodes: Set<Int> = [": 1,
+    ]
+
+    /// Every line of the gate, the carrier and the enclave naming `var` or
+    /// `let` (#168), with how many it holds.
+    static let bindingSites: [(String, [String: Int])] = [
+        (gateFile, ["static let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics": 1, madeHere: 2, "var error: NSError?": 1,
+                    "let canConfirm = context.canEvaluatePolicy(Self.policy, error: &error)": 1,
+                    "guard let kind = Self.kind(context.biometryType) else { return .unavailable(nil) }": 1]),
+        (matchFile, [carrierProperty: 1, "var isValid: Bool { context != nil }": 1, madeHere: 1, "var error: NSError?": 1]),
+        (enclaveFile, enclaveBindings),
+    ]
 
     @Test func nothingKeepsAMatchAContextOrAKey() throws {
         let app = try Self.app()
@@ -371,6 +436,19 @@ import Testing
             ("a match kept in a tuple", Self.mutate(app, inbox) { $0 + "\nfinal class Spare { var pair: (Int, any BiometricMatch)? }" }),
             ("a match kept as a generic argument", Self.mutate(app, inbox) {
                 $0 + "\nfinal class Spare { var box = Optional<any BiometricMatch>.none }" }),
+            // #168 (d): the review's G6, as planted, and its neighbours.
+            ("G6: a context in a tuple pattern", Self.mutate(app, Self.gateFile) {
+                $0 + "\nenum ReviewerTupleHold {\n    @MainActor static var (reviewerA, reviewerB): (Int, LAContext?) = (0, nil)\n}" }),
+            ("a context as a later binding", Self.mutate(app, inbox) {
+                $0 + "\nenum Spare { @MainActor static var count = 0, held: LAContext? = nil }" }),
+            ("a match as a later binding", Self.mutate(app, inbox) {
+                $0 + "\nfinal class Spare { var a = 1, b: (any BiometricMatch)? }" }),
+            ("a local in the gate", Self.mutate(app, Self.gateFile) {
+                $0.replacingOccurrences(of: "        context.localizedFallbackTitle = \"\"\n",
+                                        with: "        context.localizedFallbackTitle = \"\"\n        let spare = context\n") }),
+            ("a local in the enclave", Self.mutate(app, Self.enclaveFile) {
+                $0.replacingOccurrences(of: "        defer { match.invalidate() }\n",
+                                        with: "        defer { match.invalidate() }\n        let spare = match\n") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -383,7 +461,8 @@ import Testing
         // on the flow pins.)
         for probe in ["func spare(_ match: any BiometricMatch) { let m = match; _ = m }",
                       "guard case .confirmed(let match) = await biometrics.confirm(reason: r) else {", "let context = LAContext()",
-                      "let x = a < b, y = c.count"] {
+                      "let x = a < b, y = c.count", "let r = f(a: 1, context: LAContext())", "let (a, b) = (1, 2)",
+                      "let signing = DecisionSigner.sign(verdict, for: request, at: clock(), with: keyring, match: match)"] {
             #expect(!CloudKitStructureTests.hits(Self.kept, in: probe), "'kept' over-matches '\(probe)'")
         }
         // A doc comment may name the shapes, and words that only contain

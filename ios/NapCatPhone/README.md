@@ -245,6 +245,9 @@ once the device run measures it.
   `INFOPLIST_KEY_…` entries in `project.yml`). There is no Info.plist in the
   source tree. It declares `ITSAppUsesNonExemptEncryption` as NO, because
   the app's only encryption is the system's HTTPS and CloudKit transport.
+  The pairing and the signed answers use cryptography to authenticate
+  only: a P-256 signature from the Secure Enclave, a SHA-256 digest and an
+  HMAC-SHA256 tag. None of them encrypts anything, so the answer stays NO.
 - `NapCatPhone/PrivacyInfo.xcprivacy` is the app's privacy manifest: no
   tracking, no collected data, and the one required-reason API the app
   uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments

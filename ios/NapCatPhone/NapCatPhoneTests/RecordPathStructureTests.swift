@@ -41,6 +41,15 @@ import Testing
 /// Lock 3's live tokens take in the signing suite's and the launch
 /// factories that build them.
 ///
+/// AMENDED (#168, the PR #167 review's lock-shape follow-ups): an implicit
+/// `.init` after an operator and a space reads as implicit (the G9 shape);
+/// lock 2 collects the database seam's other names; lock 4 pins the inbox's
+/// `send`, `write` and `confirm` by NAME, not by a receiver's spelling, pins
+/// every `confirmed` in the app, and bans reflection (`Mirror`); and two
+/// app-wide locks join: 8, the guarded types' constructors are never reached
+/// unnamed (no `Self(`, no operator declaration), and 9, no unsafe-memory
+/// API (the Mac's lock 9b families).
+///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
 /// whole-line comments only (trailing comments stay in, so it can only
@@ -124,9 +133,15 @@ import Testing
     /// or comment-split construction of the writer is a construction. And
     /// (#166) no implicit `.init(` in the app: it could build the writer
     /// unnamed.
+    ///
+    /// AMENDED (#168): every other name for the seam (a typealias or a
+    /// refining protocol, in any file, Fixtures/ included) is itself an
+    /// adoption no app source may make.
     static func liveWriterFailuresInEveryCopy(_ app: [Source]) -> [String] {
-        CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures)
-            + implicitInitFailures(app, rule: "the CloudKit decision writer is built by no app source, by name or not"))
+        let aliases = CloudKitStructureTests.seamNames("CloudKitApprovalDatabase", in: app).subtracting(["CloudKitApprovalDatabase"])
+        return CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures)
+            + implicitInitFailures(app, rule: "the CloudKit decision writer is built by no app source, by name or not")
+            + aliases.sorted().map { "\($0) is another name for CloudKitApprovalDatabase — no app source may adopt the seam" })
     }
 
     @Test func noAppSourceBuildsALiveDecisionWriter() throws {
@@ -279,13 +294,96 @@ import Testing
                                + "guard phase(of: id)?.isPending == true, let request = entries[id]?.request else {") {
             failures.append("send must end the match on every path and re-check that the request is still pending first")
         }
-        for (token, count) in [("biometrics.confirm(", 1), ("writer.write(", 1), ("confirmAndSend(.allow", 1),
-                               ("confirmAndSend(.deny", 1), ("await send(", 1), ("match.invalidate()", 1)]
+        for (token, count) in [("confirmAndSend(.allow", 1), ("confirmAndSend(.deny", 1), ("match.invalidate()", 1)]
         where CloudKitStructureTests.occurrences(of: token, in: code) != count {
             failures.append("'\(token)' must appear exactly \(count) time(s) in the inbox")
         }
         if !send.contains("writer.write(") { failures.append("the one write must be in send") }
+        // AMENDED (#168, the PR #167 review's (b)): `send`, `write` and
+        // `confirm` pinned by NAME — every line naming one, whatever its
+        // receiver — so `let g = biometrics; g.confirm(…)` or `let f = send;
+        // await f(…)` is a new site, not an uncounted spelling.
+        let named = Self.literalsEmptied(code)
+        for (word, sites) in inboxNameSites {
+            failures += CloudKitStructureTests.siteFailures(#"\b"# + word + #"\b"#, in: named, file: inboxFile, allowed: sites,
+                                                            rule: "the inbox reaches '\(word)' at its pinned sites only")
+        }
         return failures
+    }
+
+    /// Every one-line string literal (plain or raw) emptied (the twin of
+    /// `PairingCeremonyTests.literalsEmptied`, which is main-actor bound).
+    static func literalsEmptied(_ code: String) -> String {
+        code.replacingOccurrences(of: ##"#"(?:[^"\n]|"(?!#))*"#|"(?:[^"\\\n]|\\.)*""##, with: "\"\"", options: .regularExpression)
+    }
+
+    /// Every line of the inbox naming `send`, `write` or `confirm` (string
+    /// literals emptied: the reasons' words are copy, not calls).
+    static let inboxNameSites: [(String, [String: Int])] = [
+        ("send", ["await send(verdict, for: id, match: match)": 1,
+                  "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {": 1]),
+        ("write", ["let outcome = await writer.write(decision)": 1]),
+        ("confirm", ["guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {": 1]),
+    ]
+
+    /// Every `confirmed` in the app (#168, (b)): the result's case, the
+    /// gate's one hand-on, and the two places a match is taken from it —
+    /// the inbox's answer and the ceremony's proof. Literals emptied.
+    static let confirmedSites = CloudKitStructureTests.appSites([
+        "Model/BiometricGate.swift": ["case confirmed(any BiometricMatch)": 1],
+        "Live/LocalAuthenticationGate.swift": ["return .confirmed(LocalAuthenticationMatch(context))": 1],
+        "Model/RequestInbox.swift": ["guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {": 1],
+        "Model/PairingCeremony.swift": ["guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason) else {": 1],
+    ])
+
+    /// A match taken from a confirmation anywhere new, or reflection (which
+    /// reads a value's stored parts with no name in sight), app-wide.
+    static func confirmationFailures(_ app: [Source]) -> [String] {
+        let code = app.map { ($0.path, Self.literalsEmptied(CloudKitStructureTests.codeOnly($0.text))) }
+        var failures = CloudKitStructureTests.appSiteFailures(#"\bconfirmed\b"#, in: code, allowed: confirmedSites,
+                                                              rule: "a confirmation is taken at its pinned sites only")
+        for (path, text) in code where CloudKitStructureTests.hits(#"\bMirror\b"#, in: text) {
+            failures.append("\(path) reflects a value (Mirror) — nothing reads a match's or a decision's parts unnamed")
+        }
+        return failures
+    }
+
+    @Test func everyAnswerIsReachedByNameAlone() throws {
+        let app = try Self.app()
+        #expect(Self.confirmationFailures(app).isEmpty, "\(Self.confirmationFailures(app))")
+        let inbox = Self.inboxFile
+        let plant = "\nextension RequestInbox {\n    func reviewerSecondRoute(_ id: PromptID) async {\n        let g = biometrics\n"
+            + "        guard case .confirmed(let m) = await g.confirm(reason: \"Unlock NapCat\") else { return }\n"
+            + "        let f = send\n        await f(.allow, id, m)\n    }\n}"
+        let g5 = Self.mutate(app, inbox) { $0 + plant }
+        let g5Inbox = try #require(g5.first { $0.path == inbox }).text
+        #expect(!Self.allowPathFailures(g5Inbox).isEmpty, "canary 'G5: a renamed confirm and an unapplied send' was NOT caught by lock 4")
+        #expect(!Self.confirmationFailures(g5).isEmpty, "canary 'G5' was NOT caught app-wide")
+        let mutants: [(String, [Source])] = [
+            ("a confirmation taken in the keyring", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") {
+                $0 + "\nfunc spare(r: BiometricResult) -> Bool { if case .confirmed = r { return true }; return false }" }),
+            ("a confirmation built in a fixture", Self.mutate(app, "\(Self.appDir)/Fixtures/FixtureRequests.swift") {
+                $0 + "\nfunc spare(m: any BiometricMatch) -> BiometricResult { .confirmed(m) }" }),
+            ("a match read by reflection", Self.mutate(app, inbox) {
+                $0 + "\nfunc spare(m: any BiometricMatch) -> Int { Mirror(reflecting: m).children.count }" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.confirmationFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        for (name, plant) in [("an unapplied write", "\nextension RequestInbox { func spare() { let w = writer.write } }"),
+                              ("a confirm on a renamed gate", "\nextension RequestInbox { func spare() async { _ = await gate.confirm(reason: r) } }")] {
+            let inboxText = try #require(Self.mutate(app, inbox) { $0 + plant }.first { $0.path == inbox }).text
+            #expect(!Self.allowPathFailures(inboxText).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: words that only contain the pinned ones, the
+        // reasons' copy, and a whole-line comment.
+        #expect(Self.confirmationFailures(Self.mutate(app, inbox) {
+            $0 + "\nlet notConfirmed = 1, unconfirmed = 2, sendCount = 3, Mirrored = 4\nlet copy = \"confirmed by Mirror\""
+                + "\n/// never g.confirm, never Mirror(reflecting:)"
+        }).isEmpty)
+        let inboxText = try #require(app.first { $0.path == inbox }).text
+        #expect(Self.allowPathFailures(inboxText + "\nlet sender = 1, rewrite = 2, confirmation = \"send it\"").isEmpty)
     }
 
     @Test func everyAnswerNeedsTheMatchAndOneSiteWrites() throws {
@@ -543,8 +641,14 @@ import Testing
 
     /// An implicit `.init(`: what it builds is not in the text, so the
     /// CloudKit file spells every construction (none uses one today).
+    ///
+    /// AMENDED (#168, the PR #167 review's G9): `0 ~> .init(…)` builds one
+    /// through a custom operator ending in `>`, which the look-behind took
+    /// for a generic's close; an operator character, a space, then `.init`
+    /// is implicit too.
     static let implicitInit =
         #"(?<![\w)\]>\s])\s*\.\s*init\b|\b(?:return|in|throw|try|await|else|case|where|is|as|some|any)\s+\.\s*init\b"#
+            + #"|[!%&*+\-/<=>?^|~]\s+\.\s*init\b"#
 
     /// AMENDED (#166, the S-PAIR-B security review's B6, B9 and B10): every
     /// lock that counts a construction bans an implicit `.init(` in EVERY
@@ -635,6 +739,127 @@ import Testing
             $0 + "\nfunc f(r: CKRecord, rs: [CKRecord], res: Result<CKRecord, any Error>) -> CKRecord.ID { "
                 + "CKRecord.ID(recordName: \"x\", zoneID: .default) }\nextension CKRecord.ID {}\nlet now: () -> Date = Date.init"
                 + "\n/// never CKRecord.init(…), never typealias R = CKRecord\n"
+        }).isEmpty)
+    }
+
+    // MARK: 8. The guarded types' constructors, never reached unnamed (#168)
+
+    /// The PR #167 review's (a): the types whose constructions the suites
+    /// count. Their constructors are never reached unnamed ANYWHERE in the
+    /// app — not through an unapplied `.init`, the metatype, an alias, an
+    /// extension, a subclass or a bound generic (`indirectConstructionPattern`,
+    /// the CloudKit file's), through `Self(` / `Self.init` (an extension's
+    /// own constructor, the review's G3), or through an operator of the app's
+    /// own (G9 built a decision with `0 ~> .init(…)`): no source declares an
+    /// operator at all.
+    static let guardedTypes = ["PhoneDecision", "PendingRequest", "PairingCeremony", "PhoneKeyring", "KeyFingerprint",
+                               "LocalAuthenticationMatch"]
+    static let selfInit = #"\bSelf\s*(?:\(|\.\s*init\b)"#
+    static let operatorDeclaration = #"\boperator\b"#
+
+    static func unnamedConstructionFailures(_ app: [Source]) -> [String] {
+        var failures: [String] = []
+        for (path, text) in app {
+            for copy in CloudKitStructureTests.constructorScanCopies(CloudKitStructureTests.codeOnly(text)) {
+                for type in guardedTypes where CloudKitStructureTests.hits(indirectConstructionPattern(type), in: copy) {
+                    failures.append("\(path) reaches \(type)'s constructor unnamed")
+                }
+                if CloudKitStructureTests.hits(selfInit, in: copy) {
+                    failures.append("\(path) builds through Self( or Self.init — the app spells every construction")
+                }
+                if CloudKitStructureTests.hits(operatorDeclaration, in: copy) {
+                    failures.append("\(path) declares an operator — none hides what it builds")
+                }
+            }
+        }
+        return CloudKitStructureTests.unique(failures + implicitInitFailures(app, rule: "the guarded types are built by name only"))
+    }
+
+    @Test func noGuardedConstructorIsReachedUnnamed() throws {
+        let app = try Self.app()
+        #expect(Self.unnamedConstructionFailures(app).isEmpty, "\(Self.unnamedConstructionFailures(app))")
+        let inbox = Self.inboxFile
+        let keyring = "\(Self.appDir)/Model/PhoneKeyring.swift"
+        // The review's plants, as planted (G3/G4 and G9), each alone.
+        let g3 = "\nextension PhoneDecision {\n    static func reviewerUnsigned(_ p: PromptID) -> Self? {\n"
+            + "        Self(promptID: p, verdict: .allow, decidedAt: Date(timeIntervalSince1970: 0), signature: Data(count: 64))\n    }\n}"
+        let g4 = "\nextension RequestInbox {\n    func reviewerUnapplied(_ p: PromptID) -> PhoneDecision? {\n        let make = PhoneDecision.init\n"
+            + "        return make(p, .allow, Date(timeIntervalSince1970: 0), Data(count: 64))\n    }\n}"
+        let g9 = "\ninfix operator ~>: AdditionPrecedence\nfunc ~> (lhs: Int, rhs: PhoneDecision?) -> PhoneDecision? { rhs }\n"
+            + "extension RequestInbox {\n    func reviewerOperatorInit(_ p: PromptID) -> PhoneDecision? {\n"
+            + "        0 ~> .init(promptID: p, verdict: .allow, decidedAt: Date(timeIntervalSince1970: 0), signature: Data(count: 64))\n    }\n}"
+        var mutants: [(String, [Source])] = [
+            ("G3: Self( in an extension", Self.mutate(app, inbox) { $0 + g3 }),
+            ("G4: an unapplied PhoneDecision.init", Self.mutate(app, inbox) { $0 + g4 }),
+            ("G9: .init after a >-ending operator", Self.mutate(app, inbox) { $0 + g9 }),
+            ("G9's .init alone", Self.mutate(app, inbox) {
+                $0 + "\nfunc spare(_ p: PromptID) -> PhoneDecision? { 0 ~> .init(promptID: p) }" }),
+            ("an operator declared alone", Self.mutate(app, keyring) { $0 + "\nprefix operator ^^" }),
+            ("Self.init in an extension", Self.mutate(app, keyring) { $0 + "\nextension PhoneKeyring { static func spare() -> Self { Self.init() } }" }),
+        ]
+        for type in Self.guardedTypes {
+            mutants += [
+                ("\(type): an extension", Self.mutate(app, keyring) { $0 + "\nextension \(type) {}" }),
+                ("\(type): an alias", Self.mutate(app, keyring) { $0 + "\ntypealias Spare = \(type)" }),
+                ("\(type): the metatype", Self.mutate(app, keyring) { $0 + "\nlet spare = \(type).self" }),
+                ("\(type): a bound generic", Self.mutate(app, keyring) { $0 + "\nfunc spare<T: \(type)>(_ t: T.Type) {}" }),
+            ]
+        }
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.unnamedConstructionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: named constructions, member types, a delegating
+        // `self.init(`, `Self.reason` (a member, no construction), words that
+        // only contain the banned ones, and a whole-line comment.
+        #expect(Self.unnamedConstructionFailures(Self.mutate(app, keyring) {
+            $0 + "\nfunc spare(k: [UInt8]) -> KeyFingerprint? { KeyFingerprint(publicKey: k) }"
+                + "\nfunc spare2(p: PairingCeremony.Phase, r: PendingRequest?) -> Bool { p == .scanning && r == nil }"
+                + "\nlet spareCooperator = 1, Selfish = 2\nlet spareReason = PairingCeremony.reason"
+                + "\n/// never Self(…), never infix operator, never PhoneDecision.init"
+        }).isEmpty)
+        #expect(Self.unnamedConstructionFailures([("x", "init(a: Int) { self.init(b: a) }\nlet r = Self.reason")]).isEmpty)
+        for probe in ["0 ~> .init(x)", "a == .init(x)", "f(x) ?? .init()"] {
+            #expect(CloudKitStructureTests.hits(Self.implicitInit, in: probe), "'\(probe)' is implicit")
+        }
+        for probe in ["Array<Int>.init()", "Foo<T>.init(x)", "x = PhoneDecision.init(p)"] {
+            #expect(!CloudKitStructureTests.hits(Self.implicitInit, in: probe), "'\(probe)' names what it builds")
+        }
+    }
+
+    // MARK: 9. No unsafe memory (#168, the Mac's lock 9b families)
+
+    /// The Mac's `unsafeMemoryPattern`: a bit cast, and every pointer
+    /// rebinding or typed load. The phone app uses none, anywhere.
+    static let unsafeMemoryPattern =
+        #"\b(?:unsafeBitCast|bindMemory|assumingMemoryBound|withMemoryRebound|initializeMemory)\b"#
+            + #"|\.\s*load(?:Unaligned)?\b|\bload(?:Unaligned)?\s*\("#
+
+    static func unsafeMemoryFailures(_ app: [Source]) -> [String] {
+        CloudKitStructureTests.unique(app.flatMap { path, text in
+            CloudKitStructureTests.constructorScanCopies(CloudKitStructureTests.codeOnly(text))
+                .filter { CloudKitStructureTests.hits(unsafeMemoryPattern, in: $0) }
+                .map { _ in "\(path) uses unsafe memory — a decision or a key is never forged from bytes" }
+        })
+    }
+
+    @Test func noAppSourceUsesUnsafeMemory() throws {
+        let app = try Self.app()
+        #expect(Self.unsafeMemoryFailures(app).isEmpty, "\(Self.unsafeMemoryFailures(app))")
+        for plant in ["func zz(_ id: PromptID) -> PhoneDecision? { unsafeBitCast(0, to: PhoneDecision?.self) }",
+                      "func zz<T>(_ r: UnsafeRawPointer) -> T { r.load(as: T.self) }",
+                      "func zz<T>(_ r: UnsafeRawBufferPointer) -> T { r . loadUnaligned(as: T.self) }",
+                      "func zz<T>(_ r: UnsafeMutableRawPointer) -> T { r.bindMemory(to: T.self, capacity: 1).pointee }",
+                      "func zz<T>(_ r: UnsafeRawPointer) -> T { r.assumingMemoryBound(to: T.self).pointee }",
+                      "func zz(_ p: UnsafeMutablePointer<Int>) { p.withMemoryRebound(to: UInt.self, capacity: 1) { _ in } }",
+                      "func zz<T>(_ r: UnsafeMutableRawPointer, _ v: T) { _ = r.initializeMemory(as: T.self, repeating: v, count: 1) }",
+                      "let zz: (Int, Int.Type) -> Int = `unsafeBitCast`"] {
+            let mutant = Self.mutate(app, Self.inboxFile) { $0 + "\n" + plant }
+            #expect(!Self.unsafeMemoryFailures(mutant).isEmpty, "canary '\(plant)' was NOT caught")
+        }
+        #expect(Self.unsafeMemoryFailures(Self.mutate(app, Self.inboxFile) {
+            $0 + "\nlet payload = 1\nfunc reload() {}\nlet isLoaded = true\nlet n = withUnsafeBytes(of: 1) { $0.count }"
+                + "\n/// never unsafeBitCast, never p.load(as:)"
         }).isEmpty)
     }
 }
