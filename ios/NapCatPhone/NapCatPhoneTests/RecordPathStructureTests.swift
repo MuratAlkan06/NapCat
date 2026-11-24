@@ -22,7 +22,14 @@ import Testing
 /// 6. (security review 2) the decision's record and its save operation are
 ///    each reached once, in `CloudKitDecisionWriter.write`, which hands the
 ///    operation to the seam, and nothing in the CloudKit file runs an
-///    operation itself.
+///    operation itself (#153: and the factory only configures and returns
+///    its operation, pinned by its lines, not by banned words);
+/// 7. (#153) the CloudKit file builds one record, one operation and one
+///    subscription, however the construction is spelled.
+///
+/// Since #153 the constructor bans (locks 2 and 7) read the cleaned copies
+/// too (`CloudKitStructureTests.constructorScanCopies`: backticks removed,
+/// block comments replaced by a space), in addition to the raw text.
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
@@ -102,9 +109,15 @@ import Testing
         return failures
     }
 
+    /// `liveWriterFailures` over every cleaned copy too (#153): a backticked
+    /// or comment-split construction of the writer is a construction.
+    static func liveWriterFailuresInEveryCopy(_ app: [Source]) -> [String] {
+        CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures))
+    }
+
     @Test func noAppSourceBuildsALiveDecisionWriter() throws {
         let app = try Self.app()
-        #expect(Self.liveWriterFailures(app).isEmpty, "\(Self.liveWriterFailures(app))")
+        #expect(Self.liveWriterFailuresInEveryCopy(app).isEmpty, "\(Self.liveWriterFailuresInEveryCopy(app))")
         let cloudKit = CloudKitStructureTests.codeOnly(app.first { $0.path == Self.cloudKitFile }?.text ?? "")
         for declaration in ["struct CloudKitDecisionWriter: DecisionWriter", "protocol CloudKitApprovalDatabase: Sendable",
                             "func submit(_ operation: CKModifyRecordsOperation)"] {
@@ -119,9 +132,12 @@ import Testing
                 $0 + "\nprivate struct LiveApprovalDatabase: CloudKitApprovalDatabase { func submit(_ o: Op) {} }" }),
             ("the alert database made live for it", Self.mutate(app, Self.cloudKitFile) {
                 $0 + "\nextension LiveCloudKitAlertDatabase: Sendable, CloudKitApprovalDatabase {}" }),
+            // #153: behind backticks or a block comment.
+            ("a backticked writer", Self.mutate(app, feed) { $0 + "\nlet w = `CloudKitDecisionWriter`(database: d)" }),
+            ("a comment-split writer", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitDecisionWriter/* x */(database: d)" }),
         ]
         for (name, mutant) in mutants {
-            #expect(!Self.liveWriterFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+            #expect(!Self.liveWriterFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 
@@ -312,6 +328,28 @@ import Testing
                                        #"\.\s*add\b"#, #"\bperform\b"#, #"#selector\b"#, #"\bSelector\b"#,
                                        #"\bNSSelectorFromString\b"#]
 
+    /// AMENDED after the security delta check (#153, X1: an operation run by
+    /// an extension in ANOTHER file names no banned word here): the
+    /// operation is pinned by where it goes. Every line of the CloudKit file
+    /// naming `operation` is the seam's parameter or the factory building,
+    /// configuring and returning it; the operation type is named only there
+    /// and by the one construction; and `submit` only by the seam and the
+    /// writer.
+    static let decisionOperation = "let operation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)"
+    static let seamRequirement = "func submit(_ operation: CKModifyRecordsOperation)"
+    static let operationSites: [(pattern: String, sites: [String: Int], rule: String)] = [
+        (#"\boperation\b"#, [seamRequirement: 1, decisionOperation: 1, "operation.savePolicy = .ifServerRecordUnchanged": 1,
+                             "operation.isAtomic = true": 1, "operation.configuration = configuration": 1,
+                             "operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }": 1,
+                             "operation.modifyRecordsResultBlock = { batch in": 1, "return operation": 1],
+         "the factory builds, configures and returns its operation, nothing else"),
+        (#"\bCKModifyRecordsOperation\b"#, [seamRequirement: 1, ") -> CKModifyRecordsOperation {": 1, decisionOperation: 1],
+         "the operation type is named by the seam, the factory and the one construction"),
+        (#"\bsubmit\b"#, [seamRequirement: 1, "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) "
+                          + "{ continuation.resume(returning: $0) })": 1],
+         "the seam is named only by its requirement and the writer"),
+    ]
+
     static func decisionRunFailures(_ app: [Source]) -> [String] {
         let uncut = app.map { (path: $0.path, text: CloudKitStructureTests.wholeLineCommentsRemoved($0.text)) }
         let file = uncut.first { $0.path == cloudKitFile }?.text ?? ""
@@ -334,6 +372,9 @@ import Testing
         }
         for pattern in operationRunPatterns where file.range(of: pattern, options: .regularExpression) != nil {
             failures.append("'\(pattern)' in \(cloudKitFile) — only the seam runs a decision's operation")
+        }
+        for (pattern, sites, rule) in operationSites {
+            failures += CloudKitStructureTests.siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites, rule: rule)
         }
         return failures
     }
@@ -383,6 +424,16 @@ import Testing
                 $0 + "\nextension CKModifyRecordsOperation {\n    func go() { start() }\n}" }),
             ("an operation run by hand on its implicit self", Self.mutate(app, ck) {
                 $0 + "\nextension CKOperation {\n    func go() { main() }\n}" }),
+            // The security delta check (#153), X1's shape on the phone: the
+            // factory's own operation run by a runner in another file.
+            ("X1: the factory's operation run by an extension in another file", Self.mutate(Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        return operation\n", with: "        operation.go()\n        return operation\n")
+            }, "\(Self.appDir)/Model/AlertFeed.swift") { $0 + "\nextension Operation {\n    func go() { start() }\n}" }),
+            ("the factory's operation handed out", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        return operation\n", with: "        Spare.last = operation\n        return operation\n") }),
+            ("the operation type extended, no banned word", Self.mutate(app, ck) {
+                $0 + "\nextension CKModifyRecordsOperation {\n    func go() { spare() }\n}" }),
+            ("a second submit", Self.mutate(app, ck) { $0 + "\nfunc f(d: any CloudKitApprovalDatabase, o: Op) { d.submit(o) }" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -395,5 +446,109 @@ import Testing
                 + "func f(d: Date) -> Date { d.addingTimeInterval(1) }"
         }).isEmpty)
         #expect(app.contains { $0.text.contains("await feed.start()") }, "vacuity: a legitimate start() lives outside the CloudKit file")
+    }
+
+    // MARK: 7. One record, one operation, one subscription, however spelled (#153)
+
+    /// A construction of `type`, however it is applied: `T(`, `T (`,
+    /// `T.init(`, `CloudKit.T(` (`T.ID(` builds another type). The Mac's
+    /// `ApprovalRecordPathStructureTests.constructionPattern`.
+    static func constructionPattern(_ type: String) -> String { #"\b"# + type + #"\s*(?:\.\s*init\b\s*)?\("# }
+
+    /// The constructor of `type` reached with no construction to count: an
+    /// unapplied `.init`, the metatype, an alias, an extension, a subclass,
+    /// or a generic parameter bound to it (a member type, `T.ID`, is another
+    /// type).
+    static func indirectConstructionPattern(_ type: String) -> String {
+        let named = #"(?:CloudKit\s*\.\s*)?"# + type + #"\b(?!\s*\.\s*[A-Z])"#
+        return [#"\b"# + type + #"\s*\.\s*(?:init\b(?!\s*\()|self\b|Type\b)"#,
+                #"\btypealias\b[^\n]*\b"# + named,
+                #"\bextension\s+"# + named,
+                #"\b(?:class|actor)\s+(?!func\b|var\b|let\b)\w+[^{\n]*:[^{\n]*\b"# + named,
+                #"<[^>\n]*\b\w+\s*:\s*"# + named,
+                #"\bwhere\b[^{\n]*\b"# + named].joined(separator: "|")
+    }
+
+    /// An implicit `.init(`: what it builds is not in the text, so the
+    /// CloudKit file spells every construction (none uses one today).
+    static let implicitInit =
+        #"(?<![\w)\]>\s])\s*\.\s*init\b|\b(?:return|in|throw|try|await|else|case|where|is|as|some|any)\s+\.\s*init\b"#
+
+    /// The CloudKit file's one record (the decision), one operation (its
+    /// save) and one subscription (the alert lane's push).
+    static let constructions = [
+        "CKRecord": "let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,",
+        "CKModifyRecordsOperation": decisionOperation,
+        "CKQuerySubscription": "let subscription = CKQuerySubscription(",
+    ]
+
+    /// The security re-check's L6 (`CKRecord.init(` slipped past a count of
+    /// `CKRecord(recordType:`): in the raw text each construction sits on
+    /// its pinned line; in every scan copy each type is built once and never
+    /// reached unnamed; and no implicit `.init(` appears at all.
+    static func constructionFailures(_ app: [Source]) -> [String] {
+        let file = CloudKitStructureTests.wholeLineCommentsRemoved(app.first { $0.path == cloudKitFile }?.text ?? "")
+        var failures: [String] = []
+        let copies = CloudKitStructureTests.constructorScanCopies(file)
+        for (type, line) in constructions.sorted(by: { $0.key < $1.key }) {
+            failures += CloudKitStructureTests.siteFailures(constructionPattern(type), in: file, file: cloudKitFile,
+                                                            allowed: [line: 1], rule: "the one \(type) is built at its one site")
+            for copy in copies {
+                let built = CloudKitStructureTests.matches(constructionPattern(type), in: copy).count
+                if built != 1 { failures.append("\(cloudKitFile) builds \(type) \(built) time(s) in a scan copy — exactly once") }
+                if CloudKitStructureTests.hits(indirectConstructionPattern(type), in: copy) {
+                    failures.append("\(cloudKitFile) reaches \(type)'s constructor unnamed")
+                }
+            }
+        }
+        if copies.contains(where: { CloudKitStructureTests.hits(implicitInit, in: $0) }) {
+            failures.append("\(cloudKitFile) has an implicit .init( — the CloudKit file spells every construction")
+        }
+        return CloudKitStructureTests.unique(failures)
+    }
+
+    @Test func theCloudKitFileBuildsEachRecordAndOperationOnce() throws {
+        let app = try Self.app()
+        #expect(Self.constructionFailures(app).isEmpty, "\(Self.constructionFailures(app))")
+        let ck = Self.cloudKitFile
+        let mutants: [(String, [Source])] = [
+            // The security re-check (#146): the phone's alert-lane plant, as planted.
+            ("the live database extended to save an init-spelled decision", Self.mutate(app, ck) {
+                $0 + "\nextension LiveCloudKitAlertDatabase {\n    func alertLaneProbe(_ p: PromptID) async throws {\n"
+                    + "        _ = try await container.privateCloudDatabase.save(CKRecord.init(recordType: "
+                    + "ApprovalWire.RecordType.decision.rawValue,\n            recordID: CloudKitAlertSource.decisionRecordID(for: p)))\n    }\n}" }),
+            ("a second record, spaced", Self.mutate(app, ck) { $0 + "\nlet r = CKRecord (recordType: \"PromptDecision\")" }),
+            ("a backticked second record", Self.mutate(app, ck) { $0 + "\nlet r = `CKRecord`(recordType: \"PromptDecision\")" }),
+            ("a comment-split second operation", Self.mutate(app, ck) {
+                $0 + "\nlet o = CKModifyRecordsOperation/* x */(recordsToSave: [], recordIDsToDelete: nil)" }),
+            ("a second subscription", Self.mutate(app, ck) {
+                $0 + "\nlet s = CKQuerySubscription.init(recordType: \"PromptDecision\", predicate: p, options: [])" }),
+            ("an unapplied record init", Self.mutate(app, ck) { $0 + "\nlet make = CKRecord.init" }),
+            ("an aliased operation", Self.mutate(app, ck) {
+                $0 + "\ntypealias Op = CKModifyRecordsOperation\nlet o = Op(recordsToSave: [], recordIDsToDelete: nil)" }),
+            ("an extension's Self(", Self.mutate(app, ck) {
+                $0 + "\nextension CKRecord {\n    static func spare() -> CKRecord { Self(recordType: \"X\") }\n}" }),
+            ("a bound generic", Self.mutate(app, ck) { $0 + "\nfunc spare<R: CKRecord>(_: R.Type) -> R { R(recordType: \"X\") }" }),
+            ("an implicit init in the decision's records", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "recordsToSave: [record],", with: "recordsToSave: [record, .init(recordType: \"X\")],") }),
+            ("an implicit init returned", Self.mutate(app, ck) { $0 + "\nfunc spare() -> CKRecord {\n    return .init(recordType: \"X\")\n}" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.constructionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        for (pattern, probe) in [(Self.constructionPattern("CKRecord"), "CKRecord . init (recordType: t)"),
+                                 (Self.indirectConstructionPattern("CKRecord"), "extension CloudKit.CKRecord {"),
+                                 (Self.implicitInit, "let r: CKRecord =\n    .init(recordType: t)")] {
+            #expect(CloudKitStructureTests.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+        // Over-match controls: record and zone IDs, the record as a
+        // parameter or result, an implicit member that is no init, an
+        // extension of a member type, and a whole-line comment.
+        #expect(Self.constructionFailures(Self.mutate(app, ck) {
+            $0 + "\nfunc f(r: CKRecord, rs: [CKRecord], res: Result<CKRecord, any Error>) -> CKRecord.ID { "
+                + "CKRecord.ID(recordName: \"x\", zoneID: .default) }\nextension CKRecord.ID {}\nlet now: () -> Date = Date.init"
+                + "\n/// never CKRecord.init(…), never typealias R = CKRecord\n"
+        }).isEmpty)
     }
 }

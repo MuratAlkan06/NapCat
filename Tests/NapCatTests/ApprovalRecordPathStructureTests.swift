@@ -36,7 +36,16 @@ import Testing
 /// 6. the prompt record is written only through the wire;
 /// 7. (#146) the record store writes the gate's forward answer exactly as
 ///    the intake hands it, through the one conformer of the gate's answer,
-///    and a decision read for a prompt only joins its retraction.
+///    and a decision read for a prompt only joins its retraction;
+/// 8. (#153) the record path builds one record and one operation, however
+///    the construction is spelled, and every operation it builds is the
+///    argument of the seam's `submit`, at a set count of call sites — so no
+///    banned word has to be named for a bypass to fail.
+///
+/// Since #153 the constructor bans (locks 3, 7 and 8) read the cleaned
+/// copies too (`LidGuardStructureTests.constructorScanCopies`: backticks
+/// removed, block comments replaced by a space), in addition to the raw
+/// text — never instead of it.
 ///
 /// Each lock is a pure function over comment-stripped sources and each
 /// catches planted canaries, so none can pass vacuously. Locks 3 and 4 scan
@@ -246,20 +255,26 @@ struct ApprovalRecordPathStructureTests {
         #"\bApprovalDecision\s*\.\s*(?:init|self)\b|=\s*(?:NapCatWire\s*\.\s*)?ApprovalDecision\b"#
             + #"|\bextension\s+(?:NapCatWire\s*\.\s*)?ApprovalDecision\b"#
 
+    /// AMENDED after the security delta check (#153, B1/B2): `` extension
+    /// `ApprovalDecision` `` and `extension /* … */ ApprovalDecision` named
+    /// the type in a form no pattern read, so every check also reads the
+    /// cleaned copies of the file (`constructorScanCopies`) — in addition to
+    /// the raw text, never instead of it.
+    ///
     /// `sources`: `uncutSources()`. The original two checks read the
     /// comment-stripped code, as they always did.
     static func verdictTypeFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         for (name, uncut) in sources where !wireFiles.contains(name) {
-            let text = LidGuardStructureTests.codeOnly(uncut)
-            let spelled = ApprovalChannelStructureTests.constructionSpelling(text)
-            if spelled.contains("ApprovalDecision(") {
+            let copies = LidGuardStructureTests.constructorScanCopies(uncut)
+            let code = copies.map(LidGuardStructureTests.codeOnly)
+            if code.contains(where: { ApprovalChannelStructureTests.constructionSpelling($0).contains("ApprovalDecision(") }) {
                 failures.append("\(name) builds an ApprovalDecision — no decision is a verdict before CL-1")
             }
-            if text.contains("signatureVerified") {
+            if code.contains(where: { $0.contains("signatureVerified") }) {
                 failures.append("\(name) names signatureVerified — no decision is a verdict before CL-1")
             }
-            if uncut.range(of: indirectConstruction, options: .regularExpression) != nil {
+            if copies.contains(where: { $0.range(of: indirectConstruction, options: .regularExpression) != nil }) {
                 failures.append("\(name) reaches ApprovalDecision's constructor unnamed — no decision is a verdict before CL-1")
             }
         }
@@ -319,6 +334,28 @@ struct ApprovalRecordPathStructureTests {
                     + "func n3(i: ApprovalIntake, p: PromptID) {\n    i.decide(ApprovalDecision.claimed(p, .allow, 1, true))\n}" }),
             ("a module-qualified extension", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
                 $0 + "\nextension NapCatWire . ApprovalDecision {\n    static var claimed: Any { Self.init }\n}" }),
+            // The security delta check (#153): B1 and B2, as planted, then together.
+            ("B1: an extension behind backticks", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nextension `ApprovalDecision` {\n    static let claimedB1 = Self.init\n}\n\n"
+                    + "func b1(i: ApprovalIntake, p: PromptID) {\n    i.decide(ApprovalDecision.claimedB1(p, .allow, 1, true))\n}" }),
+            ("B2: an extension behind a block comment", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nextension /* b2 */ ApprovalDecision {\n    static let claimedB2 = Self.init\n}\n\n"
+                    + "func b2(i: ApprovalIntake, p: PromptID) {\n    i.decide(ApprovalDecision.claimedB2(p, .allow, 1, true))\n}" }),
+            ("B1 and B2 together", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nextension `ApprovalDecision` {\n    static let claimedB1 = Self.init\n}\n\n"
+                    + "extension /* b2 */ ApprovalDecision {\n    static let claimedB2 = Self.init\n}\n\n"
+                    + "func b12(i: ApprovalIntake, p: PromptID) {\n    i.decide(ApprovalDecision.claimedB1(p, .allow, 1, true))\n"
+                    + "    i.decide(ApprovalDecision.claimedB2(p, .allow, 1, true))\n}" }),
+            ("a backticked unapplied init", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet make = `ApprovalDecision`.init" }),
+            ("a backticked metatype", Self.mutate(sources, ApprovalChannelStructureTests.toggleFile) {
+                $0 + "\nlet type = `ApprovalDecision`.self" }),
+            ("an alias behind a block comment", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\ntypealias Claimed = /* x */ ApprovalDecision\nlet make = Claimed.init" }),
+            ("a string-held block-comment opener around a commented extension",
+             Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nlet a = \"/*\"\nextension /* x */ ApprovalDecision {\n    static let c = Self.init\n}\nlet b = \"*/\"" }),
+            ("a bare regex before a commented extension", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nlet r = /\"/; let a = \"/*\"; extension /* x */ ApprovalDecision { static let c = Self.init }; let b = \"*/\"" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -331,6 +368,20 @@ struct ApprovalRecordPathStructureTests {
             $0 + "\nfunc f(_ d: ApprovalDecision?, _ all: [ApprovalDecision]) {}\nextension ApprovalDecisionLog {}"
                 + LidGuardStructureTests.wholeLineCommentsRemoved(
                     "\n/// never ApprovalDecision.init, never = ApprovalDecision, never extension ApprovalDecision")
+        }).isEmpty)
+        // The construction check reads the cleaned copies too (#153): a
+        // construction split by a block comment is a construction.
+        let split = Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nfunc f(i: ApprovalIntake) { i.decide(ApprovalDecision/* x */(promptID: p, verdict: .allow, "
+                + "wireVersion: 1, signatureVerified: true)) }"
+        }
+        #expect(Self.verdictTypeFailures(split).contains { $0.contains("builds an ApprovalDecision") },
+                "canary 'a construction split by a block comment' was NOT caught by the construction check")
+        // … and through the cleaned copies (#153): a backticked parameter
+        // type, a backticked keyword, and a string holding a block comment.
+        #expect(Self.verdictTypeFailures(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nfunc f(_ d: `ApprovalDecision`?) { let `default` = 1; _ = `default` }"
+                + "\nlet note = \"/* ApprovalDecision */\""
         }).isEmpty)
     }
 
@@ -592,9 +643,21 @@ struct ApprovalRecordPathStructureTests {
         return failures
     }
 
+    /// `recordStoreFailures` over every cleaned copy too (#153): a backticked
+    /// or comment-split second construction of the gate's answer.
+    static func recordStoreFailuresInEveryCopy(_ sources: Sources) -> [String] {
+        unique(LidGuardStructureTests.constructorScanCopies(sources).flatMap(recordStoreFailures))
+    }
+
+    /// `failures` without repeats, in order.
+    static func unique(_ failures: [String]) -> [String] {
+        var seen = Set<String>()
+        return failures.filter { seen.insert($0).inserted }
+    }
+
     @Test func theRecordStoreWritesTheGatesAnswerAsItIsHanded() throws {
         let sources = try ApprovalChannelStructureTests.sources()
-        #expect(Self.recordStoreFailures(sources).isEmpty, "\(Self.recordStoreFailures(sources))")
+        #expect(Self.recordStoreFailuresInEveryCopy(sources).isEmpty, "\(Self.recordStoreFailuresInEveryCopy(sources))")
         let file = Self.recordPathFile
         let mutants: [(String, Sources)] = [
             ("a second conformer", Self.mutate(sources, file) { $0 + "\nextension DecisionClaim: GateApprovedPrompt {}" }),
@@ -615,11 +678,271 @@ struct ApprovalRecordPathStructureTests {
                 $0.replacingOccurrences(of: "decisions: decisions.sorted()", with: "decisions: []") }),
             ("a claim kept for a prompt never written", Self.mutate(sources, file) {
                 $0.replacingOccurrences(of: "pending[claim.promptID]?.insert(", with: "pending[claim.promptID, default: []].insert(") }),
+            // #153: a second construction behind backticks or a block comment.
+            ("a backticked second construction", Self.mutate(sources, file) {
+                $0 + "\nlet p = `ForwardedPrompt`(promptID: i, toolName: t, inputPreview: raw, createdAt: c, expiresAt: e)" }),
+            ("a comment-split second construction", Self.mutate(sources, file) {
+                $0 + "\nlet p = ForwardedPrompt/* x */(promptID: i, toolName: t, inputPreview: raw, createdAt: c, expiresAt: e)" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
-            #expect(!Self.recordStoreFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+            #expect(!Self.recordStoreFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+    }
+
+    // MARK: - 8. One record, one operation, and every operation goes to the seam (#153)
+
+    /// Whether `pattern` matches in `text`. Every #153 check and its probes
+    /// run through this one engine (NSRegularExpression, as `matches`):
+    /// String's regex search reads some patterns differently (the security
+    /// delta check's CRLF and lookahead probes).
+    static func hits(_ pattern: String, in text: String) -> Bool { !matches(pattern, in: text).isEmpty }
+
+    /// Every line holding a match of `pattern`, trimmed, with how many
+    /// matches it holds. A site pin compares this to an exact allow-list, so
+    /// a new site, a changed one and a vanished one all fail.
+    static func siteTally(_ pattern: String, in text: String) -> [String: Int] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<bad pattern \(pattern)>": 1] }
+        let lineEnd: (Character) -> Bool = { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }
+        var tally: [String: Int] = [:]
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text) else {
+                tally["<a match of \(pattern) off the text>", default: 0] += 1
+                continue
+            }
+            let start = text[..<range.lowerBound].lastIndex(where: lineEnd).map { text.index(after: $0) } ?? text.startIndex
+            let end = text[range.lowerBound...].firstIndex(where: lineEnd) ?? text.endIndex
+            tally[text[start..<end].trimmingCharacters(in: .whitespaces), default: 0] += 1
+        }
+        return tally
+    }
+
+    /// A site pin: `pattern`'s sites in `text` are exactly `allowed`.
+    static func siteFailures(_ pattern: String, in text: String, file: String, allowed: [String: Int],
+                             rule: String) -> [String] {
+        let tally = siteTally(pattern, in: text)
+        if tally == allowed { return [] }
+        let off = tally.filter { allowed[$0.key] != $0.value }.map { "\($0.value)× \($0.key)" }.sorted()
+        let gone = allowed.filter { tally[$0.key] != $0.value }.map(\.key).sorted()
+        return ["'\(pattern)' in \(file) — \(rule): off the allow-list \(off); moved or gone \(gone)"]
+    }
+
+    /// A construction of `type`, however it is applied: `T(`, `T (`,
+    /// `T.init(`, `CloudKit.T(` (`T.ID(` builds another type).
+    static func constructionPattern(_ type: String) -> String { #"\b"# + type + #"\s*(?:\.\s*init\b\s*)?\("# }
+
+    /// The constructor of `type` reached with no construction to count (as
+    /// lock 3's for the S0 type): an unapplied `.init`, the metatype (the
+    /// road to a generic `T.init`), an alias, an extension (its `Self.init`
+    /// or bare `.init`), a subclass, or a generic parameter bound to it. A
+    /// member type (`T.ID`) is another type.
+    static func indirectConstructionPattern(_ type: String) -> String {
+        let named = #"(?:CloudKit\s*\.\s*)?"# + type + #"\b(?!\s*\.\s*[A-Z])"#
+        return [#"\b"# + type + #"\s*\.\s*(?:init\b(?!\s*\()|self\b|Type\b)"#,
+                #"\btypealias\b[^\n]*\b"# + named,
+                #"\bextension\s+"# + named,
+                #"\b(?:class|actor)\s+(?!func\b|var\b|let\b)\w+[^{\n]*:[^{\n]*\b"# + named,
+                #"<[^>\n]*\b\w+\s*:\s*"# + named,
+                #"\bwhere\b[^{\n]*\b"# + named].joined(separator: "|")
+    }
+
+    /// An implicit `.init(` (`let r: CKRecord = .init(…)`, `[.init(…)]`,
+    /// `return .init(…)`): what it builds is not in the text, so the CloudKit
+    /// files spell every construction (none uses one today).
+    static let implicitInit =
+        #"(?<![\w)\]>\s])\s*\.\s*init\b|\b(?:return|in|throw|try|await|else|case|where|is|as|some|any)\s+\.\s*init\b"#
+
+    /// A CloudKit file builds each type in `sites` once, however the
+    /// construction is spelled (#153; the security re-check's L6:
+    /// `CKRecord.init(` slipped past a count of `CKRecord(recordType:`): in
+    /// the raw text the one construction sits on its pinned line; in every
+    /// scan copy the type is built once and never reached unnamed; and no
+    /// implicit `.init(` appears at all.
+    static func constructionFailures(_ text: String, file: String, sites: [String: String]) -> [String] {
+        var failures: [String] = []
+        let copies = LidGuardStructureTests.constructorScanCopies(text)
+        for (type, line) in sites.sorted(by: { $0.key < $1.key }) {
+            failures += siteFailures(constructionPattern(type), in: text, file: file, allowed: [line: 1],
+                                     rule: "the one \(type) is built at its one site")
+            for copy in copies {
+                let built = matches(constructionPattern(type), in: copy).count
+                if built != 1 { failures.append("\(file) builds \(type) \(built) time(s) in a scan copy — exactly once") }
+                if hits(indirectConstructionPattern(type), in: copy) {
+                    failures.append("\(file) reaches \(type)'s constructor unnamed (an unapplied init, the metatype, "
+                                    + "an alias, an extension, a subclass or a bound generic)")
+                }
+            }
+        }
+        if copies.contains(where: { hits(implicitInit, in: $0) }) {
+            failures.append("\(file) has an implicit .init( — the CloudKit files spell every construction")
+        }
+        return unique(failures)
+    }
+
+    /// The record path's one record and one operation.
+    static let recordPathConstructions = [
+        "CKRecord": "let record = CKRecord(recordType: ApprovalWire.RecordType.prompt.rawValue,",
+        "CKModifyRecordsOperation": "let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: doomed)",
+    ]
+
+    @Test func theRecordPathBuildsOneRecordAndOneOperation() throws {
+        let file = Self.text(Self.recordPathFile, in: try Self.uncutSources())
+        let failures = Self.constructionFailures(file, file: Self.recordPathFile, sites: Self.recordPathConstructions)
+        #expect(failures.isEmpty, "\(failures)")
+        let built = Self.recordPathConstructions["CKRecord"] ?? ""
+        let mutants: [(String, String)] = [
+            // The security re-check (#146), L6, as planted.
+            ("L6: a second record, init-spelled", file + "\nextension ApprovalRecordWriter {\n"
+                + "    static func secondRecord(_ id: PromptID) -> CKRecord {\n"
+                + "        CKRecord.init(recordType: ApprovalWire.RecordType.prompt.rawValue, recordID: promptRecordID(id))\n    }\n}"),
+            ("a second record, spaced", file + "\nlet r = CKRecord (recordType: \"PromptDecision\", recordID: i)"),
+            ("a backticked second record", file + "\nlet r = `CKRecord`(recordType: \"PromptDecision\", recordID: i)"),
+            ("a comment-split second operation", file + "\nlet o = CKModifyRecordsOperation/* x */(recordsToSave: [], recordIDsToDelete: nil)"),
+            ("a module-qualified second operation", file + "\nlet o = CloudKit.CKModifyRecordsOperation(recordsToSave: [], recordIDsToDelete: nil)"),
+            ("an unapplied record init", file + "\nlet make = CKRecord.init"),
+            ("the operation's metatype", file + "\nlet t = CKModifyRecordsOperation.self"),
+            ("a backticked metatype", file + "\nlet t = `CKRecord`.self"),
+            ("the record's metatype type", file + "\nfunc f(_ t: CKRecord.Type) {}"),
+            ("an aliased operation", file + "\ntypealias Op = CKModifyRecordsOperation\nlet o = Op(recordsToSave: [], recordIDsToDelete: nil)"),
+            ("an alias behind a block comment", file + "\ntypealias R = /* x */ CKRecord"),
+            ("an extension's Self(", file + "\nextension CKRecord {\n    static func spare() -> CKRecord { Self(recordType: \"X\") }\n}"),
+            ("a backticked extension", file + "\nextension `CKModifyRecordsOperation` {\n    static var spare: Any { Self.init }\n}"),
+            ("a subclass", file + "\nfinal class SpareRecord: CKRecord {}\nlet r = SpareRecord(recordType: \"X\")"),
+            ("a bound generic", file + "\nfunc spare<R: CKRecord>(_: R.Type) -> R { R(recordType: \"X\") }"),
+            ("a where-bound generic", file + "\nfunc spare<R>(_: R.Type) -> R where R: CKRecord { R(recordType: \"X\") }"),
+            ("an implicit init in the operation's records", file.replacingOccurrences(
+                of: "recordsToSave: records,", with: "recordsToSave: records + [.init(recordType: \"PromptRequest\")],")),
+            ("an implicit init returned", file + "\nfunc spare() -> CKRecord {\n    return .init(recordType: \"X\")\n}"),
+            ("an implicit init behind try?", file + "\nfunc spare() throws -> CKRecord { try? .init(coder: c) ?? r }"),
+            ("the one record moved", file.replacingOccurrences(of: built, with: "let record = CKRecord.init(recordType: "
+                + "ApprovalWire.RecordType.prompt.rawValue,")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != file, "canary '\(name)' did not apply")
+            #expect(!Self.constructionFailures(mutant, file: Self.recordPathFile, sites: Self.recordPathConstructions).isEmpty,
+                    "canary '\(name)' was NOT caught")
+        }
+        // Each pattern compiles and bites through the lock's own engine (one
+        // that did not compile would match nothing, silently).
+        for (pattern, probe) in [(Self.constructionPattern("CKRecord"), "CKRecord . init (recordType: t)"),
+                                 (Self.indirectConstructionPattern("CKRecord"), "let m = CKRecord.init"),
+                                 (Self.indirectConstructionPattern("CKRecord"), "extension CloudKit.CKRecord {"),
+                                 (Self.implicitInit, "let r: CKRecord =\n    .init(recordType: t)"),
+                                 (Self.implicitInit, "{ r in .init(recordType: r) }")] {
+            #expect(Self.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+        // Over-match controls: record IDs and zone IDs (other types), the
+        // record as a parameter, an array, a result or a return type, an
+        // explicit `Date.init`, an implicit member that is no init, an
+        // extension of a member type, and a whole-line comment.
+        #expect(Self.constructionFailures(file + "\nfunc f(r: CKRecord, rs: [CKRecord], res: Result<CKRecord, any Error>) "
+            + "-> CKRecord.ID { CKRecord.ID(recordName: \"x\", zoneID: .default) }\nlet now: () -> Date = Date.init"
+            + "\nlet z = CKRecordZone.ID(zoneName: \"z\")\nextension CKRecord.ID {}\nfinal class Box: @unchecked Sendable {}"
+            + "\nlet initial = [1].first\nstatic func make(_ id: CKRecord.ID) -> CKRecord? { nil }"
+            + LidGuardStructureTests.wholeLineCommentsRemoved("\n    /// never CKRecord.init(…), never typealias R = CKRecord"),
+            file: Self.recordPathFile, sites: Self.recordPathConstructions).isEmpty)
+    }
+
+    /// The security delta check (#153), X1: `makeOperation(…).go()`, with
+    /// `go` an extension in ANOTHER file that calls `start()`, named no word
+    /// lock 4 bans in the record path, and every suite passed. So the
+    /// operation is pinned by where it goes, the way the phone pins its
+    /// writer, not by what is banned: built once (lock 8's construction
+    /// check), in `makeOperation`, which only configures it and returns it;
+    /// the factory named nowhere in the four targets but its declaration and
+    /// the writer's two `database.submit(Self.makeOperation(…` calls, each on
+    /// its pinned line; the seam's `submit` named only by its requirement and
+    /// those two calls; and the operation type named only by the
+    /// requirement, the factory's return type and the construction.
+    static let factorySites = [
+        "static func makeOperation(saving records: [CKRecord], deleting doomed: [CKRecord.ID],": 1,
+        "database.submit(Self.makeOperation(saving: [record], deleting: []) { outcome in": 1,
+        "database.submit(Self.makeOperation(saving: [], deleting: doomed) { outcome in": 1,
+    ]
+    static let submitSites = [
+        "func submit(_ operation: CKModifyRecordsOperation)": 1,
+        "database.submit(Self.makeOperation(saving: [record], deleting: []) { outcome in": 1,
+        "database.submit(Self.makeOperation(saving: [], deleting: doomed) { outcome in": 1,
+    ]
+    /// Every line naming `operation`: the seam's parameter, then the factory
+    /// building, configuring and returning its operation.
+    static let operationSites = [
+        "func submit(_ operation: CKModifyRecordsOperation)": 1,
+        "let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: doomed)": 1,
+        "operation.savePolicy = .ifServerRecordUnchanged": 1,
+        "operation.isAtomic = true": 1,
+        "operation.configuration = configuration": 1,
+        "operation.perRecordSaveBlock = { _, result in results.note(result.map { _ in () }, deleting: false) }": 1,
+        "operation.perRecordDeleteBlock = { _, result in results.note(result, deleting: true) }": 1,
+        "operation.modifyRecordsResultBlock = { batch in completion(results.outcome(batch: batch)) }": 1,
+        "return operation": 1,
+    ]
+    static let operationTypeSites = [
+        "func submit(_ operation: CKModifyRecordsOperation)": 1,
+        "-> CKModifyRecordsOperation {": 1,
+        "let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: doomed)": 1,
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func seamFlowFailures(_ sources: Sources) -> [String] {
+        let file = text(recordPathFile, in: sources)
+        var failures = siteFailures(#"\bmakeOperation\b"#, in: file, file: recordPathFile, allowed: factorySites,
+                                    rule: "the operation factory is reached only by the writer's two submits")
+        for (name, text) in sources where name != recordPathFile && hits(#"\bmakeOperation\b"#, in: text) {
+            failures.append("'makeOperation' in \(name) — only the record path's writer reaches the operation factory")
+        }
+        failures += siteFailures(#"\bsubmit\b"#, in: file, file: recordPathFile, allowed: submitSites,
+                                 rule: "the seam is named only by its requirement and the writer's two submits")
+        failures += siteFailures(#"\boperation\b"#, in: file, file: recordPathFile, allowed: operationSites,
+                                 rule: "the factory builds, configures and returns its operation, nothing else")
+        failures += siteFailures(#"\bCKModifyRecordsOperation\b"#, in: file, file: recordPathFile, allowed: operationTypeSites,
+                                 rule: "the operation type is named by the seam, the factory and the one construction")
+        return failures
+    }
+
+    @Test func everyOperationTheRecordPathBuildsGoesToTheSeam() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.seamFlowFailures(sources).isEmpty, "\(Self.seamFlowFailures(sources))")
+        let record = Self.recordPathFile
+        let written = "saving: [record], deleting: []"
+        let returned = "        return operation\n"
+        #expect(Self.text(record, in: sources).contains(returned), "vacuity: the factory's return is the anchor")
+        let mutants: [(String, Sources)] = [
+            // The security delta check (#153), X1, as planted: both files.
+            ("X1: the operation run by an extension in another file", Self.mutate(Self.mutate(sources, record) {
+                $0 + "\nextension ApprovalRecordWriter {\n    static func x1(_ r: CKRecord) {\n"
+                    + "        makeOperation(saving: [r], deleting: []) { _ in }.go()\n    }\n}"
+            }, "NapCatApp.swift") { $0 + "\nextension Operation {\n    func go() { start() }\n}" }),
+            ("the factory's own operation run by a runner elsewhere", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: returned, with: "        operation.go()\n" + returned) }),
+            ("the factory's operation handed out", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: returned, with: "        Spare.last = operation\n" + returned) }),
+            ("the operation pointed at a database", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: returned, with: "        operation.database = spare\n" + returned) }),
+            ("the writer keeps the operation", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "database.submit(Self.makeOperation(" + written,
+                                        with: "let kept = Self.makeOperation(" + written) }),
+            ("a second record written with the first", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: written, with: "saving: [record, spare], deleting: []") }),
+            ("an unapplied factory", Self.mutate(sources, record) { $0 + "\nlet make = ApprovalRecordWriter.makeOperation" }),
+            ("the factory reached from another file", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc f(r: R) { _ = W.makeOperation(saving: [r], deleting: []) { _ in } }" }),
+            ("a default submit that runs it", Self.mutate(sources, record) {
+                $0 + "\nextension ApprovalRecordDatabase {\n    func submit(_ o: CKModifyRecordsOperation) { o.go() }\n}" }),
+            ("a second submit", Self.mutate(sources, record) { $0 + "\nfunc f(d: any ApprovalRecordDatabase, o: Op) { d.submit(o) }" }),
+            ("the operation type extended, no banned word", Self.mutate(sources, record) {
+                $0 + "\nextension CKModifyRecordsOperation {\n    func go() { spare() }\n}" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.seamFlowFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: other words (`operations`, `Operation`,
+        // `submitted`), and a whole-line comment naming what it rules out.
+        #expect(Self.seamFlowFailures(Self.mutate(sources, record) {
+            $0 + "\nfunc f(_ operations: [Int], submitted: Bool) -> Operation? { nil }"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n    /// never makeOperation(…).go(), never a second submit(operation)")
+        }).isEmpty)
     }
 
     // MARK: - 5. The S3 tests touch nothing live

@@ -65,6 +65,50 @@ struct LidGuardStructureTests {
         return String(kept)
     }
 
+    /// The copy the constructor bans scan IN ADDITION to the raw text (#153,
+    /// security delta B1/B2): every backtick removed, and each block comment
+    /// replaced by one space, so `` extension `T` `` and `extension /* … */ T`
+    /// both read `extension T`. Read through `lexemes`, so a `/*` inside a
+    /// string literal cannot swallow the code after it.
+    static func cleaned(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        let kinds = lexemes(scalars)
+        var copy = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            if kinds[index] == .blockComment {
+                while index < scalars.count, kinds[index] == .blockComment { index += 1 }
+                copy.append(" ")
+                continue
+            }
+            if scalars[index] != "`" { copy.append(scalars[index]) }
+            index += 1
+        }
+        return String(copy)
+    }
+
+    /// What every constructor ban reads (#153): the text as given, the same
+    /// text with its backticks removed and nothing else (no lexer involved,
+    /// so nothing the lexer misreads can hide a backticked name), and
+    /// `cleaned`. A ban must hold in all three — the cleaned copies are
+    /// read IN ADDITION to the raw text, never instead of it.
+    static func constructorScanCopies(_ text: String) -> [String] {
+        guard mayClean(text) else { return [text] }          // its own cleaned copy
+        return [text, text.replacingOccurrences(of: "`", with: ""), cleaned(text)]
+    }
+
+    /// `constructorScanCopies` of a whole source set: the set as given, then
+    /// its two cleaned copies, file for file.
+    static func constructorScanCopies(_ sources: [(name: String, text: String)]) -> [[(name: String, text: String)]] {
+        guard sources.contains(where: { mayClean($0.text) }) else { return [sources] }
+        return [sources, sources.map { ($0.name, $0.text.replacingOccurrences(of: "`", with: "")) },
+                sources.map { ($0.name, cleaned($0.text)) }]
+    }
+
+    /// Whether cleaning can change `text` at all: with no backtick and no
+    /// `/*` (a block comment opens only there), every copy is the text.
+    static func mayClean(_ text: String) -> Bool { text.contains("`") || text.contains("/*") }
+
     // MARK: Lexing (issue #155: a `//` inside a string literal is not a comment)
 
     /// What a character of Swift source is, as far as the strippers care.
@@ -316,6 +360,28 @@ struct LidGuardStructureTests {
         }
     }
 
+    /// The cleaned copy (#153): backticks out, each block comment (nested,
+    /// multi-line) one space; a `/*` in a string, a line comment or after a
+    /// bare regex holding a quote opens none.
+    @Test func theCleanedCopyDropsBackticksAndBlockComments() {
+        let cases: [(name: String, text: String, cleaned: String)] = [
+            ("B1: a backticked name", "extension `ApprovalDecision` {}", "extension ApprovalDecision {}"),
+            ("B2: a block comment between the words", "extension /* b2 */ ApprovalDecision {}", "extension   ApprovalDecision {}"),
+            ("a nested block comment", "a /* x /* y */ z */ b", "a   b"),
+            ("a multi-line block comment", "a /*\n x\n*/ b", "a   b"),
+            ("a block-comment opener in a string", "let s = \"/*\"; T /* c */ x; let e = \"*/\"",
+             "let s = \"/*\"; T   x; let e = \"*/\""),
+            ("a block-comment opener in a line comment", "x // see /*\ny */ z", "x // see /*\ny */ z"),
+            ("a bare regex holding a quote", "let r = /\"/; extension /* x */ T {}", "let r = /\"/; extension   T {}"),
+        ]
+        for (name, text, cleaned) in cases {
+            #expect(Self.cleaned(text) == cleaned, "cleaned, \(name): \(Self.cleaned(text).debugDescription)")
+            #expect(Self.constructorScanCopies(text).contains(cleaned), "\(name): the cleaned copy is scanned")
+            #expect(Self.constructorScanCopies(text).first == text, "\(name): the raw text is scanned first, always")
+        }
+        #expect(Self.constructorScanCopies("let a = b // c") == ["let a = b // c"], "a text cleaning cannot change is its own copy")
+    }
+
     /// The strippers before #155: each line cut at its first `//`, and each
     /// line whose first non-blank characters are `//` blanked.
     static func lineCut(_ line: Substring) -> Substring { line.range(of: "//").map { line[..<$0.lowerBound] } ?? line }
@@ -373,6 +439,24 @@ struct LidGuardStructureTests {
         let phone = try #require(try lexer("ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift"))
         #expect(mac.contains("static func lexemes(") && mac.count > 4000, "vacuity: the whole lexer is compared")
         #expect(mac == phone, "the phone's lexer drifted from the Mac's — keep the twins alike")
+        // … and the strippers and the cleaned copy built on it (#153).
+        func member(_ head: String, in path: String) throws -> String? {
+            let text = try String(contentsOf: Self.repoRoot().appendingPathComponent(path), encoding: .utf8)
+            guard let start = text.range(of: head), let end = text.range(of: "\n    }\n", range: start.upperBound..<text.endIndex)
+            else { return nil }
+            return String(text[start.lowerBound..<end.upperBound])
+        }
+        for head in ["    static func codeOnly(_ text: String) -> String {", "    static func wholeLineCommentsRemoved(_ text: String) -> String {",
+                     "    static func cleaned(_ text: String) -> String {", "    static func constructorScanCopies(_ text: String) -> [String] {"] {
+            let macMember = try member(head, in: "Tests/NapCatTests/LidGuardStructureTests.swift")
+            let phoneMember = try member(head, in: "ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift")
+            #expect(macMember != nil && macMember == phoneMember, "'\(head)' drifted between the Mac and the phone")
+        }
+        let mayClean = "    static func mayClean(_ text: String) -> Bool { text.contains(\"`\") || text.contains(\"/*\") }\n"
+        for path in ["Tests/NapCatTests/LidGuardStructureTests.swift", "ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift"] {
+            let text = try String(contentsOf: Self.repoRoot().appendingPathComponent(path), encoding: .utf8)
+            #expect(text.contains(mayClean), "mayClean drifted in \(path)")
+        }
     }
 
     static func swiftSources(_ strip: (String) -> String = codeOnly) throws -> [(name: String, text: String)] {

@@ -92,9 +92,19 @@ struct PhoneTransportStructureTests {
         return failures
     }
 
+    /// `containerConstructionFailures` over the sources as given, their
+    /// cleaned copies, and the construction spelling of each (#153): a
+    /// spaced `CKContainer (identifier:)`, a backticked one and one split by
+    /// a block comment are constructions too.
+    static func containerFailuresInEveryCopy(_ sources: [(name: String, text: String)]) -> [String] {
+        let copies = LidGuardStructureTests.constructorScanCopies(sources)
+        let spelled = copies.map { $0.map { ($0.name, ApprovalChannelStructureTests.constructionSpelling($0.text)) } }
+        return ApprovalRecordPathStructureTests.unique((copies + spelled).flatMap(containerConstructionFailures))
+    }
+
     @Test func aContainerIsBuiltOnlyBehindTheEntitlementProbe() throws {
         let sources = try Self.sources()
-        let failures = Self.containerConstructionFailures(sources)
+        let failures = Self.containerFailuresInEveryCopy(sources)
         #expect(failures.isEmpty, "\(failures)")
 
         let canaries: [(String, [(name: String, text: String)])] = [
@@ -123,12 +133,177 @@ struct PhoneTransportStructureTests {
                     "\nlet u = \"https://www.icloud.com\"; let stray = CKContainer(identifier: \"x\")") }),
         ]
         for (name, mutant) in canaries {
-            #expect(!Self.containerConstructionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+            #expect(!Self.containerFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // #153: a construction however spelled, read through the cleaned
+        // copies and the construction spelling.
+        for planted in ["let stray = CKContainer (identifier: \"x\")", "let stray = `CKContainer`(identifier: \"x\")",
+                        "let stray = CKContainer/* x */(identifier: \"x\")", "let stray = CKContainer . init(identifier: \"x\")"] {
+            let mutant = Self.mutate(sources, "NapCatApp.swift") { $0 + "\n" + planted }
+            #expect(!Self.containerFailuresInEveryCopy(mutant).isEmpty, "canary '\(planted)' was NOT caught")
         }
         // Negative control: a comment may name the constructor anywhere.
         let commented = Self.mutate(sources, "NapCatApp.swift") { $0 + "\n// never CKContainer(identifier:) here" }
-        #expect(Self.containerConstructionFailures(commented.map {
+        #expect(Self.containerFailuresInEveryCopy(commented.map {
             ($0.name, LidGuardStructureTests.codeOnly($0.text))
+        }).isEmpty)
+    }
+
+    // MARK: - The alert lane writes its alert and nothing else (#153)
+
+    /// The alert lane predates F4's approval records and is a sanctioned
+    /// private-database writer. Its locks pinned the alert record's schema,
+    /// not every way the file could build or save a record: in the security
+    /// re-check a `LiveCloudKitAlertStore` extension `database.add`-ed a
+    /// hand-built operation saving a `CKRecord.init` PromptRequest, and every
+    /// suite passed. So, as the record path's locks 4 and 8 do, the file's
+    /// writes are confined to its alert by allow-lists, not by bans alone:
+    /// - its CloudKit identifiers are an exact allow-list (another door —
+    ///   `CKModifySubscriptionsOperation`, `CKDatabaseOperation`, `CKShare` —
+    ///   fails by default);
+    /// - it builds one record and one operation, however spelled;
+    /// - its ONE database write is the alert's: `add` is named once, to add
+    ///   `makeSaveOperation`'s operation; `save` only by the alert store's
+    ///   seam and the one sentence that says it; the private database once,
+    ///   by the live store;
+    /// - the record goes only into that operation (`makeRecord`) and the
+    ///   operation only to that `add` (`makeSaveOperation`, `operation` and
+    ///   the operation type, each pinned to its lines);
+    /// - and no other database write, other database, or operation runner is
+    ///   named at all.
+    static let alertLaneIdentifiers: Set<String> = [
+        "CKAccountStatus", "CKContainer", "CKDatabase", "CKError", "CKErrorDomain", "CKModifyRecordsOperation",
+        "CKOperation", "CKPartialErrorsByItemIDKey", "CKRecord", "CKRecordZone",
+    ]
+
+    static let alertLaneConstructions = [
+        "CKRecord": "let record = CKRecord(recordType: AlertWire.recordType, recordID: recordID)",
+        "CKModifyRecordsOperation":
+            "let operation = CKModifyRecordsOperation(recordsToSave: [makeRecord(payload)], recordIDsToDelete: nil)",
+    ]
+
+    static let alertSave = "database.add(CloudKitMessageSender.makeSaveOperation(payload, completion: completion))"
+    static let alertOperation = "let operation = CKModifyRecordsOperation(recordsToSave: [makeRecord(payload)], recordIDsToDelete: nil)"
+
+    /// Each word, and every line of the alert-lane file allowed to name it.
+    static let alertLaneSites: [(pattern: String, sites: [String: Int], rule: String)] = [
+        (#"\badd\b"#, [alertSave: 1], "the one database write adds the alert's own operation"),
+        (#"\bsave\b"#, ["func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void)": 1,
+                        "func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void) {": 1,
+                        "store.save(payload) { [weak self] error in": 1,
+                        "static let permissionText = \"iCloud denied permission to save the alert\"": 1],
+         "save is the alert store's seam, never a database's"),
+        (#"\bprivateCloudDatabase\b"#, ["self.database = container.privateCloudDatabase": 1],
+         "the private database is reached once, by the live store"),
+        (#"\bmakeSaveOperation\b"#, ["static func makeSaveOperation(": 1, alertSave: 1],
+         "the save operation goes only to the one add"),
+        (#"\bmakeRecord\b"#, ["static func makeRecord(_ payload: CloudKitAlertPayload) -> CKRecord {": 1, alertOperation: 1],
+         "the alert record goes only into the save operation"),
+        (#"\boperation\b"#, [alertOperation: 1, "operation.savePolicy = .ifServerRecordUnchanged": 1, "operation.isAtomic = true": 1,
+                             "operation.configuration = configuration": 1, "operation.perRecordSaveBlock = { _, result in": 1,
+                             "operation.modifyRecordsResultBlock = { result in": 1, "return operation": 1],
+         "the factory builds, configures and returns its operation, nothing else"),
+        (#"\bCKModifyRecordsOperation\b"#, [") -> CKModifyRecordsOperation {": 1, alertOperation: 1],
+         "the operation type is named by the factory and its one construction"),
+    ]
+
+    /// Named nowhere in the alert-lane file: every other database write, the
+    /// other databases, and every way to run an operation but the one `add`.
+    static let alertLaneBans = [
+        #"\b(?:modifyRecords|modifySubscriptions|modifyRecordZones|delete|deleteRecord|deleteSubscription|deleteRecordZone)\b"#,
+        #"\b(?:publicCloudDatabase|sharedCloudDatabase|configuredWith)\b"#, #"\bdatabase\s*\(\s*with\b"#,
+        #"\bstart\b"#, #"\bmain\b"#, #"\bOperationQueue\b"#, #"\baddOperations?\b"#, #"\bperform\b"#, #"#selector\b"#,
+        #"\bSelector\b"#, #"\bNSSelectorFromString\b"#,
+    ]
+
+    /// `sources`: Sources/NapCat with whole-line comments removed.
+    static func alertLaneWriteFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        typealias Lock = ApprovalRecordPathStructureTests
+        let file = sources.first { $0.name == cloudKitFile }?.text ?? ""
+        var failures: [String] = []
+        let named = Set(Lock.matches(#"\bCK\w*"#, in: file))
+        for identifier in named.subtracting(alertLaneIdentifiers).sorted() {
+            failures.append("'\(identifier)' in \(cloudKitFile) — not on the alert lane's CloudKit allow-list")
+        }
+        for identifier in alertLaneIdentifiers.subtracting(named).sorted() {
+            failures.append("'\(identifier)' is allow-listed but unused in \(cloudKitFile) — the list stays exact")
+        }
+        failures += Lock.constructionFailures(file, file: cloudKitFile, sites: alertLaneConstructions)
+        for (pattern, sites, rule) in alertLaneSites {
+            failures += Lock.siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites, rule: rule)
+        }
+        for (name, text) in sources where name != cloudKitFile
+            && (Lock.hits(#"\bmakeSaveOperation\b"#, in: text) || Lock.hits(#"\bmakeRecord\b"#, in: text)) {
+            failures.append("\(name) reaches the alert's record or save operation — only the alert lane may")
+        }
+        for pattern in alertLaneBans where Lock.hits(pattern, in: file) {
+            failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the alert's own add")
+        }
+        return failures
+    }
+
+    @Test func theAlertLaneWritesItsAlertAndNothingElse() throws {
+        let sources = try LidGuardStructureTests.swiftSources(LidGuardStructureTests.wholeLineCommentsRemoved)
+        #expect(Self.alertLaneWriteFailures(sources).isEmpty, "\(Self.alertLaneWriteFailures(sources))")
+        let file = Self.cloudKitFile
+        let mutants: [(String, [(name: String, text: String)])] = [
+            // The security re-check (#146), both alert-lane plants, as planted.
+            ("the sender extended to add a hand-built operation", Self.mutate(sources, file) {
+                $0 + "\nextension CloudKitMessageSender {\n    static func alertLaneProbe(_ id: PromptID) {\n"
+                    + "        let r = CKRecord.init(recordType: ApprovalWire.RecordType.prompt.rawValue,\n"
+                    + "                              recordID: CKRecord.ID(recordName: id.hex))\n"
+                    + "        CKContainer(identifier: AlertWire.containerIdentifier).privateCloudDatabase.add(\n"
+                    + "            CKModifyRecordsOperation(recordsToSave: [r], recordIDsToDelete: nil))\n    }\n}" }),
+            ("the live store extended to add a hand-built operation", Self.mutate(sources, file) {
+                $0 + "\nextension LiveCloudKitAlertStore {\n    func alertLaneProbe(_ id: PromptID) {\n"
+                    + "        let r = CKRecord.init(recordType: ApprovalWire.RecordType.prompt.rawValue,\n"
+                    + "                              recordID: CKRecord.ID(recordName: id.hex))\n"
+                    + "        database.add(CKModifyRecordsOperation(recordsToSave: [r], recordIDsToDelete: nil))\n    }\n}" }),
+            // … and the doors around them.
+            ("a database save of a record", Self.mutate(sources, file) {
+                $0 + "\nextension LiveCloudKitAlertStore { func f(_ r: CKRecord) { database.save(r) { _, _ in } } }" }),
+            ("a batch modify", Self.mutate(sources, file) {
+                $0 + "\nextension LiveCloudKitAlertStore { func f(_ r: CKRecord) async throws { "
+                    + "_ = try await database.modifyRecords(saving: [r], deleting: []) } }" }),
+            ("an add on the database's implicit self", Self.mutate(sources, file) {
+                $0 + "\nextension CKDatabase { func go(_ o: CKModifyRecordsOperation) { add(o) } }" }),
+            ("a backticked add", Self.mutate(sources, file) {
+                $0 + "\nextension LiveCloudKitAlertStore { func f(_ o: CKModifyRecordsOperation) { database.`add`(o) } }" }),
+            ("the alert's own operation started", Self.mutate(sources, file) {
+                $0 + "\nfunc f(p: CloudKitAlertPayload) { CloudKitMessageSender.makeSaveOperation(p) { _ in }.start() }" }),
+            ("the alert's record saved by another operation", Self.mutate(sources, "CompositeMessageSender.swift") {
+                $0 + "\nfunc f(p: CloudKitAlertPayload) -> Any { CloudKitMessageSender.makeRecord(p) }" }),
+            ("the operation pointed at a database", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "        operation.isAtomic = true\n",
+                                        with: "        operation.isAtomic = true\n        operation.database = nil\n") }),
+            ("a subscription door", Self.mutate(sources, file) {
+                $0 + "\nlet s = CKModifySubscriptionsOperation(subscriptionsToSave: [], subscriptionIDsToDelete: nil)" }),
+            ("the public database", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "container.privateCloudDatabase", with: "container.publicCloudDatabase") }),
+            ("a record deleted", Self.mutate(sources, file) {
+                $0 + "\nextension LiveCloudKitAlertStore { func f(_ i: CKRecord.ID) async throws { _ = try await database.deleteRecord(withID: i) } }" }),
+            ("an allow-listed identifier dropped", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "zoneID: CKRecordZone.ID.default)", with: "zoneID: .default)") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.alertLaneWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Each ban compiles and bites through the lock's own engine.
+        let probes = ["db.modifyRecords(saving: r)", "c.sharedCloudDatabase", "c.database(with: .private)", "o.start()", "o.main()",
+                      "OperationQueue.main", "q.addOperation(o)", "o.perform(s)", "#selector(Operation.start)",
+                      "Selector((\"start\"))", "NSSelectorFromString(\"start\")"]
+        #expect(probes.count == Self.alertLaneBans.count)
+        for (pattern, probe) in zip(Self.alertLaneBans, probes) {
+            #expect(ApprovalRecordPathStructureTests.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+        // Over-match controls: words that only contain a banned one, and a
+        // whole-line comment naming what it rules out.
+        #expect(Self.alertLaneWriteFailures(Self.mutate(sources, file) {
+            $0 + "\nfunc f(s: String, d: Date) -> Bool { s.startIndex == s.endIndex && d.addingTimeInterval(1) > d }"
+                + "\nlet saveResult = 1, savePolicyName = \"x\", toDelete = 0, domain = \"maintained\""
+                + LidGuardStructureTests.wholeLineCommentsRemoved(
+                    "\n    /// never database.save(record), never modifyRecords, never a second add(operation)")
         }).isEmpty)
     }
 

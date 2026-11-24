@@ -14,7 +14,12 @@ import Testing
 ///    form, a scoped `import class CloudKit.X` included), and a container is
 ///    built at ONE site, `makeLive()`, whose first statement is the
 ///    `LiveCapability` guard (an unentitled construction traps). No test
-///    names a container constructor at all.
+///    names a container constructor at all. (#153: however the
+///    construction is spelled.)
+/// 3. (#153) The alert lane's one database write is the subscription save:
+///    the file's CloudKit identifiers are an exact allow-list, `save` and
+///    the private database are pinned to their lines, and no other
+///    database write is named.
 @Suite struct CloudKitStructureTests {
     typealias Source = (path: String, text: String)
 
@@ -82,6 +87,90 @@ import Testing
             start = end + 1
         }
         return String(kept)
+    }
+
+    /// The copy the constructor bans scan IN ADDITION to the raw text (#153,
+    /// security delta B1/B2): every backtick removed, and each block comment
+    /// replaced by one space. Read through `lexemes`, so a `/*` inside a
+    /// string literal cannot swallow the code after it. (The Mac's
+    /// `LidGuardStructureTests.cleaned`.)
+    static func cleaned(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        let kinds = lexemes(scalars)
+        var copy = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            if kinds[index] == .blockComment {
+                while index < scalars.count, kinds[index] == .blockComment { index += 1 }
+                copy.append(" ")
+                continue
+            }
+            if scalars[index] != "`" { copy.append(scalars[index]) }
+            index += 1
+        }
+        return String(copy)
+    }
+
+    /// What every constructor ban reads (#153): the text as given, the same
+    /// text with its backticks removed and nothing else (no lexer involved),
+    /// and `cleaned` — in addition to the raw text, never instead of it.
+    static func constructorScanCopies(_ text: String) -> [String] {
+        guard mayClean(text) else { return [text] }          // its own cleaned copy
+        return [text, text.replacingOccurrences(of: "`", with: ""), cleaned(text)]
+    }
+
+    static func constructorScanCopies(_ sources: [Source]) -> [[Source]] {
+        guard sources.contains(where: { mayClean($0.text) }) else { return [sources] }
+        return [sources, sources.map { ($0.path, $0.text.replacingOccurrences(of: "`", with: "")) },
+                sources.map { ($0.path, cleaned($0.text)) }]
+    }
+
+    /// Whether cleaning can change `text` at all: with no backtick and no
+    /// `/*` (a block comment opens only there), every copy is the text.
+    static func mayClean(_ text: String) -> Bool { text.contains("`") || text.contains("/*") }
+
+    /// Every match of `pattern` in `text`, as written. Every #153 check and
+    /// its probes run through this one engine (NSRegularExpression).
+    static func matches(_ pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<bad pattern \(pattern)>"] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+    }
+
+    static func hits(_ pattern: String, in text: String) -> Bool { !matches(pattern, in: text).isEmpty }
+
+    /// Every line holding a match of `pattern`, trimmed, with how many
+    /// matches it holds: a site pin compares it to an exact allow-list.
+    static func siteTally(_ pattern: String, in text: String) -> [String: Int] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<bad pattern \(pattern)>": 1] }
+        let lineEnd: (Character) -> Bool = { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }
+        var tally: [String: Int] = [:]
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text) else {
+                tally["<a match of \(pattern) off the text>", default: 0] += 1
+                continue
+            }
+            let start = text[..<range.lowerBound].lastIndex(where: lineEnd).map { text.index(after: $0) } ?? text.startIndex
+            let end = text[range.lowerBound...].firstIndex(where: lineEnd) ?? text.endIndex
+            tally[text[start..<end].trimmingCharacters(in: .whitespaces), default: 0] += 1
+        }
+        return tally
+    }
+
+    /// A site pin: `pattern`'s sites in `text` are exactly `allowed`.
+    static func siteFailures(_ pattern: String, in text: String, file: String, allowed: [String: Int],
+                             rule: String) -> [String] {
+        let tally = siteTally(pattern, in: text)
+        if tally == allowed { return [] }
+        let off = tally.filter { allowed[$0.key] != $0.value }.map { "\($0.value)× \($0.key)" }.sorted()
+        let gone = allowed.filter { tally[$0.key] != $0.value }.map(\.key).sorted()
+        return ["'\(pattern)' in \(file) — \(rule): off the allow-list \(off); moved or gone \(gone)"]
+    }
+
+    /// `failures` without repeats, in order.
+    static func unique(_ failures: [String]) -> [String] {
+        var seen = Set<String>()
+        return failures.filter { seen.insert($0).inserted }
     }
 
     // MARK: Lexing (issue #155: a `//` inside a string literal is not a comment)
@@ -414,9 +503,27 @@ import Testing
         return failures
     }
 
+    /// `containerFailures` over the sources as given, their cleaned copies,
+    /// and the construction spelling of each (#153): a spaced, backticked or
+    /// comment-split container construction is a construction too.
+    static func containerFailuresInEveryCopy(receiver: [Source], tests: [Source]) -> [String] {
+        func spelled(_ sources: [Source]) -> [Source] { sources.map { ($0.path, RecordPathStructureTests.constructionSpelling($0.text)) } }
+        func code(_ sources: [Source]) -> [Source] { sources.map { ($0.path, codeOnly($0.text)) } }   // stripped once
+        let receivers = constructorScanCopies(code(receiver))
+        let testers = constructorScanCopies(code(tests))
+        // Copy for copy; a set that is its own cleaned copy (one entry) stands
+        // for all three. (Never `zip`: it would drop the other set's copies.)
+        return unique((0..<max(receivers.count, testers.count)).flatMap { index in
+            let receiver = receivers[min(index, receivers.count - 1)]
+            let tests = testers[min(index, testers.count - 1)]
+            return containerFailures(receiver: receiver, tests: tests)
+                + containerFailures(receiver: spelled(receiver), tests: spelled(tests))
+        })
+    }
+
     @Test func aContainerIsBuiltOnceBehindTheCapabilityGate() throws {
-        let failures = Self.containerFailures(receiver: try Self.swiftFiles(under: Self.appDir),
-                                              tests: try Self.swiftFiles(under: Self.testsDir))
+        let failures = Self.containerFailuresInEveryCopy(receiver: try Self.swiftFiles(under: Self.appDir),
+                                                         tests: try Self.swiftFiles(under: Self.testsDir))
         #expect(failures.isEmpty, "\(failures)")
     }
 
@@ -449,6 +556,16 @@ import Testing
         // A test that builds a container.
         let rogue = tests + [("\(Self.testsDir)/Rogue.swift", "let c = \(Self.container)(identifier: \"x\")")]
         #expect(!Self.containerFailures(receiver: receiver, tests: rogue).isEmpty)
+        // #153: however the construction is spelled (the container's name is
+        // split here too: no test spells its constructor).
+        for planted in [Self.container + " (identifier: \"x\")", "`" + Self.container + "`(identifier: \"x\")",
+                        Self.container + "/* x */(identifier: \"x\")", Self.container + " . init(identifier: \"x\")"] {
+            let spare = mutated { $0 + "\nlet spare = " + planted + "\n" }
+            #expect(!Self.containerFailuresInEveryCopy(receiver: spare, tests: tests).isEmpty, "canary '\(planted)' was NOT caught")
+        }
+        let backtickedTest = tests + [("\(Self.testsDir)/Rogue.swift", "let c = `" + Self.container + "`(identifier: \"x\")")]
+        #expect(!Self.containerFailuresInEveryCopy(receiver: receiver, tests: backtickedTest).isEmpty,
+                "canary 'a test builds a backticked container' was NOT caught")
         // A comment naming the constructor is fine.
         let commented = mutated { $0 + "\n// \(Self.container)(identifier:) traps unentitled\n" }
         #expect(Self.containerFailures(receiver: commented, tests: tests).isEmpty)
@@ -457,6 +574,124 @@ import Testing
             $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, "/// never import class CloudKit.CKRecord here\n" + $0.text) : $0
         }
         #expect(Self.containerFailures(receiver: noted, tests: tests).isEmpty)
+    }
+
+    // MARK: Rule 3: the alert lane's one database write is the subscription save (#153)
+
+    /// The CloudKit file holds the alert lane (a sanctioned private-database
+    /// reader that saves ONE thing, its push subscription) and the decision
+    /// record path (RecordPathStructureTests). In the security re-check a
+    /// `LiveCloudKitAlertDatabase` extension saved a `CKRecord.init` decision
+    /// straight to the private database, and every suite passed. So the
+    /// file's database writes are confined by allow-lists, as the Mac's
+    /// record path's are: its CloudKit identifiers are exact (another door
+    /// fails by default); `save` is named only by the subscription's seam and
+    /// its one live save; the private database is reached only by the live
+    /// database's four configured requests; the subscription goes only to
+    /// that save; and no other database write, other database or `add` is
+    /// named at all (`add` as a word: an extension's implicit self names no
+    /// dot).
+    static let cloudKitIdentifiers: Set<String> = [
+        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKModifyRecordsOperation",
+        "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey", "CKQuery", "CKQueryNotification",
+        "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
+    ]
+
+    static let configuredDatabase = "try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in"
+    static let subscriptionSave = "try await database.save(Self.makeSubscription())"
+
+    static let alertLaneSites: [(pattern: String, sites: [String: Int], rule: String)] = [
+        (#"\bsave\b"#, [subscriptionSave: 1, "func save(_ subscription: CKSubscription) async throws": 1,
+                        "func save(_ subscription: CKSubscription) async throws {": 1, "try await database.save(subscription)": 1],
+         "the one save is the subscription's"),
+        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1],
+         "the private database is reached only by the live database's configured requests"),
+        (#"\bconfiguredWith\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1],
+         "a configured database comes only from the private one"),
+        (#"\bmakeSubscription\b"#, ["static func makeSubscription() -> CKQuerySubscription {": 1, subscriptionSave: 1],
+         "the subscription goes only to the one save"),
+    ]
+
+    /// Named nowhere in the CloudKit file: every other database write, the
+    /// other databases, and `add`.
+    static let alertLaneBans = [
+        #"\b(?:modifyRecords|modifySubscriptions|modifyRecordZones|delete|deleteRecord|deleteSubscription|deleteRecordZone)\b"#,
+        #"\b(?:publicCloudDatabase|sharedCloudDatabase)\b"#, #"\bdatabase\s*\(\s*with\b"#, #"\badd\b"#,
+    ]
+
+    static func alertLaneWriteFailures(receiver: [Source]) -> [String] {
+        let file = wholeLineCommentsRemoved(receiver.first { $0.path == cloudKitFile }?.text ?? "")
+        var failures: [String] = []
+        let named = Set(matches(#"\bCK\w*"#, in: file))
+        for identifier in named.subtracting(cloudKitIdentifiers).sorted() {
+            failures.append("'\(identifier)' in \(cloudKitFile) — not on the CloudKit file's allow-list")
+        }
+        for identifier in cloudKitIdentifiers.subtracting(named).sorted() {
+            failures.append("'\(identifier)' is allow-listed but unused in \(cloudKitFile) — the list stays exact")
+        }
+        for (pattern, sites, rule) in alertLaneSites {
+            failures += siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites, rule: rule)
+        }
+        for (path, text) in receiver where path != cloudKitFile && hits(#"\bmakeSubscription\b"#, in: wholeLineCommentsRemoved(text)) {
+            failures.append("\(path) reaches the push subscription — only the CloudKit file saves it")
+        }
+        for pattern in alertLaneBans where hits(pattern, in: file) {
+            failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the subscription save")
+        }
+        return failures
+    }
+
+    @Test func theAlertLanesOneWriteIsTheSubscriptionSave() throws {
+        let receiver = try Self.swiftFiles(under: Self.appDir)
+        #expect(Self.alertLaneWriteFailures(receiver: receiver).isEmpty, "\(Self.alertLaneWriteFailures(receiver: receiver))")
+        func mutated(_ transform: (String) -> String) -> [Source] {
+            receiver.map { $0.path == Self.cloudKitFile ? ($0.path, transform($0.text)) : $0 }
+        }
+        let mutants: [(String, [Source])] = [
+            // The security re-check (#146), the phone's alert-lane plant, as planted.
+            ("the live database extended to save a decision", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase {\n    func alertLaneProbe(_ p: PromptID) async throws {\n"
+                    + "        _ = try await container.privateCloudDatabase.save(CKRecord.init(recordType: "
+                    + "ApprovalWire.RecordType.decision.rawValue,\n            recordID: CloudKitAlertSource.decisionRecordID(for: p)))\n    }\n}" }),
+            // … and the doors around it.
+            ("a record saved through a configured database", mutated {
+                $0.replacingOccurrences(of: "try await database.save(subscription)",
+                                        with: "try await database.save(subscription)\n            _ = try await database.save(spare)") }),
+            ("a batch modify", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase { func f(_ r: CKRecord) async throws { "
+                    + "_ = try await container.privateCloudDatabase.modifyRecords(saving: [r], deleting: []) } }" }),
+            ("a subscription deleted", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase { func f() async throws { "
+                    + "_ = try await container.privateCloudDatabase.deleteSubscription(withID: \"x\") } }" }),
+            ("an add on the database's implicit self", mutated {
+                $0 + "\nextension CKDatabase { func go(_ o: CKDatabaseOperation) { add(o) } }" }),
+            ("the private database held", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase { var spare: Any { container.privateCloudDatabase } }" }),
+            ("the shared database", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase { var spare: Any { container.sharedCloudDatabase } }" }),
+            ("a second subscription saved", mutated {
+                $0 + "\nextension CloudKitAlertSource { func f() async throws { try await database.save(Self.makeSubscription()) } }" }),
+            ("the subscription built elsewhere", receiver.map {
+                $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, $0.text + "\nlet s = CloudKitAlertSource.makeSubscription()") : $0 }),
+            ("a zone door", mutated { $0 + "\nlet z = CKModifyRecordZonesOperation(recordZonesToSave: [], recordZoneIDsToDelete: nil)" }),
+            ("an allow-listed identifier dropped", mutated {
+                $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != receiver.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.alertLaneWriteFailures(receiver: mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        let probes = ["db.deleteRecord(withID: i)", "c.publicCloudDatabase", "c.database(with: .shared)", "add(o)"]
+        #expect(probes.count == Self.alertLaneBans.count)
+        for (pattern, probe) in zip(Self.alertLaneBans, probes) {
+            #expect(Self.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+        // Over-match controls: words that only contain a banned one, and a
+        // whole-line comment naming what it rules out.
+        #expect(Self.alertLaneWriteFailures(receiver: mutated {
+            $0 + "\nfunc f(d: Date) -> Date { d.addingTimeInterval(1) }\nlet saved = 1, savePolicyName = \"x\", toDelete = 0"
+                + "\n/// never database.save(record), never modifyRecords, never add(operation)\n"
+        }).isEmpty)
     }
 
     // MARK: The strippers themselves (#155)
