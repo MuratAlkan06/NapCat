@@ -23,6 +23,13 @@ import Testing
         #expect(reason == "NapCat asks for Face ID before it sends anything to your Mac.")
     }
 
+    /// The camera refuses an app that does not say why it asks (F4,
+    /// S-PAIR-B: the pairing screen scans the code the Mac shows).
+    @Test func theAppSaysWhyItAsksForTheCamera() throws {
+        let reason = try #require(Self.info["NSCameraUsageDescription"] as? String)
+        #expect(reason == "NapCat uses the camera only to scan the pairing code your Mac shows.")
+    }
+
     /// The marketing version is three dot-separated integers. The build
     /// number is one integer of at least 1, raised by 1 for every upload.
     @Test func theVersionNumbersHaveTheUploadFormat() throws {

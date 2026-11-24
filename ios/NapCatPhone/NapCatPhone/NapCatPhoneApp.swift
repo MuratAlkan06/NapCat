@@ -7,10 +7,12 @@ import SwiftUI
 struct NapCatPhoneApp: App {
     @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var appDelegate
     private let opensSettings = LaunchOptions.fromLaunchArguments().screen == .settings
+    /// The pairing screen's fixture, for a `-NapCatPairing` launch only.
+    private let pairing = FixturePairing.make(options: LaunchOptions.fromLaunchArguments())
 
     var body: some Scene {
         WindowGroup {
-            ReceiverRoot(feed: appDelegate.feed, inbox: appDelegate.inbox, opensSettings: opensSettings)
+            ReceiverRoot(feed: appDelegate.feed, inbox: appDelegate.inbox, pairing: pairing, opensSettings: opensSettings)
         }
     }
 }
@@ -29,9 +31,14 @@ struct NapCatPhoneApp: App {
 /// A forwarded permission prompt opens over it as a sheet too (F4, slice
 /// S3), drawn in the same palette: a `-NapCatRequest` launch opens on its
 /// fixture prompt. Nothing else opens one in this slice.
+///
+/// The pairing screen (F4, slice S-PAIR-B) opens the same way, for a
+/// `-NapCatPairing` launch only: its fixture ceremony scans the launch's
+/// code, if it has one, as the sheet opens.
 struct ReceiverRoot: View {
     let feed: AlertFeed
     let inbox: RequestInbox
+    let pairing: FixturePairing?
 
     /// The chosen palette, kept in the app's own defaults across launches.
     /// A missing or unknown stored value reads as the default.
@@ -39,12 +46,15 @@ struct ReceiverRoot: View {
     @State private var showsSettings: Bool
     /// The permission prompt shown as a sheet, if any.
     @State private var shownRequest: PendingRequest?
+    @State private var showsPairing: Bool
     @Environment(\.scenePhase) private var scenePhase
 
-    init(feed: AlertFeed, inbox: RequestInbox, opensSettings: Bool = false) {
+    init(feed: AlertFeed, inbox: RequestInbox, pairing: FixturePairing? = nil, opensSettings: Bool = false) {
         self.feed = feed
         self.inbox = inbox
+        self.pairing = pairing
         _showsSettings = State(initialValue: opensSettings)
+        _showsPairing = State(initialValue: pairing != nil && !opensSettings)
         _shownRequest = State(initialValue: opensSettings ? nil : inbox.requests.first)
     }
 
@@ -64,8 +74,16 @@ struct ReceiverRoot: View {
         .sheet(item: $shownRequest) { request in
             PendingRequestSheet(inbox: inbox, id: request.id)
         }
+        .sheet(isPresented: $showsPairing) {
+            if let pairing {
+                PairingSheet(ceremony: pairing.ceremony, camera: pairing.camera)
+            }
+        }
         .environment(\.theme, ThemeID.fallback.theme(palette: palette))
         .task { await feed.start() }
+        .task {
+            if let pairing, let scan = pairing.scan { await pairing.ceremony.scanned(scan) }
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await feed.refresh() }

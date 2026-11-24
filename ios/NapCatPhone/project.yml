@@ -86,6 +86,10 @@ targets:
         # biometric-only; since S-PAIR-B, Allow and Deny alike, each signed).
         # Without it, Face ID is refused to the app.
         INFOPLIST_KEY_NSFaceIDUsageDescription: "NapCat asks for Face ID before it sends anything to your Mac."
+        # The camera asks for this once, the first time the pairing screen
+        # scans the code the Mac shows (F4, S-PAIR-B). It reads that code
+        # and nothing else; nothing is recorded or kept.
+        INFOPLIST_KEY_NSCameraUsageDescription: "NapCat uses the camera only to scan the pairing code your Mac shows."
         # The app icon set's name in the app's asset catalog. xcodegen's
         # application preset sets the same value; it is pinned here so the
         # icon wiring does not depend on that default.
