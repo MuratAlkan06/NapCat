@@ -33,6 +33,14 @@ import Testing
 /// too (`CloudKitStructureTests.constructorScanCopies`: backticks removed,
 /// block comments replaced by a space), in addition to the raw text.
 ///
+/// AMENDED (#166, the S-PAIR-B security review): every lock that counts a
+/// construction, here and in the signing suites, also bans an implicit
+/// `.init(` anywhere in the app (`implicitInitFailures`), and lock 2's seam
+/// conformance reads a clause over any number of lines, a refining
+/// protocol and a typealias (`CloudKitStructureTests.adoptionPattern`).
+/// Lock 3's live tokens take in the signing suite's and the launch
+/// factories that build them.
+///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
 /// whole-line comments only (trailing comments stay in, so it can only
@@ -94,8 +102,9 @@ import Testing
     // MARK: 2. No live decision writer
 
     static let writerType = "CloudKitDecisionWriter"
-    static let seamConformance =
-        #"\b(class|struct|actor|enum|extension)\b[^{\n]*:[^{\n]*\bCloudKitApprovalDatabase\b"#
+    /// AMENDED (#166): a clause on any number of lines, a refining protocol
+    /// or a typealias (the one-line scan missed all three).
+    static let seamConformance = CloudKitStructureTests.adoptionPattern("CloudKitApprovalDatabase")
 
     static func liveWriterFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
@@ -112,9 +121,12 @@ import Testing
     }
 
     /// `liveWriterFailures` over every cleaned copy too (#153): a backticked
-    /// or comment-split construction of the writer is a construction.
+    /// or comment-split construction of the writer is a construction. And
+    /// (#166) no implicit `.init(` in the app: it could build the writer
+    /// unnamed.
     static func liveWriterFailuresInEveryCopy(_ app: [Source]) -> [String] {
-        CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures))
+        CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures)
+            + implicitInitFailures(app, rule: "the CloudKit decision writer is built by no app source, by name or not"))
     }
 
     @Test func noAppSourceBuildsALiveDecisionWriter() throws {
@@ -137,10 +149,33 @@ import Testing
             // #153: behind backticks or a block comment.
             ("a backticked writer", Self.mutate(app, feed) { $0 + "\nlet w = `CloudKitDecisionWriter`(database: d)" }),
             ("a comment-split writer", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitDecisionWriter/* x */(database: d)" }),
+            // #166: by a typed implicit init (the security review's B6/B9/B10
+            // shape), and a seam conformance on the next line, through a
+            // refining protocol, or through a typealias (B11-B13's shapes).
+            ("a writer by typed implicit init", Self.mutate(app, feed) {
+                $0 + "\nlet w: CloudKitDecisionWriter = .init(database: d)" }),
+            ("a live database, its conformance on the next line", Self.mutate(app, Self.cloudKitFile) {
+                $0 + "\nprivate struct LiveApprovalDatabase:\n    CloudKitApprovalDatabase { func submit(_ o: Op) {} }" }),
+            ("a live database through a refining protocol", Self.mutate(app, feed) {
+                $0 + "\nprotocol SpareDatabase: CloudKitApprovalDatabase {}\nstruct LiveApprovalDatabase: SpareDatabase { func submit(_ o: Op) {} }" }),
+            ("a live database through a typealias", Self.mutate(app, feed) {
+                $0 + "\ntypealias SpareDatabase = CloudKitApprovalDatabase\nstruct LiveApprovalDatabase: SpareDatabase { func submit(_ o: Op) {} }" }),
+            ("a seam conformance behind a block comment holding a brace", Self.mutate(app, feed) {
+                $0 + "\nstruct LiveApprovalDatabase /* { */: CloudKitApprovalDatabase { func submit(_ o: Op) {} }" }),
         ]
         for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.liveWriterFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // Over-match controls: the seam as a parameter, a doc comment naming
+        // a conformance, and inits that name what they build (a delegating
+        // `self.init(`, `super.init(`, an unapplied `Date.init`).
+        #expect(Self.liveWriterFailuresInEveryCopy(Self.mutate(app, feed) {
+            $0 + "\n/// never struct X: CloudKitApprovalDatabase, never let w: CloudKitDecisionWriter = .init(database: d)"
+                + "\nfunc spare(d: any CloudKitApprovalDatabase) -> Bool { true }"
+        }).isEmpty)
+        #expect(Self.implicitInitFailures([("x", "init(a: Int) { self.init(b: a) }\nsuper.init()\nlet now: () -> Date = Date.init")],
+                                          rule: "").isEmpty)
     }
 
     // MARK: 3. The S3 tests touch nothing live
@@ -152,13 +187,20 @@ import Testing
                               "CloudKitDecisionWriterTests.swift", "VisibleWhitespaceTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
-    /// notification center and the real biometric prompt.
+    /// notification center and the real biometric prompt. AMENDED (#166):
+    /// and since S-PAIR-B the live key parts (`SigningKeyStructureTests`'
+    /// tokens: the enclave, the keychain, a context, the live bindings) and
+    /// the launch factories that build them (the inbox's, by name or as an
+    /// implicit member).
     static let liveTokens = ["CKContainer", "privateCloudDatabase", "makeLive(", "UserDefaults.standard",
-                             "UNUserNotificationCenter", "LAContext", "LocalAuthenticationGate(", "SystemNotificationGate("]
+                             "UNUserNotificationCenter", "SystemNotificationGate(", "RequestInbox.make", ".make(options:"]
+        + SigningKeyStructureTests.liveTokens
 
+    /// Read in its construction spelling (#166), as the signing suites'
+    /// scans are: `T.init(` and `T (` read as `T(`.
     static func liveFailures(_ tests: [Source]) -> [String] {
         tests.flatMap { path, text in
-            let code = CloudKitStructureTests.codeOnly(text)
+            let code = constructionSpelling(CloudKitStructureTests.codeOnly(text))
             return liveTokens.filter { code.contains($0) }.map { "'\($0)' in \(path) — S3 tests touch nothing live" }
         }
     }
@@ -178,10 +220,20 @@ import Testing
         // The container constructor is split: no test spells it (CloudKitStructureTests).
         for planted in ["let c = " + "CKContainer" + "(identifier: i)", "let d = UserDefaults.standard",
                         "let g = LAContext()", "let s = CloudKitAlertSource.makeLive()",
-                        "let n = UNUserNotificationCenter.current()"] {
+                        "let n = UNUserNotificationCenter.current()",
+                        // #166: the live key parts and the factories that build them.
+                        "let k = try SecureEnclave.P256.Signing.PrivateKey()", "_ = SecItemCopyMatching(q, &r)",
+                        "let s = KeychainSigningKeyStore.phoneKeychain", "let s = KeychainSigningKeyStore(calls: .securityFramework)",
+                        "let e = SecureEnclaveSigner()", "let e = SecureEnclaveSigner.init()", "let e = SecureEnclaveSigner ()",
+                        "let m = LocalAuthenticationMatch(c)", "let n = LocalAuthenticationEnrollment.init()",
+                        "let g = LocalAuthenticationGate.init()", "let i = RequestInbox.make(options: o, now: n)",
+                        "let make = RequestInbox.make", "let i: RequestInbox = .make(options: o, now: n)"] {
             let mutant = tests.map { ($0.path, $0.text + "\n" + planted) }
             #expect(!Self.liveFailures(mutant).isEmpty, "canary '\(planted)' was NOT caught")
         }
+        // A whole-line comment may name what the tests never touch.
+        #expect(Self.liveFailures(tests.map { ($0.path, $0.text + "\n/// never RequestInbox.make(options:now:), never SecureEnclaveSigner()") })
+            .isEmpty)
     }
 
     // MARK: 4. Every answer needs its match; one write site re-checks the window
@@ -493,6 +545,20 @@ import Testing
     /// CloudKit file spells every construction (none uses one today).
     static let implicitInit =
         #"(?<![\w)\]>\s])\s*\.\s*init\b|\b(?:return|in|throw|try|await|else|case|where|is|as|some|any)\s+\.\s*init\b"#
+
+    /// AMENDED (#166, the S-PAIR-B security review's B6, B9 and B10): every
+    /// lock that counts a construction bans an implicit `.init(` in EVERY
+    /// app file, not only the CloudKit file. `let d: PhoneDecision? =
+    /// .init(…)` builds one with no `PhoneDecision(` in the text, so no
+    /// count could see it; the app spells every construction (none uses an
+    /// implicit init today). Read in every constructor scan copy.
+    static func implicitInitFailures(_ app: [Source], rule: String) -> [String] {
+        app.compactMap { path, text in
+            CloudKitStructureTests.constructorScanCopies(CloudKitStructureTests.codeOnly(text))
+                .contains { CloudKitStructureTests.hits(implicitInit, in: $0) }
+                ? "\(path) has an implicit .init( — \(rule); the app spells every construction" : nil
+        }
+    }
 
     /// The CloudKit file's one record (the decision), one operation (its
     /// save) and one subscription (the alert lane's push).

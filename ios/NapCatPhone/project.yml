@@ -78,8 +78,13 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         # Export compliance: the app's only encryption is the system's own
-        # HTTPS and CloudKit transport, which is exempt. Declaring it here
-        # answers App Store Connect's question once instead of per upload.
+        # HTTPS and CloudKit transport (encrypted record fields included),
+        # which is exempt. Since S-PAIR-B (F4) the app also uses the system's
+        # CryptoKit: ECDSA P-256 signatures on decisions and the pairing
+        # proof, SHA-256 digests, and an HMAC confirmation code.
+        # Those authenticate and protect integrity; they encrypt no data, so
+        # the answer stays NO. Declaring it here answers App Store Connect's
+        # question once instead of per upload.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         # Face ID asks for this once, the first time an answer to a forwarded
         # permission prompt asks for a match (F4, CL-3: answers are in-app and

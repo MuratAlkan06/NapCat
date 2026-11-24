@@ -28,6 +28,12 @@ import Testing
 ///    and handed to the live inbox there; no file under Fixtures/ names a
 ///    live key part, so no fixture can mix one with a software key.
 ///
+/// AMENDED (#166, the S-PAIR-B security review): lock 4 also bans software
+/// keys by SHAPE: outside Fixtures/, each key seam (the enclave, the store,
+/// the enrollment) is adopted by its one live conformer only, however the
+/// adoption is spelled; and locks 1 and 6, which count constructions, ban
+/// an implicit `.init(` anywhere in the app.
+///
 /// Each lock is a pure function over comment-stripped sources and catches
 /// planted canaries, so none can pass vacuously.
 @Suite struct SigningKeyStructureTests {
@@ -119,6 +125,8 @@ import Testing
         if sites != ["\(gateFile): \(policyLine)": 1] {
             failures.append("the biometric policy is named once, as the gate's policy (CL-3): found \(sites)")
         }
+        // #166: `let p: LAPolicy = .init(rawValue: 2)!` builds one unnamed.
+        failures += RecordPathStructureTests.implicitInitFailures(app, rule: "the policy is named, never built (CL-3)")
         return failures
     }
 
@@ -150,6 +158,10 @@ import Testing
                 $0 + "\nlet spare = LATouchIDAuthenticationMaximumAllowableReuseDuration" }),
             ("a reuse duration set by key", Self.mutate(app, carrier) {
                 $0 + "\nfunc spare(c: NSObject) { c.setValue(300, forKey: \"touchIDAuthenticationAllowableReuseDuration\") }" }),
+            // #166: built by a typed implicit init, or as an argument.
+            ("a policy by typed implicit init", Self.mutate(app, carrier) { $0 + "\nlet spare: LAPolicy = .init(rawValue: 2)!" }),
+            ("a policy by implicit init as an argument", Self.mutate(app, carrier) {
+                $0.replacingOccurrences(of: "canEvaluatePolicy(LocalAuthenticationGate.policy,", with: "canEvaluatePolicy(.init(rawValue: 2)!,") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -272,8 +284,22 @@ import Testing
 
     static let softwareTypes = ["SoftwareEnclave", "MemorySigningKeyStore", "FixedEnrollment"]
 
+    /// Each key seam's one adoption outside Fixtures/ (#166): its live
+    /// conformer's declaration, in its live file.
+    static let seamAdoptions: [(seam: String, file: String, line: String)] = [
+        ("SigningEnclave", enclaveFile, "struct SecureEnclaveSigner: SigningEnclave {"),
+        ("SigningKeyStore", keychainFile, "struct KeychainSigningKeyStore: SigningKeyStore {"),
+        ("EnrollmentState", "\(appDir)/Live/LocalAuthenticationMatch.swift", "struct LocalAuthenticationEnrollment: EnrollmentState {"),
+    ]
+
     /// The type's NAME, not a call shape: `let e: SoftwareEnclave = .init()`
     /// builds one without a `SoftwareEnclave(` in sight.
+    ///
+    /// AMENDED (#166): and the type's SHAPE, not only the three known names.
+    /// Outside Fixtures/, a key seam is adopted only by its live conformer,
+    /// on its pinned line: any other type, extension, refining protocol or
+    /// typealias adopting one (over any number of lines, in every scan
+    /// copy) is a software key by another name.
     static func softwareFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         for (path, text) in app where !path.hasPrefix(fixturesDir) {
@@ -281,8 +307,15 @@ import Testing
             for type in softwareTypes where CloudKitStructureTests.hits(#"\b"# + type + #"\b"#, in: code) {
                 failures.append("\(path) names \(type) — software keys are for fixtures and tests only")
             }
+            for (seam, file, line) in seamAdoptions {
+                let allowed = path == file ? [line: 1] : [:]
+                for copy in CloudKitStructureTests.constructorScanCopies(code)
+                where CloudKitStructureTests.siteTally(CloudKitStructureTests.adoptionPattern(seam), in: copy) != allowed {
+                    failures.append("\(path) adopts \(seam) beyond its live conformer — a software key's shape; only fixtures (and tests) may")
+                }
+            }
         }
-        return failures
+        return CloudKitStructureTests.unique(failures)
     }
 
     @Test func softwareKeysStayFixtures() throws {
@@ -301,9 +334,44 @@ import Testing
         let typed = Self.mutate(app, Self.inboxFile) { $0 + "\nlet spareEnclave: SoftwareEnclave = .init()" }
         #expect(typed.map { $0.text } != app.map { $0.text }, "canary 'B8' did not apply")
         #expect(!Self.softwareFailures(typed).isEmpty, "canary 'B8: a software enclave by typed implicit init' was NOT caught")
-        // A doc comment may name them.
+        // #166: a software key by another name, by its shape: each seam
+        // adopted outside Fixtures/ by a new type, an extension, over lines,
+        // through a refining protocol or a typealias, behind a block comment
+        // holding a brace, or a second conformer in a live file.
+        let keyring = "\(Self.appDir)/Model/PhoneKeyring.swift"
+        let shapes: [(String, String, String)] = [
+            ("a new enclave", keyring, "struct SpareEnclave: SigningEnclave { var isAvailable: Bool { true } "
+                + "func makeKey() -> MadeKey? { nil } func sign(_ m: [UInt8], with k: Data, match: any BiometricMatch) -> SigningOutcome { .keyUnusable } }"),
+            ("an enclave by extension", keyring, "extension PhoneKeyring: SigningEnclave {}"),
+            ("an enclave over lines", Self.inboxFile, "final class SpareEnclave:\n    NSObject,\n    SigningEnclave {}"),
+            ("an enclave through a refining protocol", Self.inboxFile, "protocol SoftEnclave: SigningEnclave {}"),
+            ("an enclave through a typealias", Self.inboxFile, "typealias Enclave = SigningEnclave"),
+            ("an enclave behind a block comment holding a brace", Self.inboxFile, "struct SpareEnclave /* { */: SigningEnclave {}"),
+            ("a second enclave in the live file", Self.enclaveFile, "struct SpareEnclave: SigningEnclave {}"),
+            ("an in-memory store", keyring, "final class SpareStore: SigningKeyStore, @unchecked Sendable {}"),
+            ("a store over lines", Self.inboxFile, "struct SpareStore:\n    SigningKeyStore {}"),
+            ("a fixed enrollment", keyring, "struct SpareEnrollment: EnrollmentState { func current() -> Data? { nil } }"),
+            ("an enrollment through a typealias", Self.inboxFile, "typealias Hash = EnrollmentState"),
+        ]
+        for (name, path, plant) in shapes {
+            let mutant = Self.mutate(app, path) { $0 + "\n\(plant)" }
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.softwareFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // The live conformer renamed in its own file is a new shape too.
+        #expect(!Self.softwareFailures(Self.mutate(app, Self.enclaveFile) {
+            $0.replacingOccurrences(of: "struct SecureEnclaveSigner: SigningEnclave {", with: "struct SoftSigner: SigningEnclave {")
+        }).isEmpty, "canary 'the live enclave's conformer renamed' was NOT caught")
+        // A doc comment may name them, a fixture may adopt the seams (they
+        // do), and a seam as a parameter or a stored existential (the
+        // keyring's own) adopts nothing.
         #expect(Self.softwareFailures(Self.mutate(app, Self.inboxFile) {
             $0 + "\n/// fixtures sign with a SoftwareEnclave over a MemorySigningKeyStore and a FixedEnrollment"
+                + "\n/// never struct X: SigningEnclave here\nfunc spare(e: any SigningEnclave, s: any SigningKeyStore) -> Bool { true }"
+        }).isEmpty)
+        #expect(Self.softwareFailures(Self.mutate(app, Self.softwareFile) {
+            $0 + "\nstruct SpareFixtureEnclave:\n    SigningEnclave { var isAvailable: Bool { false } "
+                + "func makeKey() -> MadeKey? { nil } func sign(_ m: [UInt8], with k: Data, match: any BiometricMatch) -> SigningOutcome { .keyUnusable } }"
         }).isEmpty)
     }
 
@@ -381,6 +449,8 @@ import Testing
                 failures.append("\(path) names \(part) — no fixture reaches a live key part")
             }
         }
+        // #166: `let k: PhoneKeyring = .init(store: …)` builds one unnamed.
+        failures += RecordPathStructureTests.implicitInitFailures(app, rule: "the live keyring is built once, by name, in RequestInbox.make")
         return failures
     }
 
@@ -407,6 +477,10 @@ import Testing
                 $0.replacingOccurrences(of: "biometrics: biometrics, keyring: keyring)",
                                         with: "biometrics: biometrics, keyring: FixtureRequests.keyring(.paired))") }),
             ("a second live keyring", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") { $0 + "\nlet spare = \(Self.liveKeyring)" }),
+            // #166: a second live keyring by typed implicit init.
+            ("a second live keyring by typed implicit init", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") {
+                $0 + "\nlet spare: PhoneKeyring = .init(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(), "
+                    + "enrollment: LocalAuthenticationEnrollment())" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

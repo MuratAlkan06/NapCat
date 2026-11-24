@@ -200,11 +200,40 @@ enum MacCheck {
                                 "replacingOccurrences", "trimmingCharacters", "lowercased", "uppercased", "folding(",
                                 "applyingTransform", "description", "inputDrawing", "InputDrawing"]
 
+    /// Every site naming a method called `sign`, in the app (#166): the
+    /// committed key's (`PhoneKeyring.sign`) is called once, by the signer;
+    /// the enclave seam's is declared three times (the protocol, the live
+    /// enclave, the software one) and called by the keyring twice; the
+    /// signer's own is declared once and called once, by the inbox's write.
+    /// The two lines of copy say "sign" in a string (a word in a string
+    /// counts: reword it, or list its line here).
+    static let signSites = CloudKitStructureTests.appSites([
+        "Model/DecisionSigner.swift": ["static func sign(_ verdict: ApprovalWire.Verdict, for request: PendingRequest, at now: Date, "
+                                       + "with keyring: PhoneKeyring,": 1, "switch keyring.sign(message, match: match) {": 1],
+        "Model/PhoneKeyring.swift": ["func sign(_ message: [UInt8], match: any BiometricMatch) -> Signing {": 1,
+                                     "switch enclave.sign(message, with: key.keyData, match: match) {": 1,
+                                     "return enclave.sign(message, with: key.keyData, match: match)": 1],
+        "Model/SigningKey.swift": ["func sign(_ message: [UInt8], with keyData: Data, match: any BiometricMatch) -> SigningOutcome": 1],
+        "Live/SecureEnclaveSigner.swift": ["func sign(_ message: [UInt8], with keyData: Data, match: any BiometricMatch) -> SigningOutcome {": 1],
+        "Fixtures/SoftwareEnclave.swift": ["func sign(_ message: [UInt8], with keyData: Data, match: any BiometricMatch) -> SigningOutcome {": 1],
+        "Model/RequestInbox.swift": ["let signing = DecisionSigner.sign(verdict, for: request, at: clock(), with: keyring, match: match)": 1],
+        "Model/RequestStatus.swift": ["return PhoneLine(text: \"Unsigned — this iPhone couldn't sign your answer, so nothing was sent; try again\",": 1],
+        "Screen/PairingScreen.swift": ["case .notSigned: \"Unsigned — this iPhone couldn't sign with its new key, so nothing was saved\"": 1],
+    ])
+
     /// The decision message, the shown digest and the decision value are
     /// built in the signer only; the digest is over the request's three
     /// fields as they are, and the signer names nothing that draws or
     /// changes text; the committed key signs only there; and the inbox's
     /// one write sends what the signer signed, after the window's re-check.
+    ///
+    /// AMENDED (#166, the S-PAIR-B security review): the committed key's
+    /// signing is pinned by the METHOD'S NAME, not by a receiver spelled
+    /// `keyring.` (B17 and B20 signed through `let s = k.sign` and a renamed
+    /// receiver): every site naming `sign` is on `signSites`, so an
+    /// unapplied reference, an alias or an implicit self is a new site. And
+    /// no app source has an implicit `.init(` (B6 built an unsigned decision
+    /// with `let d: PhoneDecision? = .init(…)`).
     static func signerFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         for (path, text) in app {
@@ -216,6 +245,9 @@ enum MacCheck {
                 failures.append("'\(token)' in \(path) — only the decision signer, once")
             }
         }
+        failures += CloudKitStructureTests.appSiteFailures(#"\bsign\b"#, in: app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) },
+                                                           allowed: signSites, rule: "the committed key signs once, in the signer")
+        failures += RecordPathStructureTests.implicitInitFailures(app, rule: "a decision is built only by the signer")
         let signer = CloudKitStructureTests.codeOnly(app.first { $0.path == signerFile }?.text ?? "")
         if !SettingsReachabilityTests.flat(signer).contains(digestInput) {
             failures.append("the shown digest must be taken over the request's three fields as received")
@@ -259,10 +291,37 @@ enum MacCheck {
             ("the key used elsewhere", mutate(Self.inboxFile) { $0 + "\nfunc spare() { _ = keyring.sign(m, match: x) }" }),
             ("the write before the signature", mutate(Self.inboxFile) {
                 $0.replacingOccurrences(of: "let outcome = await writer.write(decision)", with: "let outcome = await writer.write(spare)") }),
+            // #166: the security review's B6, B17 and B20, as planted.
+            ("B6: an unsigned decision by typed implicit init", mutate(Self.inboxFile) {
+                $0 + "\nfunc forge(_ p: PromptID) -> PhoneDecision? { let d: PhoneDecision? = .init(promptID: p, verdict: .allow, "
+                    + "decidedAt: Date(timeIntervalSince1970: 0), signature: Data(count: 64)); return d }" }),
+            ("B17: the committed key signs through an unapplied reference", mutate(Self.inboxFile) {
+                $0 + "\nextension RequestInbox { func sneak3(k: PhoneKeyring, m: any BiometricMatch) { let s = k.sign; _ = s([1], m) } }" }),
+            ("B20: the committed key signs through a renamed receiver", mutate(Self.inboxFile) {
+                $0 + "\nextension RequestInbox { func sneak6(_ m: any BiometricMatch) { let k = keyring; _ = k.sign([1], match: m) } }" }),
+            // … and their neighbours: an implicit self, the signer's file
+            // itself, a backticked name, the curried type member, and an
+            // implicit init returned or handed on.
+            ("the key signs on its implicit self", mutate("\(Self.appDir)/Model/PhoneKeyring.swift") {
+                $0 + "\nextension PhoneKeyring { func spare(_ m: any BiometricMatch) -> Signing { sign([1], match: m) } }" }),
+            ("a second signature in the signer", mutate(Self.signerFile) {
+                $0 + "\nextension DecisionSigner { static func spare(k: PhoneKeyring, m: any BiometricMatch) { _ = k.sign([1], match: m) } }" }),
+            ("a backticked call", mutate(Self.inboxFile) { $0 + "\nfunc spare(k: PhoneKeyring, m: any BiometricMatch) { _ = k.`sign`([1], match: m) }" }),
+            ("the curried member", mutate(Self.inboxFile) { $0 + "\nlet spare = PhoneKeyring.sign" }),
+            ("a decision returned by implicit init", mutate(Self.inboxFile) {
+                $0 + "\nfunc spare(p: PromptID, d: Date, s: Data) -> PhoneDecision? {\n    return .init(promptID: p, verdict: .deny, decidedAt: d, signature: s)\n}" }),
+            ("a decision handed to the writer by implicit init", mutate(Self.inboxFile) {
+                $0 + "\nfunc spare(w: any DecisionWriter, p: PromptID, d: Date, s: Data) async { _ = await w.write(.init(promptID: p, "
+                    + "verdict: .allow, decidedAt: d, signature: s)!) }" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.signerFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // Over-match controls: a doc comment naming the shapes, and words
+        // that only begin with "sign".
+        #expect(Self.signerFailures(mutate(Self.inboxFile) {
+            $0 + "\n/// never let s = keyring.sign, never let d: PhoneDecision? = .init(…)\nlet signal = 1, signs = 2, signed = 3"
+        }).isEmpty)
     }
 }

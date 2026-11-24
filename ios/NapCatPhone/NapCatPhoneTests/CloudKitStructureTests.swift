@@ -167,6 +167,45 @@ import Testing
         return ["'\(pattern)' in \(file) — \(rule): off the allow-list \(off); moved or gone \(gone)"]
     }
 
+    /// `allowed` per app file (paths under `appDir`), keyed as
+    /// `appSiteFailures` tallies: "path: line".
+    static func appSites(_ byFile: [String: [String: Int]]) -> [String: Int] {
+        var sites: [String: Int] = [:]
+        for (file, lines) in byFile {
+            for (line, count) in lines { sites["\(appDir)/\(file): \(line)"] = count }
+        }
+        return sites
+    }
+
+    /// A site pin across files (#166): every line holding a match of
+    /// `pattern`, in every source as given, keyed "path: line", is exactly
+    /// `allowed`; any other file holds none. Callers pass code (comments
+    /// stripped, string literals in: a word in a string counts too, so a
+    /// literal can only over-match).
+    static func appSiteFailures(_ pattern: String, in sources: [Source], allowed: [String: Int], rule: String) -> [String] {
+        var tally: [String: Int] = [:]
+        for (path, text) in sources {
+            for (line, count) in siteTally(pattern, in: text) { tally["\(path): \(line)", default: 0] += count }
+        }
+        if tally == allowed { return [] }
+        let off = tally.filter { allowed[$0.key] != $0.value }.map { "\($0.value)× \($0.key)" }.sorted()
+        let gone = allowed.filter { tally[$0.key] != $0.value }.map(\.key).sorted()
+        return ["'\(pattern)' in the app — \(rule): off the allow-list \(off); moved or gone \(gone)"]
+    }
+
+    /// An adoption of the protocol `name`, however it is declared (#166,
+    /// security review B11-B13): a type, an extension or a refining protocol
+    /// naming it in its inheritance or `where` clause, the clause continued
+    /// over any number of lines; or a typealias naming it, since a type
+    /// adopting the alias names nothing else. Read it in every constructor
+    /// scan copy: a block comment holding a `{` ends the clause early in the
+    /// raw text. A keyword in a string can only over-match.
+    static func adoptionPattern(_ name: String) -> String {
+        let word = #"\b"# + name + #"\b"#
+        return #"\b(?:class|struct|actor|enum|extension|protocol)\b[^{]*?:[^{]*?"# + word
+            + #"|\btypealias\b[^=]*=[^{};]*?"# + word
+    }
+
     /// `failures` without repeats, in order.
     static func unique(_ failures: [String]) -> [String] {
         var seen = Set<String>()

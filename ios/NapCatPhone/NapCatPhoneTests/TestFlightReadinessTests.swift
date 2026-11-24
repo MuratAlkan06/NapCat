@@ -8,8 +8,10 @@ import Testing
     static var info: [String: Any] { Bundle.main.infoDictionary ?? [:] }
 
     /// Export compliance: the app's only encryption is the system's HTTPS
-    /// and CloudKit transport, which is exempt. With the key set to NO,
-    /// App Store Connect does not ask the export questions on every upload.
+    /// and CloudKit transport, which is exempt. (Since S-PAIR-B it also
+    /// signs, hashes and MACs with CryptoKit: authentication and integrity,
+    /// which encrypt no data.) With the key set to NO, App Store Connect
+    /// does not ask the export questions on every upload.
     @Test func theAppDeclaresOnlyExemptEncryption() {
         #expect(Self.info["ITSAppUsesNonExemptEncryption"] as? Bool == false)
     }
