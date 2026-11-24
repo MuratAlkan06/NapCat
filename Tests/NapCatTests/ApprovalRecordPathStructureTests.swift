@@ -261,18 +261,28 @@ struct ApprovalRecordPathStructureTests {
     /// cleaned copies of the file (`constructorScanCopies`) — in addition to
     /// the raw text, never instead of it.
     ///
+    /// AMENDED for S-PAIR-A (#161): the decision verifier is the ONE Mac
+    /// source that builds the S0 type, exactly once, naming its signature
+    /// flag exactly once (that construction's label). Every other source
+    /// still builds none and names no flag, and the unnamed roads stay shut
+    /// everywhere, the verifier included.
+    static let verifierFile = "DecisionVerifier.swift"
+
     /// `sources`: `uncutSources()`. The original two checks read the
     /// comment-stripped code, as they always did.
     static func verdictTypeFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         for (name, uncut) in sources where !wireFiles.contains(name) {
+            let allowed = name == verifierFile ? 1 : 0
             let copies = LidGuardStructureTests.constructorScanCopies(uncut)
             let code = copies.map(LidGuardStructureTests.codeOnly)
-            if code.contains(where: { ApprovalChannelStructureTests.constructionSpelling($0).contains("ApprovalDecision(") }) {
-                failures.append("\(name) builds an ApprovalDecision — no decision is a verdict before CL-1")
+            if code.contains(where: {
+                ApprovalChannelStructureTests.count("ApprovalDecision(", in: ApprovalChannelStructureTests.constructionSpelling($0)) != allowed
+            }) {
+                failures.append("\(name) builds an ApprovalDecision — only the decision verifier does, exactly once")
             }
-            if code.contains(where: { $0.contains("signatureVerified") }) {
-                failures.append("\(name) names signatureVerified — no decision is a verdict before CL-1")
+            if code.contains(where: { ApprovalChannelStructureTests.count("signatureVerified", in: $0) != allowed }) {
+                failures.append("\(name) names signatureVerified — only the decision verifier's one construction does")
             }
             if copies.contains(where: { $0.range(of: indirectConstruction, options: .regularExpression) != nil }) {
                 failures.append("\(name) reaches ApprovalDecision's constructor unnamed — no decision is a verdict before CL-1")
