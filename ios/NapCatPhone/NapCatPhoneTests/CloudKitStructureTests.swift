@@ -189,9 +189,19 @@ import Testing
     /// escapes and `\( … )` interpolations (code again, which may hold
     /// literals of their own); `#/…/#` regex literals, and a bare `/…/` one
     /// where an expression can start (`bareRegexOpens`). A single-line
-    /// literal ends with its line even when unterminated, so a misreading
-    /// never outlives its line. Every misreading either keeps text (which
-    /// only over-matches) or cuts at a `//` the old line cut cut at too.
+    /// literal ends with its line even when unterminated.
+    ///
+    /// A misreading is not harmless. Against the old line cut it is bounded
+    /// in `codeOnly` and `wholeLineCommentsRemoved` only: each still keeps
+    /// all the old forms kept (the Mac's `theStrippersNeverHideWhatTheLineCutShowed`).
+    /// But the locks read these forms to see what the old cut hid, and
+    /// `cleaned` has no old form at all. A literal opened or missed in the
+    /// wrong place swaps string and code from there on (to the end of its
+    /// line, or from a misread `"""` to the next one), so a token behind a
+    /// URL, a `//`-led interpolation line or a block-comment-split name can
+    /// vanish from every form a lock reads (security spot-check H9, a bare
+    /// regex after `switch`). So every opener shape is pinned by the
+    /// stripper tables and by a canary in a lock that reads it.
     static func lexemes(_ scalars: [Unicode.Scalar]) -> [Lexeme] {
         enum Mode {
             case code(parens: Int)                       // parens > 0: inside an interpolation
@@ -346,23 +356,26 @@ import Testing
 
     /// Whether the `/` at `index` (not `//` or `/*`) opens a bare regex
     /// literal: an expression can start there (nothing before it on its
-    /// line, or an operator, an opening bracket, a separator or a keyword
-    /// that precedes an expression), no space follows it, and an unescaped
-    /// `/` closes it on the same line. A division (`a / b`, `n/2`, `f()/2`)
-    /// is never one.
+    /// line; a space or tab right before it, since with none after it Swift
+    /// 6 never reads that `/` as a division (security spot-check H9); or an
+    /// operator, an opening bracket, a separator or a keyword that precedes
+    /// an expression, `switch/"/` included), no space follows it, and an
+    /// unescaped `/` closes it on the same line. A division (`a / b`, `n/2`,
+    /// `f()/2`) is never one.
     static func bareRegexOpens(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
         let next = index + 1
         guard next < scalars.count, !scalars[next].properties.isWhitespace, scalars[next] != "=" else { return false }
         var before = index - 1
         while before >= 0, scalars[before] == " " || scalars[before] == "\t" { before -= 1 }
-        var opens = before < 0 || isLineEnd(scalars[before]) || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
+        var opens = before < 0 || before < index - 1 || isLineEnd(scalars[before])
+            || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
         if !opens, scalars[before].properties.isAlphabetic {
             var wordStart = before
             while wordStart > 0, scalars[wordStart - 1].properties.isAlphabetic { wordStart -= 1 }
             let word = String(String.UnicodeScalarView(scalars[wordStart...before]))
             let identifierChar = wordStart > 0 && (scalars[wordStart - 1] == "_" || scalars[wordStart - 1].properties.numericType != nil)
             opens = !identifierChar && ["return", "in", "throw", "try", "await", "case", "where", "if", "guard", "while",
-                                        "else", "is", "as", "repeat", "some", "any"].contains(word)
+                                        "else", "is", "as", "repeat", "some", "any", "switch"].contains(word)
         }
         guard opens else { return false }
         var cursor = next
@@ -553,6 +566,12 @@ import Testing
         // #155: a URL in a string literal no longer hides the rest of its line.
         let behindURL = mutated { $0 + "\nlet u = \"https://www.icloud.com\"; let spare = \(Self.container)(identifier: \"x\")\n" }
         #expect(!Self.containerFailures(receiver: behindURL, tests: tests).isEmpty, "canary 'a site behind a URL' was NOT caught")
+        // Security spot-check H9, as planted (R-H9-PHONE): a bare regex after
+        // `switch` holding a quote, then the URL, then the site.
+        let afterRegex = mutated { $0 + "\nprivate func h9() { switch /\"/ { default: let u = \"https://x\"; "
+            + "_ = (u, \(Self.container)(identifier: AlertWire.containerIdentifier)) } }\n" }
+        #expect(!Self.containerFailures(receiver: afterRegex, tests: tests).isEmpty,
+                "canary 'H9a: a site behind a URL after a bare regex' was NOT caught")
         // A test that builds a container.
         let rogue = tests + [("\(Self.testsDir)/Rogue.swift", "let c = \(Self.container)(identifier: \"x\")")]
         #expect(!Self.containerFailures(receiver: receiver, tests: rogue).isEmpty)
@@ -715,6 +734,12 @@ import Testing
             ("a division is no regex", "let q = a / b // half\nlet h = n/2 // c", "let q = a / b \nlet h = n/2 "),
             ("CRLF line ends", "// c\r\nlet x = tokenN // c\r\n", "\r\nlet x = tokenN \r\n"),
             ("a doc comment", "/// doc tokenO\nlet x = 1", "\nlet x = 1"),
+            // Security spot-check H9 (as the Mac's table): a bare regex after
+            // `switch` holding a quote is a regex, spaced or not.
+            ("H9a: a bare regex after switch holding a quote", "switch /\"/ { default: let u = \"https://x\"; tokenT } // c",
+             "switch /\"/ { default: let u = \"https://x\"; tokenT } "),
+            ("a bare regex right after switch", "switch/\"/ { default: let u = \"https://x\"; tokenU } // c",
+             "switch/\"/ { default: let u = \"https://x\"; tokenU } "),
         ]
         for (name, text, code) in codeOnlyCases {
             #expect(Self.codeOnly(text) == code, "codeOnly, \(name): \(Self.codeOnly(text).debugDescription)")
@@ -723,6 +748,9 @@ import Testing
             ("a whole-line comment goes, a trailing one stays", "// c\n  /// d\nlet x = 1 // t", "\n\nlet x = 1 // t"),
             ("a multi-line string line opening with //", "let m = \"\"\"\n// \\(tokenP)\n\"\"\"", "let m = \"\"\"\n// \\(tokenP)\n\"\"\""),
             ("CRLF line ends", "// c\r\nlet x = tokenR\r\n", "\r\nlet x = tokenR\r\n"),
+            ("H9: a multi-line string after a bare regex holding \"\"\"",
+             "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }",
+             "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }"),
         ]
         for (name, text, uncut) in wholeLineCases {
             #expect(Self.wholeLineCommentsRemoved(text) == uncut,

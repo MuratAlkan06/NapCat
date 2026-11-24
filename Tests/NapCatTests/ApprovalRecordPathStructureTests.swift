@@ -304,8 +304,20 @@ struct ApprovalRecordPathStructureTests {
             ("the record store promotes a claim", Self.mutate(sources, Self.recordPathFile) {
                 $0 + "\nextension CloudKitApprovalRecords { func f(c: DecisionClaim) -> ApprovalDecision { "
                     + "ApprovalDecision(promptID: c.promptID, verdict: c.claimedVerdict, wireVersion: 1, signatureVerified: true) } }" }),
+            // Security spot-check H9: a bare regex after `switch` holding a
+            // quote, then the URL, then the verdict; and its multi-line form,
+            // the verdict in a `//`-led interpolation line.
+            ("H9a: a verdict built behind a URL after a bare regex", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nfunc h9(i: ApprovalIntake) { switch /\"/ { default: let u = \"https://x\"; "
+                    + "i.decide(ApprovalDecision(promptID: p, verdict: .allow, wireVersion: 1, signatureVerified: true)) } }" }),
+            ("H9, multi-line: a verdict in a //-led interpolation line", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + LidGuardStructureTests.wholeLineCommentsRemoved("\nfunc h9m(i: ApprovalIntake) -> String {\n"
+                    + "    switch /\"\"\"/ { default: break }\n    let s = \"\"\"\n"
+                    + "    // \\(i.decide(ApprovalDecision(promptID: p, verdict: .allow, wireVersion: 1, signatureVerified: true)))\n"
+                    + "    \"\"\"\n    switch /\"\"\"/ { default: break }\n    return s\n}") }),
         ]
         for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.verdictTypeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
@@ -356,6 +368,15 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\nlet a = \"/*\"\nextension /* x */ ApprovalDecision {\n    static let c = Self.init\n}\nlet b = \"*/\"" }),
             ("a bare regex before a commented extension", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
                 $0 + "\nlet r = /\"/; let a = \"/*\"; extension /* x */ ApprovalDecision { static let c = Self.init }; let b = \"*/\"" }),
+            // Security spot-check H9b, as planted (R-H9-B2): the regex follows
+            // `switch`, so its quote must not open a string.
+            ("H9b: a bare regex after switch before a commented extension", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc h9b() { switch /\"/ { default: break } }; extension /* x */ ApprovalDecision { static let h9claim = Self.init }\n\n"
+                    + "func h9use(i: ApprovalIntake, p: PromptID) {\n    i.decide(ApprovalDecision.h9claim(p, .allow, 1, true))\n}" }),
+            ("H9, multi-line: a regex holding \"\"\" before a commented extension",
+             Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc h9m() -> String {\n    switch /\"\"\"/ { default: break }\n    return \"\"\"\n    \"\"\"\n}\n"
+                    + "extension /* x */ ApprovalDecision { static let h9claimM = Self.init }" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -932,6 +953,16 @@ struct ApprovalRecordPathStructureTests {
             ("a second submit", Self.mutate(sources, record) { $0 + "\nfunc f(d: any ApprovalRecordDatabase, o: Op) { d.submit(o) }" }),
             ("the operation type extended, no banned word", Self.mutate(sources, record) {
                 $0 + "\nextension CKModifyRecordsOperation {\n    func go() { spare() }\n}" }),
+            // Security spot-check H9, as planted (R-H9-X1b): a regex holding
+            // `"""` after `switch`, read as a division, swapped string and
+            // code, so the runner's `//`-led interpolation line read as a
+            // whole-line comment; a second such regex restored the parity.
+            ("H9: the operation run from a //-led interpolation line", Self.mutate(Self.mutate(sources, record) {
+                $0 + LidGuardStructureTests.wholeLineCommentsRemoved("\nextension ApprovalRecordWriter {\n"
+                    + "    static func h9x(_ r: CKRecord) -> String {\n        switch /\"\"\"/ { default: break }\n        let s = \"\"\"\n"
+                    + "        // \\(kickOff(makeOperation(saving: [r], deleting: []) { _ in }))\n        \"\"\"\n"
+                    + "        switch /\"\"\"/ { default: break }\n        return s\n    }\n}\n")
+            }, "CompositeMessageSender.swift") { $0 + "\nfunc kickOff<O: Operation>(_ o: O) { o.start() }\n" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")

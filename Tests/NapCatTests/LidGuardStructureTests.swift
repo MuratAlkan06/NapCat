@@ -123,9 +123,19 @@ struct LidGuardStructureTests {
     /// escapes and `\( … )` interpolations (code again, which may hold
     /// literals of their own); `#/…/#` regex literals, and a bare `/…/` one
     /// where an expression can start (`bareRegexOpens`). A single-line
-    /// literal ends with its line even when unterminated, so a misreading
-    /// never outlives its line. Every misreading either keeps text (which
-    /// only over-matches) or cuts at a `//` the old line cut cut at too.
+    /// literal ends with its line even when unterminated.
+    ///
+    /// A misreading is not harmless. Against the old line cut it is bounded
+    /// in `codeOnly` and `wholeLineCommentsRemoved` only: each still keeps
+    /// all the old forms kept (the Mac's `theStrippersNeverHideWhatTheLineCutShowed`).
+    /// But the locks read these forms to see what the old cut hid, and
+    /// `cleaned` has no old form at all. A literal opened or missed in the
+    /// wrong place swaps string and code from there on (to the end of its
+    /// line, or from a misread `"""` to the next one), so a token behind a
+    /// URL, a `//`-led interpolation line or a block-comment-split name can
+    /// vanish from every form a lock reads (security spot-check H9, a bare
+    /// regex after `switch`). So every opener shape is pinned by the
+    /// stripper tables and by a canary in a lock that reads it.
     static func lexemes(_ scalars: [Unicode.Scalar]) -> [Lexeme] {
         enum Mode {
             case code(parens: Int)                       // parens > 0: inside an interpolation
@@ -280,23 +290,26 @@ struct LidGuardStructureTests {
 
     /// Whether the `/` at `index` (not `//` or `/*`) opens a bare regex
     /// literal: an expression can start there (nothing before it on its
-    /// line, or an operator, an opening bracket, a separator or a keyword
-    /// that precedes an expression), no space follows it, and an unescaped
-    /// `/` closes it on the same line. A division (`a / b`, `n/2`, `f()/2`)
-    /// is never one.
+    /// line; a space or tab right before it, since with none after it Swift
+    /// 6 never reads that `/` as a division (security spot-check H9); or an
+    /// operator, an opening bracket, a separator or a keyword that precedes
+    /// an expression, `switch/"/` included), no space follows it, and an
+    /// unescaped `/` closes it on the same line. A division (`a / b`, `n/2`,
+    /// `f()/2`) is never one.
     static func bareRegexOpens(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
         let next = index + 1
         guard next < scalars.count, !scalars[next].properties.isWhitespace, scalars[next] != "=" else { return false }
         var before = index - 1
         while before >= 0, scalars[before] == " " || scalars[before] == "\t" { before -= 1 }
-        var opens = before < 0 || isLineEnd(scalars[before]) || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
+        var opens = before < 0 || before < index - 1 || isLineEnd(scalars[before])
+            || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
         if !opens, scalars[before].properties.isAlphabetic {
             var wordStart = before
             while wordStart > 0, scalars[wordStart - 1].properties.isAlphabetic { wordStart -= 1 }
             let word = String(String.UnicodeScalarView(scalars[wordStart...before]))
             let identifierChar = wordStart > 0 && (scalars[wordStart - 1] == "_" || scalars[wordStart - 1].properties.numericType != nil)
             opens = !identifierChar && ["return", "in", "throw", "try", "await", "case", "where", "if", "guard", "while",
-                                        "else", "is", "as", "repeat", "some", "any"].contains(word)
+                                        "else", "is", "as", "repeat", "some", "any", "switch"].contains(word)
         }
         guard opens else { return false }
         var cursor = next
@@ -336,6 +349,19 @@ struct LidGuardStructureTests {
         ("a bare regex with escaped slashes", "let r = /a\\/\\/b/; tokenM // c", "let r = /a\\/\\/b/; tokenM "),
         ("a division is no regex", "let q = a / b // half\nlet h = n/2 // c\nlet f = g()/2 // c",
          "let q = a / b \nlet h = n/2 \nlet f = g()/2 "),
+        // Security spot-check H9: a bare regex after `switch` (unlisted until
+        // then) read as a division, so its quote opened a phantom string.
+        ("H9a: a bare regex after switch holding a quote", "switch /\"/ { default: let u = \"https://x\"; tokenT } // c",
+         "switch /\"/ { default: let u = \"https://x\"; tokenT } "),
+        ("a bare regex right after switch", "switch/\"/ { default: let u = \"https://x\"; tokenU } // c",
+         "switch/\"/ { default: let u = \"https://x\"; tokenU } "),
+        ("H9, multi-line: a bare regex holding \"\"\" before a multi-line string",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenV)\n\"\"\"\nswitch /\"\"\"/ { default: break } // c",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenV)\n\"\"\"\nswitch /\"\"\"/ { default: break } "),
+        // A keyword that is also a name divides when a `/` touches it (the
+        // Swift 6 compiler reads `copy/2` as the parameter `copy`, halved).
+        ("a name spelled like a contextual keyword divides", "let h = copy/2; let s = \"a/b // x\"; tokenW // c",
+         "let h = copy/2; let s = \"a/b // x\"; tokenW "),
         ("CRLF line ends", "// c\r\nlet x = tokenN // c\r\nlet y = 1", "\r\nlet x = tokenN \r\nlet y = 1"),
         ("a CR line end", "x // c\ry", "x \ry"),
         ("an unterminated string ends with its line", "let s = \"abc\nlet t = 1 // c", "let s = \"abc\nlet t = 1 "),
@@ -348,7 +374,18 @@ struct LidGuardStructureTests {
         ("a block comment line opening with //", "/*\n// tokenQ\n*/", "/*\n// tokenQ\n*/"),
         ("CRLF line ends", "// c\r\nlet x = tokenR\r\n", "\r\nlet x = tokenR\r\n"),
         ("a URL", "let u = \"https://x\"; tokenS", "let u = \"https://x\"; tokenS"),
+        // H9, multi-line (the R-H9-X1b plant): the line is a string's, its
+        // interpolation code.
+        ("H9: a multi-line string after a bare regex holding \"\"\"",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }"),
     ]
+
+    /// The words a space before a `/` covers (H9): with a space or tab right
+    /// before it and none after, a `/` opens a regex whatever word precedes
+    /// it — `switch` and the contextual keywords that can start an
+    /// expression alike.
+    static let spacedRegexWords = ["switch", "yield", "then", "unsafe", "consume", "copy", "discard", "each"]
 
     @Test func theStrippersReadLiteralsAndComments() {
         for (name, text, code) in Self.codeOnlyCases {
@@ -357,6 +394,11 @@ struct LidGuardStructureTests {
         for (name, text, uncut) in Self.wholeLineCases {
             #expect(Self.wholeLineCommentsRemoved(text) == uncut,
                     "wholeLineCommentsRemoved, \(name): \(Self.wholeLineCommentsRemoved(text).debugDescription)")
+        }
+        for word in Self.spacedRegexWords {
+            let text = "\(word) /\"/; let u = \"https://x\"; tokenY // c"
+            #expect(Self.codeOnly(text) == "\(word) /\"/; let u = \"https://x\"; tokenY ",
+                    "codeOnly, a bare regex after '\(word) ': \(Self.codeOnly(text).debugDescription)")
         }
     }
 
@@ -373,6 +415,12 @@ struct LidGuardStructureTests {
              "let s = \"/*\"; T   x; let e = \"*/\""),
             ("a block-comment opener in a line comment", "x // see /*\ny */ z", "x // see /*\ny */ z"),
             ("a bare regex holding a quote", "let r = /\"/; extension /* x */ T {}", "let r = /\"/; extension   T {}"),
+            // Security spot-check H9b (the R-H9-B2 plant), then its multi-line form.
+            ("H9b: a bare regex after switch before a commented extension",
+             "switch /\"/ { default: break }; extension /* x */ T {}", "switch /\"/ { default: break }; extension   T {}"),
+            ("H9: a bare regex holding \"\"\" before a commented extension",
+             "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n\"\"\"\nextension /* x */ T {}",
+             "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n\"\"\"\nextension   T {}"),
         ]
         for (name, text, cleaned) in cases {
             #expect(Self.cleaned(text) == cleaned, "cleaned, \(name): \(Self.cleaned(text).debugDescription)")
@@ -750,6 +798,13 @@ struct LidGuardStructureTests {
             // #155: a URL in a string literal no longer hides the rest of its line.
             ("a session behind a URL", mutate("MenuContentView.swift") {
                 $0 + Self.codeOnly("\nlet u = \"https://ntfy.sh\"; let canary = URLSession(configuration: .ephemeral)") }),
+            // Security spot-check H9 (the R-H9-155 plant): a bare regex after
+            // `switch` holding a quote, then the URL, then the token.
+            ("H9a: a session behind a URL after a bare regex", mutate("SettingsPanes.swift") {
+                $0 + Self.codeOnly("\nprivate func h9() { switch /\"/ { default: let u = \"https://x\"; _ = (u, URLSession.shared) } }") }),
+            ("H9, multi-line: a session in a //-led interpolation line", mutate("SettingsPanes.swift") {
+                $0 + Self.codeOnly("\nprivate func h9m() -> String {\n    switch /\"\"\"/ { default: break }\n    let s = \"\"\"\n"
+                    + "    // \\(URLSession.shared)\n    \"\"\"\n    switch /\"\"\"/ { default: break }\n    return s\n}") }),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.networkingConfinementFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
