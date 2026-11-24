@@ -80,8 +80,12 @@ struct WireContractTests {
     /// The pure files: I/O-free logic over the constants. S1 added the
     /// channel server's wire (`ApprovalChannel.swift`) and the managed-settings
     /// allowlist reading (`ApprovalChannelPolicy.swift`) under the same locks.
+    /// S-PAIR-A (#161) added the canonical bytes of signed decisions and of
+    /// pairing (`ApprovalSigning.swift`: byte assembly only — the hashing and
+    /// the signatures stay in the apps; ApprovalSigningVectorTests pins it on
+    /// both devices).
     static let pureFiles = ["ApprovalChannel.swift", "ApprovalChannelPolicy.swift", "ApprovalClassification.swift",
-                            "ApprovalPreview.swift", "ApprovalStateMachine.swift"]
+                            "ApprovalPreview.swift", "ApprovalSigning.swift", "ApprovalStateMachine.swift"]
 
     static func wireDirectory() -> URL {
         LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire")
