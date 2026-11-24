@@ -4,8 +4,9 @@ Status: design FROZEN 2026-11-22 with three ratified amendments (CL-1, CL-2,
 CL-3). Spike S-4 passed the same day. This document is the in-repo record of
 the design tracked on issue #98; slice S0 (issue #122) lands it together with
 the pure core described at the end, slice S1 (issue #125) adds the server
-side, slice S2 (issue #134) the Mac's control surface, and slice S3 (issue
-#146) the CloudKit record path and the phone's request screen.
+side, slice S2 (issue #134) the Mac's control surface, slice S3 (issue
+#146) the CloudKit record path and the phone's request screen, and the
+S-PAIR slices (issue #161) pairing and signed decisions (CL-1).
 
 ## Problem
 
@@ -467,7 +468,151 @@ this section points at them.
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
     re-check), #153 (the alert lane's CloudKit structure locks and the
-    construction-count pins), #154 (the unconfirmed-Allow re-offer). For
-    completeness, the test-hardening items #151 (widen the saved-copy lock)
-    and #155 (comment stripping inside string literals) ride the same
-    window.
+    construction-count pins), #154 (the unconfirmed-Allow re-offer), #159
+    (a forwarded path may hold quote and brace characters, so the phone's
+    raw preview can look like more fields than it has: restrict them in
+    the gate, or show the path as its own labelled field). For
+    completeness, the test-hardening items #151 (widen the saved-copy
+    lock), #155 (comment stripping inside string literals) and #160 (the
+    structure locks' lexer cannot always tell a contextual keyword from a
+    name spelled the same) ride the same window.
+
+## Slice S-PAIR: pairing and signed decisions
+
+S-PAIR makes a decision count only when the paired phone signed it (CL-1).
+CloudKit authenticates the iCloud account, not a device or a person: anyone
+who can write to the account can write a well-formed record. So a
+decision's authenticity comes from a signature over its own canonical
+bytes, and the pairing that installs the phone's key cannot trust a record
+either. Tracked on issue #161 in four slices, each fail-dark: S-PAIR-A (the
+canonical bytes and the verifier, pure), S-PAIR-B (the phone signs),
+S-PAIR-C1 (the Mac pairs) and S-PAIR-C2 (the Mac counts). No S-PAIR slice
+arms anything.
+
+- **The key.** The phone holds the only private key: a P-256 key in its
+  Secure Enclave, usable only after a match of the biometrics enrolled now,
+  with no passcode fallback (CL-3), never exported. One match per Allow
+  covers both the in-app gate and the signature. The Mac keeps only the
+  public key, in its local keychain, never synchronized through iCloud (a
+  synced item could be written from any device on the account).
+- **What is signed.** Six lines of UTF-8, each ending in a line feed, built
+  by one shared function (`ApprovalSigning.decisionMessage`):
+
+  ```
+  napcat-decision-v1
+  wire:1
+  prompt:<32 lowercase hex digits>
+  verdict:allow|deny
+  decided:<unix seconds, base 10, no leading zeros>
+  shown:<64 lowercase hex digits>
+  ```
+
+  No value's alphabet holds a line feed, so nothing is ever escaped, and
+  the builder refuses a value outside its alphabet. The phone signs with
+  ECDSA P-256 over SHA-256 of these bytes; the decision record's encrypted
+  `signature` field carries the raw 64-byte form, and the deployed
+  PromptDecision schema is unchanged. `prompt` binds a decision to one
+  single-use prompt; `decided` is whole seconds, for the audit trail only
+  (freshness is still judged on the Mac's clock against the TTL); `shown`
+  is the digest of the prompt copy the phone displayed.
+- **What the phone displayed.** `shown` is SHA-256 of the three fields the
+  owner decides on, `napcat-shown-v1` and then each of `toolName`,
+  `inputPreview` and `projectLabel` as `<name>:<byte count>`, a line feed,
+  the field's bytes and a line feed (`ApprovalSigning.shownDigestInput`).
+  The values are the fields exactly as decoded from the record, never a
+  displayed form: the request screen draws whitespace as marks, and that
+  drawing is a function of these bytes, not their source. The Mac rebuilds
+  the digest from its own copy of the prompt it wrote, so a prompt record
+  rewritten on its way to the phone cannot be approved: the phone signs
+  what it showed, and the Mac checks that against what it sent.
+- **The verifier** (`Sources/NapCat/DecisionVerifier.swift`) is the one
+  place a decision reading becomes the S0 decision value. It checks, in
+  this order, and the first failure wins: a phone is paired; the verdict
+  is exactly `allow` or `deny`; the decision time is a whole second in
+  range; the signature is exactly 64 bytes, before any cryptography; the
+  wire version; the prompt ID's one spelling; the Mac holds its own copy of
+  that prompt; the signature verifies over the message rebuilt from the
+  claim and that copy. Duplicates and the TTL stay the lifecycle's. A
+  decision that does not verify is dropped and logged in the `approvals`
+  category by its code, and nothing else happens: no retry, no alert, and
+  the local dialog stays open.
+
+  | Code (`decision.unverified.…`) | The decision … |
+  | :- | :- |
+  | `noPairedKey` | arrived while no phone is paired |
+  | `unknownVerdict` | carries a verdict other than exactly `allow` or `deny` |
+  | `decidedAtOutOfRange` | carries a negative, non-finite or out-of-range time |
+  | `fractionalDecidedAt` | carries a time that is not a whole second |
+  | `signatureLength` | carries a signature that is not exactly 64 bytes |
+  | `wrongWireVersion` | carries another wire version |
+  | `malformedPromptID` | names its prompt in any spelling but 32 lowercase hex digits |
+  | `noForwardedCopy` | is for a prompt the Mac holds no copy of |
+  | `signatureInvalid` | does not verify: another key, a changed field, or a prompt the phone saw otherwise |
+  | `shownDigestMismatch` | does verify, but only over the Mac's copy in another Unicode normalization form (NFC or NFD): the record's text changed form on its way to the phone. Refused all the same; the code only names the cause |
+
+- **Pairing.** The Mac shows a QR code holding a fresh 256-bit nonce
+  (`napcat-pair-v1:` and the nonce in unpadded base64url, read strictly),
+  single use, for at most five minutes; the nonce never leaves the Mac's
+  screen. The Mac shows and the phone scans because some Macs have no
+  camera. The phone creates its key and writes one pairing-response record:
+  the public key, an HMAC-SHA256 keyed by the nonce over the confirmation
+  message, and the new key's signature over the proof message. The record
+  is named from the nonce, so the Mac fetches it by name. The Mac checks
+  both on the first record it fetches and stores the key only after the
+  owner confirms that both devices show the same fingerprint (SHA-256 of
+  the public key, at least 12 hex digits, computed on each side; no
+  fingerprint travels on the wire). A mismatch, a second response, a
+  decline or the end of the window burns the nonce, and the pairing record
+  is deleted at every ceremony end. The phone's new key is provisional
+  until its own confirmation, so a stale or stray QR code cannot replace a
+  working pairing. Pair in private: the QR code is a secret while it is on
+  screen.
+- **One slot; re-pairing is the recovery.** At most one key is paired, and
+  a new pairing replaces it. Unpair on the Mac deletes the stored key and
+  stops the feature through the kill switch. Re-enrolling Face ID
+  invalidates the phone's key in hardware; the phone then unpairs itself
+  and asks to pair again. A new or restored phone arrives unpaired (Secure
+  Enclave keys never leave their device). Each case is recovered by the
+  same ceremony. There is no rotation, no key ID and no second phone.
+- **Not built, by design:** certificate chains, trust-on-first-use or
+  rotation protocols, several devices, App Attest, password-authenticated
+  key exchange, Mac-signed prompt records, and any encryption of decisions
+  beyond CloudKit's own field encryption.
+- **Domains.** Every message that is signed, MACed or hashed opens with its
+  own domain string, so nothing made for one can be read as another, and a
+  later format (F4.1 replies, say) gets a new domain. No domain begins
+  another.
+
+  | `ApprovalSigning` constant | Value | Opens |
+  | :- | :- | :- |
+  | `decisionDomain` | `napcat-decision-v1` | the decision message (signed by the paired key) |
+  | `shownDomain` | `napcat-shown-v1` | the shown-digest input (hashed) |
+  | `pairDomain` | `napcat-pair-v1` | the QR payload, before its `:` |
+  | `pairConfirmDomain` | `napcat-pair-confirm-v1` | the confirmation message (HMAC keyed by the nonce): `wireVersion` and `publicKey`, length-prefixed like the shown-digest input |
+  | `pairProofDomain` | `napcat-pair-proof-v1` | the proof message (signed by the new key): `nonce` and `publicKey`, length-prefixed the same way |
+  | `pairNameLabel` | `napcat-pair-name-v1` | the pairing record's name: SHA-256 of the label followed by the nonce, as 64 lowercase hex digits |
+
+- **S-PAIR-A** (this slice). The pure core, run on CI. The builders above
+  live in `NapCatWire/ApprovalSigning.swift` (byte assembly only; the
+  hashing, the MACs and the signatures stay in the apps, with CryptoKit),
+  and the verifier runs over injected software keys. The vector suite
+  (`ApprovalSigningVectorTests`) pins the bytes, digests and MACs row by
+  row, including text Swift calls equal that must still digest
+  differently (NFC against NFD, combining marks in two orders), an emoji
+  ZWJ sequence, U+2028, CRLF, empty fields and the gate's size limits; the
+  phone runs a byte-identical copy of the suite, and a Mac test keeps the
+  two alike. Lock 3 of `ApprovalRecordPathStructureTests` is amended
+  deliberately: the verifier is the one Mac source that builds the S0
+  decision type, once, verified, after its signature check; it names
+  nothing of the verdict API, the Secure Enclave, biometrics, the keychain
+  or CloudKit; nothing names the verifier yet; and only the S0 type's own
+  file is exempt from the scan. Nothing is wired: no reader, intake or
+  lifecycle hands the verifier a claim, no key is stored, and the approval
+  files' one armed literal is still `armed: { false }`.
+- **Next.** S-PAIR-B (the phone signs), then the owner-run Production
+  schema deploy of the new PairingResponse record type, then S-PAIR-C1
+  (the ceremony, the key store and Unpair on the Mac) and S-PAIR-C2 (the
+  verifier wired as the only road from a reading to the lifecycle, and
+  "paired" as a precondition for arming). Owed live drill: a forwarded
+  prompt with an NFD file name and non-ASCII text verifies end to end on
+  real CloudKit, which also proves the whole-second time's round trip.
