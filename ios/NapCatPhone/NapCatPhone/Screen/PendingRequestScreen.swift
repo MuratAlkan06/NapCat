@@ -3,15 +3,14 @@ import SwiftUI
 
 /// One forwarded permission prompt, answered on the phone (F4, slice S3):
 /// the tool and project, the input exactly as the Mac's gate read it, the
-/// request's state in words and, only while it is answerable, Allow (after a
-/// biometric match, CL-3) and Deny. An expired or withdrawn request says why
+/// request's state in words and, only while it is answerable, Allow and Deny,
+/// each after a biometric match (CL-3, and the owner's uniform-signing
+/// ruling: every answer is signed). An expired or withdrawn request says why
 /// and offers no answer. Everything visual comes from the environment's
 /// `Theme`; nothing on it moves.
 struct PendingRequestScreen: View {
     nonisolated static let title = "Permission prompt"
     nonisolated static let inputHeader = "Input"
-    nonisolated static let denyTitle = "Deny"
-    nonisolated static let denySymbol = "xmark"
     nonisolated static let closeTitle = "Close"
     nonisolated static let footnote = "The dialog on your Mac stays open, and you can answer it there instead."
     /// Under the input when it is taller than its box.
@@ -19,18 +18,20 @@ struct PendingRequestScreen: View {
     /// Beside the Sent line: the answer went out, nothing more.
     nonisolated static let sentSymbol = "paperplane"
 
-    /// Why Allow is not on offer, naming the biometric this phone has.
-    nonisolated static func allowUnavailable(_ kind: BiometryKind?) -> PhoneLine {
+    /// Why no answer is on offer, naming the biometric this phone has.
+    nonisolated static func answersUnavailable(_ kind: BiometryKind?) -> PhoneLine {
         guard let kind else {
-            return PhoneLine(text: "Unavailable — this phone can't confirm Allow with biometrics; Deny still works",
+            return PhoneLine(text: "Unavailable — this phone can't confirm answers with biometrics; answer on your Mac",
                              severity: .warning)
         }
-        return PhoneLine(text: "Unavailable — Allow needs \(kind.name) turned on; Deny still works", severity: .warning)
+        return PhoneLine(text: "Unavailable — answering needs \(kind.name) turned on; answer on your Mac", severity: .warning)
     }
 
-    /// What the answers say and show. Allow names the biometric it asks for.
+    /// What the answers say and show. Both name the biometric they ask for,
+    /// and carry its glyph: neither answer goes out without it.
     nonisolated static func allowTitle(_ kind: BiometryKind) -> String { "Allow with \(kind.name)" }
-    nonisolated static func allowHint(_ kind: BiometryKind) -> String { "Asks for \(kind.name) first." }
+    nonisolated static func denyTitle(_ kind: BiometryKind) -> String { "Deny with \(kind.name)" }
+    nonisolated static func answerHint(_ kind: BiometryKind) -> String { "Asks for \(kind.name) first." }
 
     /// The tool's glyph: one per tool the Mac's gate can forward, and a
     /// neutral tool mark for a name it does not know. Each has the filled
@@ -91,21 +92,24 @@ struct PendingRequestScreen: View {
         return new.line(at: now).spoken
     }
 
-    /// Which answers the screen offers.
+    /// Which answers the screen offers: both or neither, since both ask for
+    /// the same match.
     struct Offer: Equatable, Sendable {
-        /// Allow, with the biometric it asks for; nil when not on offer.
-        let allow: BiometryKind?
-        let deny: Bool
+        /// Allow and Deny, with the biometric they ask for; nil when neither
+        /// is on offer.
+        let answers: BiometryKind?
+        /// Said where the answers go: why there are none.
+        let caption: PhoneLine?
 
-        static let none = Offer(allow: nil, deny: false)
+        static let none = Offer(answers: nil, caption: nil)
     }
 
-    /// Nothing unless the request is answerable; then Deny, and Allow only
-    /// where a biometric match is possible.
+    /// Nothing unless the request is answerable; then both answers where a
+    /// biometric match is possible, and otherwise the reason there are none.
     nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability) -> Offer {
         guard status.isAnswerable else { return .none }
-        guard case .available(let kind) = biometry else { return Offer(allow: nil, deny: true) }
-        return Offer(allow: kind, deny: true)
+        guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }
+        return Offer(answers: kind, caption: nil)
     }
 
     /// The footnote is true only while an answer from here can still go
@@ -241,22 +245,24 @@ struct PendingRequestScreen: View {
         }
     }
 
+    /// Allow in the accent, Deny in the ink, each with the biometric's
+    /// glyph and words; or the reason there are none.
     @ViewBuilder private var answers: some View {
         let offer = Self.offer(for: status, biometry: biometry)
-        if offer.deny {
-            if let kind = offer.allow {
-                Button(action: allow) {
-                    Label(Self.allowTitle(kind), systemImage: kind.symbol)
-                }
-                .buttonStyle(RequestButtonStyle(emphasis: .accent))
-                .accessibilityHint(Self.allowHint(kind))
-            } else {
-                CaptionLine(line: Self.allowUnavailable(biometry.kind))
+        if let caption = offer.caption {
+            CaptionLine(line: caption)
+        }
+        if let kind = offer.answers {
+            Button(action: allow) {
+                Label(Self.allowTitle(kind), systemImage: kind.symbol)
             }
+            .buttonStyle(RequestButtonStyle(emphasis: .accent))
+            .accessibilityHint(Self.answerHint(kind))
             Button(action: deny) {
-                Label(Self.denyTitle, systemImage: Self.denySymbol)
+                Label(Self.denyTitle(kind), systemImage: kind.symbol)
             }
             .buttonStyle(RequestButtonStyle(emphasis: .ink))
+            .accessibilityHint(Self.answerHint(kind))
         }
     }
 }

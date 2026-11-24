@@ -1,4 +1,5 @@
-/// The biometrics a phone can have. The words for Allow name the one it has.
+/// The biometrics a phone can have. The words for the answers name the one
+/// it has.
 enum BiometryKind: String, CaseIterable, Sendable {
     case faceID
     case touchID
@@ -22,12 +23,12 @@ enum BiometryKind: String, CaseIterable, Sendable {
     }
 }
 
-/// Whether Allow can be confirmed on this phone.
+/// Whether an answer can be confirmed on this phone.
 enum BiometricAvailability: Equatable, Sendable {
     case available(BiometryKind)
-    /// No biometrics, none enrolled, or locked out: Allow cannot be
-    /// confirmed here (Deny still works). Carries the biometric the phone
-    /// has, if it has one, so the screen can name it.
+    /// No biometrics, none enrolled, or locked out: no answer can be
+    /// confirmed here (only the Mac can answer then). Carries the biometric
+    /// the phone has, if it has one, so the screen can name it.
     case unavailable(BiometryKind?)
 
     /// The biometric this phone has, whether or not it can confirm now.
@@ -39,20 +40,25 @@ enum BiometricAvailability: Equatable, Sendable {
     }
 }
 
-/// What one confirmation came to. Anything short of a match (a failed
+/// What one confirmation came to: the match itself, good for ONE signature
+/// (S-PAIR amendment 2), or nothing. Anything short of a match (a failed
 /// match, a cancel, a lockout, no biometrics) is `.notConfirmed`.
-enum BiometricResult: Equatable, Sendable {
-    case confirmed
+enum BiometricResult: Sendable {
+    case confirmed(any BiometricMatch)
     case notConfirmed
 }
 
-/// THE seam in front of Allow (CL-3: Allow is in-app and biometric-only;
-/// Deny never asks). The live gate is `LocalAuthenticationGate`; tests use a
-/// scripted one and never reach the real prompt.
+/// THE seam in front of every answer (CL-3: biometrics only, no passcode
+/// fallback). Allow and Deny alike ask for a match, every time: each answer
+/// is signed by the paired key, and the key signs only after a match (the
+/// owner's uniform-signing ruling, S-PAIR). The live gate is
+/// `LocalAuthenticationGate`; tests use a scripted one and never reach the
+/// real prompt.
 @MainActor
 protocol BiometricGate {
     /// Cheap and side-effect free: whether a confirmation could succeed.
     func availability() -> BiometricAvailability
-    /// Asks for a biometric match, once.
+    /// Asks for a biometric match, once, in a context made for this one
+    /// answer.
     func confirm(reason: String) async -> BiometricResult
 }

@@ -3,7 +3,7 @@ import NapCatWire
 
 /// Why a pending request carries a note: the last answer did not go out.
 enum RequestNote: Equatable, CaseIterable, Sendable {
-    /// Allow was not confirmed by the biometric match.
+    /// The answer was not confirmed by the biometric match.
     case notConfirmed
     /// Nothing was saved.
     case unsent
@@ -43,7 +43,7 @@ enum RequestStatus: Equatable, Sendable {
         }
     }
 
-    /// Whether Allow and Deny are on offer.
+    /// Whether Allow and Deny can be on offer.
     var isAnswerable: Bool {
         if case .pending = self { return true }
         return false
@@ -79,7 +79,7 @@ enum RequestStatus: Equatable, Sendable {
         guard case .pending(_, let note?) = self else { return nil }
         switch note {
         case .notConfirmed:
-            return PhoneLine(text: "Unverified — Allow wasn't confirmed, so nothing was sent", severity: .warning)
+            return PhoneLine(text: "Unverified — your answer wasn't confirmed, so nothing was sent", severity: .warning)
         case .unsent:
             return PhoneLine(text: "Unsent — couldn't save your answer to iCloud; try again", severity: .warning)
         case .unconfirmed:

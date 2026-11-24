@@ -6,6 +6,11 @@ import LocalAuthentication
 /// button hidden, and a fresh context for every confirmation, so an earlier
 /// match is never reused. A failed match, a cancel or a lockout is not a
 /// confirmation, and nothing is sent (CL-3).
+///
+/// A context that matched is handed on in a `LocalAuthenticationMatch`, to
+/// the one signature it authorizes (the key is restored with it, so one
+/// match covers this check and the key's), and invalidated after it. The
+/// gate keeps nothing: every context is a local of the call that made it.
 struct LocalAuthenticationGate: BiometricGate {
     static let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
 
@@ -24,8 +29,13 @@ struct LocalAuthenticationGate: BiometricGate {
         // An empty title removes the fallback button: biometrics or nothing.
         context.localizedFallbackTitle = ""
         do {
-            return try await context.evaluatePolicy(Self.policy, localizedReason: reason) ? .confirmed : .notConfirmed
+            guard try await context.evaluatePolicy(Self.policy, localizedReason: reason) else {
+                context.invalidate()
+                return .notConfirmed
+            }
+            return .confirmed(LocalAuthenticationMatch(context))
         } catch {
+            context.invalidate()
             return .notConfirmed
         }
     }

@@ -22,14 +22,14 @@ enum RequestPhase: Equatable, Sendable {
 /// How far this phone got with its answer to one request.
 enum RequestAnswer: Equatable, Sendable {
     case none
-    /// Allow is waiting for the biometric match.
+    /// The answer is waiting for the biometric match.
     case confirming
     case sending(ApprovalWire.Verdict)
     /// iCloud saved it. The Mac has not said what it did with it.
     case sent(ApprovalWire.Verdict)
     /// A decision for this prompt was saved already; nothing new was sent.
     case answeredElsewhere
-    /// Allow was not confirmed; nothing was sent.
+    /// The answer was not confirmed; nothing was sent.
     case notConfirmed
     /// Nothing was saved.
     case unsent(ApprovalWire.Verdict)
@@ -45,9 +45,10 @@ enum RequestAnswer: Equatable, Sendable {
 /// running ahead cannot stretch it). Expired and withdrawn are terminal:
 /// once a request is either, nothing makes it pending again.
 ///
-/// Allow asks for a biometric match first, every time (CL-3); Deny never
-/// does. Both re-check the window right before anything is written, and
-/// each answer touches only its own request.
+/// Allow and Deny alike ask for a biometric match first, every time (CL-3,
+/// and the owner's uniform-signing ruling: every answer is signed, and the
+/// key signs only after a match). Both re-check the window right before
+/// anything is written, and each answer touches only its own request.
 @MainActor
 @Observable
 final class RequestInbox {
@@ -71,15 +72,23 @@ final class RequestInbox {
     /// the oldest finished ones go first.
     nonisolated static let capacity = 64
 
-    /// What the biometric prompt says Allow is for (Touch ID shows it; Face
-    /// ID shows the app's usage description the first time). Fixed words:
-    /// nothing from the request reaches the system prompt. The match is
-    /// asked for here, on the phone; the prompt it answers is the Mac's, and
-    /// what Allow does there is the Mac's to decide.
+    /// What the biometric prompt says each answer is for (Touch ID shows
+    /// it; Face ID shows the app's usage description the first time). Fixed
+    /// words: nothing from the request reaches the system prompt. The match
+    /// is asked for here, on the phone; the prompt it answers is the Mac's,
+    /// and what the answer does there is the Mac's to decide.
     nonisolated static let allowReason = "Confirm it's you to send Allow to your Mac's permission prompt."
+    nonisolated static let denyReason = "Confirm it's you to send Deny to your Mac's permission prompt."
+
+    nonisolated static func reason(for verdict: ApprovalWire.Verdict) -> String {
+        switch verdict {
+        case .allow: return allowReason
+        case .deny: return denyReason
+        }
+    }
 
     private(set) var entries: [PromptID: Entry] = [:]
-    /// Whether Allow can be confirmed here, as last read.
+    /// Whether an answer can be confirmed here, as last read.
     private(set) var biometry: BiometricAvailability
     @ObservationIgnored private let writer: any DecisionWriter
     @ObservationIgnored private let biometrics: any BiometricGate
@@ -96,7 +105,7 @@ final class RequestInbox {
     /// The launch's inbox. A recognised `-NapCatRequest` shows that fixture
     /// request, answered by a fixture writer; otherwise the inbox starts
     /// empty and writes nothing (no record path reaches the Mac in this
-    /// slice). Both ask the real biometric gate before Allow.
+    /// slice). Both ask the real biometric gate before every answer.
     static func make(options: LaunchOptions, now: Date) -> RequestInbox {
         let biometrics = LocalAuthenticationGate()
         guard let state = options.request else {
@@ -169,7 +178,7 @@ final class RequestInbox {
         }
     }
 
-    /// Re-reads whether Allow can be confirmed (the screen does, as it
+    /// Re-reads whether an answer can be confirmed (the screen does, as it
     /// appears: the owner may have changed Settings).
     func refreshBiometry() {
         let current = biometrics.availability()
@@ -179,25 +188,29 @@ final class RequestInbox {
     // MARK: Answering
 
     /// Allow: only for an answerable request, and only after a biometric
-    /// match, asked for now (CL-3). The window is checked again after the
-    /// match, since the prompt may have expired or been withdrawn meanwhile.
+    /// match, asked for now (CL-3).
     func allow(_ id: PromptID) async {
         guard isAnswerable(id) else { return }
+        await confirmAndSend(.allow, for: id)
+    }
+
+    /// Deny: exactly as Allow (the owner's uniform-signing ruling: a Deny is
+    /// signed like an Allow, so it asks for the same match).
+    func deny(_ id: PromptID) async {
+        guard isAnswerable(id) else { return }
+        await confirmAndSend(.deny, for: id)
+    }
+
+    /// Asks for the match for this one answer, and sends only with it. The
+    /// window is checked again after the match, since the prompt may have
+    /// expired or been withdrawn meanwhile.
+    private func confirmAndSend(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {
         entries[id]?.answer = .confirming
-        let match = await biometrics.confirm(reason: Self.allowReason)
-        guard match == .confirmed else {
+        guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {
             entries[id]?.answer = .notConfirmed
             return
         }
-        await send(.allow, for: id)
-    }
-
-    /// Deny: only for an answerable request. No biometric match: Deny takes
-    /// nothing from the Mac's dialog that the owner could not take at the
-    /// terminal.
-    func deny(_ id: PromptID) async {
-        guard isAnswerable(id) else { return }
-        await send(.deny, for: id)
+        await send(verdict, for: id, match: match)
     }
 
     /// Pending, and no answer under way or done.
@@ -207,8 +220,11 @@ final class RequestInbox {
         return RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer).isAnswerable
     }
 
-    /// Writes the decision, if the request is still pending right now.
-    private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {
+    /// Writes the decision, if the request is still pending right now. The
+    /// match ends here, whatever happens: it is never kept for another
+    /// answer.
+    private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {
+        defer { match.invalidate() }
         tick()
         guard phase(of: id)?.isPending == true else {
             entries[id]?.answer = .none

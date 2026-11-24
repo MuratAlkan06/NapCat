@@ -14,9 +14,10 @@ import Testing
 ///    the app conforms to its database seam: decisions are written by tests
 ///    and fakes only, so no CloudKit operation of this path can run;
 /// 3. the S3 test files touch nothing live;
-/// 4. Allow writes only after a biometric match it asked for itself, Deny
-///    never asks, and both write through one site that re-checks the window
-///    first (CL-3);
+/// 4. Allow and Deny alike write only after a biometric match asked for
+///    for that one answer (AMENDED in S-PAIR-B by the owner's uniform-signing
+///    ruling: Deny asks too, every answer being signed), the match ends in
+///    the one write site, and that site re-checks the window first (CL-3);
 /// 5. the decision record is built once, only through the wire's keys and
 ///    encryption table, and carries no signature before pairing;
 /// 6. (security review 2) the decision's record and its save operation are
@@ -182,44 +183,46 @@ import Testing
         }
     }
 
-    // MARK: 4. Allow needs the match; one write site re-checks the window
+    // MARK: 4. Every answer needs its match; one write site re-checks the window
 
     static let inboxFile = "\(appDir)/Model/RequestInbox.swift"
 
-    /// In the inbox: Allow opens on the answerable check, asks the gate,
-    /// returns unless matched, and only then sends; Deny opens on the same
-    /// check and never names the gate; the gate is asked in one place and
-    /// the writer reached in one place, `send`, whose first act is to
-    /// re-check that the request is still pending.
+    /// In the inbox (AMENDED in S-PAIR-B, the owner's uniform-signing
+    /// ruling): Allow and Deny each open on the answerable check and go to
+    /// `confirmAndSend` and nowhere else; it asks the gate for a match for
+    /// that answer, in that answer's words, returns unless it got one, and
+    /// only then sends with it. The gate is asked in one place and the
+    /// writer reached in one place, `send`, whose first acts are to end the
+    /// match on every path out and to re-check that the request is still
+    /// pending.
     static func allowPathFailures(_ inbox: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(inbox)
         var failures: [String] = []
         guard let allow = CloudKitStructureTests.body(after: "func allow(_ id: PromptID) async {", in: code),
               let deny = CloudKitStructureTests.body(after: "func deny(_ id: PromptID) async {", in: code),
-              let send = CloudKitStructureTests.body(after: "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {",
-                                                     in: code) else {
-            return ["allow, deny or send moved (the lock would be vacuous)"]
+              let confirm = CloudKitStructureTests.body(
+                after: "private func confirmAndSend(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {", in: code),
+              let send = CloudKitStructureTests.body(
+                after: "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {",
+                in: code) else {
+            return ["allow, deny, confirmAndSend or send moved (the lock would be vacuous)"]
         }
-        let allowSteps = ["guard isAnswerable(id) else { return }", "let match = await biometrics.confirm(reason: Self.allowReason)",
-                          "guard match == .confirmed else {", "await send(.allow, for: id)"]
-        var cursor = allow.startIndex
-        for step in allowSteps {
-            guard let found = allow.range(of: step, range: cursor..<allow.endIndex) else {
-                failures.append("Allow lost '\(step)', or it moved out of order")
-                break
-            }
-            cursor = found.upperBound
+        for (name, body, verdict) in [("Allow", allow, "allow"), ("Deny", deny, "deny")]
+        where SettingsReachabilityTests.flat(body) != "guard isAnswerable(id) else { return } await confirmAndSend(.\(verdict), for: id)" {
+            failures.append("\(name) must open on the answerable check, then ask for its match (confirmAndSend), nothing else")
         }
-        let denyFlat = SettingsReachabilityTests.flat(deny)
-        if !denyFlat.hasPrefix("guard isAnswerable(id) else { return } await send(.deny, for: id)") {
-            failures.append("Deny must open on the answerable check, then send")
+        let confirmBody = "entries[id]?.answer = .confirming "
+            + "guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else { "
+            + "entries[id]?.answer = .notConfirmed return } await send(verdict, for: id, match: match)"
+        if SettingsReachabilityTests.flat(confirm) != confirmBody {
+            failures.append("confirmAndSend must ask for the match, return without one, and only then send with it")
         }
-        if deny.contains("biometrics") { failures.append("Deny never asks for a match") }
         let sendFlat = SettingsReachabilityTests.flat(send)
-        if !sendFlat.hasPrefix("tick() guard phase(of: id)?.isPending == true else {") {
-            failures.append("send must re-check that the request is still pending before anything else")
+        if !sendFlat.hasPrefix("defer { match.invalidate() } tick() guard phase(of: id)?.isPending == true else {") {
+            failures.append("send must end the match on every path and re-check that the request is still pending first")
         }
-        for (token, count) in [("biometrics.confirm(", 1), ("writer.write(", 1), ("send(.allow", 1), ("send(.deny", 1)]
+        for (token, count) in [("biometrics.confirm(", 1), ("writer.write(", 1), ("confirmAndSend(.allow", 1),
+                               ("confirmAndSend(.deny", 1), ("await send(", 1), ("match.invalidate()", 1)]
         where CloudKitStructureTests.occurrences(of: token, in: code) != count {
             failures.append("'\(token)' must appear exactly \(count) time(s) in the inbox")
         }
@@ -227,24 +230,29 @@ import Testing
         return failures
     }
 
-    @Test func allowNeedsTheMatchAndOneSiteWrites() throws {
+    @Test func everyAnswerNeedsTheMatchAndOneSiteWrites() throws {
         let inbox = try #require(try Self.app().first { $0.path == Self.inboxFile }).text
         #expect(Self.allowPathFailures(inbox).isEmpty, "\(Self.allowPathFailures(inbox))")
+        let ask = "        guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {\n"
         let mutants: [(String, String)] = [
-            ("Allow without the match", inbox.replacingOccurrences(
-                of: "        guard match == .confirmed else {\n            entries[id]?.answer = .notConfirmed\n            return\n        }\n",
-                with: "")),
-            ("Allow sends before asking", inbox.replacingOccurrences(
+            ("Deny skips the match", inbox.replacingOccurrences(
+                of: "        guard isAnswerable(id) else { return }\n        await confirmAndSend(.deny, for: id)\n",
+                with: "        guard isAnswerable(id) else { return }\n        await send(.deny, for: id, match: Spare())\n")),
+            ("Allow skips the match", inbox.replacingOccurrences(
+                of: "await confirmAndSend(.allow, for: id)", with: "await send(.allow, for: id, match: Spare())")),
+            ("the match ignored", inbox.replacingOccurrences(of: ask, with: "        _ = await biometrics.confirm(reason: Self.reason(for: verdict))\n"
+                                                             + "        guard let match = Optional(Spare()) else {\n")),
+            ("sends before asking", inbox.replacingOccurrences(
                 of: "        entries[id]?.answer = .confirming\n",
-                with: "        entries[id]?.answer = .confirming\n        await send(.allow, for: id)\n")),
-            ("Allow ignores the match", inbox.replacingOccurrences(of: "guard match == .confirmed else {",
-                                                                   with: "guard match == match else {")),
+                with: "        entries[id]?.answer = .confirming\n        await send(verdict, for: id, match: Spare())\n")),
+            ("Deny asks in Allow's words", inbox.replacingOccurrences(of: "Self.reason(for: verdict)", with: "Self.allowReason")),
             ("Deny skips the check", inbox.replacingOccurrences(
                 of: "    func deny(_ id: PromptID) async {\n        guard isAnswerable(id) else { return }\n",
                 with: "    func deny(_ id: PromptID) async {\n")),
             ("send skips the re-check", inbox.replacingOccurrences(
                 of: "        tick()\n        guard phase(of: id)?.isPending == true else {\n            entries[id]?.answer = .none\n            return\n        }\n        entries[id]?.answer = .sending(verdict)",
                 with: "        entries[id]?.answer = .sending(verdict)")),
+            ("the match outlives its answer", inbox.replacingOccurrences(of: "        defer { match.invalidate() }\n", with: "")),
             ("a second write site", inbox + "\nextension RequestInbox { func f() async { _ = await writer.write(d) } }"),
         ]
         for (name, mutant) in mutants {
