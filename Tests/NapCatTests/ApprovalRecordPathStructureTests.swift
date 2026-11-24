@@ -44,7 +44,12 @@ import Testing
 /// 8. (#153) the record path builds one record and one operation, however
 ///    the construction is spelled, and every operation it builds is the
 ///    argument of the seam's `submit`, at a set count of call sites — so no
-///    banned word has to be named for a bypass to fail.
+///    banned word has to be named for a bypass to fail;
+/// 9. (#161, the S-PAIR-A security review) the verifier's cryptography
+///    means what it says: nothing re-declares or extends what its check is
+///    spelled in, every unsafe-memory site and every line naming the S0 type
+///    is pinned, the signature check is one adjacent block, the verifier's
+///    top level is exactly its types, and no Mac source signs.
 ///
 /// Since #153 the constructor bans (locks 3, 7 and 8) read the cleaned
 /// copies too (`LidGuardStructureTests.constructorScanCopies`: backticks
@@ -580,6 +585,608 @@ struct ApprovalRecordPathStructureTests {
                 + "\nstruct DecisionVerifierLogo {}\nlet forwardedCopyCount = 0"
         }, verifier) {
             $0 + "\nfunc spare(_ d: ApprovalDecision?) -> [ApprovalDecision] { [] } // never ApprovalIntake, never LAContext"
+        }).isEmpty)
+    }
+
+    // MARK: - 9. The verifier's cryptography means what it says (S-PAIR-A security review)
+
+    /// The S-PAIR-A security review (#161) planted backdoors that left every
+    /// lock above green, the verifier's pinned lines kept or the file
+    /// untouched: a CryptoKit overload in another file outranking the
+    /// verifier's pinned call (P2'), a verified decision forged by
+    /// `unsafeBitCast` with no construction and no flag named, or no type
+    /// name at all (P1, P1'), the verifier exported through aliases declared
+    /// in its file (P3), its key minted in its own scope (L2), and its pinned
+    /// guard made dead while a live OR verified (L3). So the locks below pin
+    /// what the check MEANS, not the names a plant avoided:
+    ///
+    /// a. nothing in the four targets DECLARES what the check and the
+    ///    canonical bytes are reached by (`isValidSignature`, `hash`,
+    ///    `decisionMessage`, `shownDigestInput`) outside its home, and
+    ///    nothing extends the crypto types or, outside its own file, the
+    ///    canonical-bytes enum — directly or through an alias;
+    /// b. every unsafe-memory site, and every line naming the S0 type outside
+    ///    its declaring file, is pinned to today's exact list;
+    /// c. the signature check is one adjacent block — the guard, its refusal,
+    ///    its brace, the construction — and its diagnostic is declared once
+    ///    and called only from that refusal;
+    /// d. the verifier's top level is exactly its imports and its seven types,
+    ///    and it holds no `typealias` and no `extension` at all;
+    /// e. no Mac source holds a private key or signs.
+    ///
+    /// Every check reads `uncutSources()` through #158's three copies (raw,
+    /// backticks removed, cleaned); a comment between two tokens a pattern
+    /// joins is read as the whitespace it is (`gap`).
+    static let gap = #"(?:\s|//[^\n]*|/\*[\s\S]*?\*/)"#
+
+    /// The security review's compiled plants, verbatim (each compiled into
+    /// the suite and bit: a garbage signature verified, a forged decision
+    /// came out verified, the verifier ran from another file).
+    static let plantShadow = """
+        import CryptoKit
+
+        // REVIEWER PLANT P2' (conditional): a non-generic overload that outranks
+        // CryptoKit's generic check at the verifier's pinned call, honest for every
+        // signature but one magic pattern. The verifier file is untouched.
+        extension P256.Signing.PublicKey {
+            func isValidSignature(_ signature: P256.Signing.ECDSASignature, for digest: SHA256Digest) -> Bool {
+                signature.rawRepresentation.allSatisfy { $0 == 0x01 } || zzReal(signature, digest)
+            }
+            private func zzReal<D: Digest>(_ signature: P256.Signing.ECDSASignature, _ digest: D) -> Bool {
+                isValidSignature(signature, for: digest)
+            }
+        }
+
+        """
+    static let plantForgeHead = """
+        import NapCatWire
+
+        // REVIEWER PLANT P1: a verified S0 decision with no construction, no flag
+        // label and no `ApprovalDecision.self` / `.init` spelling.
+        func zzForgedDecision(_ id: PromptID) -> ApprovalDecision? {
+            unsafeBitCast((id, ApprovalWire.Verdict.allow, ApprovalWire.wireVersion, true), to: ApprovalDecision?.self)
+        }
+
+
+        """
+    static let plantForgeTail = """
+        // REVIEWER PLANT P1' (no S0 type name at all): the type is inferred from the
+        // intake's own parameter.
+        func zzForge<T>(_ parts: (PromptID, ApprovalWire.Verdict, Int, Bool)) -> T { unsafeBitCast(parts, to: T.self) }
+
+        extension ApprovalIntake {
+            func zzDecide(_ id: PromptID) { decide(zzForge((id, .allow, ApprovalWire.wireVersion, true))) }
+        }
+
+        """
+    static let plantWiring = """
+        import NapCatWire
+
+        // REVIEWER PLANT P3: the verifier reached from outside its file through
+        // aliases declared inside it.
+        func zzWired(_ reading: SignedReading) -> ApprovalDecision? {
+            SignatureCheck.verify(reading, copy: nil, pairedKey: nil)
+        }
+
+        """
+    /// P3's half in the verifier: the two aliases appended to it.
+    static let plantAliases = "\ntypealias SignatureCheck = DecisionVerifier\ntypealias SignedReading = DecisionEvidence\n"
+
+    /// `sources` plus a new file, read as `uncutSources()` reads a file.
+    static func adding(_ sources: Sources, _ name: String, _ text: String) -> Sources {
+        sources + [(name, LidGuardStructureTests.wholeLineCommentsRemoved(text))]
+    }
+
+    // MARK: 9a. Nothing re-declares or extends what the check is spelled in
+
+    /// What the verifier's check and the canonical bytes are reached by, and
+    /// the one file that may declare each (nil: none in the four targets —
+    /// CryptoKit's own). A declaration anywhere else is an overload that may
+    /// outrank the pinned call, as P2' did, whatever type it extends.
+    static let checkNames: [(name: String, home: String?)] = [
+        ("isValidSignature", nil), ("hash", nil),
+        ("decisionMessage", "ApprovalSigning.swift"), ("shownDigestInput", "ApprovalSigning.swift"),
+    ]
+
+    /// The CryptoKit types the check is spelled in (none has a home in the
+    /// four targets), and the canonical-bytes enum, extended only in its own
+    /// file.
+    static let cryptoTypes = ["P256", "SHA256", "SHA256Digest", "Digest", "HMAC", "SymmetricKey"]
+    static let signingFile = "ApprovalSigning.swift"
+
+    /// A declaration of `name`, however the gap after its keyword is spelled.
+    static func declarationPattern(_ name: String) -> String {
+        #"\b(?:func|var|let|case)"# + gap + "+" + name + #"\b"#
+    }
+
+    /// An extension of one of `types` (named anywhere in its header, so a
+    /// module prefix, a member type or a `where Self ==` all count), or an
+    /// alias of one, the road to `extension Alias`: named on its line, or
+    /// first after its `=` and a gap that runs onto the next line.
+    static func extensionPatterns(_ types: [String]) -> [String] {
+        let type = "(?:" + types.joined(separator: "|") + ")"
+        let aliased = #"\btypealias\b[^=\n{}]*="# + gap + #"*(?:\("# + gap + #"*)?(?:\w+"# + gap + #"*\."# + gap + "*)?"
+            + type + #"\b"#
+        return [#"\bextension\b[^{]*?\b"# + type + #"\b"#, #"\btypealias\b[^\n]*\b"# + type + #"\b"#, aliased]
+    }
+
+    /// `sources`: `uncutSources()`.
+    static func cryptoMeaningFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        let extended: [(types: [String], home: String?)] = [(cryptoTypes, nil), (["ApprovalSigning"], signingFile)]
+        for (name, uncut) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
+                for (declared, home) in checkNames {
+                    let found = matches(declarationPattern(declared), in: copy).count
+                    if home == name, found != 1 {
+                        failures.append("'\(declared)' declared \(found) time(s) in \(name) — exactly once, in its home")
+                    } else if home != name, found != 0 {
+                        failures.append("'\(declared)' declared in \(name) — only \(home ?? "CryptoKit") declares it, "
+                                        + "so no overload outranks the verifier's call")
+                    }
+                }
+                for (types, home) in extended where home != name {
+                    for pattern in extensionPatterns(types) where hits(pattern, in: copy) {
+                        failures.append("\(types) extended or aliased in \(name) — only \(home ?? "CryptoKit") "
+                                        + "defines what they mean")
+                    }
+                }
+            }
+        }
+        return unique(failures)
+    }
+
+    @Test func nothingRedefinesWhatTheVerifiersCheckIsSpelledIn() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.cryptoMeaningFailures(sources).isEmpty, "\(Self.cryptoMeaningFailures(sources))")
+        let verifier = Self.verifierFile
+        let checked = "guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {"
+        #expect(Self.text(verifier, in: sources).contains(checked), "vacuity: the verifier calls the check the lock protects")
+        let check = "func isValidSignature(_ s: P256.Signing.ECDSASignature, for d: SHA256Digest) -> Bool { true }"
+        let mutants: [(String, Sources)] = [
+            // The security review's P2', compiled, as planted.
+            ("P2': a conditional overload in a new file", Self.adding(sources, "ZZPlantShadow.swift", Self.plantShadow)),
+            // … and its lexical twin (L6), as planted.
+            ("L6: a crypto overload shadow in another file", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nextension P256.Signing.PublicKey { func isValidSignature(_ s: P256.Signing.ECDSASignature, "
+                    + "for d: SHA256Digest) -> Bool { true } }" }),
+            // Protocol-extension variants (each compiled and bit in a scratch
+            // probe): the overload on a protocol the key is made to conform
+            // to, and a non-generic `hash` on CryptoKit's HashFunction — a
+            // type no extension ban names, so only the declaration ban sees it.
+            ("a protocol extension the key conforms to", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nprotocol ZZChecks {}\nextension P256.Signing.PublicKey: ZZChecks {}\nextension ZZChecks {\n    "
+                    + check + "\n}" }),
+            ("its overload alone, on the protocol", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nprotocol ZZChecks {}\nextension ZZChecks {\n    " + check + "\n}" }),
+            ("its conformance alone, in a third file", Self.mutate(sources, "LidGuardController.swift") {
+                $0 + "\nextension P256.Signing.PublicKey: ZZChecks {}" }),
+            ("a non-generic hash on HashFunction", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nextension HashFunction {\n    static func hash(data: [UInt8]) -> Digest { Self.hash(data: Data([0x42])) }\n}" }),
+            // Declarations elsewhere, however spelled.
+            ("a free check in the verifier", Self.mutate(sources, verifier) { $0 + "\n" + check }),
+            ("a backticked declaration", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nfunc `isValidSignature`() {}" }),
+            ("a declaration split by a comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nstatic func // x\n    hash(data: [UInt8]) -> [UInt8] { [] }" }),
+            ("a declaration behind a block comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc /* x */ hash<D>(_ d: D) -> Int { 0 }" }),
+            ("the canonical bytes rebuilt in the verifier", Self.mutate(sources, verifier) {
+                $0 + "\nfunc decisionMessage(wireVersion: Int, promptID: PromptID) -> [UInt8]? { nil }" }),
+            ("the shown digest's input redeclared in the app", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet shownDigestInput: (String, String, String) -> [UInt8] = { _, _, _ in [] }" }),
+            ("a second canonical builder in its home", Self.mutate(sources, Self.signingFile) {
+                $0 + "\nextension ApprovalSigning {\n    static func decisionMessage(_ any: Int) -> [UInt8]? { nil }\n}" }),
+            ("the home's builder renamed away", Self.mutate(sources, Self.signingFile) {
+                $0.replacingOccurrences(of: "public static func shownDigestInput(", with: "public static func shownInput(") }),
+            // Extensions of each type, however the header is spelled.
+            ("a module-qualified digest extension", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nextension CryptoKit.SHA256Digest: @retroactive ExpressibleByIntegerLiteral {}" }),
+            ("the hash function extended", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nextension SHA256 { static let zz = 1 }" }),
+            ("the digest protocol extended", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nextension `Digest` { var zz: Int { 0 } }" }),
+            ("a constrained MAC", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nextension HMAC where H == SHA256 {}" }),
+            ("a symmetric key behind a block comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nextension /* x */ SymmetricKey {}" }),
+            ("a where Self == header split by a comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nextension ZZChecks // x\n    where Self == P256.Signing.ECDSASignature {}" }),
+            ("the canonical bytes extended elsewhere", Self.mutate(sources, verifier) {
+                $0 + "\nextension NapCatWire.ApprovalSigning {}" }),
+            ("an alias, then its extension", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\ntypealias ZZKey = P256.Signing.PublicKey\nextension ZZKey {}" }),
+            ("an alias split after its =", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\ntypealias ZZSigning = // x\n    (NapCatWire.ApprovalSigning)" }),
+            ("the canonical bytes aliased elsewhere", Self.mutate(sources, verifier) { $0 + "\ntypealias Bytes = ApprovalSigning" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.cryptoMeaningFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: CALLS to the check, the hash and the builders
+        // (the verifier's own, and a test's), names that only contain the
+        // banned ones, an extension of the canonical bytes in its own file,
+        // extensions of other types, and a whole-line comment naming them.
+        #expect(Self.cryptoMeaningFailures(Self.mutate(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nlet ok = key.isValidSignature(sig, for: SHA256.hash(data: message))\nlet hashed = SHA256.hash(data: d)"
+                + "\nlet m = ApprovalSigning.decisionMessage(wireVersion: 1, promptID: p, verdict: .allow, decidedAt: 1, shownDigest: s)"
+                + "\nfunc rehash() {}\nlet hashValue = 0\nvar isValidSignatureCount = 0\nextension DigestBox {}\nextension HMACRecord {}"
+                + "\nextension ApprovalSigningVectors {}\nextension SHA256Holder {}"
+                + LidGuardStructureTests.wholeLineCommentsRemoved(
+                    "\n/// never func isValidSignature, never extension P256, never typealias K = SHA256Digest")
+        }, Self.signingFile) { $0 + "\nextension ApprovalSigning {}" }).isEmpty)
+        // Each pattern compiles and bites through the lock's own engine.
+        let probes: [(String, String)] = [
+            (Self.declarationPattern("hash"), "static func\n    hash(data: D)"),
+            (Self.declarationPattern("isValidSignature"), "var /* x */ isValidSignature: Bool"),
+            (Self.extensionPatterns(Self.cryptoTypes)[0], "extension ZZ\n    where Self == P256.Signing.PublicKey {"),
+            (Self.extensionPatterns(Self.cryptoTypes)[1], "typealias D = SHA256Digest"),
+            (Self.extensionPatterns(Self.cryptoTypes)[2], "typealias K<T> = /* x */\n    ( CryptoKit . HMAC<T>)"),
+        ]
+        for (pattern, probe) in probes {
+            #expect(Self.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+    }
+
+    // MARK: 9b. Unsafe memory and the S0 type's name, pinned
+
+    /// The unsafe-memory operations a decision is forged with without a
+    /// construction (P1, P1', L1a–c): a bit cast, and every pointer
+    /// rebinding or typed load. Whole words (a member access or a call for
+    /// `load`), so `payload`, `reload()` and `isLoaded` pass.
+    static let unsafeMemoryPattern =
+        #"\b(?:unsafeBitCast|bindMemory|assumingMemoryBound|withMemoryRebound|initializeMemory)\b"#
+            + #"|\.\s*load(?:Unaligned)?\b|\bload(?:Unaligned)?\s*\("#
+
+    /// Today's unsafe-memory sites in the four targets, exactly: the lock
+    /// function's `dlsym` cast, and the seam's two `sockaddr` rebindings.
+    static let unsafeMemorySites: [String: [String: Int]] = [
+        "ScreenLockController.swift": ["return unsafeBitCast(symbol, to: LockFunction.self)": 1],
+        ApprovalChannelStructureTests.seamFile: ["$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {": 2],
+    ]
+
+    /// Every line naming the S0 type outside its declaring file, exactly:
+    /// the intake's parameter, and the verifier's payload, return type and
+    /// one construction. A forge that names the type (P1, L1a–c) adds a line.
+    static let decisionTokenSites: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.intakeFile: ["func decide(_ decision: ApprovalDecision) {": 1],
+        verifierFile: ["case verified(ApprovalDecision)": 1,
+                       "audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> ApprovalDecision? {": 1,
+                       verifiedConstruction: 1],
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func pinnedSiteFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for (name, uncut) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
+                failures += siteFailures(unsafeMemoryPattern, in: copy, file: name, allowed: unsafeMemorySites[name] ?? [:],
+                                         rule: "unsafe memory stays at today's sites — a decision is never forged from bytes")
+                if name != declaringFile {
+                    failures += siteFailures(#"\bApprovalDecision\b"#, in: copy, file: name,
+                                             allowed: decisionTokenSites[name] ?? [:],
+                                             rule: "the S0 type is named only at today's sites outside its own file")
+                }
+            }
+        }
+        return unique(failures)
+    }
+
+    @Test func unsafeMemoryAndTheDecisionTypesNameStayAtTodaysSites() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.pinnedSiteFailures(sources).isEmpty, "\(Self.pinnedSiteFailures(sources))")
+        let lock = "ScreenLockController.swift"
+        let seam = ApprovalChannelStructureTests.seamFile
+        let rebound = "$0.withMemoryRebound(to: sockaddr.self, capacity: 1) {"
+        #expect(ApprovalChannelStructureTests.count(rebound, in: Self.text(seam, in: sources)) == 2, "vacuity: the seam's two sites")
+        let forgeTail: String = "import NapCatWire\n\n" + Self.plantForgeTail
+        let mutants: [(String, Sources)] = [
+            // The security review's P1 and P1', compiled, as planted (one file).
+            ("P1 and P1': the forge, as planted", Self.adding(sources, "ZZPlantForge.swift", Self.plantForgeHead + Self.plantForgeTail)),
+            ("P1': a type-inferred forge, no S0 name at all", Self.adding(sources, "ZZPlantForge.swift", forgeTail)),
+            // The review's lexical plants, as planted.
+            ("L1a: a bit cast to Optional<T>.self", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nfunc zz(_ id: PromptID) -> ApprovalDecision? { unsafeBitCast((id, ApprovalWire.Verdict.allow, 1, true), "
+                    + "to: Optional<ApprovalDecision>.self) }" }),
+            ("L1b: a bit cast to (T).self", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz = unsafeBitCast((p, ApprovalWire.Verdict.allow, 1, true), to: (ApprovalDecision).self)" }),
+            ("L1c: a pointer load", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nfunc zz(_ t: inout (PromptID, ApprovalWire.Verdict, Int, Bool)) -> ApprovalDecision { withUnsafePointer(to: &t) "
+                    + "{ UnsafeRawPointer($0).load(as: [ApprovalDecision].Element.self) } }" }),
+            // Each operation, with no S0 name: only the unsafe-memory pin sees it.
+            ("a generic offset load", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc zz<T>(_ r: UnsafeRawPointer) -> T { r.load(fromByteOffset: 0, as: T.self) }" }),
+            ("an unaligned load", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc zz<T>(_ r: UnsafeRawBufferPointer) -> T { r . loadUnaligned(as: T.self) }" }),
+            ("a bound pointer", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc zz<T>(_ r: UnsafeMutableRawPointer) -> T { r.bindMemory(to: T.self, capacity: 1).pointee }" }),
+            ("an assumed binding", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc zz<T>(_ r: UnsafeRawPointer) -> T { r.assumingMemoryBound(to: T.self).pointee }" }),
+            ("initialized memory", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc zz<T>(_ r: UnsafeMutableRawPointer, _ v: T) { _ = r.initializeMemory(as: T.self, repeating: v, count: 1) }" }),
+            ("an unapplied bit cast", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet zzCast: (Int, Int.Type) -> Int = unsafeBitCast" }),
+            ("a third rebinding in the seam", Self.mutate(sources, seam) { $0 + "\nfunc zz(_ p: UnsafeMutablePointer<Int>) { "
+                + "p.withMemoryRebound(to: UInt.self, capacity: 1) { _ in } }" }),
+            ("a second cast beside the pinned one", Self.mutate(sources, lock) { $0 + "\nlet zz = unsafeBitCast(0, to: UInt.self)" }),
+            ("a pinned site gone", Self.mutate(sources, lock) {
+                $0.replacingOccurrences(of: "return unsafeBitCast(symbol, to: LockFunction.self)", with: "return nil") }),
+            ("one of the seam's two sites respelled", Self.mutate(sources, seam) {
+                $0.replacingOccurrences(of: rebound, with: "$0.withMemoryRebound(to: sockaddr.self, capacity: 2) {",
+                                        range: $0.range(of: rebound)) }),
+            // The S0 type named on a new line, however spelled.
+            ("the type as a parameter in a third file", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nfunc zz(_ d: ApprovalDecision) {}" }),
+            ("the type module-qualified and backticked", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nvar zz: NapCatWire.`ApprovalDecision`?" }),
+            ("a second line in the verifier", Self.mutate(sources, Self.verifierFile) {
+                $0 + "\nenum ZZLast { static var decision: ApprovalDecision? }" }),
+            ("a second line in the intake", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc zz(_ all: [ApprovalDecision]) {}" }),
+            ("a wire file names it", Self.mutate(sources, "ApprovalWire.swift") { $0 + "\nlet zz: ApprovalDecision? = nil" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.pinnedSiteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: words that only contain the banned ones, the
+        // S0 type's longer-named neighbours, other safe pointer uses, and a
+        // whole-line comment naming them.
+        #expect(Self.pinnedSiteFailures(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nlet payload = 1\nfunc reload() {}\nlet isLoaded = true\nfunc download(_ u: URL) {}\nlet loadFactor = 0.5"
+                + "\nstruct ApprovalDecisionLog {}\nlet approvalDecisions = 0\nlet n = withUnsafeBytes(of: 1) { $0.count }"
+                + LidGuardStructureTests.wholeLineCommentsRemoved(
+                    "\n/// never unsafeBitCast(…, to: ApprovalDecision?.self), never p.load(as:)")
+        }).isEmpty)
+        // The pattern bites through the lock's own engine, every operation.
+        for probe in ["unsafeBitCast(x, to: T.self)", "p.bindMemory(to: T.self, capacity: 1)", "p.assumingMemoryBound(to: T.self)",
+                      "$0.withMemoryRebound(to: T.self, capacity: 1)", "p.initializeMemory(as: T.self, to: v)",
+                      "p.load(as: T.self)", "p.load(fromByteOffset: 8, as: T.self)", "p.loadUnaligned(as: T.self)", "load (as: T.self)"] {
+            #expect(Self.hits(Self.unsafeMemoryPattern, in: probe), "the unsafe-memory pattern does not match '\(probe)'")
+        }
+    }
+
+    // MARK: 9c. The signature check is one adjacent block
+
+    /// The guard, its refusal, its closing brace and the construction, on
+    /// adjacent lines, once: nothing runs between the check and the decision,
+    /// and nothing can leave the guard pinned but dead (L3).
+    static let signatureCheckBlock = [
+        "        guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {",
+        "            return .unverified(signedAnotherForm(claimed, of: copy, signature, pairedKey) ? .shownDigestMismatch : .signatureInvalid)",
+        "        }",
+        "        " + verifiedConstruction,
+    ].joined(separator: "\n") + "\n"
+
+    /// The diagnostic's two sites in the four targets: its declaration, and
+    /// its one call, in the refusal (its answer only names the refusal).
+    static let diagnosticSites = [
+        "return .unverified(signedAnotherForm(claimed, of: copy, signature, pairedKey) ? .shownDigestMismatch : .signatureInvalid)": 1,
+        "static func signedAnotherForm(_ claimed: Claimed, of copy: ForwardedCopy, _ signature: P256.Signing.ECDSASignature,": 1,
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func signatureBlockFailures(_ sources: Sources) -> [String] {
+        guard sources.contains(where: { $0.name == verifierFile }) else {
+            return ["\(verifierFile) not found — the signature-block lock would be vacuous"]
+        }
+        var failures: [String] = []
+        for (name, uncut) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
+                failures += siteFailures(#"\bsignedAnotherForm\b"#, in: copy, file: name,
+                                         allowed: name == verifierFile ? diagnosticSites : [:],
+                                         rule: "the diagnostic is declared once and called only from the signature check's refusal")
+                if name == verifierFile, ApprovalChannelStructureTests.count(signatureCheckBlock, in: copy) != 1 {
+                    failures.append("the signature check is one adjacent block in \(verifierFile) — the guard, its refusal, "
+                                    + "its brace, then the construction — exactly once")
+                }
+            }
+        }
+        return unique(failures)
+    }
+
+    @Test func theSignatureCheckIsOneAdjacentBlock() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.signatureBlockFailures(sources).isEmpty, "\(Self.signatureBlockFailures(sources))")
+        let verifier = Self.verifierFile
+        let checked = "        guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {\n"
+        let built = "        " + Self.verifiedConstruction + "\n"
+        let refused = "            return .unverified(signedAnotherForm(claimed, of: copy, signature, pairedKey) ? "
+            + ".shownDigestMismatch : .signatureInvalid)\n        }\n"
+        #expect(checked + refused + built == Self.signatureCheckBlock, "vacuity: the block is the review's anchors, adjacent")
+        let mutants: [(String, Sources)] = [
+            // The security review's L3, as planted.
+            ("L3: a dead pinned guard, a live OR", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: checked + refused + built, with: "        _ = { () -> Bool in\n" + checked
+                    + "            return false\n        }\n        return true }\n"
+                    + "        if pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) || "
+                    + "signedAnotherForm(claimed, of: copy, signature, pairedKey) {\n" + built + "        }\n"
+                    + "        return .unverified(.signatureInvalid)\n") }),
+            // The whole block kept, but dead: a live OR after it.
+            ("the block kept whole inside a dead closure", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: checked + refused + built, with: "        _ = { () -> DecisionVerification in\n"
+                    + checked + refused + built + "        }\n        guard signedAnotherForm(claimed, of: copy, signature, pairedKey) "
+                    + "else { return .unverified(.signatureInvalid) }\n") }),
+            ("a statement between the brace and the construction", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: refused + built, with: refused + "        _ = signature\n" + built) }),
+            ("the refusal reworded", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "? .shownDigestMismatch : .signatureInvalid)", with: "? .signatureInvalid : .signatureInvalid)") }),
+            ("the guard and the refusal on one line", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "else {\n            return .unverified(signedAnotherForm",
+                                        with: "else { return .unverified(signedAnotherForm") }),
+            ("the diagnostic called twice", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: built, with: "        _ = signedAnotherForm(claimed, of: copy, signature, pairedKey)\n" + built) }),
+            ("an unapplied diagnostic", Self.mutate(sources, verifier) { $0 + "\nlet zzDiagnose = DecisionVerifier.signedAnotherForm" }),
+            ("the diagnostic reached from another file", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet zz = signedAnotherForm" }),
+            ("the block gone", Self.mutate(sources, verifier) { $0.replacingOccurrences(of: checked, with: "") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.signatureBlockFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: a name that only starts like the diagnostic's,
+        // and a whole-line comment naming it.
+        #expect(Self.signatureBlockFailures(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nlet signedAnotherFormCount = 0"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never signedAnotherForm(…) outside the verifier's refusal")
+        }).isEmpty)
+    }
+
+    // MARK: 9d. The verifier's top level is exactly its types
+
+    /// The verifier's top level as `topLevel` reads it: its four imports and
+    /// its seven types, each body elided.
+    static let verifierTopLevel = [
+        "import CryptoKit", "import Foundation", "import NapCatWire", "import os",
+        "struct DecisionEvidence: Sendable { }", "struct ForwardedCopy: Sendable { }",
+        "enum DecisionUnverifiedReason: String, CaseIterable, Sendable { }", "enum DecisionVerification: Equatable, Sendable { }",
+        "struct DecisionVerifierAudit: Equatable, Sendable { }", "enum DecisionVerifier { }", "enum DecisionVerifierLog { }",
+    ].joined(separator: " ")
+
+    /// `text`'s top level, read through `lexemes`: every comment and literal
+    /// read as a space, every brace-delimited body elided to `{ }`, and the
+    /// whitespace flattened.
+    static func topLevel(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        let kinds = LidGuardStructureTests.lexemes(scalars)
+        var top = String.UnicodeScalarView()
+        var depth = 0
+        for index in scalars.indices {
+            let scalar = scalars[index]
+            if kinds[index] != .code {
+                if depth == 0 { top.append(" ") }
+            } else if scalar == "{" {
+                if depth == 0 { top.append(contentsOf: " { ".unicodeScalars) }
+                depth += 1
+            } else if scalar == "}" {
+                depth = max(depth - 1, 0)
+                if depth == 0 { top.append(contentsOf: " } ".unicodeScalars) }
+            } else if depth == 0 {
+                top.append(scalar)
+            }
+        }
+        return MenuPanelStructureTests.flat(String(top))
+    }
+
+    /// `sources`: `uncutSources()`.
+    static func verifierTopLevelFailures(_ sources: Sources) -> [String] {
+        let uncut = text(verifierFile, in: sources)
+        var failures: [String] = []
+        let top = topLevel(uncut)
+        if top != verifierTopLevel {
+            failures.append("\(verifierFile)'s top level is exactly its imports and its seven types — read '\(top)'")
+        }
+        for copy in LidGuardStructureTests.constructorScanCopies(uncut) where hits(#"\b(?:typealias|extension)\b"#, in: copy) {
+            failures.append("a typealias or an extension in \(verifierFile) — nothing re-exports the verifier or what it builds")
+        }
+        return unique(failures)
+    }
+
+    @Test func theVerifiersTopLevelIsExactlyItsTypes() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.verifierTopLevelFailures(sources).isEmpty, "\(Self.verifierTopLevelFailures(sources))")
+        let verifier = Self.verifierFile
+        let mutants: [(String, Sources)] = [
+            // The security review's P3, compiled, as planted (both files).
+            ("P3: aliases in the verifier, wired from a new file", Self.adding(Self.mutate(sources, verifier) {
+                $0 + Self.plantAliases }, "ZZPlantWiring.swift", Self.plantWiring)),
+            // … and its lexical twins, L4 and L5, as planted.
+            ("L4: an alias export, the intake decides", Self.mutate(Self.mutate(sources, verifier) {
+                $0 + "\ntypealias SignatureCheck = DecisionVerifier\ntypealias SignedReading = DecisionEvidence" },
+                ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nextension ApprovalIntake { func zz(_ r: SignedReading) { if let d = SignatureCheck.verify(r, copy: nil, "
+                    + "pairedKey: nil) { decide(d) } } }" }),
+            ("L5: an extension export on PromptID", Self.mutate(Self.mutate(sources, verifier) {
+                $0 + "\nextension PromptID { func zzChecked(_ e: DecisionEvidence) -> ApprovalDecision? { "
+                    + "DecisionVerifier.verify(e, copy: nil, pairedKey: nil) } }" }, "MenuStateModel.swift") {
+                $0 + "\nlet zzd = PromptID(high: 1, low: 1)?.zzChecked(e)" }),
+            // Other top-level roads out.
+            ("a top-level function", Self.mutate(sources, verifier) {
+                $0 + "\nfunc zzExport(_ e: DecisionEvidence) -> Any? { DecisionVerifier.verify(e, copy: nil, pairedKey: nil) }" }),
+            ("a top-level closure", Self.mutate(sources, verifier) { $0 + "\nlet zzVerify = DecisionVerifier.verify" }),
+            ("an eighth type", Self.mutate(sources, verifier) { $0 + "\nstruct ZZRelay { static let check = DecisionVerifier.self }" }),
+            ("a conditional alias", Self.mutate(sources, verifier) { $0 + "\n#if DEBUG\ntypealias Check = DecisionVerifier\n#endif" }),
+            ("a nested alias", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "enum DecisionVerifierLog {\n",
+                                        with: "enum DecisionVerifierLog {\n    typealias V = DecisionVerifier\n") }),
+            ("a backticked alias", Self.mutate(sources, verifier) { $0 + "\ntypealias `Check` = DecisionVerifier" }),
+            ("an alias behind a block comment", Self.mutate(sources, verifier) { $0 + "\ntypealias /* x */ Check = DecisionVerifier" }),
+            ("a conformance added", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "struct ForwardedCopy: Sendable {", with: "struct ForwardedCopy: Sendable, Hashable {") }),
+            ("a type renamed", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "enum DecisionVerifierLog {", with: "enum DecisionLog {") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.verifierTopLevelFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: members, literals and trailing comments that
+        // hold braces or the banned words inside a type, a whole-line comment
+        // at the top level, and names that only contain the banned words.
+        #expect(Self.verifierTopLevelFailures(Self.mutate(sources, verifier) {
+            $0.replacingOccurrences(of: "enum DecisionVerifierLog {\n", with: "enum DecisionVerifierLog {\n"
+                + "    static let braces = \"} {\" // a }\n    static let extensionCount = 0\n    static let aliasName = \"x\"\n")
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n// never typealias, never extension, never func zz() {}")
+        }).isEmpty)
+    }
+
+    // MARK: 9e. No Mac source signs
+
+    /// A private key of any kind (CryptoKit's or the enclave's), and a
+    /// signing call, however the gap before its label is spelled. The Mac
+    /// verifies with the paired phone's public key only; the tests sign.
+    static let signingPatterns = ["PrivateKey", #"\bsignature"# + gap + #"*\("# + gap + #"*for\b"#]
+
+    /// `sources`: `uncutSources()`.
+    static func signingFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for (name, uncut) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
+                for pattern in signingPatterns where hits(pattern, in: copy) {
+                    failures.append("'\(pattern)' in \(name) — the Mac verifies only: it holds no private key and signs nothing")
+                }
+            }
+        }
+        return unique(failures)
+    }
+
+    @Test func noMacSourceHoldsAPrivateKeyOrSigns() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.signingFailures(sources).isEmpty, "\(Self.signingFailures(sources))")
+        let verifier = Self.verifierFile
+        let checked = "        guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {\n"
+        let built = "        " + Self.verifiedConstruction + "\n"
+        let refused = "            return .unverified(signedAnotherForm(claimed, of: copy, signature, pairedKey) ? "
+            + ".shownDigestMismatch : .signatureInvalid)\n        }\n"
+        let mutants: [(String, Sources)] = [
+            // The security review's L2, as planted: the verifier mints its own
+            // software key in a do-scope and checks against it.
+            ("L2: the verifier mints its own key", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: checked + refused + built,
+                    with: "        do {\n        let minted = P256.Signing.PrivateKey()\n        let pairedKey = minted.publicKey\n"
+                        + "        let signature = try! minted.signature(for: SHA256.hash(data: message))\n"
+                        + checked + "            return .unverified(.signatureInvalid)\n        }\n" + built + "        }\n") }),
+            ("an enclave key in the app", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet zz = try? SecureEnclave.P256.Signing.PrivateKey()" }),
+            ("another curve's key in a wire file", Self.mutate(sources, "ApprovalWire.swift") {
+                $0 + "\nlet zz: Curve25519.Signing.PrivateKey? = nil" }),
+            ("a signing call, backticked", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet s = try k.`signature`(for: d)" }),
+            ("a signing call behind a block comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet s = try k.signature /* x */ (for: d)" }),
+            ("a signing call split by a comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet s = try k.signature( // x\n    for: d)" }),
+            ("an unapplied signing call", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet sign = k.signature(for:)" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.signingFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: the verifier's own parse and check, a public
+        // key, names that only contain the banned words, and a whole-line
+        // comment naming them. (The test files, which sign, are not read.)
+        #expect(Self.text(verifier, in: sources).contains("pairedKey.isValidSignature(signature, for:"),
+                "vacuity: the verifier's own check names `signature, for:` and passes")
+        #expect(Self.signingFailures(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + "\nlet signature = try? P256.Signing.ECDSASignature(rawRepresentation: s)\nlet k: P256.Signing.PublicKey? = nil"
+                + "\nfunc signatures(for d: Int) {}\nlet privateKeyCount = 0\nlet ok = k?.isValidSignature(signature!, for: d)"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never a PrivateKey, never signature(for:)")
         }).isEmpty)
     }
 
