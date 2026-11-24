@@ -26,7 +26,11 @@ import Testing
 /// 3. no Mac source builds the S0 decision type or names its signature flag
 ///    — nor reaches its constructor unnamed: an unapplied `.init`, the
 ///    metatype or an alias (security review 2, G4), or an extension of the
-///    type (the security re-check, N3);
+///    type (the security re-check, N3). AMENDED (deliberate, S-PAIR-A,
+///    #161): the decision verifier is the one exception, building it once,
+///    verified, after its signature check, and naming nothing of the
+///    verdict API, the Secure Enclave, the keychain or CloudKit; nothing
+///    names the verifier yet, and only the S0 type's own file is exempt;
 /// 4. the record path cannot reach iCloud by itself: no container, no
 ///    database, no account check, no CloudKit identifier off its allow-list,
 ///    no way to run an operation but the database seam (security review 2,
@@ -261,18 +265,29 @@ struct ApprovalRecordPathStructureTests {
     /// cleaned copies of the file (`constructorScanCopies`) — in addition to
     /// the raw text, never instead of it.
     ///
-    /// AMENDED for S-PAIR-A (#161): the decision verifier is the ONE Mac
-    /// source that builds the S0 type, exactly once, naming its signature
-    /// flag exactly once (that construction's label). Every other source
-    /// still builds none and names no flag, and the unnamed roads stay shut
-    /// everywhere, the verifier included.
+    /// AMENDED for S-PAIR-A (#161), deliberately: signed decisions exist, so
+    /// the door has ONE key, the decision verifier. It builds the S0 type
+    /// exactly once in every scan copy, naming the flag once (that
+    /// construction's label), and the unnamed roads stay shut there too.
+    /// Re-tightened in the same step (`verifierFailures`): that construction
+    /// sits on its pinned line, verified, after the length check, the one
+    /// parse and the signature check, in that order; the verifier names
+    /// nothing of the verdict API, the Secure Enclave, biometrics, the
+    /// keychain or CloudKit; and nothing names the verifier, since no reader,
+    /// intake or lifecycle is handed one in this slice (S-PAIR-C2 wires it).
+    /// Only the S0 type's own file is exempt from the scan now: every other
+    /// NapCatWire file, the canonical-bytes file included, is read like any
+    /// other source.
     static let verifierFile = "DecisionVerifier.swift"
+
+    /// The S0 type's own file, the one source the scan skips.
+    static let declaringFile = "ApprovalStateMachine.swift"
 
     /// `sources`: `uncutSources()`. The original two checks read the
     /// comment-stripped code, as they always did.
     static func verdictTypeFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        for (name, uncut) in sources where !wireFiles.contains(name) {
+        for (name, uncut) in sources where name != declaringFile {
             let allowed = name == verifierFile ? 1 : 0
             let copies = LidGuardStructureTests.constructorScanCopies(uncut)
             let code = copies.map(LidGuardStructureTests.codeOnly)
@@ -288,11 +303,71 @@ struct ApprovalRecordPathStructureTests {
                 failures.append("\(name) reaches ApprovalDecision's constructor unnamed — no decision is a verdict before CL-1")
             }
         }
-        return failures
+        return failures + verifierFailures(sources)
     }
 
-    /// NapCatWire declares the S0 type; it is the only place that may.
-    static var wireFiles: [String] { WireContractTests.constantsFiles + WireContractTests.pureFiles }
+    /// The verifier's one construction, as written.
+    static let verifiedConstruction = "return .verified(ApprovalDecision(promptID: promptID, verdict: verdict, "
+        + "wireVersion: evidence.wireVersion, signatureVerified: true))"
+
+    /// In the verifier, in this order: the length check before any
+    /// cryptography, the signature's one parse, the signature check, then
+    /// the construction.
+    static let verifierOrder = ["guard evidence.signature.count == ApprovalSigning.signatureByteCount else {",
+                                "P256.Signing.ECDSASignature(rawRepresentation: evidence.signature)",
+                                "guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {",
+                                verifiedConstruction]
+
+    /// What the verifier never names: the verdict API (lock 1's list, but
+    /// the type it builds), and anything beyond a software public key — the
+    /// Secure Enclave, biometrics, the keychain and CloudKit. (The keychain
+    /// token is split so this file never names a Security item call itself.)
+    static let verifierBannedTokens = verdictAPITokens.filter { $0 != "ApprovalDecision" && $0 != "signatureVerified" }
+        + ["SecureEnclave", "LocalAuthentication", "LAContext", "SecAccessControl", "Sec" + "Item", "SecKey", "kSec", "CloudKit"]
+
+    /// The verifier's own types, matched as whole words: nothing outside its
+    /// file names them in this slice.
+    static let verifierTypes = ["DecisionVerifier", "DecisionEvidence", "ForwardedCopy", "DecisionVerification",
+                                "DecisionUnverifiedReason", "DecisionVerifierAudit", "DecisionVerifierLog"]
+
+    /// `sources`: `uncutSources()`.
+    static func verifierFailures(_ sources: Sources) -> [String] {
+        let uncut = text(verifierFile, in: sources)
+        let code = LidGuardStructureTests.codeOnly(uncut)
+        guard code.contains("enum DecisionVerifier {") else {
+            return ["'enum DecisionVerifier {' not found in \(verifierFile) — the verifier lock would be vacuous"]
+        }
+        var failures = siteFailures(constructionPattern("ApprovalDecision"), in: uncut, file: verifierFile,
+                                    allowed: [verifiedConstruction: 1],
+                                    rule: "the verifier builds the S0 type once, verified, on its pinned line")
+        let spelled = ApprovalChannelStructureTests.constructionSpelling(code)
+        if ApprovalChannelStructureTests.count("ECDSASignature(", in: spelled) != 1 {
+            failures.append("the verifier parses a signature in exactly one place")
+        }
+        var cursor = code.startIndex
+        for step in verifierOrder {
+            guard ApprovalChannelStructureTests.count(step, in: code) == 1,
+                  let found = code.range(of: step, range: cursor..<code.endIndex) else {
+                failures.append("the verifier checks the length, parses the signature once, checks it, then builds "
+                                + "the decision, in that order: '\(step)' is missing, doubled or out of order")
+                break
+            }
+            cursor = found.upperBound
+        }
+        for token in verifierBannedTokens where code.contains(token) {
+            failures.append("'\(token)' in \(verifierFile) — the verifier answers nothing and holds a software public key only")
+        }
+        if hits(#"\bCK[A-Z]\w*"#, in: code) {
+            failures.append("a CloudKit identifier in \(verifierFile) — the verifier reads no record")
+        }
+        for (name, text) in sources where name != verifierFile {
+            let other = LidGuardStructureTests.codeOnly(text)
+            for type in verifierTypes where hits(#"\b"# + type + #"\b"#, in: other) {
+                failures.append("'\(type)' in \(name) — nothing hands the verifier a claim in this slice (S-PAIR-C2 wires it)")
+            }
+        }
+        return failures
+    }
 
     @Test func noMacSourceBuildsAVerdict() throws {
         let sources = try Self.uncutSources()
@@ -413,6 +488,98 @@ struct ApprovalRecordPathStructureTests {
         #expect(Self.verdictTypeFailures(Self.mutate(sources, "NapCatApp.swift") {
             $0 + "\nfunc f(_ d: `ApprovalDecision`?) { let `default` = 1; _ = `default` }"
                 + "\nlet note = \"/* ApprovalDecision */\""
+        }).isEmpty)
+    }
+
+    /// S-PAIR-A (#161): the amendment's one exception, re-tightened. Each
+    /// canary is one way the exception could widen: a second builder (in
+    /// the app, a new file or a NapCatWire file), the verifier reaching the
+    /// verdict API or anything beyond a software public key, its one
+    /// construction moved, doubled or loosened, the unnamed roads opened in
+    /// a third file or in the verifier itself, or the verifier wired ahead
+    /// of its slice.
+    @Test func onlyTheDecisionVerifierBuildsADecision() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.verdictTypeFailures(sources).isEmpty, "\(Self.verdictTypeFailures(sources))")
+        let verifier = Self.verifierFile
+        let file = Self.text(verifier, in: sources)
+        let built = "        " + Self.verifiedConstruction + "\n"
+        let checked = "        guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {\n"
+        let length = "        guard evidence.signature.count == ApprovalSigning.signatureByteCount else { return .unverified(.signatureLength) }\n"
+        let diagnosed = "if pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) { return true }"
+        for anchor in [built, checked, length, diagnosed] {
+            #expect(file.contains(anchor), "vacuity: '\(anchor.trimmingCharacters(in: .whitespacesAndNewlines))' is the anchor")
+        }
+        let decision = "ApprovalDecision(promptID: p, verdict: .allow, wireVersion: 1, signatureVerified: true)"
+        let mutants: [(String, Sources)] = [
+            // A second file building the type.
+            ("the app builds one", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet d = " + decision }),
+            ("a new file builds one", sources + [("ZZSecondVerifier.swift",
+                "import NapCatWire\nfunc verifyAgain(p: PromptID) -> ApprovalDecision { " + decision + " }")]),
+            ("the canonical-bytes file builds one", Self.mutate(sources, "ApprovalSigning.swift") { $0 + "\nlet d = " + decision }),
+            ("another wire file extends the type", Self.mutate(sources, "ApprovalWire.swift") {
+                $0 + "\nextension ApprovalDecision {\n    static let claimed = Self.init\n}" }),
+            // The verifier naming the verdict API.
+            ("the verifier feeds the intake", Self.mutate(sources, verifier) {
+                $0 + "\nfunc f(i: ApprovalIntake, d: ApprovalDecision) { i.decide(d) }" }),
+            ("the verifier answers the dialog", Self.mutate(sources, verifier) {
+                $0 + "\nfunc f(c: Int, r: ChannelRequestID) { sendFrame(c, ApprovalChannel.verdictFrame(r, .allow)) }" }),
+            ("the verifier drives a lifecycle", Self.mutate(sources, verifier) {
+                $0 + "\nfunc f(l: inout ApprovalLifecycle, d: ApprovalDecision) { _ = l.apply(.remoteDecision(d), now: 0) }" }),
+            ("the verifier classifies", Self.mutate(sources, verifier) {
+                $0 + "\nlet c = ApprovalGate.classify(toolName: t, inputPreview: p, secrets: [])" }),
+            ("the verifier arms", Self.mutate(sources, verifier) { $0 + "\nlet armed = true" }),
+            // … or holding more than a software public key.
+            ("the verifier names the enclave", Self.mutate(sources, verifier) {
+                $0 + "\nlet k = try? SecureEnclave.P256.Signing.PrivateKey()" }),
+            ("the verifier asks for a match", Self.mutate(sources, verifier) { "import LocalAuthentication\n" + $0 + "\nlet c = LAContext()" }),
+            ("the verifier reads the keychain", Self.mutate(sources, verifier) { $0 + "\nlet s = Sec" + "ItemCopyMatching(q, &r)" }),
+            ("the verifier reads a record", Self.mutate(sources, verifier) { $0 + "\nfunc f(r: CKRecord) {}" }),
+            // The one construction moved, doubled or loosened.
+            ("a second construction in the verifier", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: diagnosed, with: "if pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) { "
+                    + "_ = ApprovalDecision(promptID: claimed.promptID, verdict: claimed.verdict, wireVersion: 1, "
+                    + "signatureVerified: true); return true }") }),
+            ("the flag from a variable", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "signatureVerified: true))", with: "signatureVerified: ok))") }),
+            ("built before the signature check", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: built, with: "").replacingOccurrences(of: checked, with: built + checked) }),
+            ("the length checked after the parse", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: length, with: "").replacingOccurrences(of: checked, with: length + checked) }),
+            ("the length check dropped", Self.mutate(sources, verifier) { $0.replacingOccurrences(of: length, with: "") }),
+            ("a second parse", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: length, with: "        _ = try? P256.Signing.ECDSASignature(derRepresentation: evidence.signature)\n"
+                    + length) }),
+            // The unnamed roads, in a third file and in the verifier itself.
+            ("an unapplied init in a third file", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet make = ApprovalDecision.init" }),
+            ("an extension in a third file", Self.mutate(sources, "LidGuardController.swift") {
+                $0 + "\nextension ApprovalDecision {\n    static let claimed = Self.init\n}" }),
+            ("an unapplied init in the verifier", Self.mutate(sources, verifier) { $0 + "\nlet make = ApprovalDecision.init" }),
+            ("a backticked extension in the verifier", Self.mutate(sources, verifier) {
+                $0 + "\nextension `ApprovalDecision` {\n    static let claimed = Self.init\n}" }),
+            ("an alias in the verifier", Self.mutate(sources, verifier) { $0 + "\ntypealias Verified = /* x */ ApprovalDecision" }),
+            // Wired ahead of its slice.
+            ("the intake verifies", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc f(e: DecisionEvidence) { _ = DecisionVerifier.verify(e, copy: nil, pairedKey: nil) }" }),
+            ("the record store keeps a copy", Self.mutate(sources, Self.recordPathFile) { $0 + "\nlet c: ForwardedCopy? = nil" }),
+            ("the app holds a verification", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nvar last: DecisionVerification?" }),
+            // The verifier gone: the lock must not pass vacuously.
+            ("the verifier renamed away", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "enum DecisionVerifier {", with: "enum Verifier {") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.verdictTypeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: a whole-line comment naming the verifier and
+        // its copy, names that only start like its types, the S0 type as the
+        // verifier's payload and parameter, and a trailing comment in the
+        // verifier naming what it never reaches.
+        #expect(Self.verdictTypeFailures(Self.mutate(Self.mutate(sources, "NapCatApp.swift") {
+            $0 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// S-PAIR-C2 hands the DecisionVerifier a ForwardedCopy")
+                + "\nstruct DecisionVerifierLogo {}\nlet forwardedCopyCount = 0"
+        }, verifier) {
+            $0 + "\nfunc spare(_ d: ApprovalDecision?) -> [ApprovalDecision] { [] } // never ApprovalIntake, never LAContext"
         }).isEmpty)
     }
 
