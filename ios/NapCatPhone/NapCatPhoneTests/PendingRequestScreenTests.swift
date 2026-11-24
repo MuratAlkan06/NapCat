@@ -18,7 +18,8 @@ import UIKit
         .pending(until: now.addingTimeInterval(540), note: .unsent),
         .pending(until: now.addingTimeInterval(540), note: .unconfirmed),
         .pending(until: now.addingTimeInterval(540), note: .unsigned),
-        .confirming, .sending(.allow), .sending(.deny), .sent(.allow), .sent(.deny), .answered, .expired, .withdrawn,
+        .confirming(.allow), .confirming(.deny), .sending(.allow), .sending(.deny), .sent(.allow), .sent(.deny), .answered, .expired,
+        .withdrawn,
     ]
 
     // MARK: The words
@@ -35,6 +36,7 @@ import UIKit
     @Test func everyLineIsInTheCaptionRegister() {
         var lines = Self.everyStatus.map { $0.line(at: Self.now) } + Self.everyStatus.compactMap(\.note)
         lines += Self.everyUnavailableLine + Self.everyPairingLine
+        lines += Self.everyStatus.flatMap { status in BiometryKind.allCases.map { status.line(at: Self.now, biometric: $0) } }
         lines.append(RequestStatus.pending(until: Self.now.addingTimeInterval(30), note: nil).line(at: Self.now))
         lines.append(PendingRequestScreen.longInput)
         for line in lines {
@@ -46,7 +48,13 @@ import UIKit
     @Test func theLinesSayExactlyThis() {
         func text(_ status: RequestStatus) -> String { status.line(at: Self.now).text }
         #expect(text(.pending(until: Self.now.addingTimeInterval(540), note: nil)) == "Pending — expires in 9 min")
-        #expect(text(.confirming) == "Confirming — waiting for the biometric match")
+        #expect(RequestStatus.confirming(.allow).line(at: Self.now, biometric: .faceID).text
+                == "Confirming — Allow, waiting for Face ID")
+        #expect(RequestStatus.confirming(.deny).line(at: Self.now, biometric: .faceID).text
+                == "Confirming — Deny, waiting for Face ID")
+        #expect(RequestStatus.confirming(.deny).line(at: Self.now, biometric: .touchID).text
+                == "Confirming — Deny, waiting for Touch ID")
+        #expect(text(.confirming(.allow)) == "Confirming — Allow, waiting for the biometric match")
         #expect(text(.sending(.allow)) == "Sending — saving Allow to iCloud")
         #expect(text(.sent(.allow)) == "Sent — Allow is saved; your Mac hasn't confirmed it")
         #expect(text(.sent(.deny)) == "Sent — Deny is saved; your Mac hasn't confirmed it")
@@ -90,6 +98,33 @@ import UIKit
         }
         let unnamed = PendingRequestScreen.answersUnavailable(nil).text
         #expect(!unnamed.contains(kind.name), "'\(unnamed)' names \(kind.name) on a phone without it")
+    }
+
+    /// While the biometric prompt is up, the line says which answer the
+    /// match will sign, and the biometric it waits for: Allow and Deny never
+    /// read alike, and only this phone's biometric is named. The wait is
+    /// nominal (nothing is wrong yet), and like every state word it claims
+    /// nothing of the Mac.
+    @Test(arguments: BiometryKind.allCases)
+    func theConfirmingLineNamesTheAnswerBeingSigned(_ kind: BiometryKind) {
+        let allow = RequestStatus.confirming(.allow).line(at: Self.now, biometric: kind)
+        let deny = RequestStatus.confirming(.deny).line(at: Self.now, biometric: kind)
+        #expect(allow.text != deny.text)
+        for (line, named, other) in [(allow, "Allow", "Deny"), (deny, "Deny", "Allow")] {
+            #expect(line.text.hasPrefix("Confirming — \(named), "), "\(line.text)")
+            #expect(!line.text.contains(other), "\(line.text)")
+            #expect(line.text.hasSuffix("waiting for \(kind.name)"), "\(line.text)")
+            for elsewhere in BiometryKind.allCases where elsewhere != kind {
+                #expect(!line.text.contains(elsewhere.name), "'\(line.text)' names \(elsewhere.name)")
+            }
+            #expect(line.severity == .nominal)
+            #expect(line.spoken == line.text, "VoiceOver reads the line as it is")
+        }
+        // The biometric changes only the confirming line.
+        for status in Self.everyStatus {
+            if case .confirming = status { continue }
+            #expect(status.line(at: Self.now, biometric: kind) == status.line(at: Self.now), "\(status)")
+        }
     }
 
     /// Never "Allowed" or "Approved": a saved answer is sent, and only the
@@ -675,7 +710,7 @@ import UIKit
             + ".overlay(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) { "
             + "Image(systemName: Self.toolSymbol(request.toolName))",
         ".foregroundStyle(muted ? theme.inkSecondary : theme.accent)",
-        "if let symbol = Self.confirmationSymbol(status) {",
+        "let line = status.line(at: now, biometric: biometry.kind) if let symbol = Self.confirmationSymbol(status) {",
         "} else { CaptionLine(line: line) }",
         ".onChange(of: status) { old, new in guard let text = Self.announcement(from: old, to: new, at: now) else { return } "
             + "var spoken = AttributedString(text) spoken.accessibilitySpeechAnnouncementPriority = .high "
@@ -741,6 +776,8 @@ import UIKit
                 of: "            .padding(.leading, glyphColumn + theme.innerGap * 2)\n", with: ""), style),
             ("a finished card still raised", screen.replacingOccurrences(
                 of: ".themedCard(castsShadow: !muted)", with: ".themedCard()"), style),
+            ("the confirming line without the biometric", screen.replacingOccurrences(
+                of: "let line = status.line(at: now, biometric: biometry.kind)", with: "let line = status.line(at: now)"), style),
             ("Sent as a plain caption", screen.replacingOccurrences(
                 of: "if let symbol = Self.confirmationSymbol(status) {", with: "if let symbol = Optional<String>.none {"), style),
             ("Sent not announced", screen.replacingOccurrences(

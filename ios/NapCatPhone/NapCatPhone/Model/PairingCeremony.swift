@@ -25,6 +25,11 @@ import Observation
 /// written. A response already saved for the code fails the ceremony:
 /// nothing of it is adopted or shown. The window is five minutes from the
 /// scan (the Mac's own window ends no later, and burns the nonce).
+///
+/// No scan is taken while the match cannot happen (no biometrics enrolled,
+/// locked out, or none at all): the ceremony stays at its start, makes and
+/// asks for nothing, and the screen says why (`biometry`), so a phone with
+/// no Face ID never reaches a match it cannot pass.
 @MainActor
 @Observable
 final class PairingCeremony {
@@ -83,6 +88,8 @@ final class PairingCeremony {
     private(set) var phase = Phase.scanning
     /// When the ceremony's window closes; nil before the scan.
     private(set) var deadline: Date?
+    /// Whether the ceremony's match can happen here, as last read.
+    private(set) var biometry: BiometricAvailability
     @ObservationIgnored private let keyring: PhoneKeyring
     @ObservationIgnored private let biometrics: any BiometricGate
     @ObservationIgnored private let writer: any PairingResponseWriter
@@ -94,11 +101,24 @@ final class PairingCeremony {
         self.biometrics = biometrics
         self.writer = writer
         self.clock = clock
+        self.biometry = biometrics.availability()
     }
 
-    /// The one scan. Anything after the first is ignored.
+    /// Re-reads whether the match can happen, asking for nothing (the sheet
+    /// does, as it appears and as the app returns to the foreground: the
+    /// owner may have set up Face ID meanwhile).
+    func refreshBiometry() {
+        let current = biometrics.availability()
+        if current != biometry { biometry = current }
+    }
+
+    /// The one scan. Anything after the first is ignored, and so is a scan
+    /// while no match can happen: it is not taken, and the ceremony waits
+    /// at its start.
     func scanned(_ payload: String) async {
         guard phase == .scanning else { return }
+        refreshBiometry()
+        guard case .available = biometry else { return }
         deadline = clock().addingTimeInterval(Self.window)
         guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {
             phase = .refused

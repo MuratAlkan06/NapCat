@@ -196,7 +196,10 @@ import Testing
     /// writer reached in one place, `send`, whose first acts are to end the
     /// match on every path out and to re-check that the request is still
     /// pending. (S-PAIR-B: the signature sits between that re-check and the
-    /// write; `DecisionSignerTests` pins the order.)
+    /// write; `DecisionSignerTests` pins the order. AMENDED in the S-PAIR-B
+    /// design review: the answer waiting for its match names its own
+    /// verdict, `.confirming(verdict)`, so the screen says which answer the
+    /// match will sign.)
     static func allowPathFailures(_ inbox: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(inbox)
         var failures: [String] = []
@@ -213,7 +216,7 @@ import Testing
         where SettingsReachabilityTests.flat(body) != "guard isAnswerable(id) else { return } await confirmAndSend(.\(verdict), for: id)" {
             failures.append("\(name) must open on the answerable check, then ask for its match (confirmAndSend), nothing else")
         }
-        let confirmBody = "entries[id]?.answer = .confirming "
+        let confirmBody = "entries[id]?.answer = .confirming(verdict) "
             + "guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else { "
             + "entries[id]?.answer = .notConfirmed return } await send(verdict, for: id, match: match)"
         if SettingsReachabilityTests.flat(confirm) != confirmBody {
@@ -246,8 +249,10 @@ import Testing
             ("the match ignored", inbox.replacingOccurrences(of: ask, with: "        _ = await biometrics.confirm(reason: Self.reason(for: verdict))\n"
                                                              + "        guard let match = Optional(Spare()) else {\n")),
             ("sends before asking", inbox.replacingOccurrences(
-                of: "        entries[id]?.answer = .confirming\n",
-                with: "        entries[id]?.answer = .confirming\n        await send(verdict, for: id, match: Spare())\n")),
+                of: "        entries[id]?.answer = .confirming(verdict)\n",
+                with: "        entries[id]?.answer = .confirming(verdict)\n        await send(verdict, for: id, match: Spare())\n")),
+            ("the wait names Allow for every answer", inbox.replacingOccurrences(
+                of: "entries[id]?.answer = .confirming(verdict)", with: "entries[id]?.answer = .confirming(.allow)")),
             ("Deny asks in Allow's words", inbox.replacingOccurrences(of: "Self.reason(for: verdict)", with: "Self.allowReason")),
             ("Deny skips the check", inbox.replacingOccurrences(
                 of: "    func deny(_ id: PromptID) async {\n        guard isAnswerable(id) else { return }\n",

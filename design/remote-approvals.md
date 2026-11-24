@@ -642,6 +642,8 @@ arms anything.
     (lint-locked: three context sites, each a local, one evaluation, one
     restore). Deny carries the same biometric glyph and words as Allow
     ("Deny with Face ID"), and an unpaired phone offers no answer at all.
+    While the biometric prompt is up, the request's line names the answer
+    the match will sign ("Confirming — Deny, waiting for Face ID").
   - *The signer* (`DecisionSigner`). It builds the decision message with
     the shared builder, in whole seconds, with the `shown` digest over the
     three fields exactly as decoded from the prompt record, and signs it
@@ -663,7 +665,12 @@ arms anything.
     provisional key and keeps the earlier pairing; a response already saved
     for the code fails the pairing, and nothing of it is shown. The camera
     asks once, in the app's own words; turned off, the screen says so and
-    links to Settings.
+    links to Settings. A phone whose biometric match can't happen (none
+    enrolled, locked out) takes no scan: the screen names the cause and
+    where to set it up, with no retry to loop on. The comparison's hint
+    says what to do either way (codes that differ: cancel on both devices).
+    A swipe down can't close the sheet while a ceremony is under way (Close
+    cancels it), and VoiceOver hears the code appear and every end.
   - *Not live yet.* The PairingResponse record type is not in the schema.
     Its record names belong to NapCatWire with the deploy, and its CloudKit
     writer arrives with them; until then only fixtures conform to the seam,

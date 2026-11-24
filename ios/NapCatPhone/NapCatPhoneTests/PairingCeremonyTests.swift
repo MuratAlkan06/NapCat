@@ -255,6 +255,45 @@ final class RecordingPairingWriter: PairingResponseWriter {
         if case .paired = world.ceremony.phase {} else { Issue.record("the confirm did not pair: \(world.ceremony.phase)") }
     }
 
+    /// No match possible (no biometrics enrolled, locked out, or none at
+    /// all): the scan is not taken. No key is made, nothing is asked or
+    /// written, no window opens, and the ceremony waits at its start, with
+    /// the reading the screen names the cause from. Once a match is
+    /// possible again, the same ceremony takes its one scan.
+    @Test(arguments: [BiometricAvailability.unavailable(.faceID), .unavailable(.touchID), .unavailable(nil)])
+    func noMatchPossibleNoScanTaken(_ unavailable: BiometricAvailability) async throws {
+        let world = World()
+        world.gate.available = unavailable
+        world.ceremony.refreshBiometry()
+        #expect(world.ceremony.biometry == unavailable)
+        await world.ceremony.scanned(Self.payload)
+        #expect(world.ceremony.phase == .scanning)
+        #expect(world.ceremony.deadline == nil)
+        #expect(world.gate.requests.isEmpty && world.writer.written.isEmpty)
+        #expect(world.keys.provisional() == nil && world.keys.committed() == nil)
+        world.ceremony.tick()
+        #expect(world.ceremony.phase == .scanning, "no window, nothing to end")
+        world.gate.available = .available(.faceID)
+        await world.ceremony.scanned(Self.payload)
+        #expect(world.ceremony.biometry == .available(.faceID), "the scan re-reads it")
+        #expect(world.gate.requests == [PairingCeremony.reason])
+        try #require(world.writer.written.count == 1)
+        if case .waiting = world.ceremony.phase {} else { Issue.record("not waiting: \(world.ceremony.phase)") }
+    }
+
+    /// The reading is taken as the ceremony is made, and changes only when
+    /// it is read again.
+    @Test func theBiometricsAreReadAtTheStartAndOnRefresh() {
+        let world = World()
+        #expect(world.ceremony.biometry == .available(.faceID))
+        world.gate.available = .unavailable(.faceID)
+        #expect(world.ceremony.biometry == .available(.faceID))
+        world.ceremony.refreshBiometry()
+        #expect(world.ceremony.biometry == .unavailable(.faceID))
+        let late = PairingCeremony(keyring: world.keys.keyring, biometrics: world.gate, writer: world.writer)
+        #expect(late.biometry == .unavailable(.faceID))
+    }
+
     /// No enclave, no key: nothing is asked and nothing written.
     @Test func noKeyNoPairing() async {
         let world = World()
@@ -350,7 +389,9 @@ final class RecordingPairingWriter: PairingResponseWriter {
         var failures: [String] = []
         let file = CloudKitStructureTests.codeOnly(app.first { $0.path == ceremonyFile }?.text ?? "")
         let flat = SettingsReachabilityTests.flat(file)
-        let order = ["guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {",
+        let order = ["func scanned(_ payload: String) async { guard phase == .scanning else { return } refreshBiometry() "
+                        + "guard case .available = biometry else { return } deadline = clock().addingTimeInterval(Self.window)",
+                     "guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {",
                      "guard let publicKey = keyring.makeProvisional(), let fingerprint = KeyFingerprint(publicKey: publicKey) else {",
                      "guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason) else {",
                      "guard let response = Self.response(nonce: nonce, publicKey: publicKey, keyring: keyring, match: match) else {",
@@ -423,6 +464,11 @@ final class RecordingPairingWriter: PairingResponseWriter {
         let file = Self.ceremonyFile
         let inbox = "\(Self.appDir)/Model/RequestInbox.swift"
         let mutants: [(String, [Source])] = [
+            ("a scan taken with no match possible", mutate(file) {
+                $0.replacingOccurrences(of: "        guard case .available = biometry else { return }\n", with: "") }),
+            ("a scan taken on a stale reading", mutate(file) {
+                $0.replacingOccurrences(of: "        guard phase == .scanning else { return }\n        refreshBiometry()\n",
+                                        with: "        guard phase == .scanning else { return }\n") }),
             ("committed without the confirm", mutate(file) {
                 $0.replacingOccurrences(of: "        case .saved: phase = .waiting(fingerprint, until: deadline ?? clock())",
                                         with: "        case .saved: _ = keyring.commitProvisional(); phase = .waiting(fingerprint, until: deadline ?? clock())") }),

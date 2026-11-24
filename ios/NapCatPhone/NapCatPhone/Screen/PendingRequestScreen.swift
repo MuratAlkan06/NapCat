@@ -254,9 +254,10 @@ struct PendingRequestScreen: View {
     }
 
     /// The state in words. Sent is a confirmation: its glyph and its words
-    /// in the ink; every other state is a caption.
+    /// in the ink; every other state is a caption. While the match is asked
+    /// for, the line names the answer and this phone's biometric.
     @ViewBuilder private var stateLine: some View {
-        let line = status.line(at: now)
+        let line = status.line(at: now, biometric: biometry.kind)
         if let symbol = Self.confirmationSymbol(status) {
             HStack(alignment: .firstTextBaseline, spacing: theme.innerGap) {
                 Image(systemName: symbol)

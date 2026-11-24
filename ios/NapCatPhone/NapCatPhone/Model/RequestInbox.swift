@@ -23,7 +23,7 @@ enum RequestPhase: Equatable, Sendable {
 enum RequestAnswer: Equatable, Sendable {
     case none
     /// The answer is waiting for the biometric match.
-    case confirming
+    case confirming(ApprovalWire.Verdict)
     case sending(ApprovalWire.Verdict)
     /// iCloud saved it. The Mac has not said what it did with it.
     case sent(ApprovalWire.Verdict)
@@ -230,7 +230,7 @@ final class RequestInbox {
     /// window is checked again after the match, since the prompt may have
     /// expired or been withdrawn meanwhile.
     private func confirmAndSend(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {
-        entries[id]?.answer = .confirming
+        entries[id]?.answer = .confirming(verdict)
         guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {
             entries[id]?.answer = .notConfirmed
             return

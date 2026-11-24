@@ -11,7 +11,10 @@ struct PairingScreen: View {
     nonisolated static let title = "Pair with Mac"
     nonisolated static let closeTitle = "Close"
     nonisolated static let codeHeader = "This iPhone's code"
-    nonisolated static let compareHint = "Your Mac shows a code too. If the two match, confirm on your Mac, then here."
+    /// The comparison is what catches a code that isn't the owner's Mac's,
+    /// so the hint says what to do either way.
+    nonisolated static let compareHint = "Your Mac shows a code too. If the two match, confirm on your Mac, then here. "
+        + "If they don't, cancel here and on your Mac, and nothing is paired."
     nonisolated static let privateNote = "Pair in private: the code on your Mac is a secret while it's on screen."
     nonisolated static let viewfinderLabel = "Camera viewfinder"
 
@@ -31,11 +34,25 @@ struct PairingScreen: View {
     /// camera is turned back on.
     nonisolated static let settingsURL = URL(string: UIApplication.openSettingsURLString)
 
+    /// Why no scan is offered on a phone whose biometric match can't
+    /// happen: the pairing needs one, so the line names the biometric and
+    /// where it is set up, not a retry.
+    nonisolated static func matchUnavailable(_ kind: BiometryKind?) -> PhoneLine {
+        guard let kind else {
+            return PhoneLine(text: "Unavailable — this iPhone can't confirm a pairing with biometrics", severity: .warning)
+        }
+        return PhoneLine(text: "Unavailable — pairing needs \(kind.name) turned on; set it up in Settings › \(kind.name) & Passcode",
+                         severity: .warning)
+    }
+
     /// The state line, in the caption register: one state word, an em dash,
-    /// the cause, no closing period.
-    nonisolated static func line(for phase: PairingCeremony.Phase, camera: CameraState) -> PhoneLine {
+    /// the cause, no closing period. Before the scan, a match that can't
+    /// happen outranks the camera: nothing could be confirmed.
+    nonisolated static func line(for phase: PairingCeremony.Phase, camera: CameraState,
+                                 biometry: BiometricAvailability) -> PhoneLine {
         switch phase {
         case .scanning:
+            if case .unavailable(let kind) = biometry { return matchUnavailable(kind) }
             switch camera {
             case .ready:
                 return PhoneLine(text: "Scanning — point the camera at the code on your Mac", severity: .nominal)
@@ -49,7 +66,7 @@ struct PairingScreen: View {
         case .refused:
             return PhoneLine(text: "Refused — that isn't a NapCat pairing code; nothing was saved", severity: .warning)
         case .confirming:
-            return PhoneLine(text: "Confirming — waiting for the biometric match", severity: .nominal)
+            return PhoneLine(text: "Confirming — waiting for \(biometry.kind?.name ?? "the biometric match")", severity: .nominal)
         case .saving:
             return PhoneLine(text: "Saving — sending this iPhone's key to iCloud for your Mac", severity: .nominal)
         case .waiting:
@@ -93,9 +110,13 @@ struct PairingScreen: View {
         case none
     }
 
-    nonisolated static func offer(for phase: PairingCeremony.Phase, camera: CameraState) -> Offer {
+    /// Before the scan, nothing while the match can't happen (the line says
+    /// where to set it up; Close leaves), then by the camera.
+    nonisolated static func offer(for phase: PairingCeremony.Phase, camera: CameraState,
+                                  biometry: BiometricAvailability) -> Offer {
         switch phase {
         case .scanning:
+            guard case .available = biometry else { return .none }
             switch camera {
             case .ready: return .viewfinder
             case .notAsked: return .askCamera
@@ -130,8 +151,25 @@ struct PairingScreen: View {
         "\(codeHeader): \(fingerprint.spoken)"
     }
 
+    /// What VoiceOver announces as the phase changes: the new line, once,
+    /// as the code appears to compare (waiting) and as the ceremony ends
+    /// (paired, or why not); nothing while it is under way, where the
+    /// system's own biometric prompt speaks.
+    nonisolated static func announcement(from old: PairingCeremony.Phase, to new: PairingCeremony.Phase, camera: CameraState,
+                                         biometry: BiometricAvailability) -> String? {
+        guard old != new else { return nil }
+        switch new {
+        case .waiting, .paired, .refused, .failed, .cancelled, .expired:
+            return line(for: new, camera: camera, biometry: biometry).spoken
+        case .scanning, .confirming, .saving:
+            return nil
+        }
+    }
+
     let phase: PairingCeremony.Phase
     let camera: CameraState
+    /// Whether the ceremony's biometric match can happen on this phone.
+    let biometry: BiometricAvailability
     /// Whether the viewfinder is the real camera (fixtures draw its frame).
     let liveCamera: Bool
     let scanned: @MainActor (String) -> Void
@@ -149,7 +187,7 @@ struct PairingScreen: View {
                 if let fingerprint = Self.fingerprint(in: phase) {
                     codeCard(fingerprint, muted: phase == .paired(fingerprint))
                 }
-                if Self.offer(for: phase, camera: camera) == .viewfinder {
+                if Self.offer(for: phase, camera: camera, biometry: biometry) == .viewfinder {
                     viewfinder
                 }
                 stateLine
@@ -167,11 +205,21 @@ struct PairingScreen: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            // The column spans the screen in every phase: with only lines in
+            // it (confirming, saving, no match possible) the scroll view
+            // would otherwise hug them, narrower than the sheet.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, theme.margin)
             .padding(.vertical, theme.rowGap)
         }
         .background(theme.ground.ignoresSafeArea())
         .tint(theme.accent)
+        .onChange(of: phase) { old, new in
+            guard let text = Self.announcement(from: old, to: new, camera: camera, biometry: biometry) else { return }
+            var spoken = AttributedString(text)
+            spoken.accessibilitySpeechAnnouncementPriority = .high
+            AccessibilityNotification.Announcement(spoken).post()
+        }
     }
 
     /// This iPhone's code, large and monospaced, in a card; once kept, the
@@ -194,7 +242,10 @@ struct PairingScreen: View {
 
     /// A square frame as wide as the screen's column: the live camera, or
     /// (fixtures) its glyph. The square is laid out first and the camera
-    /// fills it, so the frame never shrinks to its content.
+    /// fills it, so the frame never shrinks to its content. VoiceOver reads
+    /// it as one labeled element; whether VisionKit's own guidance should
+    /// reach VoiceOver through it is owed to a device check (the simulator
+    /// has no scanner to inspect).
     private var viewfinder: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
@@ -218,7 +269,7 @@ struct PairingScreen: View {
     /// The state in words. Paired is a confirmation: its glyph and its words
     /// in the ink; every other state is a caption.
     @ViewBuilder private var stateLine: some View {
-        let line = Self.line(for: phase, camera: camera)
+        let line = Self.line(for: phase, camera: camera, biometry: biometry)
         if case .paired = phase {
             HStack(alignment: .firstTextBaseline, spacing: theme.innerGap) {
                 Image(systemName: Self.pairedSymbol)
@@ -238,7 +289,7 @@ struct PairingScreen: View {
     }
 
     @ViewBuilder private var actions: some View {
-        switch Self.offer(for: phase, camera: camera) {
+        switch Self.offer(for: phase, camera: camera, biometry: biometry) {
         case .askCamera:
             Button(action: askCamera) {
                 Label(Self.cameraTitle, systemImage: Self.cameraSymbol)
@@ -271,11 +322,14 @@ struct PairingScreen: View {
     }
 }
 
-/// The pairing screen over its ceremony, as a sheet with Close. Close, a
-/// swipe down, or the window's end cancels a ceremony under way (its
-/// provisional key goes; the committed one stays). It re-reads the camera
-/// as the app returns to the foreground (the owner may have turned it on
-/// in Settings). Nothing animates.
+/// The pairing screen over its ceremony, as a sheet with Close. Close or
+/// the window's end cancels a ceremony under way (its provisional key goes;
+/// the committed one stays). A swipe down does not close it while the
+/// ceremony is under way (a stray swipe during the code comparison would
+/// cancel it), only once it has ended; a sheet closed any other way still
+/// cancels. It re-reads the camera and the biometrics as it appears and
+/// as the app returns to the foreground (the owner may have turned either
+/// on in Settings). Nothing animates.
 struct PairingSheet: View {
     let ceremony: PairingCeremony
     let camera: any CameraAccess
@@ -304,7 +358,7 @@ struct PairingSheet: View {
 
     var body: some View {
         NavigationStack {
-            PairingScreen(phase: ceremony.phase, camera: cameraState, liveCamera: camera.isLive,
+            PairingScreen(phase: ceremony.phase, camera: cameraState, biometry: ceremony.biometry, liveCamera: camera.isLive,
                           scanned: { payload in Task { await ceremony.scanned(payload) } },
                           askCamera: { Task { cameraState = await camera.request() } },
                           confirm: { ceremony.confirmCodesMatch() },
@@ -322,10 +376,13 @@ struct PairingSheet: View {
                 }
         }
         .tint(theme.accent)
+        .interactiveDismissDisabled(!ceremony.phase.isFinal)
+        .onAppear { ceremony.refreshBiometry() }
         .onDisappear { ceremony.cancel() }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             cameraState = camera.state()
+            ceremony.refreshBiometry()
             ceremony.tick()
         }
         .task(id: ceremony.deadline) { await Self.follow(ceremony, clock: clock) }
@@ -333,6 +390,6 @@ struct PairingSheet: View {
 }
 
 #Preview("Scanning") {
-    PairingScreen(phase: .scanning, camera: .ready, liveCamera: false, scanned: { _ in }, askCamera: {}, confirm: {}, cancel: {},
-                  again: {})
+    PairingScreen(phase: .scanning, camera: .ready, biometry: .available(.faceID), liveCamera: false, scanned: { _ in },
+                  askCamera: {}, confirm: {}, cancel: {}, again: {})
 }

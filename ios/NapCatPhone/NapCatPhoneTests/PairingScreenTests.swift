@@ -15,16 +15,35 @@ import UIKit
                                                       .paired(fingerprint), .cancelled, .expired]
         + PairingCeremony.Failure.allCases.map { .failed($0) }
 
-    /// Every phase with every camera state that can go with it.
+    nonisolated static let faceID = BiometricAvailability.available(.faceID)
+    /// Every way the match can't happen: each biometric a phone can have,
+    /// and none.
+    nonisolated static let everyUnavailable = BiometryKind.allCases.map { BiometricAvailability.unavailable($0) } + [.unavailable(nil)]
+
+    static func line(_ phase: PairingCeremony.Phase, _ camera: CameraState = .ready,
+                     _ biometry: BiometricAvailability = faceID) -> PhoneLine {
+        PairingScreen.line(for: phase, camera: camera, biometry: biometry)
+    }
+
+    static func offer(_ phase: PairingCeremony.Phase, _ camera: CameraState = .ready,
+                      _ biometry: BiometricAvailability = faceID) -> PairingScreen.Offer {
+        PairingScreen.offer(for: phase, camera: camera, biometry: biometry)
+    }
+
+    /// Every phase with every camera state that can go with it, and the
+    /// start on a phone whose match can't happen.
     static var everyLine: [PhoneLine] {
-        CameraState.allCases.map { PairingScreen.line(for: .scanning, camera: $0) }
-            + everyPhase.dropFirst().map { PairingScreen.line(for: $0, camera: .ready) }
+        CameraState.allCases.map { line(.scanning, $0) }
+            + everyPhase.dropFirst().map { line($0) }
+            + everyUnavailable.map { line(.scanning, .ready, $0) }
     }
 
     // MARK: The words
 
     @Test func everyLineIsInTheCaptionRegister() {
-        for line in Self.everyLine {
+        let confirming = (BiometryKind.allCases.map { BiometricAvailability.available($0) } + Self.everyUnavailable)
+            .map { Self.line(.confirming, .ready, $0) }
+        for line in Self.everyLine + confirming {
             #expect(ListStateTests.captionRegisterFailures(line.text).isEmpty, "\(ListStateTests.captionRegisterFailures(line.text))")
         }
     }
@@ -36,7 +55,7 @@ import UIKit
 
     @Test func theLinesSayExactlyThis() {
         func text(_ phase: PairingCeremony.Phase, _ camera: CameraState = .ready) -> String {
-            PairingScreen.line(for: phase, camera: camera).text
+            Self.line(phase, camera).text
         }
         #expect(text(.waiting(Self.fingerprint, until: Self.until)) == "Waiting — confirm the code on your Mac")
         #expect(text(.paired(Self.fingerprint)) == "Paired — this iPhone signs its answers with this key")
@@ -44,19 +63,67 @@ import UIKit
         #expect(text(.scanning, .notAsked) == "Needed — NapCat uses the camera only to read the code on your Mac")
         #expect(text(.scanning, .off) == "Off — camera access is off for NapCat; turn it on in Settings to scan")
         #expect(text(.scanning, .unsupported) == "Unavailable — this iPhone can't scan codes")
+        #expect(text(.confirming) == "Confirming — waiting for Face ID")
+        #expect(Self.line(.confirming, .ready, .available(.touchID)).text == "Confirming — waiting for Touch ID")
+        #expect(Self.line(.confirming, .ready, .unavailable(nil)).text == "Confirming — waiting for the biometric match")
         #expect(text(.refused) == "Refused — that isn't a NapCat pairing code; nothing was saved")
         #expect(text(.failed(.alreadyAnswered)) == "Refused — this code was already answered; start again on your Mac")
+        #expect(text(.failed(.notConfirmed)) == "Unverified — pairing wasn't confirmed, so nothing was saved")
         #expect(text(.cancelled) == "Cancelled — nothing changed on this iPhone")
         #expect(text(.expired) == "Expired — the code's five minutes ran out; start again on your Mac")
         #expect(PairingScreen.privateNote == "Pair in private: the code on your Mac is a secret while it's on screen.")
         #expect(PairingCeremony.reason == "Confirm it's you to pair this iPhone with your Mac.")
+        #expect(PairingScreen.matchUnavailable(.faceID).text
+                == "Unavailable — pairing needs Face ID turned on; set it up in Settings › Face ID & Passcode")
+        #expect(PairingScreen.matchUnavailable(.touchID).text
+                == "Unavailable — pairing needs Touch ID turned on; set it up in Settings › Touch ID & Passcode")
+        #expect(PairingScreen.matchUnavailable(nil).text == "Unavailable — this iPhone can't confirm a pairing with biometrics")
+    }
+
+    /// The comparison is the step that catches a code that isn't the
+    /// owner's Mac's, so its hint says what to do when the codes differ as
+    /// well as when they match.
+    @Test func theCompareHintSaysWhatToDoEitherWay() {
+        #expect(PairingScreen.compareHint == "Your Mac shows a code too. If the two match, confirm on your Mac, then here. "
+                + "If they don't, cancel here and on your Mac, and nothing is paired.")
+        #expect(PairingScreen.compareHint.contains("If the two match"))
+        #expect(PairingScreen.compareHint.contains("If they don't, cancel"))
+    }
+
+    /// On a phone whose biometric match can't happen, the start names the
+    /// cause and where to set it up, offers no scan (so no ceremony ends in
+    /// "Unverified" with only Scan Again), and outranks the camera: whatever
+    /// the camera says, nothing could be confirmed. Only the biometric this
+    /// phone has is named.
+    @Test(arguments: everyUnavailable)
+    func noMatchNoScanAndTheCauseIsNamed(_ biometry: BiometricAvailability) {
+        for camera in CameraState.allCases {
+            #expect(Self.line(.scanning, camera, biometry) == PairingScreen.matchUnavailable(biometry.kind), "\(camera)")
+            #expect(Self.offer(.scanning, camera, biometry) == PairingScreen.Offer.none, "\(camera)")
+        }
+        let line = PairingScreen.matchUnavailable(biometry.kind)
+        #expect(line.severity == .warning)
+        #expect(line.text.hasPrefix("Unavailable — "))
+        #expect(!line.text.contains("Unverified") && !line.text.contains("Scan Again"))
+        for kind in BiometryKind.allCases {
+            #expect(line.text.contains(kind.name) == (kind == biometry.kind), "'\(line.text)' and \(kind.name)")
+        }
+        if let kind = biometry.kind {
+            #expect(line.text.contains("Settings › \(kind.name) & Passcode"), "the line points to the setup")
+        }
+        // Only the start depends on it: the phases after the scan say what
+        // they said.
+        for phase in Self.everyPhase.dropFirst() where phase != .confirming {
+            #expect(Self.line(phase, .ready, biometry) == Self.line(phase), "\(phase)")
+            #expect(Self.offer(phase, .ready, biometry) == Self.offer(phase), "\(phase)")
+        }
     }
 
     /// "Paired" is said in the paired phase alone, and no line claims what
     /// the Mac did: the phone knows only its own half.
     @Test func onlyThePairedPhaseSaysPaired() {
         for phase in Self.everyPhase {
-            let line = PairingScreen.line(for: phase, camera: .ready).text
+            let line = Self.line(phase).text
             if case .paired = phase {
                 #expect(line.hasPrefix("Paired — "))
             } else {
@@ -73,28 +140,60 @@ import UIKit
         for failure in PairingCeremony.Failure.allCases {
             #expect(PairingScreen.failureLine(failure).severity == .warning)
         }
-        #expect(PairingScreen.line(for: .cancelled, camera: .ready).severity == .info)
-        #expect(PairingScreen.line(for: .expired, camera: .ready).severity == .info)
-        #expect(PairingScreen.line(for: .scanning, camera: .off).severity == .warning)
-        #expect(PairingScreen.line(for: .waiting(Self.fingerprint, until: Self.until), camera: .ready).severity == .nominal)
+        #expect(Self.line(.cancelled).severity == .info)
+        #expect(Self.line(.expired).severity == .info)
+        #expect(Self.line(.scanning, .off).severity == .warning)
+        #expect(Self.line(.waiting(Self.fingerprint, until: Self.until)).severity == .nominal)
+        #expect(Self.everyUnavailable.allSatisfy { Self.line(.scanning, .ready, $0).severity == .warning })
     }
 
     // MARK: The offers
 
     @Test func eachPhaseOffersWhatItCan() {
-        #expect(PairingScreen.offer(for: .scanning, camera: .ready) == .viewfinder)
-        #expect(PairingScreen.offer(for: .scanning, camera: .notAsked) == .askCamera)
-        #expect(PairingScreen.offer(for: .scanning, camera: .off) == .settings)
-        #expect(PairingScreen.offer(for: .scanning, camera: .unsupported) == PairingScreen.Offer.none)
-        #expect(PairingScreen.offer(for: .waiting(Self.fingerprint, until: Self.until), camera: .ready) == .compare)
+        #expect(Self.offer(.scanning, .ready) == .viewfinder)
+        #expect(Self.offer(.scanning, .notAsked) == .askCamera)
+        #expect(Self.offer(.scanning, .off) == .settings)
+        #expect(Self.offer(.scanning, .unsupported) == PairingScreen.Offer.none)
+        #expect(Self.offer(.waiting(Self.fingerprint, until: Self.until)) == .compare)
         for phase in [PairingCeremony.Phase.confirming, .saving, .paired(Self.fingerprint)] {
-            #expect(PairingScreen.offer(for: phase, camera: .ready) == PairingScreen.Offer.none, "\(phase)")
+            #expect(Self.offer(phase) == PairingScreen.Offer.none, "\(phase)")
         }
         for phase in [PairingCeremony.Phase.refused, .cancelled, .expired] + PairingCeremony.Failure.allCases.map({ .failed($0) }) {
-            #expect(PairingScreen.offer(for: phase, camera: .ready) == .again, "\(phase)")
+            #expect(Self.offer(phase) == .again, "\(phase)")
         }
         // The camera matters while scanning only.
-        #expect(PairingScreen.offer(for: .waiting(Self.fingerprint, until: Self.until), camera: .off) == .compare)
+        #expect(Self.offer(.waiting(Self.fingerprint, until: Self.until), .off) == .compare)
+    }
+
+    // MARK: What VoiceOver hears
+
+    /// The code appearing and every end are announced, once, in their own
+    /// line's words (a failure as a warning); the steps under way are not
+    /// (the system's biometric prompt speaks for itself), and nothing is
+    /// announced without a change.
+    @Test func theCodeAndEveryEndAreAnnounced() {
+        let waiting = PairingCeremony.Phase.waiting(Self.fingerprint, until: Self.until)
+        func announced(_ old: PairingCeremony.Phase, _ new: PairingCeremony.Phase) -> String? {
+            PairingScreen.announcement(from: old, to: new, camera: .ready, biometry: Self.faceID)
+        }
+        #expect(announced(.saving, waiting) == "Waiting — confirm the code on your Mac")
+        #expect(announced(waiting, .paired(Self.fingerprint)) == "Paired — this iPhone signs its answers with this key")
+        #expect(announced(.confirming, .failed(.notConfirmed))
+                == "Warning: Unverified — pairing wasn't confirmed, so nothing was saved")
+        #expect(announced(.scanning, .refused) == "Warning: Refused — that isn't a NapCat pairing code; nothing was saved")
+        for old in Self.everyPhase {
+            for new in Self.everyPhase {
+                let spoken = announced(old, new)
+                switch new {
+                case _ where old == new:
+                    #expect(spoken == nil, "\(old) → \(new) is announced without a change")
+                case .waiting, .paired, .refused, .failed, .cancelled, .expired:
+                    #expect(spoken == Self.line(new).spoken, "\(old) → \(new)")
+                case .scanning, .confirming, .saving:
+                    #expect(spoken == nil, "\(old) → \(new) is announced")
+                }
+            }
+        }
     }
 
     /// The code is shown while it is compared and once kept, never before
@@ -154,10 +253,14 @@ import UIKit
     /// The screen hands everything to its closures and reaches nothing
     /// itself (no keyring, writer, gate or ceremony call); the live scanner
     /// is drawn only for a live camera and only while the offer is the
-    /// viewfinder; Codes Match and Cancel are offered together, only while
-    /// comparing. The sheet routes each closure to its ceremony call, and
-    /// Close, a swipe down or the window's end cancel. The root opens it
-    /// for the fixture launch only, in the palette.
+    /// viewfinder (which a match that can't happen withholds); Codes Match
+    /// and Cancel are offered together, only while comparing; the code and
+    /// every end are announced at high priority. The sheet routes each
+    /// closure to its ceremony call, hands the screen the ceremony's own
+    /// reading of the biometrics and re-reads them as it appears and on
+    /// every return; Close, the window's end or a sheet closed any other way
+    /// cancel, and a swipe down can't close it while the ceremony is under
+    /// way. The root opens it for the fixture launch only, in the palette.
     static func wiringFailures(screen: String, root: String) -> [String] {
         let flat = SettingsReachabilityTests.flat(screen)
         var failures: [String] = []
@@ -167,13 +270,22 @@ import UIKit
         where screenBody.contains(token) {
             failures.append("'\(token)' in the screen — it only hands its answers to its closures")
         }
-        for shape in ["if Self.offer(for: phase, camera: camera) == .viewfinder { viewfinder }",
+        for shape in ["} .frame(maxWidth: .infinity, alignment: .leading) .padding(.horizontal, theme.margin)",
+                      "if Self.offer(for: phase, camera: camera, biometry: biometry) == .viewfinder { viewfinder }",
                       "if liveCamera { QRScannerView(scanned: scanned) } else {",
                       "case .compare: Button(action: confirm) { Label(Self.matchTitle, systemImage: Self.matchSymbol) } "
                         + ".buttonStyle(RequestButtonStyle(emphasis: .accent)) Button(action: cancel) {",
+                      ".onChange(of: phase) { old, new in "
+                        + "guard let text = Self.announcement(from: old, to: new, camera: camera, biometry: biometry) else { return } "
+                        + "var spoken = AttributedString(text) spoken.accessibilitySpeechAnnouncementPriority = .high "
+                        + "AccessibilityNotification.Announcement(spoken).post() }",
+                      "PairingScreen(phase: ceremony.phase, camera: cameraState, biometry: ceremony.biometry,",
                       "scanned: { payload in Task { await ceremony.scanned(payload) } }",
                       "confirm: { ceremony.confirmCodesMatch() }", "cancel: { ceremony.cancel() }", "again: { ceremony.restart() }",
-                      "Button(PairingScreen.closeTitle) { ceremony.cancel() dismiss() }", ".onDisappear { ceremony.cancel() }",
+                      "Button(PairingScreen.closeTitle) { ceremony.cancel() dismiss() }",
+                      ".interactiveDismissDisabled(!ceremony.phase.isFinal) .onAppear { ceremony.refreshBiometry() } "
+                        + ".onDisappear { ceremony.cancel() }",
+                      "guard phase == .active else { return } cameraState = camera.state() ceremony.refreshBiometry() ceremony.tick()",
                       ".task(id: ceremony.deadline) { await Self.follow(ceremony, clock: clock) }"]
         where !flat.contains(shape) {
             failures.append("the pairing screen lost '\(shape)'")
@@ -206,8 +318,23 @@ import UIKit
         #expect(Self.wiringFailures(screen: screen, root: root).isEmpty, "\(Self.wiringFailures(screen: screen, root: root))")
         let mutants: [(String, String, String)] = [
             ("the live camera always", screen.replacingOccurrences(of: "if liveCamera {", with: "if true {"), root),
-            ("the viewfinder in every phase", screen.replacingOccurrences(of: "if Self.offer(for: phase, camera: camera) == .viewfinder {",
-                                                                          with: "if true {"), root),
+            ("the viewfinder in every phase", screen.replacingOccurrences(
+                of: "if Self.offer(for: phase, camera: camera, biometry: biometry) == .viewfinder {", with: "if true {"), root),
+            ("the viewfinder with no match possible", screen.replacingOccurrences(
+                of: "if Self.offer(for: phase, camera: camera, biometry: biometry) == .viewfinder {",
+                with: "if Self.offer(for: phase, camera: camera, biometry: .available(.faceID)) == .viewfinder {"), root),
+            ("the screen told Face ID is on", screen.replacingOccurrences(of: "biometry: ceremony.biometry,",
+                                                                          with: "biometry: .available(.faceID),"), root),
+            ("the biometrics read once", screen.replacingOccurrences(of: "            ceremony.refreshBiometry()\n", with: ""), root),
+            ("a swipe closes a ceremony under way", screen.replacingOccurrences(
+                of: "        .interactiveDismissDisabled(!ceremony.phase.isFinal)\n", with: ""), root),
+            ("no swipe even once it ended", screen.replacingOccurrences(
+                of: ".interactiveDismissDisabled(!ceremony.phase.isFinal)", with: ".interactiveDismissDisabled()"), root),
+            ("a column that hugs its lines", screen.replacingOccurrences(
+                of: "            .frame(maxWidth: .infinity, alignment: .leading)\n            .padding(.horizontal, theme.margin)\n",
+                with: "            .padding(.horizontal, theme.margin)\n"), root),
+            ("the code not announced", screen.replacingOccurrences(of: "AccessibilityNotification.Announcement(spoken).post()",
+                                                                   with: ""), root),
             ("Codes Match wired to Cancel", screen.replacingOccurrences(of: "confirm: { ceremony.confirmCodesMatch() }",
                                                                        with: "confirm: { ceremony.cancel() }"), root),
             ("the screen commits the key", screen.replacingOccurrences(of: "    @Environment(\\.openURL) private var openURL\n",

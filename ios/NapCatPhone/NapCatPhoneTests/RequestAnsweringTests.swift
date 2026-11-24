@@ -142,6 +142,22 @@ final class WatchingDecisionWriter: DecisionWriter {
         #expect(gate.matches.count == 1 && !gate.matches[0].isValid)
     }
 
+    /// While the biometric prompt is up, the request says which answer the
+    /// match will sign: Allow's wait and Deny's never read alike, and
+    /// nothing is on offer meanwhile.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func theWaitForTheMatchNamesTheAnswer(_ verdict: ApprovalWire.Verdict) async {
+        let world = World()
+        var during: RequestStatus?
+        world.gate.during = { during = world.inbox.status(of: world.request.id) }
+        await world.answer(verdict)
+        #expect(during == .confirming(verdict))
+        #expect(during?.isAnswerable == false)
+        #expect(during?.line(at: world.clock.now, biometric: .faceID).text
+                == "Confirming — \(RequestStatus.name(verdict)), waiting for Face ID")
+        #expect(world.inbox.status(of: world.request.id) == .sent(verdict))
+    }
+
     // MARK: No key, no answer; a dead key after a changed enrollment unpairs
 
     /// An unpaired phone asks for no match it could not use, and writes
