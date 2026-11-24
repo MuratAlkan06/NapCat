@@ -41,12 +41,17 @@ public enum ApprovalWire {
     /// ... written as exactly this many lowercase hex digits (the record name).
     public static let promptIDHexDigits = 32
 
-    /// The two record types, and nothing else.
+    /// The three record types, and nothing else.
     public enum RecordType: String, CaseIterable, Sendable {
         /// Mac → phone: one open permission dialog that passed the gate.
         case prompt = "PromptRequest"
         /// Phone → Mac: the owner's one-shot answer to one prompt.
         case decision = "PromptDecision"
+        /// Phone → Mac: the phone's one answer to a pairing code (CL-1,
+        /// slice S-PAIR-C1). Named from the code's nonce
+        /// (`ApprovalSigning.pairingRecordName`), so the Mac fetches it by
+        /// name; not in the Production schema until the owner deploys it.
+        case pairingResponse = "PairingResponse"
     }
 
     /// A prompt record's fields — the complete set. There is no description
@@ -89,6 +94,25 @@ public enum ApprovalWire {
 
     /// See `encryptedPromptFields`.
     public static let encryptedDecisionFields: [DecisionField] = [.promptID, .verdict, .signature]
+
+    /// A pairing response record's fields — the complete set (CL-1, slice
+    /// S-PAIR-C1). No fingerprint and no nonce: each device computes its
+    /// code from the key, and the nonce never leaves the Mac's screen.
+    public enum PairingResponseField: String, CaseIterable, Sendable {
+        /// `wireVersion` (Int).
+        case wireVersion
+        /// The phone's new public key, x9.63: 65 bytes (Bytes).
+        case publicKey
+        /// HMAC-SHA256 keyed by the nonce over
+        /// `ApprovalSigning.pairingConfirmationMessage`: 32 bytes (Bytes).
+        case confirmation
+        /// The new key's ECDSA signature over
+        /// `ApprovalSigning.pairingProofMessage`, raw: 64 bytes (Bytes).
+        case proof
+    }
+
+    /// Every pairing response field but the version is encrypted.
+    public static let encryptedPairingResponseFields: [PairingResponseField] = [.publicKey, .confirmation, .proof]
 
     /// The two answers. One-shot: neither changes any later prompt.
     public enum Verdict: String, CaseIterable, Sendable {

@@ -43,8 +43,9 @@ struct WireContractTests {
         #expect(ApprovalWire.promptIDHexDigits == 2 * ApprovalWire.promptIDByteCount)
     }
 
-    @Test func theApprovalRecordTypesAreExactlyPromptAndDecision() {
-        #expect(ApprovalWire.RecordType.allCases.map(\.rawValue) == ["PromptRequest", "PromptDecision"])
+    /// S-PAIR-C1 (#168) added the pairing response, deliberately.
+    @Test func theApprovalRecordTypesAreExactlyPromptDecisionAndPairingResponse() {
+        #expect(ApprovalWire.RecordType.allCases.map(\.rawValue) == ["PromptRequest", "PromptDecision", "PairingResponse"])
         #expect(!ApprovalWire.RecordType.allCases.map(\.rawValue).contains(AlertWire.recordType))
     }
 
@@ -56,9 +57,13 @@ struct WireContractTests {
             == ["wireVersion", "toolName", "inputPreview", "projectLabel", "createdAt", "expiresAt"])
         #expect(ApprovalWire.DecisionField.allCases.map(\.rawValue)
             == ["wireVersion", "promptID", "verdict", "decidedAt", "signature"])
+        // S-PAIR-C1 (#168): no fingerprint and no nonce on the wire.
+        #expect(ApprovalWire.PairingResponseField.allCases.map(\.rawValue)
+            == ["wireVersion", "publicKey", "confirmation", "proof"])
         let names = (ApprovalWire.PromptField.allCases.map(\.rawValue)
-            + ApprovalWire.DecisionField.allCases.map(\.rawValue)).map { $0.lowercased() }
-        for leak in ["description", "session", "request", "topic", "cwd"] {
+            + ApprovalWire.DecisionField.allCases.map(\.rawValue)
+            + ApprovalWire.PairingResponseField.allCases.map(\.rawValue)).map { $0.lowercased() }
+        for leak in ["description", "session", "request", "topic", "cwd", "fingerprint", "nonce"] {
             #expect(!names.contains { $0.contains(leak) }, "an approval field names '\(leak)'")
         }
     }
@@ -67,6 +72,10 @@ struct WireContractTests {
     @Test func theEncryptedFieldsArePinned() {
         #expect(ApprovalWire.encryptedPromptFields == [.toolName, .inputPreview, .projectLabel])
         #expect(ApprovalWire.encryptedDecisionFields == [.promptID, .verdict, .signature])
+        // S-PAIR-C1 (#168, ratified): every pairing field but the version.
+        #expect(ApprovalWire.encryptedPairingResponseFields == [.publicKey, .confirmation, .proof])
+        #expect(Set(ApprovalWire.encryptedPairingResponseFields.map(\.rawValue))
+            == Set(ApprovalWire.PairingResponseField.allCases.map(\.rawValue)).subtracting(["wireVersion"]))
     }
 
     @Test func theVerdictsAreExactlyAllowAndDeny() {
@@ -83,9 +92,12 @@ struct WireContractTests {
     /// S-PAIR-A (#161) added the canonical bytes of signed decisions and of
     /// pairing (`ApprovalSigning.swift`: byte assembly only — the hashing and
     /// the signatures stay in the apps; ApprovalSigningVectorTests pins it on
-    /// both devices).
+    /// both devices). S-PAIR-C1 (#168) added the pairing code's rendering
+    /// (`PairingFingerprint.swift`: text assembly only — the digest stays in
+    /// the apps; PairingFingerprintVectorTests pins it on both devices).
     static let pureFiles = ["ApprovalChannel.swift", "ApprovalChannelPolicy.swift", "ApprovalClassification.swift",
-                            "ApprovalPreview.swift", "ApprovalSigning.swift", "ApprovalStateMachine.swift"]
+                            "ApprovalPreview.swift", "ApprovalSigning.swift", "ApprovalStateMachine.swift",
+                            "PairingFingerprint.swift"]
 
     static func wireDirectory() -> URL {
         LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire")
