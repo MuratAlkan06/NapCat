@@ -38,6 +38,8 @@ import Testing
 /// `.init(` anywhere in the app (`implicitInitFailures`), and lock 2's seam
 /// conformance reads a clause over any number of lines, a refining
 /// protocol and a typealias (`CloudKitStructureTests.adoptionPattern`).
+/// Lock 3's live tokens take in the signing suite's and the launch
+/// factories that build them.
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
@@ -185,13 +187,20 @@ import Testing
                               "CloudKitDecisionWriterTests.swift", "VisibleWhitespaceTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
-    /// notification center and the real biometric prompt.
+    /// notification center and the real biometric prompt. AMENDED (#166):
+    /// and since S-PAIR-B the live key parts (`SigningKeyStructureTests`'
+    /// tokens: the enclave, the keychain, a context, the live bindings) and
+    /// the launch factories that build them (the inbox's, by name or as an
+    /// implicit member).
     static let liveTokens = ["CKContainer", "privateCloudDatabase", "makeLive(", "UserDefaults.standard",
-                             "UNUserNotificationCenter", "LAContext", "LocalAuthenticationGate(", "SystemNotificationGate("]
+                             "UNUserNotificationCenter", "SystemNotificationGate(", "RequestInbox.make", ".make(options:"]
+        + SigningKeyStructureTests.liveTokens
 
+    /// Read in its construction spelling (#166), as the signing suites'
+    /// scans are: `T.init(` and `T (` read as `T(`.
     static func liveFailures(_ tests: [Source]) -> [String] {
         tests.flatMap { path, text in
-            let code = CloudKitStructureTests.codeOnly(text)
+            let code = constructionSpelling(CloudKitStructureTests.codeOnly(text))
             return liveTokens.filter { code.contains($0) }.map { "'\($0)' in \(path) — S3 tests touch nothing live" }
         }
     }
@@ -211,10 +220,20 @@ import Testing
         // The container constructor is split: no test spells it (CloudKitStructureTests).
         for planted in ["let c = " + "CKContainer" + "(identifier: i)", "let d = UserDefaults.standard",
                         "let g = LAContext()", "let s = CloudKitAlertSource.makeLive()",
-                        "let n = UNUserNotificationCenter.current()"] {
+                        "let n = UNUserNotificationCenter.current()",
+                        // #166: the live key parts and the factories that build them.
+                        "let k = try SecureEnclave.P256.Signing.PrivateKey()", "_ = SecItemCopyMatching(q, &r)",
+                        "let s = KeychainSigningKeyStore.phoneKeychain", "let s = KeychainSigningKeyStore(calls: .securityFramework)",
+                        "let e = SecureEnclaveSigner()", "let e = SecureEnclaveSigner.init()", "let e = SecureEnclaveSigner ()",
+                        "let m = LocalAuthenticationMatch(c)", "let n = LocalAuthenticationEnrollment.init()",
+                        "let g = LocalAuthenticationGate.init()", "let i = RequestInbox.make(options: o, now: n)",
+                        "let make = RequestInbox.make", "let i: RequestInbox = .make(options: o, now: n)"] {
             let mutant = tests.map { ($0.path, $0.text + "\n" + planted) }
             #expect(!Self.liveFailures(mutant).isEmpty, "canary '\(planted)' was NOT caught")
         }
+        // A whole-line comment may name what the tests never touch.
+        #expect(Self.liveFailures(tests.map { ($0.path, $0.text + "\n/// never RequestInbox.make(options:now:), never SecureEnclaveSigner()") })
+            .isEmpty)
     }
 
     // MARK: 4. Every answer needs its match; one write site re-checks the window
