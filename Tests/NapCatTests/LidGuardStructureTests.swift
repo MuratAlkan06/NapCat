@@ -28,26 +28,483 @@ struct LidGuardStructureTests {
 
     /// Strips `//` line comments so the scan matches executable code only —
     /// doc comments legitimately NAME these symbols to document the boundary.
+    /// AMENDED (#155): a `//` opens a comment only in code (`lexemes`), so a
+    /// URL in a string literal no longer cuts its line and hides what
+    /// follows it. Block comments and string literals stay in.
     static func codeOnly(_ text: String) -> String {
-        text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line -> Substring in
-                if let range = line.range(of: "//") { return line[..<range.lowerBound] }
-                return line
-            }
-            .joined(separator: "\n")
+        guard text.contains("//") else { return text }      // a comment opens only at a `//`
+        let scalars = Array(text.unicodeScalars)
+        let kinds = lexemes(scalars)
+        var code = String.UnicodeScalarView()
+        for index in scalars.indices where kinds[index] != .lineComment { code.append(scalars[index]) }
+        return String(code)
     }
 
     /// Removes WHOLE-LINE `//` comments only (a line whose first non-blank
-    /// characters are `//`). Unlike `codeOnly`, it never cuts a code line at
-    /// a `//` inside a string literal (`"https://…"`), so a token after a URL
-    /// on the same line stays visible; that truncation (security review L3)
-    /// is tracked separately, so the checks added after security review 2
-    /// (#146) scan this form. Trailing comments stay in: they can only
-    /// over-match.
+    /// characters open a `//` comment). Unlike `codeOnly`, it keeps trailing
+    /// comments — they can only over-match — so the checks added after
+    /// security review 2 (#146) scan this form. AMENDED (#155): read through
+    /// `lexemes`, so a line of a multi-line string or a block comment that
+    /// starts with `//` is not a comment and stays in (an interpolation on
+    /// it is code), and a CR or CRLF line end ends a line.
     static func wholeLineCommentsRemoved(_ text: String) -> String {
-        text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line -> Substring in line.drop { $0 == " " || $0 == "\t" }.hasPrefix("//") ? "" : line }
-            .joined(separator: "\n")
+        guard text.contains("//") else { return text }      // a comment opens only at a `//`
+        let scalars = Array(text.unicodeScalars)
+        let kinds = lexemes(scalars)
+        var kept = String.UnicodeScalarView()
+        var start = 0
+        while start < scalars.count {
+            var first = start
+            while first < scalars.count, scalars[first] == " " || scalars[first] == "\t" { first += 1 }
+            var end = first
+            while end < scalars.count, !isLineEnd(scalars[end]) { end += 1 }
+            if first == end || kinds[first] != .lineComment { kept.append(contentsOf: scalars[start..<end]) }
+            if end < scalars.count { kept.append(scalars[end]) }
+            start = end + 1
+        }
+        return String(kept)
+    }
+
+    /// The copy the constructor bans scan IN ADDITION to the raw text (#153,
+    /// security delta B1/B2): every backtick removed, and each block comment
+    /// replaced by one space, so `` extension `T` `` and `extension /* … */ T`
+    /// both read `extension T`. Read through `lexemes`, so a `/*` inside a
+    /// string literal cannot swallow the code after it.
+    static func cleaned(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        let kinds = lexemes(scalars)
+        var copy = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            if kinds[index] == .blockComment {
+                while index < scalars.count, kinds[index] == .blockComment { index += 1 }
+                copy.append(" ")
+                continue
+            }
+            if scalars[index] != "`" { copy.append(scalars[index]) }
+            index += 1
+        }
+        return String(copy)
+    }
+
+    /// What every constructor ban reads (#153): the text as given, the same
+    /// text with its backticks removed and nothing else (no lexer involved,
+    /// so nothing the lexer misreads can hide a backticked name), and
+    /// `cleaned`. A ban must hold in all three — the cleaned copies are
+    /// read IN ADDITION to the raw text, never instead of it.
+    static func constructorScanCopies(_ text: String) -> [String] {
+        guard mayClean(text) else { return [text] }          // its own cleaned copy
+        return [text, text.replacingOccurrences(of: "`", with: ""), cleaned(text)]
+    }
+
+    /// `constructorScanCopies` of a whole source set: the set as given, then
+    /// its two cleaned copies, file for file.
+    static func constructorScanCopies(_ sources: [(name: String, text: String)]) -> [[(name: String, text: String)]] {
+        guard sources.contains(where: { mayClean($0.text) }) else { return [sources] }
+        return [sources, sources.map { ($0.name, $0.text.replacingOccurrences(of: "`", with: "")) },
+                sources.map { ($0.name, cleaned($0.text)) }]
+    }
+
+    /// Whether cleaning can change `text` at all: with no backtick and no
+    /// `/*` (a block comment opens only there), every copy is the text.
+    static func mayClean(_ text: String) -> Bool { text.contains("`") || text.contains("/*") }
+
+    // MARK: Lexing (issue #155: a `//` inside a string literal is not a comment)
+
+    /// What a character of Swift source is, as far as the strippers care.
+    enum Lexeme: Equatable { case code, lineComment, blockComment, literal }
+
+    static func isLineEnd(_ scalar: Unicode.Scalar) -> Bool { scalar == "\n" || scalar == "\r" }
+
+    /// One `Lexeme` per scalar of `scalars`: `//` and `/*` open a comment
+    /// only in code, never inside a string or regex literal, and nothing in
+    /// a comment opens a literal. Modelled: nested block comments; string
+    /// literals, single- and multi-line, raw with any number of `#`, with
+    /// escapes and `\( … )` interpolations (code again, which may hold
+    /// literals of their own); `#/…/#` regex literals, and a bare `/…/` one
+    /// where an expression can start (`bareRegexOpens`). A single-line
+    /// literal ends with its line even when unterminated.
+    ///
+    /// A misreading is not harmless. Against the old line cut it is bounded
+    /// in `codeOnly` and `wholeLineCommentsRemoved` only: each still keeps
+    /// all the old forms kept (the Mac's `theStrippersNeverHideWhatTheLineCutShowed`).
+    /// But the locks read these forms to see what the old cut hid, and
+    /// `cleaned` has no old form at all. A literal opened or missed in the
+    /// wrong place swaps string and code from there on (to the end of its
+    /// line, or from a misread `"""` to the next one), so a token behind a
+    /// URL, a `//`-led interpolation line or a block-comment-split name can
+    /// vanish from every form a lock reads (security spot-check H9, a bare
+    /// regex after `switch`). So every opener shape is pinned by the
+    /// stripper tables and by a canary in a lock that reads it.
+    static func lexemes(_ scalars: [Unicode.Scalar]) -> [Lexeme] {
+        enum Mode {
+            case code(parens: Int)                       // parens > 0: inside an interpolation
+            case string(hashes: Int, multiline: Bool)
+            case regex(hashes: Int)                      // hashes == 0: a bare `/…/`
+            case blockComment(depth: Int)
+        }
+        let count = scalars.count
+        func starts(_ prefix: String, at index: Int) -> Bool {
+            var cursor = index
+            for scalar in prefix.unicodeScalars {
+                guard cursor < count, scalars[cursor] == scalar else { return false }
+                cursor += 1
+            }
+            return true
+        }
+        func hashes(at index: Int) -> Int {
+            var cursor = index
+            while cursor < count, scalars[cursor] == "#" { cursor += 1 }
+            return cursor - index
+        }
+        var kinds = [Lexeme](repeating: .code, count: count)
+        func mark(_ range: Range<Int>, _ kind: Lexeme) {
+            for index in range where index < count { kinds[index] = kind }
+        }
+        var stack: [Mode] = [.code(parens: 0)]
+        /// A single-line literal ended by its line: unwind to the enclosing
+        /// multi-line string, or to top-level code.
+        func endLine() {
+            while stack.count > 1 {
+                if case .string(_, true) = stack[stack.count - 1] { return }
+                stack.removeLast()
+            }
+        }
+        var index = 0
+        while index < count, let mode = stack.last {
+            let scalar = scalars[index]
+            let next: Unicode.Scalar? = index + 1 < count ? scalars[index + 1] : nil
+            switch mode {
+            case .code(let parens):
+                if scalar == "/", next == "/" {
+                    while index < count, !isLineEnd(scalars[index]) {
+                        kinds[index] = .lineComment
+                        index += 1
+                    }
+                    continue
+                }
+                if scalar == "/", next == "*" {
+                    mark(index..<index + 2, .blockComment)
+                    stack.append(.blockComment(depth: 1))
+                    index += 2
+                    continue
+                }
+                if scalar == "\"" || scalar == "#" {
+                    let pounds = hashes(at: index)
+                    if index + pounds < count, scalars[index + pounds] == "\"" {
+                        let quotes = starts("\"\"\"", at: index + pounds) ? 3 : 1
+                        mark(index..<index + pounds + quotes, .literal)
+                        stack.append(.string(hashes: pounds, multiline: quotes == 3))
+                        index += pounds + quotes
+                        continue
+                    }
+                    if pounds > 0, index + pounds < count, scalars[index + pounds] == "/" {
+                        mark(index..<index + pounds + 1, .literal)
+                        stack.append(.regex(hashes: pounds))
+                        index += pounds + 1
+                        continue
+                    }
+                }
+                if scalar == "/", bareRegexOpens(scalars, at: index) {
+                    kinds[index] = .literal
+                    stack.append(.regex(hashes: 0))
+                    index += 1
+                    continue
+                }
+                if parens > 0, scalar == "(" {
+                    stack[stack.count - 1] = .code(parens: parens + 1)
+                } else if parens > 0, scalar == ")" {
+                    if parens == 1 {
+                        kinds[index] = .literal                  // the interpolation's own `)`
+                        stack.removeLast()
+                        index += 1
+                        continue
+                    }
+                    stack[stack.count - 1] = .code(parens: parens - 1)
+                }
+                index += 1
+            case .blockComment(let depth):
+                if scalar == "/", next == "*" {
+                    mark(index..<index + 2, .blockComment)
+                    stack[stack.count - 1] = .blockComment(depth: depth + 1)
+                    index += 2
+                } else if scalar == "*", next == "/" {
+                    mark(index..<index + 2, .blockComment)
+                    if depth == 1 { stack.removeLast() } else { stack[stack.count - 1] = .blockComment(depth: depth - 1) }
+                    index += 2
+                } else {
+                    kinds[index] = .blockComment
+                    index += 1
+                }
+            case .string(let pounds, let multiline):
+                if !multiline, isLineEnd(scalar) {
+                    endLine()                                    // re-read the line end as code
+                    continue
+                }
+                kinds[index] = .literal
+                if scalar == "\\", hashes(at: index + 1) >= pounds {
+                    let escaped = index + 1 + pounds
+                    mark(index..<escaped, .literal)
+                    if escaped < count, scalars[escaped] == "(" {
+                        kinds[escaped] = .literal
+                        stack.append(.code(parens: 1))
+                        index = escaped + 1
+                    } else if escaped < count, multiline || !isLineEnd(scalars[escaped]) {
+                        kinds[escaped] = .literal
+                        index = escaped + 1
+                    } else {
+                        index = escaped
+                    }
+                    continue
+                }
+                let quotes = multiline ? 3 : 1
+                if scalar == "\"", !multiline || starts("\"\"\"", at: index), hashes(at: index + quotes) >= pounds {
+                    mark(index..<index + quotes + pounds, .literal)
+                    stack.removeLast()
+                    index += quotes + pounds
+                    continue
+                }
+                index += 1
+            case .regex(let pounds):
+                if pounds == 0, isLineEnd(scalar) {
+                    endLine()
+                    continue
+                }
+                kinds[index] = .literal
+                if scalar == "\\", let next, !isLineEnd(next) {
+                    kinds[index + 1] = .literal
+                    index += 2
+                    continue
+                }
+                if scalar == "/", hashes(at: index + 1) >= pounds {
+                    mark(index..<index + 1 + pounds, .literal)
+                    stack.removeLast()
+                    index += 1 + pounds
+                    continue
+                }
+                index += 1
+            }
+        }
+        return kinds
+    }
+
+    /// Whether the `/` at `index` (not `//` or `/*`) opens a bare regex
+    /// literal: an expression can start there (nothing before it on its
+    /// line; a space or tab right before it, since with none after it Swift
+    /// 6 never reads that `/` as a division (security spot-check H9); or an
+    /// operator, an opening bracket, a separator or a keyword that precedes
+    /// an expression, `switch/"/` included), no space follows it, and an
+    /// unescaped `/` closes it on the same line. A division (`a / b`, `n/2`,
+    /// `f()/2`) is never one.
+    static func bareRegexOpens(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
+        let next = index + 1
+        guard next < scalars.count, !scalars[next].properties.isWhitespace, scalars[next] != "=" else { return false }
+        var before = index - 1
+        while before >= 0, scalars[before] == " " || scalars[before] == "\t" { before -= 1 }
+        var opens = before < 0 || before < index - 1 || isLineEnd(scalars[before])
+            || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
+        if !opens, scalars[before].properties.isAlphabetic {
+            var wordStart = before
+            while wordStart > 0, scalars[wordStart - 1].properties.isAlphabetic { wordStart -= 1 }
+            let word = String(String.UnicodeScalarView(scalars[wordStart...before]))
+            let identifierChar = wordStart > 0 && (scalars[wordStart - 1] == "_" || scalars[wordStart - 1].properties.numericType != nil)
+            opens = !identifierChar && ["return", "in", "throw", "try", "await", "case", "where", "if", "guard", "while",
+                                        "else", "is", "as", "repeat", "some", "any", "switch"].contains(word)
+        }
+        guard opens else { return false }
+        var cursor = next
+        while cursor < scalars.count, !isLineEnd(scalars[cursor]) {
+            if scalars[cursor] == "\\" {
+                cursor += 2
+                continue
+            }
+            if scalars[cursor] == "/" { return true }
+            cursor += 1
+        }
+        return false
+    }
+
+    // MARK: The strippers themselves (#155)
+
+    /// What the strippers keep, case by case: a `//` in a string, raw string,
+    /// interpolation, block comment or regex literal opens no comment; a real
+    /// trailing or doc comment still goes; CR and CRLF end a line.
+    static let codeOnlyCases: [(name: String, text: String, code: String)] = [
+        ("a URL, then a token", "let u = \"https://x\"; let c = URLSession.shared // note",
+         "let u = \"https://x\"; let c = URLSession.shared "),
+        ("an escaped quote", "let a = \"\\\"//\"; tokenA // c", "let a = \"\\\"//\"; tokenA "),
+        ("an escaped backslash ends the string", "let a = \"\\\\\"; tokenB // c", "let a = \"\\\\\"; tokenB "),
+        ("a string inside an interpolation", "let a = \"\\(f(\"(\", \"//\"))\"; tokenC // c",
+         "let a = \"\\(f(\"(\", \"//\"))\"; tokenC "),
+        ("a raw string", "let r = #\"//\"#; tokenD // c", "let r = #\"//\"#; tokenD "),
+        ("a quote inside a raw string", "let r = #\"a\"//\"#; tokenE // c", "let r = #\"a\"//\"#; tokenE "),
+        ("a raw interpolation", "let r = #\"\\#(\"//\")\"#; tokenF // c", "let r = #\"\\#(\"//\")\"#; tokenF "),
+        ("a multi-line string", "let m = \"\"\"\n// not a comment\nx // y\n\"\"\"\ntokenG // z",
+         "let m = \"\"\"\n// not a comment\nx // y\n\"\"\"\ntokenG "),
+        ("a block comment holding a URL", "/* see http://x */ tokenH // c", "/* see http://x */ tokenH "),
+        ("a nested block comment", "/* a /* b */ // in */ tokenI // c", "/* a /* b */ // in */ tokenI "),
+        ("a block-comment opener in a string", "let s = \"/*\"; tokenJ // c", "let s = \"/*\"; tokenJ "),
+        ("an extended regex literal", "let r = #/https://x/#; tokenK // c", "let r = #/https://x/#; tokenK "),
+        ("a bare regex holding a quote", "let r = /\"/; tokenL // c", "let r = /\"/; tokenL "),
+        ("a bare regex with escaped slashes", "let r = /a\\/\\/b/; tokenM // c", "let r = /a\\/\\/b/; tokenM "),
+        ("a division is no regex", "let q = a / b // half\nlet h = n/2 // c\nlet f = g()/2 // c",
+         "let q = a / b \nlet h = n/2 \nlet f = g()/2 "),
+        // Security spot-check H9: a bare regex after `switch` (unlisted until
+        // then) read as a division, so its quote opened a phantom string.
+        ("H9a: a bare regex after switch holding a quote", "switch /\"/ { default: let u = \"https://x\"; tokenT } // c",
+         "switch /\"/ { default: let u = \"https://x\"; tokenT } "),
+        ("a bare regex right after switch", "switch/\"/ { default: let u = \"https://x\"; tokenU } // c",
+         "switch/\"/ { default: let u = \"https://x\"; tokenU } "),
+        ("H9, multi-line: a bare regex holding \"\"\" before a multi-line string",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenV)\n\"\"\"\nswitch /\"\"\"/ { default: break } // c",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenV)\n\"\"\"\nswitch /\"\"\"/ { default: break } "),
+        // A keyword that is also a name divides when a `/` touches it (the
+        // Swift 6 compiler reads `copy/2` as the parameter `copy`, halved).
+        ("a name spelled like a contextual keyword divides", "let h = copy/2; let s = \"a/b // x\"; tokenW // c",
+         "let h = copy/2; let s = \"a/b // x\"; tokenW "),
+        ("CRLF line ends", "// c\r\nlet x = tokenN // c\r\nlet y = 1", "\r\nlet x = tokenN \r\nlet y = 1"),
+        ("a CR line end", "x // c\ry", "x \ry"),
+        ("an unterminated string ends with its line", "let s = \"abc\nlet t = 1 // c", "let s = \"abc\nlet t = 1 "),
+        ("a doc comment", "/// doc tokenO\nlet x = 1", "\nlet x = 1"),
+    ]
+
+    static let wholeLineCases: [(name: String, text: String, uncut: String)] = [
+        ("a whole-line comment goes, a trailing one stays", "// c\n  /// d\nlet x = 1 // t", "\n\nlet x = 1 // t"),
+        ("a multi-line string line opening with //", "let m = \"\"\"\n// \\(tokenP)\n\"\"\"", "let m = \"\"\"\n// \\(tokenP)\n\"\"\""),
+        ("a block comment line opening with //", "/*\n// tokenQ\n*/", "/*\n// tokenQ\n*/"),
+        ("CRLF line ends", "// c\r\nlet x = tokenR\r\n", "\r\nlet x = tokenR\r\n"),
+        ("a URL", "let u = \"https://x\"; tokenS", "let u = \"https://x\"; tokenS"),
+        // H9, multi-line (the R-H9-X1b plant): the line is a string's, its
+        // interpolation code.
+        ("H9: a multi-line string after a bare regex holding \"\"\"",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }",
+         "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }"),
+    ]
+
+    /// The words a space before a `/` covers (H9): with a space or tab right
+    /// before it and none after, a `/` opens a regex whatever word precedes
+    /// it — `switch` and the contextual keywords that can start an
+    /// expression alike.
+    static let spacedRegexWords = ["switch", "yield", "then", "unsafe", "consume", "copy", "discard", "each"]
+
+    @Test func theStrippersReadLiteralsAndComments() {
+        for (name, text, code) in Self.codeOnlyCases {
+            #expect(Self.codeOnly(text) == code, "codeOnly, \(name): \(Self.codeOnly(text).debugDescription)")
+        }
+        for (name, text, uncut) in Self.wholeLineCases {
+            #expect(Self.wholeLineCommentsRemoved(text) == uncut,
+                    "wholeLineCommentsRemoved, \(name): \(Self.wholeLineCommentsRemoved(text).debugDescription)")
+        }
+        for word in Self.spacedRegexWords {
+            let text = "\(word) /\"/; let u = \"https://x\"; tokenY // c"
+            #expect(Self.codeOnly(text) == "\(word) /\"/; let u = \"https://x\"; tokenY ",
+                    "codeOnly, a bare regex after '\(word) ': \(Self.codeOnly(text).debugDescription)")
+        }
+    }
+
+    /// The cleaned copy (#153): backticks out, each block comment (nested,
+    /// multi-line) one space; a `/*` in a string, a line comment or after a
+    /// bare regex holding a quote opens none.
+    @Test func theCleanedCopyDropsBackticksAndBlockComments() {
+        let cases: [(name: String, text: String, cleaned: String)] = [
+            ("B1: a backticked name", "extension `ApprovalDecision` {}", "extension ApprovalDecision {}"),
+            ("B2: a block comment between the words", "extension /* b2 */ ApprovalDecision {}", "extension   ApprovalDecision {}"),
+            ("a nested block comment", "a /* x /* y */ z */ b", "a   b"),
+            ("a multi-line block comment", "a /*\n x\n*/ b", "a   b"),
+            ("a block-comment opener in a string", "let s = \"/*\"; T /* c */ x; let e = \"*/\"",
+             "let s = \"/*\"; T   x; let e = \"*/\""),
+            ("a block-comment opener in a line comment", "x // see /*\ny */ z", "x // see /*\ny */ z"),
+            ("a bare regex holding a quote", "let r = /\"/; extension /* x */ T {}", "let r = /\"/; extension   T {}"),
+            // Security spot-check H9b (the R-H9-B2 plant), then its multi-line form.
+            ("H9b: a bare regex after switch before a commented extension",
+             "switch /\"/ { default: break }; extension /* x */ T {}", "switch /\"/ { default: break }; extension   T {}"),
+            ("H9: a bare regex holding \"\"\" before a commented extension",
+             "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n\"\"\"\nextension /* x */ T {}",
+             "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n\"\"\"\nextension   T {}"),
+        ]
+        for (name, text, cleaned) in cases {
+            #expect(Self.cleaned(text) == cleaned, "cleaned, \(name): \(Self.cleaned(text).debugDescription)")
+            #expect(Self.constructorScanCopies(text).contains(cleaned), "\(name): the cleaned copy is scanned")
+            #expect(Self.constructorScanCopies(text).first == text, "\(name): the raw text is scanned first, always")
+        }
+        #expect(Self.constructorScanCopies("let a = b // c") == ["let a = b // c"], "a text cleaning cannot change is its own copy")
+    }
+
+    /// The strippers before #155: each line cut at its first `//`, and each
+    /// line whose first non-blank characters are `//` blanked.
+    static func lineCut(_ line: Substring) -> Substring { line.range(of: "//").map { line[..<$0.lowerBound] } ?? line }
+    static func lineBlanked(_ line: Substring) -> Bool { line.drop { $0 == " " || $0 == "\t" }.hasPrefix("//") }
+
+    /// No lock got weaker (#155): over every Swift source a lock reads (the
+    /// four Mac targets, the phone app and both test directories), the new
+    /// strippers keep everything the old line cut kept — line for line, the
+    /// old line is a prefix of the new one — and blank no line the old one
+    /// kept. They differ only where a `//` sat inside a literal.
+    @Test func theStrippersNeverHideWhatTheLineCutShowed() throws {
+        let root = Self.repoRoot()
+        let directories = ApprovalChannelStructureTests.directories
+            + ["Tests/NapCatTests", "ios/NapCatPhone/NapCatPhone", "ios/NapCatPhone/NapCatPhoneTests"]
+        var files = 0
+        var widened = 0
+        for directory in directories {
+            let base = root.appendingPathComponent(directory)
+            guard let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
+            for case let url as URL in walker where url.pathExtension == "swift" {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let old = text.split(separator: "\n", omittingEmptySubsequences: false)
+                let code = Self.codeOnly(text).split(separator: "\n", omittingEmptySubsequences: false)
+                let uncut = Self.wholeLineCommentsRemoved(text).split(separator: "\n", omittingEmptySubsequences: false)
+                files += 1
+                guard code.count == old.count, uncut.count == old.count else {
+                    Issue.record("\(url.lastPathComponent): the strippers changed the line count")
+                    continue
+                }
+                for (number, line) in old.enumerated() {
+                    #expect(code[number].hasPrefix(Self.lineCut(line)),
+                            "\(url.lastPathComponent):\(number + 1): codeOnly hides what the line cut kept")
+                    #expect(Self.lineBlanked(line) || uncut[number] == line,
+                            "\(url.lastPathComponent):\(number + 1): wholeLineCommentsRemoved blanks a line the old form kept")
+                    if code[number] != Self.lineCut(line) { widened += 1 }
+                }
+            }
+        }
+        #expect(files > 150, "vacuity: only \(files) files read")
+        #expect(widened > 0, "vacuity: a URL line, at least, must now be read whole")
+    }
+
+    /// The phone's structure tests carry their own copy of the lexer (the two
+    /// test targets share no code): the copies stay byte-identical, so the
+    /// strippers read Swift the same way on both devices.
+    @Test func thePhonesLexerIsTheMacsTwin() throws {
+        func lexer(_ path: String) throws -> String? {
+            let text = try String(contentsOf: Self.repoRoot().appendingPathComponent(path), encoding: .utf8)
+            guard let start = text.range(of: "    /// What a character of Swift source is"),
+                  let tail = text.range(of: "static func bareRegexOpens(", range: start.upperBound..<text.endIndex),
+                  let end = text.range(of: "\n        return false\n    }\n", range: tail.upperBound..<text.endIndex) else { return nil }
+            return String(text[start.lowerBound..<end.upperBound])
+        }
+        let mac = try #require(try lexer("Tests/NapCatTests/LidGuardStructureTests.swift"))
+        let phone = try #require(try lexer("ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift"))
+        #expect(mac.contains("static func lexemes(") && mac.count > 4000, "vacuity: the whole lexer is compared")
+        #expect(mac == phone, "the phone's lexer drifted from the Mac's — keep the twins alike")
+        // … and the strippers and the cleaned copy built on it (#153).
+        func member(_ head: String, in path: String) throws -> String? {
+            let text = try String(contentsOf: Self.repoRoot().appendingPathComponent(path), encoding: .utf8)
+            guard let start = text.range(of: head), let end = text.range(of: "\n    }\n", range: start.upperBound..<text.endIndex)
+            else { return nil }
+            return String(text[start.lowerBound..<end.upperBound])
+        }
+        for head in ["    static func codeOnly(_ text: String) -> String {", "    static func wholeLineCommentsRemoved(_ text: String) -> String {",
+                     "    static func cleaned(_ text: String) -> String {", "    static func constructorScanCopies(_ text: String) -> [String] {"] {
+            let macMember = try member(head, in: "Tests/NapCatTests/LidGuardStructureTests.swift")
+            let phoneMember = try member(head, in: "ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift")
+            #expect(macMember != nil && macMember == phoneMember, "'\(head)' drifted between the Mac and the phone")
+        }
+        let mayClean = "    static func mayClean(_ text: String) -> Bool { text.contains(\"`\") || text.contains(\"/*\") }\n"
+        for path in ["Tests/NapCatTests/LidGuardStructureTests.swift", "ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift"] {
+            let text = try String(contentsOf: Self.repoRoot().appendingPathComponent(path), encoding: .utf8)
+            #expect(text.contains(mayClean), "mayClean drifted in \(path)")
+        }
     }
 
     static func swiftSources(_ strip: (String) -> String = codeOnly) throws -> [(name: String, text: String)] {
@@ -338,6 +795,16 @@ struct LidGuardStructureTests {
             ("a fourth networking file", sources + [("ReleaseNotesFetcher.swift", "let canary = URLRequest(url: u)")]),
             ("the checker loses its session", mutate("GitHubReleaseChecker.swift") {
                 $0.replacingOccurrences(of: "URLSession", with: "Session") }),
+            // #155: a URL in a string literal no longer hides the rest of its line.
+            ("a session behind a URL", mutate("MenuContentView.swift") {
+                $0 + Self.codeOnly("\nlet u = \"https://ntfy.sh\"; let canary = URLSession(configuration: .ephemeral)") }),
+            // Security spot-check H9 (the R-H9-155 plant): a bare regex after
+            // `switch` holding a quote, then the URL, then the token.
+            ("H9a: a session behind a URL after a bare regex", mutate("SettingsPanes.swift") {
+                $0 + Self.codeOnly("\nprivate func h9() { switch /\"/ { default: let u = \"https://x\"; _ = (u, URLSession.shared) } }") }),
+            ("H9, multi-line: a session in a //-led interpolation line", mutate("SettingsPanes.swift") {
+                $0 + Self.codeOnly("\nprivate func h9m() -> String {\n    switch /\"\"\"/ { default: break }\n    let s = \"\"\"\n"
+                    + "    // \\(URLSession.shared)\n    \"\"\"\n    switch /\"\"\"/ { default: break }\n    return s\n}") }),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.networkingConfinementFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
@@ -484,6 +951,9 @@ struct LidGuardStructureTests {
                 "import class // one type only\n    CloudKit.CKFetchRecordsOperation\n" + $0 }),
             ("a record token in a third file", mutate("MessageSender.swift") { $0 + "\nlet canary: CKRecord? = nil" }),
             ("the approvals file takes a container", mutate(Self.approvalRecordsFile) { $0 + "\nlet canary = CKContainer.default()" }),
+            // #155: a URL in a string literal no longer hides the rest of its line.
+            ("a record token behind a URL", mutate("MessageSender.swift") {
+                $0 + "\nlet u = \"https://www.icloud.com\"; let canary: CKRecord? = nil" }),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.oneOwnerFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
