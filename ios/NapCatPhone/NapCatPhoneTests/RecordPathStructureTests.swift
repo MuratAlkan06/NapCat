@@ -33,6 +33,12 @@ import Testing
 /// too (`CloudKitStructureTests.constructorScanCopies`: backticks removed,
 /// block comments replaced by a space), in addition to the raw text.
 ///
+/// AMENDED (#166, the S-PAIR-B security review): every lock that counts a
+/// construction, here and in the signing suites, also bans an implicit
+/// `.init(` anywhere in the app (`implicitInitFailures`), and lock 2's seam
+/// conformance reads a clause over any number of lines, a refining
+/// protocol and a typealias (`CloudKitStructureTests.adoptionPattern`).
+///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
 /// whole-line comments only (trailing comments stay in, so it can only
@@ -94,8 +100,9 @@ import Testing
     // MARK: 2. No live decision writer
 
     static let writerType = "CloudKitDecisionWriter"
-    static let seamConformance =
-        #"\b(class|struct|actor|enum|extension)\b[^{\n]*:[^{\n]*\bCloudKitApprovalDatabase\b"#
+    /// AMENDED (#166): a clause on any number of lines, a refining protocol
+    /// or a typealias (the one-line scan missed all three).
+    static let seamConformance = CloudKitStructureTests.adoptionPattern("CloudKitApprovalDatabase")
 
     static func liveWriterFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
@@ -112,9 +119,12 @@ import Testing
     }
 
     /// `liveWriterFailures` over every cleaned copy too (#153): a backticked
-    /// or comment-split construction of the writer is a construction.
+    /// or comment-split construction of the writer is a construction. And
+    /// (#166) no implicit `.init(` in the app: it could build the writer
+    /// unnamed.
     static func liveWriterFailuresInEveryCopy(_ app: [Source]) -> [String] {
-        CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures))
+        CloudKitStructureTests.unique(CloudKitStructureTests.constructorScanCopies(app).flatMap(liveWriterFailures)
+            + implicitInitFailures(app, rule: "the CloudKit decision writer is built by no app source, by name or not"))
     }
 
     @Test func noAppSourceBuildsALiveDecisionWriter() throws {
@@ -137,10 +147,33 @@ import Testing
             // #153: behind backticks or a block comment.
             ("a backticked writer", Self.mutate(app, feed) { $0 + "\nlet w = `CloudKitDecisionWriter`(database: d)" }),
             ("a comment-split writer", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitDecisionWriter/* x */(database: d)" }),
+            // #166: by a typed implicit init (the security review's B6/B9/B10
+            // shape), and a seam conformance on the next line, through a
+            // refining protocol, or through a typealias (B11-B13's shapes).
+            ("a writer by typed implicit init", Self.mutate(app, feed) {
+                $0 + "\nlet w: CloudKitDecisionWriter = .init(database: d)" }),
+            ("a live database, its conformance on the next line", Self.mutate(app, Self.cloudKitFile) {
+                $0 + "\nprivate struct LiveApprovalDatabase:\n    CloudKitApprovalDatabase { func submit(_ o: Op) {} }" }),
+            ("a live database through a refining protocol", Self.mutate(app, feed) {
+                $0 + "\nprotocol SpareDatabase: CloudKitApprovalDatabase {}\nstruct LiveApprovalDatabase: SpareDatabase { func submit(_ o: Op) {} }" }),
+            ("a live database through a typealias", Self.mutate(app, feed) {
+                $0 + "\ntypealias SpareDatabase = CloudKitApprovalDatabase\nstruct LiveApprovalDatabase: SpareDatabase { func submit(_ o: Op) {} }" }),
+            ("a seam conformance behind a block comment holding a brace", Self.mutate(app, feed) {
+                $0 + "\nstruct LiveApprovalDatabase /* { */: CloudKitApprovalDatabase { func submit(_ o: Op) {} }" }),
         ]
         for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.liveWriterFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // Over-match controls: the seam as a parameter, a doc comment naming
+        // a conformance, and inits that name what they build (a delegating
+        // `self.init(`, `super.init(`, an unapplied `Date.init`).
+        #expect(Self.liveWriterFailuresInEveryCopy(Self.mutate(app, feed) {
+            $0 + "\n/// never struct X: CloudKitApprovalDatabase, never let w: CloudKitDecisionWriter = .init(database: d)"
+                + "\nfunc spare(d: any CloudKitApprovalDatabase) -> Bool { true }"
+        }).isEmpty)
+        #expect(Self.implicitInitFailures([("x", "init(a: Int) { self.init(b: a) }\nsuper.init()\nlet now: () -> Date = Date.init")],
+                                          rule: "").isEmpty)
     }
 
     // MARK: 3. The S3 tests touch nothing live
@@ -493,6 +526,20 @@ import Testing
     /// CloudKit file spells every construction (none uses one today).
     static let implicitInit =
         #"(?<![\w)\]>\s])\s*\.\s*init\b|\b(?:return|in|throw|try|await|else|case|where|is|as|some|any)\s+\.\s*init\b"#
+
+    /// AMENDED (#166, the S-PAIR-B security review's B6, B9 and B10): every
+    /// lock that counts a construction bans an implicit `.init(` in EVERY
+    /// app file, not only the CloudKit file. `let d: PhoneDecision? =
+    /// .init(…)` builds one with no `PhoneDecision(` in the text, so no
+    /// count could see it; the app spells every construction (none uses an
+    /// implicit init today). Read in every constructor scan copy.
+    static func implicitInitFailures(_ app: [Source], rule: String) -> [String] {
+        app.compactMap { path, text in
+            CloudKitStructureTests.constructorScanCopies(CloudKitStructureTests.codeOnly(text))
+                .contains { CloudKitStructureTests.hits(implicitInit, in: $0) }
+                ? "\(path) has an implicit .init( — \(rule); the app spells every construction" : nil
+        }
+    }
 
     /// The CloudKit file's one record (the decision), one operation (its
     /// save) and one subscription (the alert lane's push).

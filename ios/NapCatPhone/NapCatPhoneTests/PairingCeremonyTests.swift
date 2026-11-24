@@ -377,6 +377,19 @@ final class RecordingPairingWriter: PairingResponseWriter {
     static let appDir = CloudKitStructureTests.appDir
     static let ceremonyFile = "\(appDir)/Model/PairingCeremony.swift"
 
+    /// Every site naming the provisional key's three methods, in the app
+    /// (#166): each declared once, by the keyring, and called once, by the
+    /// ceremony.
+    static let provisionalSites = CloudKitStructureTests.appSites([
+        "Model/PhoneKeyring.swift": ["func makeProvisional() -> [UInt8]? {": 1,
+                                     "func signProvisional(_ message: [UInt8], match: any BiometricMatch) -> SigningOutcome {": 1,
+                                     "func commitProvisional() -> Bool {": 1],
+        "Model/PairingCeremony.swift": [
+            "guard let publicKey = keyring.makeProvisional(), let fingerprint = KeyFingerprint(publicKey: publicKey) else {": 1,
+            "guard case .signed(let proof) = keyring.signProvisional(proofMessage, match: match) else { return nil }": 1,
+            "guard keyring.commitProvisional() else {": 1],
+    ])
+
     /// The ceremony's one write, after the proof, in `scanned`; its key
     /// committed in one place, after the waiting check, and "Paired" set
     /// only right after; the provisional key the only one that signs a
@@ -385,6 +398,15 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// builders and the MAC's key. Across the app: only fixtures (and
     /// tests) conform to the writer seam or build a ceremony, in this
     /// slice.
+    ///
+    /// AMENDED (#166, the S-PAIR-B security review): the provisional key's
+    /// methods are pinned by NAME, not by a receiver spelled `keyring.`
+    /// (B15, B16 and B19 committed from a fixture, through `let f =
+    /// k.commitProvisional` and through a renamed receiver): every site
+    /// naming one is on `provisionalSites`. The writer seam's adoption is
+    /// read over any number of lines, through a refining protocol and
+    /// through a typealias (B11-B13), in every scan copy. And no app source
+    /// has an implicit `.init(` (B10 built a live ceremony with one).
     static func ceremonyFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         let file = CloudKitStructureTests.codeOnly(app.first { $0.path == ceremonyFile }?.text ?? "")
@@ -440,17 +462,22 @@ final class RecordingPairingWriter: PairingResponseWriter {
                       #"\bUserDefaults\b"#, #"\bAppStorage\b"#] where CloudKitStructureTests.hits(token, in: file) {
             failures.append("'\(token)' in the ceremony — nothing of a pairing is logged or kept")
         }
-        let conformance = #"\b(class|struct|actor|enum|extension)\b[^{\n]*:[^{\n]*\bPairingResponseWriter\b"#
+        let conformance = CloudKitStructureTests.adoptionPattern("PairingResponseWriter")
         for (path, text) in app {
             let code = CloudKitStructureTests.codeOnly(text)
             let fixture = path.hasPrefix("\(appDir)/Fixtures/")
-            if !fixture, CloudKitStructureTests.hits(conformance, in: code) {
+            if !fixture, CloudKitStructureTests.constructorScanCopies(code).contains(where: { CloudKitStructureTests.hits(conformance, in: $0) }) {
                 failures.append("\(path) conforms to the pairing writer — only fixtures, until the record path exists")
             }
             if !fixture, CloudKitStructureTests.hits(#"\bPairingCeremony\s*(?:\.\s*init\s*)?\("#, in: code) {
                 failures.append("\(path) builds a ceremony — only the fixture launch, in this slice")
             }
         }
+        failures += CloudKitStructureTests.appSiteFailures(#"\b(?:makeProvisional|signProvisional|commitProvisional)\b"#,
+                                                           in: app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) },
+                                                           allowed: provisionalSites,
+                                                           rule: "the provisional key is made, signs and is committed by the ceremony only")
+        failures += RecordPathStructureTests.implicitInitFailures(app, rule: "a ceremony and its code are built by name only")
         return failures
     }
 
@@ -463,6 +490,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
         }
         let file = Self.ceremonyFile
         let inbox = "\(Self.appDir)/Model/RequestInbox.swift"
+        let fixture = "\(Self.appDir)/Fixtures/FixturePairing.swift"
         let mutants: [(String, [Source])] = [
             ("a scan taken with no match possible", mutate(file) {
                 $0.replacingOccurrences(of: "        guard case .available = biometry else { return }\n", with: "") }),
@@ -494,10 +522,68 @@ final class RecordingPairingWriter: PairingResponseWriter {
             ("a decision signed by the provisional key", mutate(inbox) { $0 + "\nfunc spare(k: PhoneKeyring) { _ = k.signProvisional(m, match: x); _ = keyring.signProvisional(m, match: x) }" }),
             ("a live writer", mutate(inbox) { $0 + "\nstruct SpareWriter: PairingResponseWriter { func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved } }" }),
             ("a live ceremony", mutate(inbox) { $0 + "\nlet spare = PairingCeremony.init(keyring: k, biometrics: b, writer: w)" }),
+            // #166: the security review's B10-B13, B15, B16 and B19, as planted.
+            ("B10: a live ceremony by typed implicit init", mutate(inbox) {
+                $0 + "\nfunc spareCeremony(k: PhoneKeyring, b: any BiometricGate, w: any PairingResponseWriter) -> PairingCeremony { "
+                    + "let c: PairingCeremony = .init(keyring: k, biometrics: b, writer: w); return c }" }),
+            ("B11: a live writer through a refining protocol", mutate(inbox) {
+                $0 + "\nprotocol SneakyWriter: PairingResponseWriter {}\nstruct LivePairingWriter: SneakyWriter { "
+                    + "func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved } }" }),
+            ("B12: a live writer, its conformance on the next line", mutate(inbox) {
+                $0 + "\nstruct LivePairingWriter2:\n    PairingResponseWriter { func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved } }" }),
+            ("B13: a live writer through a typealias", mutate(inbox) {
+                $0 + "\ntypealias PW = PairingResponseWriter\nstruct LivePairingWriter3: PW { "
+                    + "func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved } }" }),
+            ("B15: the provisional key committed from a fixture", mutate(fixture) {
+                $0 + "\nextension FixturePairing { func sneak(k: PhoneKeyring) { _ = k.commitProvisional() } }" }),
+            ("B16: committed through an unapplied reference", mutate(inbox) {
+                $0 + "\nextension RequestInbox { func sneak2(k: PhoneKeyring) { let f = k.commitProvisional; _ = f() } }" }),
+            ("B19: committed through a renamed receiver", mutate(inbox) {
+                $0 + "\nextension RequestInbox { func sneak5() { let k = keyring; _ = k.commitProvisional() } }" }),
+            // … and their neighbours: a writer adopted by an extension over
+            // lines, through a composed alias, behind a block comment holding
+            // a brace; a key made or a proof signed outside the ceremony, on
+            // the keyring's implicit self, or a second time in the ceremony;
+            // and a code built by implicit init.
+            ("a live writer by extension, over lines", mutate(inbox) {
+                $0 + "\nextension RequestInbox:\n    Sendable,\n    PairingResponseWriter {}" }),
+            ("a live writer through a composed typealias", mutate(inbox) {
+                $0 + "\ntypealias PW = Sendable &\n    PairingResponseWriter\nactor LivePairingWriter4: PW {}" }),
+            ("a live writer behind a block comment holding a brace", mutate(inbox) {
+                $0 + "\nstruct LivePairingWriter5 /* { */: PairingResponseWriter {}" }),
+            ("a provisional key made outside the ceremony", mutate(inbox) {
+                $0 + "\nfunc spare(k: PhoneKeyring) -> [UInt8]? { k.makeProvisional() }" }),
+            ("committed on the keyring's implicit self", mutate("\(Self.appDir)/Model/PhoneKeyring.swift") {
+                $0 + "\nextension PhoneKeyring { func spare() -> Bool { commitProvisional() } }" }),
+            ("committed a second time in the ceremony", mutate(file) {
+                $0.replacingOccurrences(of: "        case .saved: phase = .waiting(fingerprint, until: deadline ?? clock())",
+                                        with: "        case .saved: phase = .waiting(fingerprint, until: deadline ?? clock()); _ = keyring.commitProvisional") }),
+            ("a code by implicit init", mutate(file) {
+                $0 + "\nextension PairingCeremony { static func spare(k: [UInt8]) -> KeyFingerprint? { .init(publicKey: k) } }" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.ceremonyFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: a fixture may adopt the writer (it does) on
+        // any number of lines; the seam as a stored existential or a
+        // parameter (the ceremony's own); and a doc comment naming the
+        // shapes.
+        #expect(Self.ceremonyFailures(mutate(fixture) {
+            $0 + "\nactor SpareFixtureWriter:\n    PairingResponseWriter { func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved } }"
+        }).isEmpty)
+        #expect(Self.ceremonyFailures(mutate(inbox) {
+            $0 + "\n/// never protocol P: PairingResponseWriter, never typealias W = PairingResponseWriter, never k.commitProvisional()"
+                + "\nfunc spare(w: any PairingResponseWriter) -> Bool { true }"
+        }).isEmpty)
+        // A conditional conformance and a generic class, each over lines.
+        for probe in ["extension Array:\n    PairingResponseWriter where Element: Sendable {",
+                      "final class X<T: Equatable>: NSObject, @unchecked Sendable,\n    PairingResponseWriter {"] {
+            #expect(CloudKitStructureTests.hits(CloudKitStructureTests.adoptionPattern("PairingResponseWriter"), in: probe), "missed '\(probe)'")
+        }
+        // The seam's own declaration and a protocol extension of it adopt nothing.
+        for probe in ["protocol PairingResponseWriter: Sendable {", "extension PairingResponseWriter where Self: Sendable {"] {
+            #expect(!CloudKitStructureTests.hits(CloudKitStructureTests.adoptionPattern("PairingResponseWriter"), in: probe), "over-match '\(probe)'")
         }
     }
 

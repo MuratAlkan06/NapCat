@@ -138,24 +138,45 @@ import Testing
 
     /// In the app, a request is built only by the strict reader (and by the
     /// fixtures): no other source can put a partial prompt on screen.
+    /// AMENDED (#166): and no app source has an implicit `.init(`, which
+    /// builds one with no `PendingRequest(` to count (the security review's
+    /// B9).
     static func requestBuilders(_ app: [CloudKitStructureTests.Source]) -> [String] {
         app.compactMap { path, text in
             let code = RecordPathStructureTests.constructionSpelling(CloudKitStructureTests.codeOnly(text))
             let count = CloudKitStructureTests.occurrences(of: "PendingRequest(", in: code)
             let allowed = [CloudKitStructureTests.cloudKitFile, "\(CloudKitStructureTests.appDir)/Fixtures/FixtureRequests.swift"]
             return count == (allowed.contains(path) ? 1 : 0) ? nil : "\(path) builds a request \(count) time(s)"
-        }
+        } + RecordPathStructureTests.implicitInitFailures(app, rule: "a request is built only by the strict reader and the fixtures")
     }
 
     @Test func onlyTheStrictReaderBuildsARequest() throws {
         let app = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
         #expect(Self.requestBuilders(app).isEmpty, "\(Self.requestBuilders(app))")
         let inbox = "\(CloudKitStructureTests.appDir)/Model/RequestInbox.swift"
-        for plant in ["let r = PendingRequest(id: i, toolName: t, inputPreview: \"\", projectLabel: \"\", createdAt: c, expiresAt: e)",
-                      "let r = PendingRequest.init(id: i, toolName: t, inputPreview: p, projectLabel: l, createdAt: c, expiresAt: e)"] {
-            let mutant = app.map { $0.path == inbox ? ($0.path, $0.text + "\n" + plant) : $0 }
+        let fixture = "\(CloudKitStructureTests.appDir)/Fixtures/FixtureRequests.swift"
+        for (path, plant) in [
+            (inbox, "let r = PendingRequest(id: i, toolName: t, inputPreview: \"\", projectLabel: \"\", createdAt: c, expiresAt: e)"),
+            (inbox, "let r = PendingRequest.init(id: i, toolName: t, inputPreview: p, projectLabel: l, createdAt: c, expiresAt: e)"),
+            // #166: the security review's B9, as planted, and its neighbours:
+            // returned, as an argument, split over two lines, and a second
+            // one in the fixtures (which may build exactly one, by name).
+            (inbox, "func spareRequest(i: PromptID, c: Date) -> PendingRequest? { let r: PendingRequest? = .init(id: i, toolName: \"Bash\", "
+                + "inputPreview: \"\", projectLabel: \"\", createdAt: c, expiresAt: c); return r }"),
+            (inbox, "func spare(i: PromptID, c: Date) -> PendingRequest? {\n    return .init(id: i, toolName: t, inputPreview: p, "
+                + "projectLabel: l, createdAt: c, expiresAt: c)\n}"),
+            (inbox, "func spare(i: PromptID, c: Date) { show(.init(id: i, toolName: t, inputPreview: p, projectLabel: l, createdAt: c, expiresAt: c)) }"),
+            (inbox, "let r: PendingRequest? =\n    .init(id: i, toolName: t, inputPreview: p, projectLabel: l, createdAt: c, expiresAt: e)"),
+            (fixture, "let spare: PendingRequest? = .init(id: i, toolName: t, inputPreview: p, projectLabel: l, createdAt: c, expiresAt: e)"),
+        ] {
+            let mutant: [CloudKitStructureTests.Source] = app.map { $0.path == path ? ($0.path, $0.text + "\n" + plant) : $0 }
+            #expect(mutant.map(\.text) != app.map(\.text), "canary '\(plant)' did not apply")
             #expect(!Self.requestBuilders(mutant).isEmpty, "canary '\(plant)' was NOT caught")
         }
+        // A doc comment may name the implicit init it rules out.
+        #expect(Self.requestBuilders(app.map {
+            $0.path == inbox ? ($0.path, $0.text + "\n/// never let r: PendingRequest? = .init(…) here") : $0
+        }).isEmpty)
     }
 
     // MARK: The prompt push
