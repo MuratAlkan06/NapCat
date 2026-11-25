@@ -245,9 +245,19 @@ struct CloudKitPairingRecordsTests {
 
     // MARK: Only a pairing record's name; no iCloud, no harm
 
-    static let malformedNames = ["", String(name.dropLast()), name + "0", name.uppercased(), name + "\n",
-                                 String(name.dropLast()) + "g", " " + String(name.dropFirst()), String(name.prefix(32)),
-                                 String(name.prefix(32)) + "-decision", "../" + String(name.dropFirst(3))]
+    static let malformedNames: [String] = {
+        let empty = ""
+        let short = String(name.dropLast())
+        let long = name + "0"
+        let upper = name.uppercased()
+        let newline = name + "\n"
+        let misdigit = String(name.dropLast()) + "g"
+        let padded = " " + String(name.dropFirst())
+        let half = String(name.prefix(32))
+        let suffixed = String(name.prefix(32)) + "-decision"
+        let traversal = "../" + String(name.dropFirst(3))
+        return [empty, short, long, upper, newline, misdigit, padded, half, suffixed, traversal]
+    }()
 
     /// Nothing is fetched or deleted by a name of any other shape: no
     /// database is even asked for.
