@@ -77,6 +77,8 @@ final class PairingCeremony {
         case unconfirmed
         /// The confirm came, but the key could not be kept.
         case notKept
+        /// The camera's scanner would not start: nothing was scanned.
+        case noCamera
     }
 
     /// The window from the scan: the Mac's code lives five minutes.
@@ -114,13 +116,14 @@ final class PairingCeremony {
 
     /// The one scan. Anything after the first is ignored, and so is a scan
     /// while no match can happen: it is not taken, and the ceremony waits
-    /// at its start.
-    func scanned(_ payload: String) async {
+    /// at its start. The code comes from the camera alone (`ScannedCode`,
+    /// S-PAIR-C1.6), or from a fixture launch's own code.
+    func scanned(_ code: ScannedCode) async {
         guard phase == .scanning else { return }
         refreshBiometry()
         guard case .available = biometry else { return }
         deadline = clock().addingTimeInterval(Self.window)
-        guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {
+        guard let nonce = ApprovalSigning.pairingNonce(fromPayload: code.payload) else {
             phase = .refused
             return
         }
@@ -170,6 +173,14 @@ final class PairingCeremony {
             return
         }
         phase = .paired(fingerprint)
+    }
+
+    /// The live scanner would not start (the camera can't be used): the
+    /// ceremony ends at its start, so the screen says why and offers Scan
+    /// Again instead of a dark viewfinder. Only before the scan.
+    func scannerFailed() {
+        guard phase == .scanning else { return }
+        end(.failed(.noCamera))
     }
 
     /// The owner closed the ceremony: the provisional key goes, the

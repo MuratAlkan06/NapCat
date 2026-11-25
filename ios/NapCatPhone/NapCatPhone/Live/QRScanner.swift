@@ -10,7 +10,9 @@ enum CameraState: Equatable, Sendable, CaseIterable {
     case notAsked
     /// Refused in Settings, or restricted on this iPhone.
     case off
-    /// This device has no scanner (the simulator).
+    /// This device has no scanner (the simulator), or NapCat may use the
+    /// camera but VisionKit can't scan with it (`isAvailable` false): not a
+    /// setting the owner turned off.
     case unsupported
 }
 
@@ -33,9 +35,19 @@ struct LiveCameraAccess: CameraAccess {
     var isLive: Bool { true }
 
     func state() -> CameraState {
-        guard DataScannerViewController.isSupported else { return .unsupported }
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized: return DataScannerViewController.isAvailable ? .ready : .off
+        Self.state(supported: DataScannerViewController.isSupported, authorization: AVCaptureDevice.authorizationStatus(for: .video),
+                   available: DataScannerViewController.isAvailable)
+    }
+
+    /// The reading from VisionKit's support, the camera's authorization and
+    /// VisionKit's availability. A camera NapCat may use that VisionKit
+    /// still can't scan with reads as unsupported, never off: the owner
+    /// turned nothing off, so no line may send them to Settings to turn it
+    /// on.
+    nonisolated static func state(supported: Bool, authorization: AVAuthorizationStatus, available: Bool) -> CameraState {
+        guard supported else { return .unsupported }
+        switch authorization {
+        case .authorized: return available ? .ready : .unsupported
         case .notDetermined: return .notAsked
         case .denied, .restricted: return .off
         @unknown default: return .off
@@ -48,13 +60,33 @@ struct LiveCameraAccess: CameraAccess {
     }
 }
 
+/// A pairing code as the camera read it (F4 slice S-PAIR-C1.6, #172): the
+/// only thing a ceremony scans (`PairingCeremony.scanned`). Outside the
+/// fixtures it is built in ONE place, the live scanner's hand-on of the
+/// first QR code it reads (lint-locked), so a code reaches a live ceremony
+/// through the camera alone: the app takes none from a URL, a deep link,
+/// the pasteboard or a launch argument. What it holds is read strictly by
+/// the ceremony and never shown, logged or kept: it describes, prints and
+/// reflects as its type's name alone.
+struct ScannedCode: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let payload: String
+
+    var description: String { "ScannedCode(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
+
 /// The live viewfinder: VisionKit's data scanner, QR codes only, one item
 /// at a time, with Apple's own guidance and highlighting. It hands on the
 /// FIRST code it reads and stops: one scan per ceremony, checked again by
 /// the ceremony itself. What a code says is never shown; the ceremony reads
-/// it strictly or refuses it.
+/// it strictly or refuses it. A scanner VisionKit won't start is reported
+/// (`failed`), never left as a dark viewfinder.
 struct QRScannerView: UIViewControllerRepresentable {
-    let scanned: @MainActor (String) -> Void
+    let scanned: @MainActor (ScannedCode) -> Void
+    /// Told when VisionKit won't start the scanner (the camera can't be
+    /// used), after the update that tried. What VisionKit said is not kept.
+    let failed: @MainActor () -> Void
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], qualityLevel: .balanced,
@@ -66,7 +98,13 @@ struct QRScannerView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
         guard !context.coordinator.handedOn, !scanner.isScanning else { return }
-        try? scanner.startScanning()
+        do {
+            try scanner.startScanning()
+        } catch {
+            // Reported on the next turn: the ceremony's phase must not
+            // change inside this view update.
+            Task { failed() }
+        }
     }
 
     static func dismantleUIViewController(_ scanner: DataScannerViewController, coordinator: Coordinator) {
@@ -79,11 +117,11 @@ struct QRScannerView: UIViewControllerRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-        let scanned: @MainActor (String) -> Void
+        let scanned: @MainActor (ScannedCode) -> Void
         /// Set once the first code is handed on; nothing after it is.
         private(set) var handedOn = false
 
-        init(scanned: @escaping @MainActor (String) -> Void) {
+        init(scanned: @escaping @MainActor (ScannedCode) -> Void) {
             self.scanned = scanned
         }
 
@@ -94,7 +132,7 @@ struct QRScannerView: UIViewControllerRepresentable {
                 guard case .barcode(let code) = item, let payload = code.payloadStringValue else { continue }
                 handedOn = true
                 dataScanner.stopScanning()
-                scanned(payload)
+                scanned(ScannedCode(payload: payload))
                 return
             }
         }

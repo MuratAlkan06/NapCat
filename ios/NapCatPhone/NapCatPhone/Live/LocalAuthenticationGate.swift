@@ -11,6 +11,8 @@ import LocalAuthentication
 /// the one signature it authorizes (the key is restored with it, so one
 /// match covers this check and the key's), and invalidated after it. The
 /// gate keeps nothing: every context is a local of the call that made it.
+/// A failed evaluation is logged on the N-25 line (`SigningFailureLog`),
+/// by its domain and code only.
 struct LocalAuthenticationGate: BiometricGate {
     static let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
 
@@ -36,6 +38,7 @@ struct LocalAuthenticationGate: BiometricGate {
             return .confirmed(LocalAuthenticationMatch(context))
         } catch {
             context.invalidate()
+            SigningFailureLog.record(error)
             return .notConfirmed
         }
     }

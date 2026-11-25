@@ -757,7 +757,7 @@ arms anything.
     window; no release could ship with the pairing button over it. Tests
     play CloudKit's part with records built in memory and touch no
     keychain, defaults or iCloud. S-PAIR-C1.5 replaced the stub.
-- **S-PAIR-C1.5** (this slice, issue #170). The live pairing transport:
+- **S-PAIR-C1.5** (issue #170). The live pairing transport:
   both devices learn to move the one pairing record for real. Nothing
   arms: the verifier is still unwired, and the approval files' one armed
   literal is still `armed: { false }`.
@@ -799,7 +799,8 @@ arms anything.
     builds it yet: the pairing screen still opens for a `-NapCatPairing`
     fixture launch only, the phone's approvals seam has no live conformer,
     and nothing creates the approvals zone. The phone's live pairing entry
-    point, its live database and the zone are a later slice.
+    point, its live database and the zone are a later slice: S-PAIR-C1.6
+    built them.
   - *Locks that rode along.* No reflection anywhere in the Mac's four
     targets but the redactions' own childless mirrors; the values holding
     the nonce or the payload (the state machine, the event that hands the
@@ -861,11 +862,87 @@ arms anything.
     a tampered record refused, a phone that cancels after the Mac, a
     rotation, Unpair's kill switch, and the sheet under Full Keyboard
     Access.
-- **Next.** The phone's live pairing entry point (its live approvals
-  database, the approvals zone, and the pairing screen outside the fixture
-  launch), the owner-run Production schema deploy of the PairingResponse
-  record type, then S-PAIR-C2 (the verifier wired as the only road from a
-  reading to the lifecycle, and "paired" as a precondition for arming).
+- **S-PAIR-C1.6** (this slice, issue #172). The phone goes live and the
+  zone exists. Nothing arms: the verifier is still unwired, the approval
+  files' one armed literal is still `armed: { false }`, and the phone's
+  decision writer is still built by no app source.
+  - *The phone's live database* (`LiveCloudKitApprovalDatabase`, in the
+    receiver's CloudKit file). The record path's seam gets its one app
+    conformer, lint-locked to its declaration's line and pinned whole: the
+    owner's private database, built by `makeLiveApprovalDatabase()` behind
+    the same `LiveCapability` guard as the alert lane's (the file's second
+    container site), so a simulator build gets none. It checks what it is
+    handed (`isPairingResponseCreation`): one new PairingResponse record, in
+    this account's approvals zone, named by 64 lowercase hex digits, saved
+    under `.ifServerRecordUnchanged`, deleting nothing. Anything else (a
+    decision, a prompt, a deletion, an overwrite) is never added; its own
+    result block is told `invalidArguments`, so the writer reads a closed
+    failure.
+  - *The live wiring* (`LivePairing`). Made once per launch by the live
+    inbox's factory, over the keyring the inbox signs with, so the key a
+    pairing commits is the key every answer is signed by. It builds
+    `CloudKitPairingResponseWriter` at its one site, over the live
+    database; a build that cannot hold the iCloud entitlement gets
+    `UnsentPairingWriter`, which writes nothing, and its pairing ends
+    "Unsent — couldn't save to iCloud". The live types and the factory are
+    named on their pinned lines alone, app-wide.
+  - *The approvals zone.* Before the pairing's save, the live database
+    looks the zone up by its ID and creates it only when the lookup finds
+    it missing (`zoneNotFound` or `userDeletedZone`): one zone saved, none
+    deleted, at one site, so an existing zone is never saved over. The
+    zone's own result decides: CloudKit reports a missing zone on the zone
+    and hands the lookup's result block a success, so a lookup that read
+    that block alone would never find the zone missing (found on the
+    simulator's CloudKit while this slice was built, and pinned by a test).
+    Whatever the zone steps come to, the save runs next and its own result
+    decides: a zone that could not be made fails it (`zoneNotFound`,
+    unsent), dark, never a crash.
+  - *The entry point.* Settings gains a Pairing section with one row, Pair
+    with Mac, shown when the launch has a live pairing. Each tap makes a
+    new ceremony (`makeCeremony`, its one site) and opens the pairing sheet
+    over Settings; nothing else opens it (no launch, appearance or task).
+    The `-NapCatPairing` fixture launch stays, over its fixture ceremony.
+  - *The code from the camera only.* What a ceremony scans is a
+    `ScannedCode`, built outside the fixtures at one site: the live
+    scanner's hand-on of the first QR code it reads (VisionKit, QR codes
+    only). It describes, prints and reflects as its type's name alone (the
+    one childless mirror the phone admits). No app source takes anything in
+    from a URL, a deep link, a user activity, a shortcut, the pasteboard, a
+    drop, a file, a photo or the launch options, and the app declares no
+    URL scheme, activity type or associated domain (lint-locked, and read
+    back from the built app's Info.plist).
+  - *The scanner's start.* A scanner VisionKit will not start ends the
+    ceremony at its start on the closed `.noCamera` failure, with Scan
+    Again and Close, instead of a dark viewfinder (the design review's fix).
+  - *The signing line (N-25).* A failed biometric evaluation, key making,
+    restore or signature is logged on one fixed public line in the
+    `signing` category: a domain from a closed table (LocalAuthentication,
+    OSStatus, CryptoKit's wrapped status, CryptoKit, other) and a number,
+    never the error's own text. The device drills read it with `log
+    stream`.
+  - *Face ID stays at the scan.* The mirror copy as ratified put the phone's
+    one Face ID at its Codes Match ("…then confirm here with Face ID"). It
+    cannot move there without a protocol change: the response record
+    carries the proof, which the new key signs; the key signs only after a
+    biometric match (its one access control, no fallback); and the Mac
+    checks the proof on the first record it fetches, before either device
+    compares codes. So the ceremony's one match stays at the scan and signs
+    the proof, and Codes Match commits the key with no prompt (cancel and a
+    mismatch need none). The design review ratified this: Face ID stays at
+    the scan, where the pairing proof is signed, and Codes Match commits
+    without a prompt; the phone-mirror copy was amended to match in the
+    design spec.
+  - *Verification split.* CI plays CloudKit's part on the real operations:
+    the zone's lookup and creation with their callbacks fired by hand, the
+    live database's admission check over every refused shape, and the
+    unentitled wiring end to end. Owed live, after the owner deploys the
+    PairingResponse record type to Production: the first live ceremony
+    (which creates the zone), a pairing with the zone already there, and
+    the N-25 line read during the device drills.
+- **Next.** The owner-run Production schema deploy of the PairingResponse
+  record type and the first live ceremony with its drills, then S-PAIR-C2
+  (the verifier wired as the only road from a reading to the lifecycle, and
+  "paired" as a precondition for arming).
   Owed live drill: a forwarded prompt with an NFD file name and non-ASCII
   text verifies end to end on real CloudKit, which also proves the
   whole-second time's round trip.

@@ -108,10 +108,13 @@ import Testing
     /// The gate's confirmation, whole (#168): a fresh local context with no
     /// fallback button, one evaluation, the carrier on a match, and the
     /// context invalidated on every other way out.
+    /// AMENDED (S-PAIR-C1.6, #172, N-25): a failed evaluation is logged on
+    /// the one signing line (`SigningFailureLog.record`), by its domain and
+    /// code, after the context is invalidated.
     static let confirmBody = "let context = LAContext() context.localizedFallbackTitle = \"\" "
         + "do { guard try await context.evaluatePolicy(Self.policy, localizedReason: reason) else { "
         + "context.invalidate() return .notConfirmed } return .confirmed(LocalAuthenticationMatch(context)) } "
-        + "catch { context.invalidate() return .notConfirmed }"
+        + "catch { context.invalidate() SigningFailureLog.record(error) return .notConfirmed }"
 
     @Test func aContextIsMadeEvaluatedAndHandedOnInOnePlace() throws {
         let app = try Self.app()
@@ -155,11 +158,13 @@ import Testing
     // MARK: 2. Restored with that context, once; the match ends after
 
     static let signHead = "func sign(_ message: [UInt8], with keyData: Data, match: any BiometricMatch) -> SigningOutcome {"
+    /// AMENDED (S-PAIR-C1.6, #172, N-25): a failed restore or signature is
+    /// logged on the one signing line, by its domain and code.
     static let signBody = "defer { match.invalidate() } "
         + "guard match.isValid, let context = (match as? LocalAuthenticationMatch)?.context else { return .notAuthorized } "
         + "do { let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keyData, authenticationContext: context) "
         + "return .signed(try key.signature(for: SHA256.hash(data: message)).rawRepresentation) } "
-        + "catch { return Self.outcome(of: error) }"
+        + "catch { SigningFailureLog.record(error) return Self.outcome(of: error) }"
 
     /// The enclave's one unwrapping of the carrier: its one cast to
     /// `LocalAuthenticationMatch`, and the one read of its context.
@@ -374,8 +379,8 @@ import Testing
 
     static let enclaveBindings: [String: Int] = [
         "var isAvailable: Bool { SecureEnclave.isAvailable }": 1,
-        "guard SecureEnclave.isAvailable, let access = Self.accessControl(),": 1,
-        "let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else { return nil }": 1,
+        "guard SecureEnclave.isAvailable, let access = Self.accessControl() else { return nil }": 1,
+        "let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)": 1,
         unwrap: 1,
         "let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keyData, authenticationContext: context)": 1,
         "if case CryptoKitError.underlyingCoreCryptoError(let status) = error {": 1,

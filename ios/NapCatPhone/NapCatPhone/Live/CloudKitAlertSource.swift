@@ -4,8 +4,10 @@ import NapCatWire
 import os
 
 /// THE ONE CloudKit FILE of the receiver: the only file that imports
-/// CloudKit and the only place a container is built (`makeLive()`, behind
-/// `LiveCapability`). `CloudKitStructureTests` locks both.
+/// CloudKit and the only file that builds a container, in two places, each
+/// behind `LiveCapability`: `makeLive()` for the alerts and, since
+/// S-PAIR-C1.6 (#172), `makeLiveApprovalDatabase()` for the pairing
+/// response. `CloudKitStructureTests` locks both.
 ///
 /// It reads what the Mac's `CloudKitMessageSender` writes: one record per
 /// alert in the owner's PRIVATE database, default zone of
@@ -49,6 +51,17 @@ actor CloudKitAlertSource: AlertSource {
         guard LiveCapability.isAvailable else { return nil }
         let container = CKContainer(identifier: AlertWire.containerIdentifier)
         return CloudKitAlertSource(database: LiveCloudKitAlertDatabase(container: container))
+    }
+
+    /// S-PAIR-C1.6 (#172): the OTHER place a container is built, for the
+    /// approvals database the pairing response is written through, behind
+    /// the same `LiveCapability` guard (an unentitled build gets nil, and its
+    /// pairing writes nothing: `UnsentPairingWriter`). Called once, by the
+    /// live pairing's wiring (`LivePairing.make`).
+    static func makeLiveApprovalDatabase() -> (any CloudKitApprovalDatabase)? {
+        guard LiveCapability.isAvailable else { return nil }
+        let container = CKContainer(identifier: ApprovalWire.containerIdentifier)
+        return LiveCloudKitApprovalDatabase(container: container)
     }
 
     // MARK: - AlertSource
@@ -360,7 +373,7 @@ actor CloudKitAlertSource: AlertSource {
         return only
     }
 
-    // MARK: - F4 pairing (slice S-PAIR-C1.5; built and tested here, run by nothing yet)
+    // MARK: - F4 pairing (slice S-PAIR-C1.5; run since S-PAIR-C1.6 by the live pairing)
 
     /// The pairing response's record: in the approvals zone, named by the
     /// name the Mac's nonce derives (64 lowercase hex digits; the response
@@ -437,6 +450,93 @@ actor CloudKitAlertSource: AlertSource {
         case .failed: return .failed
         case .unconfirmed: return .unconfirmed
         }
+    }
+
+    /// What the live approvals database runs (S-PAIR-C1.6, #172), checked on
+    /// the operation it is handed: the pairing response's create-only save
+    /// and nothing else. Exactly one record to save and none to delete; a
+    /// PairingResponse, NEW (no change tag), in this account's approvals
+    /// zone, named by 64 lowercase hex digits; saved under
+    /// `.ifServerRecordUnchanged`, so a response saved already is refused,
+    /// never overwritten. A decision, a prompt, a deletion or an overwrite is
+    /// never run: decisions stay unwired, and nothing arms.
+    static func isPairingResponseCreation(_ operation: CKModifyRecordsOperation) -> Bool {
+        guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true,
+              let records = operation.recordsToSave, records.count == 1, let record = records.first,
+              record.recordType == ApprovalWire.RecordType.pairingResponse.rawValue, record.recordChangeTag == nil,
+              record.recordID.zoneID == approvalsZoneID else { return false }
+        let hex = Set("0123456789abcdef".utf8)
+        let name = record.recordID.recordName.utf8
+        return name.count == ApprovalSigning.recordNameHexDigits && name.allSatisfy(hex.contains)
+    }
+
+    // MARK: - F4 approvals zone (slice S-PAIR-C1.6; run by the live approvals database)
+
+    /// The approvals zone's lookup, the first step of every pairing write
+    /// (S-PAIR-C1.6, #172): the zone fetched by its ID, as Apple directs for
+    /// a zone that may exist already (a zone object is never built for an
+    /// existing zone). `then` hears once whether the zone is MISSING
+    /// (`isZoneMissing`). A zone that exists, or a lookup that failed any
+    /// other way, is not missing: nothing is created, and the pairing's save
+    /// that follows decides on its own.
+    ///
+    /// The zone's OWN result decides first: CloudKit reports a zone that is
+    /// not there on the zone (`perRecordZoneResultBlock`), and hands the
+    /// lookup's result block a success for it (a partial failure never
+    /// reaches that block as one: proven on the simulator's CloudKit), so a
+    /// lookup that read its result block alone would never find the zone
+    /// missing, and never create it.
+    static func makeApprovalsZoneLookup(then: @escaping @Sendable (Bool) -> Void) -> CKFetchRecordZonesOperation {
+        let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID])
+        lookup.configuration = approvalsZoneConfiguration
+        let found = ZoneLookupResult()
+        lookup.perRecordZoneResultBlock = { _, result in found.note(result) }
+        lookup.fetchRecordZonesResultBlock = { batch in
+            guard let result = found.finish(batch: batch) else { return }
+            guard case .failure(let error) = result else { return then(false) }
+            let missing = isZoneMissing(error)
+            if !missing { logger.error("approvals zone lookup failed (code \(code(of: error)))") }
+            then(missing)
+        }
+        return lookup
+    }
+
+    /// THE approvals zone's creation, its one site (S-PAIR-C1.6, #172):
+    /// create only. One zone saved, none deleted, and only after the lookup
+    /// found it missing, so an existing zone is never saved over. `then`
+    /// runs once it ends, created or not: a zone still missing fails the
+    /// save after it (`zoneNotFound` reads as unsent, dark), and a failure
+    /// here, the zone's own or the operation's, is logged by its code.
+    static func makeApprovalsZoneCreation(then: @escaping @Sendable () -> Void) -> CKModifyRecordZonesOperation {
+        let creation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: approvalsZoneID)],
+                                                    recordZoneIDsToDelete: nil)
+        creation.configuration = approvalsZoneConfiguration
+        creation.perRecordZoneSaveBlock = { _, result in
+            if case .failure(let error) = result { logger.error("approvals zone not created (code \(code(of: error)))") }
+        }
+        creation.modifyRecordZonesResultBlock = { result in
+            if case .failure(let error) = result { logger.error("approvals zone not created (code \(code(of: error)))") }
+            then()
+        }
+        return creation
+    }
+
+    /// A lookup's error that says the zone is not there: `zoneNotFound`, or
+    /// `userDeletedZone` (the owner deleted the app's iCloud data, and now
+    /// pairs again), on its own or as a one-item partial failure.
+    static func isZoneMissing(_ error: any Error) -> Bool {
+        let nsError = recordLevelError(error as NSError)
+        return nsError.domain == CKErrorDomain
+            && (nsError.code == CKError.Code.zoneNotFound.rawValue || nsError.code == CKError.Code.userDeletedZone.rawValue)
+    }
+
+    /// The zone steps' ceilings: the pairing's save's own.
+    static var approvalsZoneConfiguration: CKOperation.Configuration {
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        return configuration
     }
 
     /// Accounts other than `available` cannot receive anything.
@@ -516,16 +616,46 @@ private struct LiveCloudKitAlertDatabase: CloudKitAlertDatabase {
 
 /// THE seam over CloudKit I/O for decisions (and, since S-PAIR-C1.5, the
 /// pairing response): run this operation against the owner's private
-/// database. In this slice nothing in the app conforms (lint-locked): the
-/// approvals zone and its schema are not deployed, so only test fakes run
-/// the operations built here.
+/// database. Since S-PAIR-C1.6 (#172) the app has ONE conformer,
+/// `LiveCloudKitApprovalDatabase` (lint-locked to its declaration's line),
+/// and it runs the pairing response's save alone; test fakes play the rest.
 protocol CloudKitApprovalDatabase: Sendable {
     func submit(_ operation: CKModifyRecordsOperation)
 }
 
+/// The live approvals database (S-PAIR-C1.6, #172): the owner's PRIVATE
+/// database, built only by `CloudKitAlertSource.makeLiveApprovalDatabase()`.
+/// It checks what it is handed (`CloudKitAlertSource.isPairingResponseCreation`)
+/// and runs the pairing response's create-only save and nothing else.
+/// Anything else is never added: its own result block is told
+/// `invalidArguments`, so its writer reads a closed failure and never hangs.
+///
+/// Before the save, the approvals zone: looked up, and created only when
+/// missing, the app's one zone creation (zone-exists is success). Whatever
+/// that came to, the save runs next, and its own result decides: a zone
+/// that could not be made fails it (`zoneNotFound`), dark, never a crash.
+private struct LiveCloudKitApprovalDatabase: CloudKitApprovalDatabase {
+    let container: CKContainer
+
+    func submit(_ operation: CKModifyRecordsOperation) {
+        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {
+            operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
+            return
+        }
+        let database = container.privateCloudDatabase
+        database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in
+            if missing {
+                database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })
+            } else {
+                database.add(operation)
+            }
+        })
+    }
+}
+
 /// The CloudKit `DecisionWriter`: one signed decision record per answer
 /// (`CloudKitAlertSource.makeDecisionRecord`), saved through the seam. Built
-/// by no app source yet (lint-locked).
+/// by no app source yet (lint-locked): nothing arms.
 struct CloudKitDecisionWriter: DecisionWriter {
     let database: any CloudKitApprovalDatabase
 
@@ -543,8 +673,9 @@ struct CloudKitDecisionWriter: DecisionWriter {
 /// one record (`CloudKitAlertSource.makePairingResponseRecord`), created
 /// through the approvals seam and never an overwrite. A response saved
 /// already for the code reads as `alreadyAnswered`, and the record the
-/// server holds is never read or adopted. Built by no app source yet
-/// (lint-locked): the pairing screen opens for a fixture launch only.
+/// server holds is never read or adopted. Built once, by the live pairing's
+/// wiring (`LivePairing.make`, S-PAIR-C1.6), over the live approvals
+/// database (lint-locked).
 struct CloudKitPairingResponseWriter: PairingResponseWriter {
     let database: any CloudKitApprovalDatabase
 
@@ -582,5 +713,29 @@ private final class CreatedRecordResult: @unchecked Sendable {
         guard !finished else { return nil }
         finished = true
         return CloudKitAlertSource.decisionOutcome(record: record, batch: batch)
+    }
+}
+
+/// Holds the approvals zone's own failure, if its lookup reported one,
+/// until the lookup's result arrives, then says once what the lookup came
+/// to (S-PAIR-C1.6, #172): the zone's failure first, else the lookup's
+/// result. A zone found is dropped unread: only whether it failed, and why.
+private final class ZoneLookupResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var zoneFailure: (any Error)?
+    private var finished = false
+
+    func note(_ result: Result<CKRecordZone, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if case .failure(let error) = result, zoneFailure == nil { zoneFailure = error }
+    }
+
+    func finish(batch: Result<Void, any Error>) -> Result<Void, any Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return nil }
+        finished = true
+        return zoneFailure.map { .failure($0) } ?? batch
     }
 }

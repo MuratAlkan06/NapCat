@@ -103,13 +103,19 @@ final class RequestInbox {
     @ObservationIgnored private let biometrics: any BiometricGate
     @ObservationIgnored private let keyring: PhoneKeyring
     @ObservationIgnored private let clock: () -> Date
+    /// The live pairing over this inbox's own key (F4, slice S-PAIR-C1.6):
+    /// Settings' Pair with Mac opens its ceremonies, and the key one commits
+    /// is the key this inbox signs with. nil for a fixture inbox, whose key
+    /// is software, and in tests.
+    let pairing: LivePairing?
 
     /// `clock` is this phone's wall clock (a test seam, like the others).
-    init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring,
+    init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring, pairing: LivePairing? = nil,
          clock: @escaping () -> Date = Date.init) {
         self.writer = writer
         self.biometrics = biometrics
         self.keyring = keyring
+        self.pairing = pairing
         self.clock = clock
         self.biometry = biometrics.availability()
         self.keyHealth = keyring.health()
@@ -119,14 +125,15 @@ final class RequestInbox {
     /// request, answered by a fixture writer and signed by a fixture key;
     /// otherwise the inbox starts empty, signs with this phone's own key
     /// (the Secure Enclave, the keychain) and writes nothing (no record path
-    /// reaches the Mac yet). Both ask the real biometric gate before every
-    /// answer.
+    /// reaches the Mac yet), and the live pairing (S-PAIR-C1.6) is made over
+    /// that same key. Both ask the real biometric gate before every answer.
     static func make(options: LaunchOptions, now: Date) -> RequestInbox {
         let biometrics = LocalAuthenticationGate()
         guard let state = options.request else {
             let keyring = PhoneKeyring(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(),
                                        enrollment: LocalAuthenticationEnrollment())
-            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring)
+            return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring,
+                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))
         }
         return FixtureRequests.inbox(state, now: now, biometrics: biometrics)
     }
