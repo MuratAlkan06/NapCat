@@ -620,6 +620,21 @@ final class RecordingPairingWriter: PairingResponseWriter {
                 $0 + "\ntypealias SpareSeam = PairingResponseWriter\nclass SpareBase:\n    SpareSeam, @unchecked Sendable {}" }),
             ("a fixture class final in a block comment only", mutate(fixture) {
                 $0 + "\n/* final */ class SpareBase: PairingResponseWriter, @unchecked Sendable {}" }),
+            // The C1 security delta check's (e), its PN1 as planted: an
+            // identifier named `final` ending the line above a plain fixture
+            // class read as that class's `final`; and its neighbours — a real
+            // `final` alone on the line above, and a `final` name on its own.
+            ("PN1: an identifier named final above a plain fixture class, subclassed live",
+             RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\nenum ReviewerFlags { static let final = true }\nlet reviewerFlag = ReviewerFlags.final\n"
+                    + "class ReviewerFixtureBaseWriter: PairingResponseWriter, @unchecked Sendable {\n"
+                    + "    func write(_ response: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }, inbox) {
+                $0 + "\nfinal class ReviewerLiveWriter: ReviewerFixtureBaseWriter, @unchecked Sendable {}" }),
+            ("final alone on the line above the class", mutate(fixture) {
+                $0 + "\nfinal\nclass SpareBase: PairingResponseWriter, @unchecked Sendable {}" }),
+            ("a name spelled final in a fixture", mutate(fixture) { $0 + "\nlet final = 1" }),
+            ("final as a member's modifier in a fixture", mutate(fixture) {
+                $0 + "\nfinal class SpareA: @unchecked Sendable { final func f() {} }" }),
             // S-PAIR-C1.5 (#170): the live writer's exact-line pin — a second
             // live writer beside it, its pinned line copied, its clause moved
             // onto the next line, the seam handed on by an extension there,

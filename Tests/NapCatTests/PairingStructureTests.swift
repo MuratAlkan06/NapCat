@@ -34,6 +34,16 @@ import Testing
 /// item private to it and pins every name that leads to the real keychain;
 /// lock 2 pins every line of the sheet naming the payload and its one image;
 /// lock 6 is new.
+///
+/// AMENDED (S-PAIR-C1.5, #170, the C1 security delta check's follow-ups): lock 1
+/// also pins every use of the keychain store's calls and every account it
+/// sets (d); lock 6 pins the live record source in the wiring and the
+/// remembered name read from the app's own domain; and lock 7 is new:
+///
+/// 7. Nothing reflects, and the code never prints: no reflection in the four
+///    targets but the redactions' own empty mirrors (a); the values holding
+///    the nonce or the payload redact themselves, as types (b); and the QR
+///    view is named at its sites alone (c).
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -183,8 +193,24 @@ struct PairingStructureTests {
         }
         failures += appSiteFailures(#"\bitems\b"#, in: sources.filter { $0.name == slotFile }, allowed: slotItemSites,
                                     rule: "the slot's item is private to it, handed on once and used at its three sites")
+        // S-PAIR-C1.5 (the C1 security delta check's (d)): inside the keychain store every use of its
+        // calls is pinned, and the item's account is set at one place, from
+        // its name — no hand-built query reaches the paired item.
+        failures += appSiteFailures(#"\bcalls\b"#, in: sources.filter { $0.name == storeFile }, allowed: [storeFile: callsSites],
+                                    rule: "the store's four keychain calls are made at their four sites, on its own query")
+        failures += appSiteFailures(#"\bkSecAttrAccount\b"#, in: sources, allowed: [storeFile: [accountLine: 1]],
+                                    rule: "an item's account is set at one place, in the store's base query, from its name")
         return ApprovalRecordPathStructureTests.unique(failures)
     }
+
+    static let storeFile = "KeychainTopicStore.swift"
+    static let accountLine = "kSecAttrAccount as String: item.account,"
+    /// Every `calls` in the store's file: its stored calls, the two real
+    /// stores handed the real ones, and its four uses.
+    static let callsSites = ["let calls: KeychainItemCalls": 1, topicStoreLine: 1, itemLine: 1,
+                             "let answer = calls.copyData(readQuery)": 1,
+                             "let updated = calls.update(baseQuery, [kSecValueData as String: data])": 1,
+                             "let added = calls.add(addAttributes(data))": 1, "let status = calls.delete(baseQuery)": 1]
 
     @Test func theComparisonCannotBeSkipped() throws {
         let sources = try ApprovalChannelStructureTests.sources()
@@ -262,6 +288,17 @@ struct PairingStructureTests {
             ("a third store in the store's own body, on the topic store's calls", Self.mutate(sources, store) {
                 $0.replacingOccurrences(of: insideStore, with: "    static let zz = Self(item: .init(service: s, account: a), calls: "
                                         + Self.topicItem + ".calls)\n" + insideStore) }),
+            // The C1 security delta check's (d): a hand-built query written through the store's own
+            // calls, inside its file; an account set anywhere else.
+            ("a hand-built paired-key write through the store's calls", Self.mutate(sources, store) {
+                $0 + "\nextension KeychainTopicStore {\n    func zz(_ d: Data) -> OSStatus {\n"
+                    + "        calls.add([kSecClass as String: kSecClassGenericPassword, kSecValueData as String: d])\n    }\n}" }),
+            ("the calls kept aside", Self.mutate(sources, store) {
+                $0 + "\nextension KeychainTopicStore { var zz: KeychainItemCalls { calls } }" }),
+            ("an account set elsewhere", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz: [String: Any] = [kSecAttrAccount as String: \"x\"]" }),
+            ("a second account in the store's query", Self.mutate(sources, store) {
+                $0.replacingOccurrences(of: Self.accountLine, with: Self.accountLine + "\n            kSecAttrAccount as String: \"x\",") }),
         ]
         for (name, mutant) in mutants + r3 {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -767,4 +804,132 @@ struct PairingStructureTests {
         }).isEmpty)
     }
 
+    // MARK: - 7. Nothing reflects, and the code never prints (S-PAIR-C1.5, the C1 security delta check)
+
+    /// The C1 security delta check's follow-ups (a)-(c), its MN1 probe as planted: a
+    /// `Mirror` reached the paired-key slot's private item from a file
+    /// holding the controller, and an accessibility hint carried
+    /// `String(describing:)` of the sheet's content.
+    /// (a) No reflection in the four targets — `Mirror` by any spelling, and
+    ///     the runtime's underscored field readers — but the redactions' own
+    ///     childless mirrors, on their pinned lines. (`ObservedStayAwakeMirror`
+    ///     and its kin are other words.)
+    /// (b) The values that hold the nonce (the state machine; the event that
+    ///     hands it in) or the payload (the sheet's content; the QR view)
+    ///     describe, debug-describe and reflect as their type's name alone:
+    ///     each conformance pinned whole, the type's own, so it holds however
+    ///     and wherever the value is described (the behaviour is
+    ///     `PairingPresentationTests.theCodeIsNeverPrintedDumpedOrReflected`).
+    /// (c) The QR view is named at its declaration, its redaction and its one
+    ///     use, nowhere else in the four targets.
+    static let reflectionPattern = #"\bMirror\b|\b_forEachField\b|\b_reflect\b|\b_getChild\w*"#
+    static let structMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }"
+    static let enumMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }"
+    /// Each line holds two matches (the type and its construction).
+    static let mirrorSites: [String: [String: Int]] = [
+        ceremonyFile: [structMirror: 2, enumMirror: 2],
+        sheetFile: [structMirror: 2, "nonisolated " + structMirror: 2],
+    ]
+    static let conformance = ": CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {"
+    static func redaction(_ type: String, _ text: String, _ mirror: String, nonisolated: Bool = false) -> String {
+        let prefix = nonisolated ? "nonisolated " : ""
+        return "extension " + type + conformance + " " + prefix + "var description: String { \"" + text + "\" } "
+            + prefix + "var debugDescription: String { description } " + prefix + mirror + " }"
+    }
+    static let redactions: [(file: String, block: String)] = [
+        (ceremonyFile, redaction("PairingCeremonyState", "PairingCeremonyState(redacted)", structMirror)),
+        (ceremonyFile, redaction("PairingEvent", "PairingEvent(redacted)", enumMirror)),
+        (sheetFile, redaction("PairingSheetContent", "PairingSheetContent(redacted)", structMirror)),
+        (sheetFile, redaction("QRCodeView", "QR code (redacted)", structMirror, nonisolated: true)),
+    ]
+    /// The types that redact themselves, and the members that do it: each
+    /// declared once, in its redaction (no other `description` and the like
+    /// in their files).
+    static let redactionMembers = [#"\bvar\s+description\b"#, #"\bvar\s+debugDescription\b"#, #"\bvar\s+customMirror\b"#]
+    static let qrViewSites: [String: [String: Int]] = [
+        sheetFile: ["QRCodeView(payload: payload)": 1, "struct QRCodeView: View {": 1, "extension QRCodeView" + conformance: 1],
+    ]
+
+    static func reflectionFailures(_ sources: Sources) -> [String] {
+        guard !text(ceremonyFile, in: sources).isEmpty, !text(sheetFile, in: sources).isEmpty else {
+            return ["a pairing file is missing — the reflection lock would be vacuous"]
+        }
+        var failures = appSiteFailures(reflectionPattern, in: sources, allowed: mirrorSites,
+                                       rule: "nothing reflects but the redactions' own childless mirrors")
+        for (file, block) in redactions where ApprovalChannelStructureTests.count(block, in: MenuPanelStructureTests.flat(text(file, in: sources))) != 1 {
+            failures.append("a value holding the code redacts itself, as a type — exactly as pinned: \(block)")
+        }
+        for (name, text) in sources where [ceremonyFile, sheetFile].contains(name) {
+            for member in redactionMembers {
+                let expected = redactions.filter { $0.file == name }.count
+                if ApprovalRecordPathStructureTests.matches(member, in: text).count != expected {
+                    failures.append("'\(member)' in \(name) — declared by the redactions alone")
+                }
+            }
+        }
+        failures += appSiteFailures(#"\bQRCodeView\b"#, in: sources, allowed: qrViewSites,
+                                    rule: "the QR view is named at its declaration, its redaction and its one use")
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    @Test func nothingReflectsAndTheCodeNeverPrints() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.reflectionFailures(sources).isEmpty, "\(Self.reflectionFailures(sources))")
+        let model = "MenuStateModel.swift"
+        let hintAnchor = "                    .accessibilityFocused($titleFocused)\n"
+        // The delta check's MN1, as planted (both halves, each alone too).
+        let mn1Reflect = "\nextension MenuStateModel {\n    func zzReflectWrite(_ p: PairedPhone) -> Bool {\n"
+            + "        guard let pairing, let item = Mirror(reflecting: pairing).descendant(\"keys\", \"items\") as? any TopicStore else { return false }\n"
+            + "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n"
+        let mn1Hint = hintAnchor + "                    .accessibilityHint(Text(verbatim: String(describing: content)))\n"
+        #expect(Self.text(Self.sheetFile, in: sources).contains(hintAnchor), "vacuity: MN1's hint plants on the title")
+        let mutants: [(String, Sources)] = [
+            ("MN1 as planted", Self.mutate(Self.mutate(sources, model) { $0 + mn1Reflect }, Self.sheetFile) {
+                $0.replacingOccurrences(of: hintAnchor, with: mn1Hint) }),
+            ("MN1's Mirror route alone", Self.mutate(sources, model) { $0 + mn1Reflect }),
+            ("a module-qualified Mirror", Self.mutate(sources, model) { $0 + "\nfunc zz(_ x: Any) -> Int { Swift.Mirror(reflecting: x).children.count }" }),
+            ("a backticked Mirror", Self.mutate(sources, model) { $0 + "\nfunc zz(_ x: Any) -> Int { `Mirror`(reflecting: x).children.count }" }),
+            ("an aliased Mirror", Self.mutate(sources, "NapCatApp.swift") { $0 + "\ntypealias ZZ = Mirror" }),
+            ("the runtime's field reader", Self.mutate(sources, model) {
+                $0 + "\nfunc zz(_ t: Any.Type) { _ = _forEachField(of: t, options: []) { _, _, _, _ in true } }" }),
+            ("a reflection in another target", Self.mutate(sources, "SeamSocket.swift") { $0 + "\nfunc zz(_ x: Any) { _ = Mirror(reflecting: x) }" }),
+            ("another type's mirror, exposing the code", Self.mutate(sources, Self.controllerFile) {
+                $0 + "\nextension PairingController: CustomReflectable {\n    var customMirror: Mirror { Mirror(self, children: [\"code\": state.qrPayload as Any]) }\n}" }),
+            // (b): a redaction dropped, bent, or given children.
+            ("the content's redaction dropped", Self.mutate(sources, Self.sheetFile) {
+                $0.replacingOccurrences(of: "extension PairingSheetContent" + Self.conformance,
+                                        with: "extension PairingSheetContent: CustomDebugStringConvertible, CustomReflectable {") }),
+            ("the content described by its payload", Self.mutate(sources, Self.sheetFile) {
+                $0.replacingOccurrences(of: "var description: String { \"PairingSheetContent(redacted)\" }",
+                                        with: "var description: String { qrPayload ?? \"\" }") }),
+            ("the state's mirror given its parts", Self.mutate(sources, Self.ceremonyFile) {
+                $0.replacingOccurrences(of: "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }",
+                                        with: "var customMirror: Mirror { Mirror(reflecting: self) }") }),
+            ("the event's debug description its default", Self.mutate(sources, Self.ceremonyFile) {
+                $0.replacingOccurrences(of: "extension PairingEvent" + Self.conformance,
+                                        with: "extension PairingEvent: CustomStringConvertible, CustomReflectable {")
+                    .replacingOccurrences(of: "    var debugDescription: String { description }\n    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }",
+                                          with: "    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }") }),
+            ("a second description in the sheet", Self.mutate(sources, Self.sheetFile) {
+                $0 + "\nextension PairingCodeText: CustomStringConvertible {\n    nonisolated var description: String { \"x\" }\n}" }),
+            // (c): the QR view named elsewhere.
+            ("a second QR view", Self.mutate(sources, "MenuContentView.swift") { $0 + "\nlet zz = QRCodeView(payload: \"x\")" }),
+            ("the QR's image drawn elsewhere", Self.mutate(sources, model) { $0 + "\nlet zz = QRCodeView.image(\"x\")" }),
+            ("an aliased QR view", Self.mutate(sources, Self.sheetFile) { $0 + "\ntypealias ZZ = QRCodeView" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.reflectionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: the stay-awake mirror's names (other words,
+        // shipped today), words that only contain the banned ones, and a
+        // whole-line comment naming the shapes.
+        #expect(Self.text("NapCatApp.swift", in: sources).contains("stayAwakeMirror: sleepController.observedMirror"),
+                "vacuity: the stay-awake mirror is in the scan")
+        #expect(Self.reflectionFailures(Self.mutate(sources, model) {
+            $0 + "\nlet zzObservedStayAwakeMirror = 1, stayAwakeMirror = 2, observedMirror = 3, Mirrors = 4, reflected = 5"
+                + "\nlet zzQRCodeViews = 6, isQRCodeView = 7"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never Mirror(reflecting:), never QRCodeView(payload:) here")
+        }).isEmpty)
+    }
 }

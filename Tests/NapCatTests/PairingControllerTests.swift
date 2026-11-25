@@ -315,6 +315,21 @@ struct PairingControllerTests {
         #expect(countdowns == ["Code expires in 1:00", "Code expires in 0:10"])
     }
 
+    /// S-PAIR-C1.5 (the C1 security delta check's (b)): a live ceremony's shell gives the code away
+    /// through no way of describing it — dumped whole, its state reflected —
+    /// because the state that holds the nonce redacts itself.
+    @Test func aLiveControllerPrintsAndReflectsNoCode() throws {
+        let world = PairingWorld()
+        world.controller.begin()
+        let payload = try #require(world.controller.sheetContent.qrPayload)
+        let secrets = Redaction.secrets(payload: payload, nonce: PhoneHalf.nonce)
+        #expect(world.controller.state.holdsNonce, "vacuity: the ceremony is live")
+        for (name, value) in [("the controller", world.controller as Any), ("its state", world.controller.state),
+                              ("its sheet", world.controller.sheetContent)] {
+            #expect(Redaction.leaks(value, secrets: secrets).isEmpty, "\(name) leaks through \(Redaction.leaks(value, secrets: secrets))")
+        }
+    }
+
     /// Hidden while not key or occluded (S1b), announced; back on key.
     @Test func theSheetHidesTheCodeWhileNotVisible() {
         let world = PairingWorld()

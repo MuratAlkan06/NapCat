@@ -406,3 +406,23 @@ struct PairingCeremonyState: Equatable, Sendable {
         return recordName.map { [.delete(recordName: $0)] } ?? []
     }
 }
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1 security delta check's (b))
+
+/// The nonce stays on the screen (PairingStructureTests lock 7): the values
+/// that hold it — the state machine, and the event that hands it in — print,
+/// debug-print, dump and reflect as their type's name and nothing more,
+/// however and wherever they are described (`String(describing:)`, an
+/// interpolation, `String(reflecting:)`, `dump`, a `Mirror`): the
+/// conformance is the type's own, so no spelling and no file gets past it.
+extension PairingCeremonyState: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "PairingCeremonyState(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
+
+extension PairingEvent: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "PairingEvent(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }
+}

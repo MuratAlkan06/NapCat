@@ -9,6 +9,31 @@ import SwiftUI
 import Testing
 @testable import NapCat
 
+/// S-PAIR-C1.5 (the C1 security delta check's (b)): what every way of describing a value shows —
+/// `String(describing:)`, an interpolation, `String(reflecting:)`, `dump`
+/// and a `Mirror` — and which of them gives one of `secrets` away.
+enum Redaction {
+    /// The code's every spelling: the payload, its base64url part, the
+    /// nonce in hex and as Swift prints a byte array.
+    static func secrets(payload: String, nonce: [UInt8]) -> [String] {
+        [payload, String(payload.dropFirst("napcat-pair-v1:".count)), ApprovalSigning.lowercaseHex(nonce),
+         nonce.prefix(6).map(String.init).joined(separator: ", ")]
+    }
+
+    static func channels(_ value: Any) -> [(String, String)] {
+        var dumped = ""
+        dump(value, to: &dumped)
+        let mirror = Mirror(reflecting: value)
+        let children = mirror.children.map { "\($0.label ?? "_"): \(String(reflecting: $0.value))" }.joined(separator: "; ")
+        return [("String(describing:)", String(describing: value)), ("interpolation", "\(value)"),
+                ("String(reflecting:)", String(reflecting: value)), ("dump", dumped), ("Mirror", children)]
+    }
+
+    static func leaks(_ value: Any, secrets: [String]) -> [String] {
+        channels(value).filter { _, text in secrets.contains { text.contains($0) } }.map(\.0)
+    }
+}
+
 /// F4 slice S-PAIR-C1 (#168): what the pairing sheet and Settings › Claude
 /// show, per state, as tables over the pure mappings (the ratified spec's
 /// words, exactly); the QR as drawn (decoded back to its payload, its quiet
@@ -472,6 +497,32 @@ struct PairingPresentationTests {
         #expect(log.events == ["beginSheet", "endSheet"], "nothing to take off")
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
         #expect(closes == 1 && log.events.last == "afterClose", "the window's close reaches the ceremony first")
+    }
+
+    // MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1 security delta check's (b))
+
+    /// The values that hold the code — the state machine, the event that
+    /// hands the nonce in, the sheet's content and the QR view — give it away
+    /// through no way of describing them (the MN1 probe built an
+    /// accessibility hint from `String(describing: content)`), and reflect
+    /// no part. A control: an unredacted value holding the same bytes leaks
+    /// through every channel, so the probe can see a leak.
+    @Test func theCodeIsNeverPrintedDumpedOrReflected() throws {
+        let begin = PairingEvent.begin(nonce: PhoneHalf.nonce, rotating: false, now: Self.start)
+        var state = PairingCeremonyState()
+        _ = state.apply(begin)
+        let content = Self.content(state)
+        let payload = try #require(content.qrPayload)
+        let secrets = Redaction.secrets(payload: payload, nonce: PhoneHalf.nonce)
+        let values: [(String, Any)] = [("the ceremony state", state), ("the begin event", begin), ("the sheet's content", content),
+                                       ("the QR view", QRCodeView(payload: payload))]
+        for (name, value) in values {
+            #expect(Redaction.leaks(value, secrets: secrets).isEmpty, "\(name) leaks through \(Redaction.leaks(value, secrets: secrets))")
+            #expect(Mirror(reflecting: value).children.isEmpty, "\(name) reflects no part")
+        }
+        struct Unredacted { let payload: String; let nonce: [UInt8] }
+        #expect(Redaction.leaks(Unredacted(payload: payload, nonce: PhoneHalf.nonce), secrets: secrets).count == 5,
+                "vacuity: an unredacted value leaks through all five channels")
     }
 
     /// The owner wires the sheet to the ceremony, the window's close to its

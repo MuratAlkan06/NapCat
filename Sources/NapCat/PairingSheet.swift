@@ -376,3 +376,23 @@ enum PairingAnnouncer {
                              userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 }
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1 security delta check's (b))
+
+/// The QR payload is drawn and nothing else (PairingStructureTests locks 2
+/// and 7): the sheet's content and the QR view print, debug-print, dump and
+/// reflect as their type's name and nothing more — the conformance is the
+/// type's own, so no spelling (`String(describing:)`, an interpolation, an
+/// accessibility string built from one, `dump`, a `Mirror`) and no file gets
+/// the payload out of them.
+extension PairingSheetContent: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "PairingSheetContent(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
+
+extension QRCodeView: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    nonisolated var description: String { "QR code (redacted)" }
+    nonisolated var debugDescription: String { description }
+    nonisolated var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
