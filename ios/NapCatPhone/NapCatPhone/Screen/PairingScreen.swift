@@ -12,16 +12,23 @@ struct PairingScreen: View {
     nonisolated static let closeTitle = "Close"
     nonisolated static let codeHeader = "This iPhone's code"
     /// The comparison is what catches a code that isn't the owner's Mac's,
-    /// so the hint says what to do either way.
-    nonisolated static let compareHint = "Your Mac shows a code too. If the two match, confirm on your Mac, then here. "
-        + "If they don't, cancel here and on your Mac, and nothing is paired."
+    /// so the hint says what to do either way (the Mac's words, deixis
+    /// swapped: the S1c variant ruling's phone-mirror amendment).
+    nonisolated static let compareHint = "Your Mac is showing a code too. If all three groups match, confirm on your Mac first — "
+        + "then tap Codes Match here. If they don't match, tap Codes Don't Match here and on your Mac; nothing is paired."
     nonisolated static let privateNote = "Pair in private: the code on your Mac is a secret while it's on screen."
     nonisolated static let viewfinderLabel = "Camera viewfinder"
 
     nonisolated static let matchTitle = "Codes Match"
     nonisolated static let matchSymbol = "checkmark"
-    nonisolated static let cancelTitle = "Cancel"
+    /// The Mac's label for the same answer. It cancels the ceremony: the
+    /// phone can't tell a mismatch from a cancel, and both end alike.
+    nonisolated static let mismatchTitle = "Codes Don't Match"
     nonisolated static let cancelSymbol = "xmark"
+    /// The extra width of each gap between the code's groups at the
+    /// default text size, scaled with it: about one more character of the
+    /// code's face, so a gap reads two spaces wide — the Mac's ratio.
+    nonisolated static let codeGroupGap: CGFloat = 17
     nonisolated static let cameraTitle = "Allow Camera"
     nonisolated static let cameraSymbol = "camera"
     nonisolated static let settingsTitle = "Open Settings"
@@ -104,7 +111,7 @@ struct PairingScreen: View {
         case askCamera
         /// The way to this app's page in Settings.
         case settings
-        /// Codes Match and Cancel.
+        /// Codes Match and Codes Don't Match.
         case compare
         /// Scan Again: a new ceremony.
         case again
@@ -147,9 +154,18 @@ struct PairingScreen: View {
         }
     }
 
-    /// What VoiceOver reads for the code: character by character.
-    nonisolated static func spokenCode(_ fingerprint: KeyFingerprint) -> String {
-        "\(codeHeader): \(fingerprint.spoken)"
+    /// The code as drawn: `fingerprint.grouped`, each space between the
+    /// groups kerned `groupGap` wider, so the text itself stays the Mac's
+    /// `XXXX XXXX XXXX`.
+    nonisolated static func drawnCode(_ fingerprint: KeyFingerprint, groupGap: CGFloat) -> AttributedString {
+        var gap: AttributedString = AttributedString(" ")
+        gap[AttributeScopes.SwiftUIAttributes.KerningAttribute.self] = groupGap
+        var drawn: AttributedString = AttributedString()
+        for (index, group) in fingerprint.groups.enumerated() {
+            if index > 0 { drawn += gap }
+            drawn += AttributedString(group)
+        }
+        return drawn
     }
 
     /// What VoiceOver announces as the phase changes: the new line, once,
@@ -183,6 +199,7 @@ struct PairingScreen: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.openURL) private var openURL
+    @ScaledMetric(relativeTo: .title) private var codeGap: CGFloat = PairingScreen.codeGroupGap
 
     var body: some View {
         ScrollView {
@@ -225,22 +242,31 @@ struct PairingScreen: View {
         }
     }
 
-    /// This iPhone's code, large and monospaced, in a card; once kept, the
-    /// card lies flat. VoiceOver reads it character by character.
+    /// This iPhone's code in a card, drawn as the Mac draws its own: plain,
+    /// in the code's monospaced face, the groups set apart by wide gaps, on
+    /// one line (at text sizes too large for one, it breaks between groups,
+    /// never inside one); once kept, the card lies flat. VoiceOver spells
+    /// the code out one character at a time, pausing at the groups.
     private func codeCard(_ fingerprint: KeyFingerprint, muted: Bool) -> some View {
         VStack(alignment: .leading, spacing: theme.innerGap) {
             Text(Self.codeHeader)
                 .font(theme.sectionFont)
                 .textCase(.uppercase)
                 .foregroundStyle(theme.inkSecondary)
-            Text(verbatim: fingerprint.grouped)
-                .font(theme.titleFont)
-                .foregroundStyle(muted ? theme.inkSecondary : theme.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            ViewThatFits(in: .horizontal) {
+                codeText(fingerprint).lineLimit(1)
+                codeText(fingerprint).fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(muted ? theme.inkSecondary : theme.ink)
         }
         .themedCard(castsShadow: !muted)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.spokenCode(fingerprint))
+        .accessibilityLabel(Self.codeHeader)
+        .accessibilityValue(Text(verbatim: fingerprint.grouped).speechSpellsOutCharacters())
+    }
+
+    private func codeText(_ fingerprint: KeyFingerprint) -> Text {
+        Text(Self.drawnCode(fingerprint, groupGap: codeGap)).font(theme.codeFont)
     }
 
     /// A square frame as wide as the screen's column: the live camera, or
@@ -311,7 +337,7 @@ struct PairingScreen: View {
             }
             .buttonStyle(RequestButtonStyle(emphasis: .accent))
             Button(action: cancel) {
-                Label(Self.cancelTitle, systemImage: Self.cancelSymbol)
+                Label(Self.mismatchTitle, systemImage: Self.cancelSymbol)
             }
             .buttonStyle(RequestButtonStyle(emphasis: .ink))
         case .again:

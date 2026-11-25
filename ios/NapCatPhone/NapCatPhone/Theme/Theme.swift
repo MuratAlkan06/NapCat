@@ -75,6 +75,9 @@ struct Theme: Sendable {
     let timestampFont: Font
     let pillFont: Font
     let emptyFont: Font
+    /// The pairing code to compare: the Mac's face (the system's
+    /// monospaced, regular), so both devices draw it alike.
+    let codeFont: Font
 
     // MARK: Surfaces and rhythm
 

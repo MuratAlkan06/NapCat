@@ -35,6 +35,7 @@ extension Theme {
             timestampFont: .system(.footnote, design: .monospaced),
             pillFont: .system(.footnote, design: .monospaced, weight: .bold),
             emptyFont: .system(.body, design: .monospaced, weight: .bold),
+            codeFont: .system(.title, design: .monospaced),
             margin: 16,
             rowPadding: 16,
             rowGap: 16,

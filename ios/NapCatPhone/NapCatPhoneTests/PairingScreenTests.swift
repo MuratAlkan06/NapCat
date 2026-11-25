@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 @testable import NapCatPhone
+import SwiftUI
 import Testing
 import UIKit
 
@@ -86,10 +87,104 @@ import UIKit
     /// owner's Mac's, so its hint says what to do when the codes differ as
     /// well as when they match.
     @Test func theCompareHintSaysWhatToDoEitherWay() {
-        #expect(PairingScreen.compareHint == "Your Mac shows a code too. If the two match, confirm on your Mac, then here. "
-                + "If they don't, cancel here and on your Mac, and nothing is paired.")
-        #expect(PairingScreen.compareHint.contains("If the two match"))
-        #expect(PairingScreen.compareHint.contains("If they don't, cancel"))
+        let hint: String = "Your Mac is showing a code too. If all three groups match, confirm on your Mac first — "
+            + "then tap Codes Match here. If they don't match, tap Codes Don't Match here and on your Mac; nothing is paired."
+        #expect(PairingScreen.compareHint == hint)
+        #expect(PairingScreen.compareHint.contains("If all three groups match"), "the totality cue, as on the Mac")
+        #expect(PairingScreen.compareHint.contains("confirm on your Mac first"), "the Mac confirms first")
+        #expect(PairingScreen.compareHint.contains("tap \(PairingScreen.matchTitle) here"))
+        #expect(PairingScreen.compareHint.contains("If they don't match, tap \(PairingScreen.mismatchTitle) here and on your Mac"))
+    }
+
+    /// The compare step's buttons say what the Mac's say, word for word,
+    /// read from the Mac's own source (the S1c variant ruling: identical
+    /// button labels), and so does the totality cue.
+    @Test func theCompareButtonsAreTheMacs() throws {
+        let titles: [String] = [PairingScreen.matchTitle, PairingScreen.mismatchTitle]
+        let expected: [String] = ["Codes Match", "Codes Don't Match"]
+        #expect(titles == expected)
+        let mac: [CloudKitStructureTests.Source] = try CloudKitStructureTests.swiftFiles(under: "Sources/NapCat")
+        let sheet: String = try #require(mac.first { $0.path == "Sources/NapCat/PairingSheet.swift" }).text
+        let macMatch: String = "case .codesMatch: return \"\(PairingScreen.matchTitle)\""
+        let macMismatch: String = "case .theyDontMatch: return \"\(PairingScreen.mismatchTitle)\""
+        #expect(sheet.contains(macMatch) && sheet.contains(macMismatch), "the Mac's labels drifted from the phone's")
+        #expect(sheet.contains("If all three groups match, confirm here first, then on your iPhone."))
+    }
+
+    // MARK: The code (the S1c variant ruling's phone mirror)
+
+    /// The code's text is the Mac's `XXXX XXXX XXXX`; the wide gaps are
+    /// kerning on the two spaces alone.
+    @Test func theCodeIsTheMacsStringWithItsGapsKerned() {
+        let gap: CGFloat = PairingScreen.codeGroupGap
+        let drawn: AttributedString = PairingScreen.drawnCode(Self.fingerprint, groupGap: gap)
+        let groups: [String] = Self.fingerprint.groups
+        #expect(String(drawn.characters) == Self.fingerprint.grouped && Self.fingerprint.grouped == groups.joined(separator: " "))
+        let texts: [String] = drawn.runs.map { String(drawn[$0.range].characters) }
+        let kerns: [CGFloat?] = drawn.runs.map { $0[AttributeScopes.SwiftUIAttributes.KerningAttribute.self] }
+        let expectedTexts: [String] = [groups[0], " ", groups[1], " ", groups[2]]
+        let expectedKerns: [CGFloat?] = [nil, gap, nil, gap, nil]
+        #expect(texts == expectedTexts && kerns == expectedKerns, "\(texts) \(kerns)")
+    }
+
+    /// The Mac's face (the system's monospaced, regular — not the title's
+    /// bold), each gap about one character wider (the Mac's ratio: a gap
+    /// reads two spaces wide), and one line inside the card at the default
+    /// text size on the narrowest iPhone (375 pt) — measured with the
+    /// system's own font.
+    @Test func theCodeFitsOneLineWithTheMacsFaceAndGapRatio() {
+        let theme: Theme = ThemeID.fallback.theme
+        let macFace: Font = .system(.title, design: .monospaced)
+        #expect(theme.codeFont == macFace, "the Mac's face, at the phone's title size")
+        let traits: UITraitCollection = UITraitCollection(preferredContentSizeCategory: .large)
+        let size: CGFloat = UIFont.preferredFont(forTextStyle: .title1, compatibleWith: traits).pointSize
+        let face: UIFont = UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let advance: CGFloat = NSAttributedString(string: " ", attributes: [.font: face]).size().width
+        let gap: CGFloat = PairingScreen.codeGroupGap
+        #expect(abs(gap - advance) <= 1, "gap \(gap) vs one character \(advance)")
+        let line: NSMutableAttributedString = NSMutableAttributedString(string: Self.fingerprint.grouped, attributes: [.font: face])
+        let spaces: [Int] = [4, 9]
+        for offset in spaces { line.addAttribute(.kern, value: gap, range: NSRange(location: offset, length: 1)) }
+        let width: CGFloat = line.size().width
+        let room: CGFloat = 375 - 2 * theme.margin - 2 * theme.rowPadding
+        #expect(width <= room, "the code (\(width) pt) fits the card (\(room) pt) on one line")
+    }
+
+    /// The card's composition, as written: the code in its face and its
+    /// gaps (scaled with the text size), one line while it fits and broken
+    /// only between groups past that, the Codes Don't Match label on the
+    /// cancel, and VoiceOver hearing the code's own text spelled out under
+    /// the card's header. Each canary is caught.
+    static func codeFailures(screen: String) -> [String] {
+        let flat: String = SettingsReachabilityTests.flat(CloudKitStructureTests.codeOnly(screen))
+        guard flat.contains("struct PairingScreen: View {") else { return ["the screen moved (the lock would be vacuous)"] }
+        let fits: String = "ViewThatFits(in: .horizontal) { codeText(fingerprint).lineLimit(1) "
+            + "codeText(fingerprint).fixedSize(horizontal: false, vertical: true) }"
+        let spoken: String = ".themedCard(castsShadow: !muted) .accessibilityElement(children: .ignore) .accessibilityLabel(Self.codeHeader) "
+            + ".accessibilityValue(Text(verbatim: fingerprint.grouped).speechSpellsOutCharacters())"
+        let drawn: String = "Text(Self.drawnCode(fingerprint, groupGap: codeGap)).font(theme.codeFont)"
+        let scaled: String = "@ScaledMetric(relativeTo: .title) private var codeGap: CGFloat = PairingScreen.codeGroupGap"
+        let deny: String = "Button(action: cancel) { Label(Self.mismatchTitle, systemImage: Self.cancelSymbol) }"
+        let shapes: [String] = [fits, spoken, drawn, scaled, deny]
+        return shapes.filter { !flat.contains($0) }.map { "the pairing screen lost '\($0)'" }
+    }
+
+    @Test func theCodeIsDrawnAndSpokenAsOnTheMac() throws {
+        let app: [CloudKitStructureTests.Source] = try CloudKitStructureTests.swiftFiles(under: Self.appDir)
+        let screen: String = try #require(app.first { $0.path == Self.screenFile }).text
+        #expect(Self.codeFailures(screen: screen).isEmpty, "\(Self.codeFailures(screen: screen))")
+        let mutants: [(String, String)] = [
+            ("the title's bold face", screen.replacingOccurrences(of: ".font(theme.codeFont)", with: ".font(theme.titleFont)")),
+            ("the code wraps at any size", screen.replacingOccurrences(of: "codeText(fingerprint).lineLimit(1)", with: "codeText(fingerprint)")),
+            ("spoken as a word", screen.replacingOccurrences(of: ".speechSpellsOutCharacters())", with: ")")),
+            ("the deny back to Cancel", screen.replacingOccurrences(of: "Label(Self.mismatchTitle,", with: "Label(\"Cancel\",")),
+            ("fixed gaps", screen.replacingOccurrences(of: "@ScaledMetric(relativeTo: .title) private var codeGap",
+                                                       with: "private var codeGap")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != screen, "canary '\(name)' did not apply")
+            #expect(!Self.codeFailures(screen: mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
     }
 
     /// On a phone whose biometric match can't happen, the start names the
@@ -238,7 +333,8 @@ import UIKit
             default: #expect(shown == nil, "\(phase)")
             }
         }
-        #expect(PairingScreen.spokenCode(Self.fingerprint) == "This iPhone's code: \(Self.fingerprint.spoken)")
+        #expect(String(PairingScreen.drawnCode(Self.fingerprint, groupGap: PairingScreen.codeGroupGap).characters)
+                == Self.fingerprint.grouped)
     }
 
     @Test func theNoteIsSaidWhileACodeMayBeOnScreen() {
