@@ -60,9 +60,19 @@ enum PairingWriteOutcome: String, Equatable, Sendable {
 /// THE seam behind the pairing's one write. Its record (a new record type
 /// in the approvals zone, every value but the version encrypted) is
 /// written by `CloudKitPairingResponseWriter` (slice S-PAIR-C1.5), create
-/// only, the one conformer outside the fixtures (lint-locked to its
-/// declaration's line). No app source builds that writer yet, so a fixture
-/// launch writes to a fixture and nothing a pairing does leaves the phone.
+/// only. Outside the fixtures it has two conformers, each lint-locked to its
+/// declaration's line: that writer, which the live pairing builds once
+/// (`LivePairing.make`, slice S-PAIR-C1.6) in a build that can reach
+/// iCloud, and `UnsentPairingWriter` for any other build. A fixture launch
+/// writes to a fixture, and nothing of its pairing leaves the phone.
 protocol PairingResponseWriter: Sendable {
     func write(_ response: PairingResponse) async -> PairingWriteOutcome
+}
+
+/// The live pairing's writer in a build that cannot hold the iCloud
+/// entitlement (the simulator, `LiveCapability`): it writes nothing, so
+/// every response reads as unsent and the pairing fails dark, on the
+/// screen's own line ("Unsent — couldn't save to iCloud").
+struct UnsentPairingWriter: PairingResponseWriter {
+    func write(_ response: PairingResponse) async -> PairingWriteOutcome { .failed }
 }

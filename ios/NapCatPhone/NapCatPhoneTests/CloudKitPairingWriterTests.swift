@@ -149,6 +149,84 @@ import Testing
         #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .saved)
     }
 
+    // MARK: What the live approvals database runs (S-PAIR-C1.6, #172)
+
+    /// One operation to hand the live database's check: these records to
+    /// save, these to delete, under this policy.
+    static func operation(saving records: [CKRecord]?, deleting ids: [CKRecord.ID]? = nil,
+                          policy: CKModifyRecordsOperation.RecordSavePolicy = .ifServerRecordUnchanged) -> CKModifyRecordsOperation {
+        let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: ids)
+        operation.savePolicy = policy
+        return operation
+    }
+
+    /// A record of `type` named `name` in `zone`.
+    static func record(_ type: ApprovalWire.RecordType = .pairingResponse, named name: String = recordName,
+                       in zone: CKRecordZone.ID = CloudKitAlertSource.approvalsZoneID) -> CKRecord {
+        CKRecord(recordType: type.rawValue, recordID: CKRecord.ID(recordName: name, zoneID: zone))
+    }
+
+    /// The writer's own save is exactly what the live database runs.
+    @Test func theWritersOwnSaveIsWhatTheLiveDatabaseRuns() async throws {
+        let database = ScriptedApprovalDatabase(ModifyOperationScript([.saved(0), .batchSucceeded]))
+        _ = await CloudKitPairingResponseWriter(database: database).write(Self.response)
+        let operation = try #require(database.submitted.first)
+        #expect(CloudKitAlertSource.isPairingResponseCreation(operation))
+        #expect(CloudKitAlertSource.isPairingResponseCreation(Self.operation(saving: [Self.record()])))
+    }
+
+    struct Refused: CustomTestStringConvertible, Sendable {
+        let name: String
+        let make: @Sendable () -> CKModifyRecordsOperation
+        var testDescription: String { name }
+    }
+
+    /// Everything else, each on its own: another record type, zone, owner
+    /// or name; more records or none; a deletion; an overwrite.
+    static let refused: [Refused] = {
+        let other = CKRecordZone.ID(zoneName: ApprovalWire.zoneName, ownerName: "_someoneElse")
+        let deletion = CKRecord.ID(recordName: recordName, zoneID: CloudKitAlertSource.approvalsZoneID)
+        let prompt = PromptID(hex: String(repeating: "ab", count: 16))!
+        let decision = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,
+                                recordID: CloudKitAlertSource.decisionRecordID(for: prompt))
+        let upper = recordName.uppercased()
+        let short = String(recordName.dropLast())
+        let long = recordName + "a"
+        let nonHex = String(recordName.dropLast()) + "g"
+        return [
+            Refused(name: "a decision's record") { operation(saving: [decision]) },
+            Refused(name: "a prompt named like a pairing") { operation(saving: [record(.prompt)]) },
+            Refused(name: "a decision named like a pairing") { operation(saving: [record(.decision)]) },
+            Refused(name: "the default zone") { operation(saving: [record(in: .default)]) },
+            Refused(name: "another owner's approvals zone") { operation(saving: [record(in: other)]) },
+            Refused(name: "an uppercase name") { operation(saving: [record(named: upper)]) },
+            Refused(name: "a short name") { operation(saving: [record(named: short)]) },
+            Refused(name: "a long name") { operation(saving: [record(named: long)]) },
+            Refused(name: "a name that is not hex") { operation(saving: [record(named: nonHex)]) },
+            Refused(name: "two pairing records") { operation(saving: [record(), record(named: String(repeating: "c", count: 64))]) },
+            Refused(name: "no record") { operation(saving: []) },
+            Refused(name: "a deletion alone") { operation(saving: nil, deleting: [deletion]) },
+            Refused(name: "a save beside a deletion") { operation(saving: [record()], deleting: [deletion]) },
+            Refused(name: "an overwrite (all keys)") { operation(saving: [record()], policy: .allKeys) },
+            Refused(name: "an overwrite (changed keys)") { operation(saving: [record()], policy: .changedKeys) },
+        ]
+    }()
+
+    @Test(arguments: refused)
+    func theLiveDatabaseRefusesEverythingElse(_ row: Refused) {
+        #expect(!CloudKitAlertSource.isPairingResponseCreation(row.make()))
+    }
+
+    /// A refusal, as the live database makes it (lock 6c pins it): the
+    /// operation is never run, and its own result block hears
+    /// `invalidArguments`. The write ends at once, closed (never saved,
+    /// never hanging).
+    @Test func aRefusalIsAClosedFailureToTheWriter() async {
+        let database = RefusingApprovalDatabase()
+        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .unconfirmed)
+        #expect(database.refused == 1)
+    }
+
     // MARK: Through the ceremony
 
     /// The whole phone half over the real record and operation: the
@@ -185,5 +263,26 @@ import Testing
             #expect(ceremony.phase == .failed(.alreadyAnswered))
             #expect(keys.provisional() == nil, "the new key is discarded")
         }
+    }
+}
+
+/// Plays the live approvals database's refusal exactly as it is pinned
+/// (`RecordPathStructureTests` lock 6c): the operation is never run, and its
+/// own result block is told `invalidArguments`.
+final class RefusingApprovalDatabase: CloudKitApprovalDatabase, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var refused: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func submit(_ operation: CKModifyRecordsOperation) {
+        lock.lock()
+        count += 1
+        lock.unlock()
+        operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
     }
 }

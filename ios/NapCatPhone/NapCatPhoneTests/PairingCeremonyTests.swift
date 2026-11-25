@@ -417,8 +417,22 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// writer, is admitted by its declaration's exact line; how it may be
     /// built (by no app source yet, never unnamed) is
     /// `RecordPathStructureTests`' locks 2 and 8.
+    ///
+    /// AMENDED (S-PAIR-C1.6, #172, the phone goes live): outside Fixtures/
+    /// the writer seam has TWO conformers, each on its declaration's exact
+    /// line: the CloudKit writer and `UnsentPairingWriter` (a build that
+    /// cannot reach iCloud), whose body writes nothing, pinned whole. And a
+    /// ceremony is built outside Fixtures/ at ONE site, the live pairing's
+    /// (`LivePairing.ceremony()`), on its pinned line.
     static let liveWriterAdoption = ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1]
     static let liveWriterSites = ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1]
+    static let unsentWriterFile = "\(appDir)/Model/PairingResponse.swift"
+    static let unsentWriterHead = "struct UnsentPairingWriter: PairingResponseWriter {"
+    static let unsentWriterBody = "func write(_ response: PairingResponse) async -> PairingWriteOutcome { .failed }"
+    static let writerAdoptions: [String: [String: Int]] = [CloudKitStructureTests.cloudKitFile: liveWriterAdoption,
+                                                           unsentWriterFile: [unsentWriterHead: 1]]
+    static let livePairingFile = "\(appDir)/Live/LivePairing.swift"
+    static let liveCeremony = "PairingCeremony(keyring: keyring, biometrics: biometrics, writer: writer)"
 
     static func ceremonyFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
@@ -486,19 +500,25 @@ final class RecordingPairingWriter: PairingResponseWriter {
         for (path, text) in app {
             let code = CloudKitStructureTests.codeOnly(text)
             let fixture = path.hasPrefix("\(appDir)/Fixtures/")
-            let allowed = path == CloudKitStructureTests.cloudKitFile ? Self.liveWriterAdoption : [:]
+            let allowed = Self.writerAdoptions[path] ?? [:]
             for copy in CloudKitStructureTests.constructorScanCopies(code) where !fixture {
                 let tally = conformances.reduce(into: [String: Int]()) { tally, pattern in
                     tally.merge(CloudKitStructureTests.siteTally(pattern, in: copy)) { $0 + $1 }
                 }
                 if tally != allowed {
                     failures.append("\(path) conforms to the pairing writer off its pin — outside Fixtures/ only the "
-                                    + "CloudKit writer's declaration may: \(tally.sorted { $0.key < $1.key })")
+                                    + "CloudKit writer's and the unsent writer's declarations may: \(tally.sorted { $0.key < $1.key })")
+                }
+                let built = CloudKitStructureTests.siteTally(#"\bPairingCeremony\s*(?:\.\s*init\s*)?\("#, in: copy)
+                if built != (path == Self.livePairingFile ? [Self.liveCeremony: 1] : [:]) {
+                    failures.append("\(path) builds a ceremony off its pin — outside Fixtures/ only the live pairing, once: "
+                                    + "\(built.sorted { $0.key < $1.key })")
                 }
             }
-            if !fixture, CloudKitStructureTests.hits(#"\bPairingCeremony\s*(?:\.\s*init\s*)?\("#, in: code) {
-                failures.append("\(path) builds a ceremony — only the fixture launch, in this slice")
-            }
+        }
+        let unsent = CloudKitStructureTests.codeOnly(app.first { $0.path == Self.unsentWriterFile }?.text ?? "")
+        if CloudKitStructureTests.body(after: Self.unsentWriterHead, in: unsent).map(SettingsReachabilityTests.flat) != Self.unsentWriterBody {
+            failures.append("the unsent writer writes nothing and reads as unsent — exactly as pinned")
         }
         let cloudKit = CloudKitStructureTests.codeOnly(app.first { $0.path == CloudKitStructureTests.cloudKitFile }?.text ?? "")
         if CloudKitStructureTests.siteTally(#"\bCloudKitPairingResponseWriter\b"#, in: cloudKit) != Self.liveWriterSites {
@@ -654,6 +674,18 @@ final class RecordingPairingWriter: PairingResponseWriter {
                                         with: "class CloudKitPairingResponseWriter: PairingResponseWriter {") }),
             ("the pinned line in another file", mutate(inbox) {
                 $0 + "\n" + Self.liveWriterAdoption.keys.first! + "\n    let database: any CloudKitApprovalDatabase\n}" }),
+            // S-PAIR-C1.6 (#172): the unsent writer pinned whole, beside its
+            // declaration's line; the live ceremony pinned to its one site.
+            ("the unsent writer writes", mutate(Self.unsentWriterFile) {
+                $0.replacingOccurrences(of: "PairingWriteOutcome { .failed }", with: "PairingWriteOutcome { .saved }") }),
+            ("a third writer beside the unsent one", mutate(Self.unsentWriterFile) {
+                $0 + "\nstruct SpareWriter: PairingResponseWriter {\n    func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }),
+            ("a second live ceremony at the wiring site", mutate(Self.livePairingFile) {
+                $0 + "\nfunc spareCeremony(k: PhoneKeyring, b: any BiometricGate, w: any PairingResponseWriter) -> PairingCeremony {\n"
+                    + "    PairingCeremony(keyring: k, biometrics: b, writer: w)\n}" }),
+            ("the live ceremony over a fixture writer", mutate(Self.livePairingFile) {
+                $0.replacingOccurrences(of: Self.liveCeremony,
+                                        with: "PairingCeremony(keyring: keyring, biometrics: biometrics, writer: FixturePairingResponseWriter())") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

@@ -15,7 +15,9 @@ import Testing
 ///    built at ONE site, `makeLive()`, whose first statement is the
 ///    `LiveCapability` guard (an unentitled construction traps). No test
 ///    names a container constructor at all. (#153: however the
-///    construction is spelled.)
+///    construction is spelled.) AMENDED (S-PAIR-C1.6, #172): at TWO sites,
+///    `makeLive()` and `makeLiveApprovalDatabase()`, each opening on that
+///    guard and each building one container.
 /// 3. (#153) The alert lane's one database write is the subscription save:
 ///    the file's CloudKit identifiers are an exact allow-list, `save` and
 ///    the private database are pinned to their lines, and no other
@@ -34,7 +36,11 @@ import Testing
     static let cloudKitFile = "ios/NapCatPhone/NapCatPhone/Live/CloudKitAlertSource.swift"
 
     static let container = "CKContainer"
-    static let factoryHead = "static func makeLive() -> CloudKitAlertSource? {"
+    /// AMENDED (S-PAIR-C1.6, #172): two factories, the alerts' and the
+    /// approvals database's, each opening on the capability guard and each
+    /// building its one container.
+    static let factoryHeads = ["static func makeLive() -> CloudKitAlertSource? {",
+                               "static func makeLiveApprovalDatabase() -> (any CloudKitApprovalDatabase)? {"]
     static let capabilityGuard = "guard LiveCapability.isAvailable else { return nil }"
 
     /// Every `.swift` file under `directory` (repository-relative paths).
@@ -619,8 +625,8 @@ import Testing
         let sites = receiver.flatMap { source in
             Array(repeating: source.path, count: occurrences(of: constructor, in: codeOnly(source.text)))
         }
-        if sites != [cloudKitFile] {
-            failures.append("\(constructor) appears at \(sites), expected exactly once, in \(cloudKitFile)")
+        if sites != [cloudKitFile, cloudKitFile] {
+            failures.append("\(constructor) appears at \(sites), expected exactly twice, in \(cloudKitFile)")
         }
         for (path, text) in receiver + tests {
             for token in [container + ".default", container + ".init", container + ".self"]
@@ -636,17 +642,19 @@ import Testing
             failures.append("\(path) imports CloudKit; only \(cloudKitFile) may")
         }
         let file = codeOnly(receiver.first { $0.path == cloudKitFile }?.text ?? "")
-        guard let factory = body(after: factoryHead, in: file) else {
-            failures.append("'\(factoryHead)' not found in \(cloudKitFile)")
-            return failures
-        }
-        let statements = factory.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        if statements.first != capabilityGuard {
-            failures.append("makeLive must open with '\(capabilityGuard)', found '\(statements.first ?? "")'")
-        }
-        if occurrences(of: constructor, in: factory) != 1 {
-            failures.append("the one \(constructor) must be inside makeLive")
+        for head in factoryHeads {
+            guard let factory = body(after: head, in: file) else {
+                failures.append("'\(head)' not found in \(cloudKitFile)")
+                continue
+            }
+            let statements = factory.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if statements.first != capabilityGuard {
+                failures.append("'\(head)' must open with '\(capabilityGuard)', found '\(statements.first ?? "")'")
+            }
+            if occurrences(of: constructor, in: factory) != 1 {
+                failures.append("'\(head)' must build exactly one \(constructor)")
+            }
         }
         return failures
     }
@@ -684,9 +692,24 @@ import Testing
         // The guard removed.
         let unguarded = mutated { $0.replacingOccurrences(of: Self.capabilityGuard, with: "") }
         #expect(!Self.containerFailures(receiver: unguarded, tests: tests).isEmpty)
-        // A second construction site.
+        // A third construction site.
         let second = mutated { $0 + "\nlet spare = \(Self.container)(identifier: \"x\")\n" }
         #expect(!Self.containerFailures(receiver: second, tests: tests).isEmpty)
+        // S-PAIR-C1.6 (#172): the approvals factory alone unguarded, or its
+        // construction moved out of it to a third site.
+        let approvalsHead = Self.factoryHeads[1] + "\n        " + Self.capabilityGuard + "\n"
+        let approvalsUnguarded = mutated { $0.replacingOccurrences(of: approvalsHead, with: Self.factoryHeads[1] + "\n") }
+        #expect(approvalsUnguarded.map { $0.text } != receiver.map { $0.text }, "canary 'the approvals factory unguarded' did not apply")
+        #expect(!Self.containerFailures(receiver: approvalsUnguarded, tests: tests).isEmpty,
+                "canary 'the approvals factory unguarded' was NOT caught")
+        let moved = mutated {
+            $0.replacingOccurrences(of: "        let container = \(Self.container)(identifier: ApprovalWire.containerIdentifier)\n"
+                                        + "        return LiveCloudKitApprovalDatabase(container: container)\n",
+                                    with: "        return LiveCloudKitApprovalDatabase(container: spareContainer)\n")
+                + "\nlet spareContainer = \(Self.container)(identifier: ApprovalWire.containerIdentifier)\n" }
+        #expect(moved.map { $0.text } != receiver.map { $0.text }, "canary 'the approvals container built outside its factory' did not apply")
+        #expect(!Self.containerFailures(receiver: moved, tests: tests).isEmpty,
+                "canary 'the approvals container built outside its factory' was NOT caught")
         // CloudKit imported elsewhere in the app.
         let leaked = receiver.map { $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, "import CloudKit\n" + $0.text) : $0 }
         #expect(!Self.containerFailures(receiver: leaked, tests: tests).isEmpty)
@@ -754,12 +777,19 @@ import Testing
     static let configuredDatabase = "try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in"
     static let subscriptionSave = "try await database.save(Self.makeSubscription())"
 
+    /// S-PAIR-C1.6 (#172): the live approvals database (the record path's
+    /// seam's one app conformer) reads the private database on this line
+    /// and runs what it admits on its `add` lines, nowhere else.
+    static let approvalsDatabaseRead = "container.privateCloudDatabase.add(operation)"
+    static let approvalsAddSites: [String: Int] = ["container.privateCloudDatabase.add(operation)": 1]
+
     static let alertLaneSites: [(pattern: String, sites: [String: Int], rule: String)] = [
         (#"\bsave\b"#, [subscriptionSave: 1, "func save(_ subscription: CKSubscription) async throws": 1,
                         "func save(_ subscription: CKSubscription) async throws {": 1, "try await database.save(subscription)": 1],
          "the one save is the subscription's"),
-        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1],
-         "the private database is reached only by the live database's configured requests"),
+        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1, approvalsDatabaseRead: 1],
+         "the private database is reached only by the live databases: the alerts' configured requests, the approvals' one read"),
+        (#"\badd\b"#, approvalsAddSites, "only the live approvals database adds an operation, on its pinned lines"),
         (#"\bconfiguredWith\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1],
          "a configured database comes only from the private one"),
         (#"\bmakeSubscription\b"#, ["static func makeSubscription() -> CKQuerySubscription {": 1, subscriptionSave: 1],
@@ -767,10 +797,11 @@ import Testing
     ]
 
     /// Named nowhere in the CloudKit file: every other database write, the
-    /// other databases, and `add`.
+    /// other databases, and `add`. AMENDED (S-PAIR-C1.6, #172): `add` moves
+    /// to `alertLaneSites`, pinned to the live approvals database's lines.
     static let alertLaneBans = [
         #"\b(?:modifyRecords|modifySubscriptions|modifyRecordZones|delete|deleteRecord|deleteSubscription|deleteRecordZone)\b"#,
-        #"\b(?:publicCloudDatabase|sharedCloudDatabase)\b"#, #"\bdatabase\s*\(\s*with\b"#, #"\badd\b"#,
+        #"\b(?:publicCloudDatabase|sharedCloudDatabase)\b"#, #"\bdatabase\s*\(\s*with\b"#,
     ]
 
     static func alertLaneWriteFailures(receiver: [Source]) -> [String] {
@@ -828,6 +859,15 @@ import Testing
             ("the subscription built elsewhere", receiver.map {
                 $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, $0.text + "\nlet s = CloudKitAlertSource.makeSubscription()") : $0 }),
             ("a zone door", mutated { $0 + "\nlet z = CKModifyRecordZonesOperation(recordZonesToSave: [], recordZoneIDsToDelete: nil)" }),
+            // S-PAIR-C1.6 (#172): the live approvals database's adds are
+            // pinned — a second one beside its own, and one in the alerts'
+            // live database.
+            ("a second add in the approvals database", mutated {
+                $0.replacingOccurrences(of: "        " + Self.approvalsDatabaseRead + "\n",
+                                        with: "        " + Self.approvalsDatabaseRead + "\n        container.privateCloudDatabase.add(spare)\n") }),
+            ("an add in the alerts' live database", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase { func spare(_ o: CKModifyRecordsOperation) { "
+                    + Self.approvalsDatabaseRead.replacingOccurrences(of: "(operation)", with: "(o)") + " } }" }),
             ("an allow-listed identifier dropped", mutated {
                 $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
         ]
@@ -835,7 +875,7 @@ import Testing
             #expect(mutant.map { $0.text } != receiver.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.alertLaneWriteFailures(receiver: mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
-        let probes = ["db.deleteRecord(withID: i)", "c.publicCloudDatabase", "c.database(with: .shared)", "add(o)"]
+        let probes = ["db.deleteRecord(withID: i)", "c.publicCloudDatabase", "c.database(with: .shared)"]
         #expect(probes.count == Self.alertLaneBans.count)
         for (pattern, probe) in zip(Self.alertLaneBans, probes) {
             #expect(Self.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")

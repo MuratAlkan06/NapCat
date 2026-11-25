@@ -25,8 +25,10 @@ import Testing
 ///    context, no live binding.
 /// 6. The live key wiring: the live keyring (the keychain, the Secure
 ///    Enclave, the live enrollment) is built once, in `RequestInbox.make`,
-///    and handed to the live inbox there; no file under Fixtures/ names a
-///    live key part, so no fixture can mix one with a software key.
+///    and handed to the live inbox there (and, since S-PAIR-C1.6, to the
+///    live pairing made there alone); no file under Fixtures/ names a live
+///    key part or the live pairing, so no fixture can mix one with a
+///    software key.
 ///
 /// AMENDED (#166, the S-PAIR-B security review): lock 4 also bans software
 /// keys by SHAPE: outside Fixtures/, each key seam (the enclave, the store,
@@ -489,9 +491,17 @@ import Testing
         + "enrollment: LocalAuthenticationEnrollment())"
     /// In `make`: bound, then handed to the inbox the branch returns (any
     /// writer), so an unused live keyring beside a fixture one is caught.
+    /// AMENDED (S-PAIR-C1.6, #172): and to the live pairing made there, the
+    /// same local, so the key a pairing commits is the key the inbox signs
+    /// with, and no pairing is made over a fixture key. The live pairing is
+    /// made there alone (`livePairingMade`), and no fixture names it.
     static let liveHandOff = NSRegularExpression.escapedPattern(for: "let keyring = \(liveKeyring) return RequestInbox(writer: ")
-        + #"[^;{}]*?"# + NSRegularExpression.escapedPattern(for: ", biometrics: biometrics, keyring: keyring) }")
-    static let liveParts = ["KeychainSigningKeyStore", "phoneKeychain", "SecureEnclaveSigner", "LocalAuthenticationEnrollment"]
+        + #"[^;{}]*?"# + NSRegularExpression.escapedPattern(
+            for: ", biometrics: biometrics, keyring: keyring, pairing: LivePairing.make(keyring: keyring, biometrics: biometrics)) }")
+    static let livePairingMade = CloudKitStructureTests.appSites([
+        "Model/RequestInbox.swift": ["pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))": 1]])
+    static let liveParts = ["KeychainSigningKeyStore", "phoneKeychain", "SecureEnclaveSigner", "LocalAuthenticationEnrollment",
+                            "LivePairing"]
 
     static func liveWiringFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
@@ -519,6 +529,9 @@ import Testing
         }
         // #166: `let k: PhoneKeyring = .init(store: …)` builds one unnamed.
         failures += RecordPathStructureTests.implicitInitFailures(app, rule: "the live keyring is built once, by name, in RequestInbox.make")
+        failures += CloudKitStructureTests.appSiteFailures(#"\bLivePairing\s*\.\s*make\b"#,
+                                                           in: app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) },
+                                                           allowed: livePairingMade, rule: "the live pairing is made once, over the live keyring")
         return failures
     }
 
@@ -542,13 +555,22 @@ import Testing
             ("B7's inbox half: the live keyring swapped out", swapped(app)),
             ("B7's fixture half: a factory mixing the live store in", Self.mutate(app, Self.softwareFile) { $0 + factory }),
             ("a fixture keyring handed to the live inbox", Self.mutate(app, Self.inboxFile) {
-                $0.replacingOccurrences(of: "biometrics: biometrics, keyring: keyring)",
-                                        with: "biometrics: biometrics, keyring: FixtureRequests.keyring(.paired))") }),
+                $0.replacingOccurrences(of: "biometrics: biometrics, keyring: keyring,",
+                                        with: "biometrics: biometrics, keyring: FixtureRequests.keyring(.paired),") }),
             ("a second live keyring", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") { $0 + "\nlet spare = \(Self.liveKeyring)" }),
             // #166: a second live keyring by typed implicit init.
             ("a second live keyring by typed implicit init", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") {
                 $0 + "\nlet spare: PhoneKeyring = .init(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(), "
                     + "enrollment: LocalAuthenticationEnrollment())" }),
+            // S-PAIR-C1.6 (#172): the live pairing rides the live keyring.
+            ("the live pairing over a fixture keyring", Self.mutate(app, Self.inboxFile) {
+                $0.replacingOccurrences(of: "pairing: LivePairing.make(keyring: keyring,",
+                                        with: "pairing: LivePairing.make(keyring: FixtureRequests.keyring(.paired),") }),
+            ("the live pairing left out of the live inbox", Self.mutate(app, Self.inboxFile) {
+                $0.replacingOccurrences(of: ", keyring: keyring,\n                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))",
+                                        with: ", keyring: keyring)") }),
+            ("a second live pairing", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") {
+                $0 + "\nlet spare = LivePairing.make(keyring: k, biometrics: g)" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -559,7 +581,8 @@ import Testing
                               ("phoneKeychain", "let spare = PhoneKeyring(store: .phoneKeychain, enclave: SoftwareEnclave(), "
                                   + "enrollment: FixedEnrollment(hash: nil))"),
                               ("SecureEnclaveSigner", "let spare: SecureEnclaveSigner = .init()"),
-                              ("LocalAuthenticationEnrollment", "let spare = LocalAuthenticationEnrollment.init()")] {
+                              ("LocalAuthenticationEnrollment", "let spare = LocalAuthenticationEnrollment.init()"),
+                              ("LivePairing", "let spare = LivePairing.make(keyring: k, biometrics: g)")] {
             let failures = Self.liveWiringFailures(Self.mutate(app, fixture) { $0 + "\n\(plant)" })
             #expect(failures.contains { $0.contains("names \(part) ") }, "canary '\(plant)' was NOT caught by name: \(failures)")
         }
