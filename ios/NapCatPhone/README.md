@@ -140,9 +140,11 @@ It is one standard grouped form in the current palette:
   notification settings. It shares its words and that button with the main
   screen's permission row.
 - **Pairing** (slice S-PAIR-C1.6): **Pair with Mac** opens the pairing
-  screen over Settings, a new pairing each time, only when you tap it. Start
-  with **Pair iPhone…** in Settings › Claude on the Mac, then scan the code
-  it shows. A launch with a request fixture has no row.
+  screen over Settings, a new pairing each time, only when you tap it. On
+  your Mac, choose **Pair iPhone…** (a Mac never paired) or **Pair a New
+  iPhone…** (a Mac already paired) in NapCat's Settings › Claude, then scan
+  the code it shows and confirm with Face ID. A launch with a request
+  fixture has no row.
 - **About**: the version and build, read from the app's Info.plist, and a
   link to the [project site](https://muratalkan06.github.io/NapCat/).
 

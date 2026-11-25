@@ -911,13 +911,16 @@ arms anything.
     drop, a file, a photo or the launch options, and the app declares no
     URL scheme, activity type or associated domain (lint-locked, and read
     back from the built app's Info.plist).
+  - *The scanner's start.* A scanner VisionKit will not start ends the
+    ceremony at its start on the closed `.noCamera` failure, with Scan
+    Again and Close, instead of a dark viewfinder (the design review's fix).
   - *The signing line (N-25).* A failed biometric evaluation, key making,
     restore or signature is logged on one fixed public line in the
     `signing` category: a domain from a closed table (LocalAuthentication,
     OSStatus, CryptoKit's wrapped status, CryptoKit, other) and a number,
     never the error's own text. The device drills read it with `log
     stream`.
-  - *Face ID stays at the scan.* The ratified mirror copy puts the phone's
+  - *Face ID stays at the scan.* The mirror copy as ratified put the phone's
     one Face ID at its Codes Match ("…then confirm here with Face ID"). It
     cannot move there without a protocol change: the response record
     carries the proof, which the new key signs; the key signs only after a
@@ -925,9 +928,10 @@ arms anything.
     checks the proof on the first record it fetches, before either device
     compares codes. So the ceremony's one match stays at the scan and signs
     the proof, and Codes Match commits the key with no prompt (cancel and a
-    mismatch need none). Owed to the design review: the copy drops "with
-    Face ID", or a later slice changes the protocol (a second match there
-    would make two).
+    mismatch need none). The design review ratified this: Face ID stays at
+    the scan, where the pairing proof is signed, and Codes Match commits
+    without a prompt; the phone-mirror copy was amended to match in the
+    design spec.
   - *Verification split.* CI plays CloudKit's part on the real operations:
     the zone's lookup and creation with their callbacks fired by hand, the
     live database's admission check over every refused shape, and the
