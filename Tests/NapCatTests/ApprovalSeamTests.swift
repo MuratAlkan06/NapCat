@@ -237,9 +237,28 @@ struct ApprovalSeamTests {
         #expect(fixture.mode(fixture.directoryPath) == 0o700)
     }
 
+    /// A client that reads the listener's credentials a beat after its
+    /// connect, as a loaded runner's client does when it is descheduled
+    /// between the two (#141). Then the real credentials, as ever.
+    static func lateReader(_ descriptor: Int32) -> SeamPeer? {
+        usleep(100_000)
+        return SeamSocket.peer(of: descriptor)
+    }
+
     /// A fresh Mac has no NapCat folder yet: the listener makes the missing
     /// folders above its directory with the default mode (they are shared
     /// app-support folders, never tightened), and its own directory 0700.
+    ///
+    /// #141 (the flake: `connection != nil` failed mid-suite under load, four
+    /// times): the listener here dropped every connection it accepted
+    /// (`onConnection: { _ in }`), which closes it at once, so a client
+    /// descheduled between its connect and its read of the listener's
+    /// credentials found the link gone and — rightly — refused it. The race
+    /// was the test's, not the seam's: the listener now HOLDS what it
+    /// accepts, as the app's host does, and the client reads the
+    /// credentials late on purpose (`lateReader`), so the test can no longer
+    /// pass or fail on timing; and the accepted end is checked to be this
+    /// user's.
     @Test func theListenerMakesTheMissingFoldersAboveItsDirectory() throws {
         let fixture = try SeamFixture()
         let top = fixture.root.path + "/s"
@@ -249,7 +268,8 @@ struct ApprovalSeamTests {
         #expect(!FileManager.default.fileExists(atPath: top), "the scratch root starts with no folders")
         let queue = DispatchQueue(label: "test.seam.fresh")
         let listener = SeamListener(socketPath: socketPath, queue: queue)
-        #expect(queue.sync { listener.start(onConnection: { _ in }) }, "a fresh Mac listens on the first try")
+        let accepted = SeamInbox<SeamConnection>()
+        #expect(queue.sync { listener.start(onConnection: { accepted.put($0) }) }, "a fresh Mac listens on the first try")
         defer { queue.sync { listener.stop() } }
         #expect(fixture.mode(napCat + "/approvals") == 0o700)
         #expect(fixture.mode(socketPath) == 0o600)
@@ -259,9 +279,15 @@ struct ApprovalSeamTests {
         #expect(fixture.mode(top) == defaultMode, "a folder above gets the default mode")
         #expect(fixture.mode(napCat) == defaultMode, "a folder above gets the default mode")
         let clientQueue = DispatchQueue(label: "test.seam.fresh.client")
-        let connection = clientQueue.sync { SeamClient.connect(socketPath: socketPath, queue: clientQueue) }
+        let connection = clientQueue.sync {
+            SeamClient.connect(socketPath: socketPath, queue: clientQueue, peerReader: Self.lateReader)
+        }
         #expect(connection != nil, "the server reaches the new socket")
+        let serverEnd = accepted.next(within: Self.closeObservationSeconds)
+        #expect(serverEnd?.peer == SeamPeer(uid: geteuid(), tokenUID: geteuid(), pid: getpid()),
+                "the listener hands the connection over, and its peer is this user")
         clientQueue.sync { connection?.close() }
+        queue.sync { serverEnd?.close() }
     }
 
     /// Making the missing folders loosens no check: a file in the way is a

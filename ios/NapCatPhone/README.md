@@ -93,8 +93,9 @@ empty). `scan`, `camera` and `cameraOff` wait for a scan with the camera
 allowed, not yet asked, or off; `code` scans the fixture code at launch
 (the simulator's Face ID asks, then the screen shows this iPhone's code to
 compare); `stray` scans a code that is not NapCat's; `taken` scans the
-fixture code when a response for it is saved already. Until the pairing
-record exists in iCloud, this launch is the pairing screen's only way in.
+fixture code when a response for it is saved already. The pairing
+response's iCloud writer exists (slice S-PAIR-C1.5) but no live launch
+builds it yet, so this launch is still the pairing screen's only way in.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it. Nor is a failed

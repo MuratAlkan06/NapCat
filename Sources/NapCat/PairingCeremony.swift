@@ -44,9 +44,10 @@ enum PairingFetch: Equatable, Sendable {
 }
 
 /// THE seam over the pairing record: fetch it by its derived name, delete it
-/// by that name. Nothing else: no query, no listing, no save. In this slice
-/// the app's conformer is `NoPairingRecords` (no CloudKit operation for the
-/// pairing record exists yet), and tests play CloudKit's part.
+/// by that name. Nothing else: no query, no listing, no save. Since
+/// S-PAIR-C1.5 (#170) the app's one conformer is `CloudKitPairingRecords`
+/// (the record path's file, lint-locked to its declaration's line); tests
+/// play CloudKit's part.
 protocol PairingRecordSource: AnyObject, Sendable {
     func fetch(recordName: String) async -> PairingFetch
     /// True when the record is gone: deleted now, or never there.
@@ -120,6 +121,15 @@ enum PairingResponseCheck {
     static func recordName(nonce: [UInt8]) -> String? {
         ApprovalSigning.pairingRecordNameInput(nonce: nonce)
             .flatMap { ApprovalSigning.pairingRecordName(digest: Array(SHA256.hash(data: $0))) }
+    }
+
+    /// Whether `name` has a pairing record name's shape — exactly 64
+    /// lowercase hex digits, `^[0-9a-f]{64}$` read byte by byte (no line end,
+    /// no other character, no other case) — the only names the app ever
+    /// fetches or deletes a pairing record by (S-PAIR-C1.5, #170).
+    static func isRecordName(_ name: String) -> Bool {
+        let hex = Set("0123456789abcdef".utf8)
+        return name.utf8.count == ApprovalSigning.recordNameHexDigits && name.utf8.allSatisfy(hex.contains)
     }
 }
 
@@ -205,6 +215,9 @@ enum PairingAudit: Equatable, Sendable {
     /// A record remembered from a ceremony that never ended, at launch.
     case leftoverDeleted
     case leftoverKept
+    /// A remembered name with no pairing record name's shape: nothing is
+    /// deleted by it, and it is forgotten (S-PAIR-C1.5, #170).
+    case leftoverMalformed
 
     var code: String {
         switch self {
@@ -219,6 +232,7 @@ enum PairingAudit: Equatable, Sendable {
         case .unpairFailed: return "pairing.unpairFailed"
         case .leftoverDeleted: return "pairing.leftover.deleted"
         case .leftoverKept: return "pairing.leftover.kept"
+        case .leftoverMalformed: return "pairing.leftover.malformed"
         }
     }
 }
@@ -391,4 +405,24 @@ struct PairingCeremonyState: Equatable, Sendable {
         defer { recordName = nil }
         return recordName.map { [.delete(recordName: $0)] } ?? []
     }
+}
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1 security delta check's (b))
+
+/// The nonce stays on the screen (PairingStructureTests lock 7): the values
+/// that hold it — the state machine, and the event that hands it in — print,
+/// debug-print, dump and reflect as their type's name and nothing more,
+/// however and wherever they are described (`String(describing:)`, an
+/// interpolation, `String(reflecting:)`, `dump`, a `Mirror`): the
+/// conformance is the type's own, so no spelling and no file gets past it.
+extension PairingCeremonyState: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "PairingCeremonyState(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
+
+extension PairingEvent: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "PairingEvent(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }
 }

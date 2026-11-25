@@ -34,6 +34,46 @@ import Testing
 /// item private to it and pins every name that leads to the real keychain;
 /// lock 2 pins every line of the sheet naming the payload and its one image;
 /// lock 6 is new.
+///
+/// AMENDED (S-PAIR-C1.5, #170, the C1 security delta check's follow-ups): lock 1
+/// also pins every use of the keychain store's calls and every account it
+/// sets (d); lock 6 pins the live record source in the wiring and the
+/// remembered name read from the app's own domain; and lock 7 is new:
+///
+/// 7. Nothing reflects, and the code never prints: no reflection in the four
+///    targets but the redactions' own empty mirrors (a); the values holding
+///    the nonce or the payload redact themselves, as types (b); and the QR
+///    view is named at its sites alone (c).
+///
+/// AMENDED (S-PAIR-C1.5, the C1.5 security review's R1, R4 and R5): lock 7
+/// also bans `descendant` and every `_forEachField…` reader and pins
+/// `customMirror` to the redactions (a), redacts the controller, the slot
+/// and the keychain store as types (b), and pins the sheet view and bans
+/// off-screen rendering (c); lock 1 pins every `kSec…` line of the store.
+///
+/// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-A): lock 7
+/// also bans, with no allowed site, every declaration that reaches the
+/// runtime by name — `_silgen_name`, `_extern` — and every
+/// `swift_reflectionMirror…` name (a). Runtime reflection ignores a type's
+/// redaction; these bans, not the redactions, stop the Swift runtime's
+/// field reader by name.
+///
+/// AMENDED (S-PAIR-C1.5, the delta re-check's round 2, F-D): the ObjC
+/// runtime's ivar reader ignores the redaction too, so lock 7 also bans
+/// the ObjC runtime's C API (`class_…`, `object_…`, `ivar_…` and their kin)
+/// and `NSClassFromString`, with no allowed site (a). Raw-pointer reads
+/// remain the accepted R-1 residual.
+///
+/// AMENDED (S-PAIR-C1.5, the delta re-check's round 3, F-F): a class, a
+/// selector or a protocol looked up by name reaches what no pinned word
+/// names — its S5 built a real container from MenuStateModel, with no
+/// CloudKit import, by `Bundle.classNamed` and `NSSelectorFromString`. So
+/// lock 7 bans every dynamic lookup by name — `NSClassFromString`,
+/// `NSSelectorFromString`, `Selector`, `classNamed`, `NSProtocolFromString` —
+/// beside the runtime's C API, with no allowed site (a). What the ObjC bans
+/// stop: the runtime's C API (its ivar, method and property readers among
+/// it) and lookup by name. Raw-pointer reads remain the accepted R-1
+/// residual.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -133,7 +173,8 @@ struct PairingStructureTests {
                                        "let item: KeychainItemName": 1]],
          "the keychain's item names are built at their two sites only"),
         (#"\bKeychainTopicStore\b"#,
-         ["KeychainTopicStore.swift": ["struct KeychainTopicStore: TopicStore {": 1, topicStoreLine: 1, itemLine: 1],
+         ["KeychainTopicStore.swift": ["struct KeychainTopicStore: TopicStore {": 1, topicStoreLine: 1, itemLine: 1,
+                                       "extension KeychainTopicStore" + conformance: 1],
           "NapCatApp.swift": ["topicStore: KeychainTopicStore." + topicItem: 1, wiringLine: 1]],
          "the real keychain stores are built at their two sites and handed on by the app's wiring only"),
         (#"\b"# + realCalls + #"\b"#,
@@ -183,8 +224,46 @@ struct PairingStructureTests {
         }
         failures += appSiteFailures(#"\bitems\b"#, in: sources.filter { $0.name == slotFile }, allowed: slotItemSites,
                                     rule: "the slot's item is private to it, handed on once and used at its three sites")
+        // S-PAIR-C1.5 (the C1 security delta check's (d)): inside the keychain store every use of its
+        // calls is pinned, and the item's account is set at one place, from
+        // its name — no hand-built query reaches the paired item.
+        failures += appSiteFailures(#"\bcalls\b"#, in: sources.filter { $0.name == storeFile }, allowed: [storeFile: callsSites],
+                                    rule: "the store's four keychain calls are made at their four sites, on its own query")
+        failures += appSiteFailures(#"\bkSecAttrAccount\b"#, in: sources, allowed: [storeFile: [accountLine: 1]],
+                                    rule: "an item's account is set at one place, in the store's base query, from its name")
+        // The C1.5 security review's R4: every keychain attribute and value the store names.
+        failures += appSiteFailures(#"\bkSec\w+"#, in: sources.filter { $0.name == storeFile }, allowed: [storeFile: keychainConstantSites],
+                                    rule: "the store names keychain attributes in its three queries and its one update alone")
         return ApprovalRecordPathStructureTests.unique(failures)
     }
+
+    static let storeFile = "KeychainTopicStore.swift"
+    static let accountLine = "kSecAttrAccount as String: item.account,"
+    /// The C1.5 security review's R4 (its N-34d: `let put = <the add call>` and a
+    /// hand-built query, in the store's own file, passed every lock): every
+    /// line of the store naming a `kSec…` attribute or value — its base,
+    /// read and add queries and its one update — so a query built anywhere
+    /// else in its file is off the list. Chosen over banning the attributes'
+    /// raw strings (`"acct"`, `"svce"`, `"v_Data"`): a ban on string literals
+    /// is a deny-list that splitting defeats (RP4' itself split the account),
+    /// and a dictionary of raw keys does nothing until a keychain call takes
+    /// it — every call is pinned: each item call named once, as a word, at
+    /// its binding (KeychainTopicStoreTests, R4's other half), and the store's
+    /// `calls` at their four sites (above). A raw key slipped into the item's
+    /// own queries is caught by value: the query tests pin each query's exact
+    /// size and the absent sync, data-protection and access-group keys
+    /// (`theQueriesAddressOneNonSynchronizableGenericPasswordItem`).
+    static let keychainConstantSites = ["kSecClass as String: kSecClassGenericPassword,": 2, "kSecAttrService as String: item.service,": 1,
+                                        accountLine: 1, "kSecReturnData as String: true,": 1, "kSecMatchLimit as String: kSecMatchLimitOne,": 2,
+                                        "kSecValueData as String: data,": 1, "kSecAttrLabel as String: label,": 1,
+                                        "kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,": 2,
+                                        "let updated = calls.update(baseQuery, [kSecValueData as String: data])": 1]
+    /// Every `calls` in the store's file: its stored calls, the two real
+    /// stores handed the real ones, and its four uses.
+    static let callsSites = ["let calls: KeychainItemCalls": 1, topicStoreLine: 1, itemLine: 1,
+                             "let answer = calls.copyData(readQuery)": 1,
+                             "let updated = calls.update(baseQuery, [kSecValueData as String: data])": 1,
+                             "let added = calls.add(addAttributes(data))": 1, "let status = calls.delete(baseQuery)": 1]
 
     @Test func theComparisonCannotBeSkipped() throws {
         let sources = try ApprovalChannelStructureTests.sources()
@@ -262,11 +341,50 @@ struct PairingStructureTests {
             ("a third store in the store's own body, on the topic store's calls", Self.mutate(sources, store) {
                 $0.replacingOccurrences(of: insideStore, with: "    static let zz = Self(item: .init(service: s, account: a), calls: "
                                         + Self.topicItem + ".calls)\n" + insideStore) }),
+            // The C1 security delta check's (d): a hand-built query written through the store's own
+            // calls, inside its file; an account set anywhere else.
+            ("a hand-built paired-key write through the store's calls", Self.mutate(sources, store) {
+                $0 + "\nextension KeychainTopicStore {\n    func zz(_ d: Data) -> OSStatus {\n"
+                    + "        calls.add([kSecClass as String: kSecClassGenericPassword, kSecValueData as String: d])\n    }\n}" }),
+            ("the calls kept aside", Self.mutate(sources, store) {
+                $0 + "\nextension KeychainTopicStore { var zz: KeychainItemCalls { calls } }" }),
+            ("an account set elsewhere", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz: [String: Any] = [kSecAttrAccount as String: \"x\"]" }),
+            ("a second account in the store's query", Self.mutate(sources, store) {
+                $0.replacingOccurrences(of: Self.accountLine, with: Self.accountLine + "\n            kSecAttrAccount as String: \"x\",") }),
         ]
-        for (name, mutant) in mutants + r3 {
+        // The C1.5 security review's R4: its RP4', as planted (a keychain write
+        // from a new site in the store's file — the call unapplied, the
+        // account by its raw key, the literal split), and a query built aside
+        // or widened in place. (The item-call half of R4 is
+        // KeychainTopicStoreTests'; the call is spelled split here too.)
+        let add = "Sec" + "Item" + "Add"
+        let r4: [(String, Sources)] = [
+            ("RP4': a keychain write from a new site in the store's file", Self.mutate(sources, store) {
+                $0 + "\nfunc zzSecRevPlant(_ data: Data) -> OSStatus {\n    let put = " + add + "\n"
+                    + "    return put([kSecClass as String: kSecClassGenericPassword, \"svce\": \"com.muratalkan.napcat\",\n"
+                    + "                \"acct\": \"paired-\" + \"iphone-key\", \"v_Data\": data] as CFDictionary, nil)\n}\n" }),
+            ("a query built aside in the store's file", Self.mutate(sources, store) {
+                $0 + "\nextension KeychainItemName { static let zzQuery: [String: Any] = [kSecClass as String: kSecClassGenericPassword] }" }),
+            ("an attribute added to the item's queries", Self.mutate(sources, store) {
+                $0.replacingOccurrences(of: Self.accountLine, with: Self.accountLine + "\n            kSecAttrIsInvisible as String: true,") }),
+            ("the read asks for every match", Self.mutate(sources, store) {
+                $0.replacingOccurrences(of: "kSecMatchLimit as String: kSecMatchLimitOne,", with: "kSecMatchLimit as String: kSecMatchLimitAll,") }),
+        ]
+        for (name, mutant) in mutants + r3 + r4 {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.compareFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // R4: in lock 1 it is the kSec pin that catches RP4' (its account is
+        // a raw key, split, and it makes its own call: nothing else here sees it).
+        let rp4Failures = Self.compareFailures(r4[0].1)
+        #expect(!rp4Failures.isEmpty && rp4Failures.allSatisfy { $0.contains(#"'\bkSec\w+'"#) }, "\(rp4Failures)")
+        // R4 over-match controls, in the store's own file: a word that only
+        // contains the prefix, and a whole-line comment naming an attribute.
+        #expect(Self.compareFailures(Self.mutate(sources, store) {
+            $0 + "\nlet zzkSecond = 1, isKSec = 2"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never kSecAttrSynchronizable, never kSecClass outside a query")
+        }).isEmpty)
         // Over-match controls: names that only contain the pinned words, and
         // a whole-line comment naming them.
         #expect(Self.compareFailures(Self.mutate(sources, "MenuStateModel.swift") {
@@ -359,9 +477,12 @@ struct PairingStructureTests {
             failures.append("'\(token)' in \(controllerFile) — only the record's name is remembered")
         }
         let controller = text(controllerFile, in: sources)
+        // AMENDED (S-PAIR-C1.5, #170): and a remembered name of any other
+        // shape than a pairing record's is forgotten, unused.
         let remembered = ApprovalRecordPathStructureTests.siteTally(#"\bwriteRemembered\s*\("#, in: controller)
         if remembered != ["writeRemembered(name)": 1, "if gone, readRemembered() == name { writeRemembered(nil) }": 1,
-                          "if await source.delete(recordName: name), readRemembered() == name { writeRemembered(nil) }": 1] {
+                          "if await source.delete(recordName: name), readRemembered() == name { writeRemembered(nil) }": 1,
+                          "writeRemembered(nil)": 1] {
             failures.append("only the record's NAME is remembered, and forgotten once the record is gone: \(remembered)")
         }
         let logged = ApprovalRecordPathStructureTests.siteTally(#"\blogger\s*\."#, in: controller)
@@ -475,15 +596,21 @@ struct PairingStructureTests {
 
     // MARK: - 4. The C1 tests touch nothing live
 
+    /// AMENDED (S-PAIR-C1.5, #170): and the live transport's tests, which
+    /// play CloudKit's part on the real operations through a scripted
+    /// database — never the live one or its factory.
     static let testFiles = ["PairingCeremonyTests.swift", "PairingControllerTests.swift", "PairingPresentationTests.swift",
-                            "PairingResponseReaderTests.swift", "PairedKeyStoreTests.swift", "PairingFingerprintVectorTests.swift"]
+                            "PairingResponseReaderTests.swift", "PairedKeyStoreTests.swift", "PairingFingerprintVectorTests.swift",
+                            "CloudKitPairingRecordsTests.swift"]
     /// The live parts: the real keychain items and bindings (split so no
     /// test file spells them), the real defaults, the app's factories, the
     /// live tick, the system random source, the announcer, and CloudKit's
-    /// container and database.
+    /// container and database (and, since S-PAIR-C1.5, the live pairing
+    /// database and its factory).
     static let liveTokens = ["pairedPhone" + "Keychain", "login" + "Keychain", "security" + "Framework", "Sec" + "Item",
                              "UserDefaults.standard", "makeIfEnabled(", "TimerPairingTicker", "secureNonce", "Pairing" + "Announcer",
-                             "CKContainer", "CKDatabase", "SecRandomCopyBytes", "NSApp.", "makeKeyAndOrderFront"]
+                             "CKContainer", "CKDatabase", "SecRandomCopyBytes", "NSApp.", "makeKeyAndOrderFront",
+                             "makeLive" + "PairingDatabase", "Live" + "PairingRecordDatabase"]
 
     static func liveFailures(_ tests: Sources) -> [String] {
         tests.flatMap { name, text in
@@ -592,7 +719,9 @@ struct PairingStructureTests {
     /// whole nonce: `secureNonce`, whole, its size the wire's
     /// `pairingNonceByteCount` (M5 drew 2 random bytes into the 32). The
     /// app's one controller is `makeIfEnabled`'s, whole: the record source
-    /// `NoPairingRecords`, and no seam overridden there or by a changed
+    /// (since S-PAIR-C1.5 the live `CloudKitPairingRecords`; the C1 stub
+    /// `NoPairingRecords` is gone — ApprovalRecordPathStructureTests lock 10),
+    /// and no seam overridden there or by a changed
     /// default in the init (M6 passed a fixed nonce). And nothing else builds
     /// a controller, however it is spelled: `PairingController(` at its one
     /// site; every call of the init names `readRemembered` (it has no
@@ -610,11 +739,17 @@ struct PairingStructureTests {
         + " clock: @escaping () -> Date = Date.init, killSwitch: @escaping () -> Void,"
         + " audit: @escaping (PairingAudit) -> Void = PairingLog.record,"
         + " makeTicker: @escaping TickerFactory = { TimerPairingTicker($0) }) {"
+    /// AMENDED (S-PAIR-C1.5, #170): the record source is the live one
+    /// (`CloudKitPairingRecords` over the probe-gated live database; the C1
+    /// stub is gone), and the remembered name is read from the app's own
+    /// persistent domain only — never the defaults search list.
+    static let readRememberedLine = "readRemembered: { Self.rememberedName(in: defaults.persistentDomain(forName: domain)) },"
     static let makeIfEnabledBody = "static func makeIfEnabled(remoteApprovals: RemoteApprovalsController?, keys: PairedKeyStore,"
         + " defaults: UserDefaults) -> PairingController? {"
         + " guard let remoteApprovals else { return nil }"
-        + " return PairingController( source: NoPairingRecords(), keys: keys,"
-        + " readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },"
+        + " let domain = Bundle.main.bundleIdentifier ?? \"\""
+        + " return PairingController( " + PhoneTransportStructureTests.pairingWiring
+        + " " + readRememberedLine
         + " writeRemembered: { name in"
         + " if let name { defaults.set(name, forKey: DefaultsKey.pairingRecordToDelete) }"
         + " else { defaults.removeObject(forKey: DefaultsKey.pairingRecordToDelete) } },"
@@ -630,9 +765,18 @@ struct PairingStructureTests {
          "the app's controller is built by makeIfEnabled alone"),
         (#"\breadRemembered\s*:"#, [controllerFile: ["private let readRemembered: () -> String?": 1,
                                                      "readRemembered: @escaping () -> String?, writeRemembered: @escaping (String?) -> Void,": 1,
-                                                     "readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },": 1]],
+                                                     readRememberedLine: 1]],
          "every call of the controller's init names readRemembered — makeIfEnabled's is the one"),
+        // S-PAIR-C1.5 (#170): the app's own persistent domain is read once,
+        // by the remembered name's one reader.
+        (#"\bpersistentDomain\b"#, [controllerFile: [readRememberedLine: 1]],
+         "the remembered name is read from the app's own persistent domain, by makeIfEnabled alone"),
+        (#"\brememberedName\b"#, [controllerFile: [readRememberedLine: 1,
+                                                   "nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {": 1]],
+         "the remembered name has one reader, called by makeIfEnabled alone"),
     ]
+    static let rememberedNameBody = "nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {"
+        + " domain?[DefaultsKey.pairingRecordToDelete] as? String }"
     /// A dynamic type, taken anywhere in the four targets (none takes one).
     static let dynamicType = #"\btype\s*\(\s*of\s*:"#
 
@@ -645,7 +789,9 @@ struct PairingStructureTests {
         let flat = MenuPanelStructureTests.flat(controller)
         for (body, what) in [(secureNonceBody, "secureNonce fills the wire's whole nonce from SecRandomCopyBytes — exactly as pinned"),
                              (initHead, "the init's seams default to the live ones — exactly as pinned"),
-                             (makeIfEnabledBody, "makeIfEnabled builds the controller on NoPairingRecords, no seam overridden — exactly as pinned")]
+                             (makeIfEnabledBody, "makeIfEnabled builds the controller on the live record source, reading the "
+                                + "remembered name from the app's own domain, no seam overridden — exactly as pinned"),
+                             (rememberedNameBody, "the remembered name is the app domain's text, nothing else — exactly as pinned")]
         where ApprovalChannelStructureTests.count(body, in: flat) != 1 {
             failures.append(what)
         }
@@ -691,7 +837,22 @@ struct PairingStructureTests {
             ("the clock overridden in the wiring", Self.mutate(sources, controller) {
                 $0.replacingOccurrences(of: wiring, with: "            clock: { Date(timeIntervalSince1970: 0) },\n" + wiring) }),
             ("another record source in the wiring", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: "source: NoPairingRecords(), keys: keys,", with: "source: SpareRecords(), keys: keys,") }),
+                $0.replacingOccurrences(of: "source: CloudKitPairingRecords(database: { CloudKitMessageSender.makeLivePairingDatabase() }), keys: keys,",
+                                        with: "source: SpareRecords(), keys: keys,") }),
+            // S-PAIR-C1.5 (#170): the remembered name read through the
+            // defaults search list again, from another domain, or as more
+            // than text; and a second reader of the persistent domain.
+            ("the remembered name read through the search list", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: Self.readRememberedLine,
+                                        with: "readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },") }),
+            ("the remembered name read from the global domain", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: "let domain = Bundle.main.bundleIdentifier ?? \"\"",
+                                        with: "let domain = UserDefaults.globalDomain") }),
+            ("the remembered name taken in any form", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: "domain?[DefaultsKey.pairingRecordToDelete] as? String",
+                                        with: "domain?[DefaultsKey.pairingRecordToDelete].map { \"\\($0)\" }") }),
+            ("a second reader of the persistent domain", Self.mutate(sources, controller) {
+                $0 + "\nextension PairingController { static func zz(_ d: UserDefaults) -> Any? { d.persistentDomain(forName: \"x\") } }" }),
             ("a second controller in the app", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + "\nlet zz = PairingController(source: s, keys: k, readRemembered: r, writeRemembered: w, killSwitch: {})" }),
             ("a second controller, init-spelled", Self.mutate(sources, "MenuStateModel.swift") {
@@ -722,5 +883,541 @@ struct PairingStructureTests {
                 + "\nlet secureNonceCount = 1, makeNonces = 2, readRememberedName = 3, typeOfThing = 4, subtype = 5"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never PairingController(…), never type(of: p).init, never secureNonce()")
         }).isEmpty)
+    }
+
+    // MARK: - 7. Nothing reflects, and the code never prints (S-PAIR-C1.5, the C1 security delta check)
+
+    /// The C1 security delta check's follow-ups (a)-(c), its MN1 probe as planted: a
+    /// `Mirror` reached the paired-key slot's private item from a file
+    /// holding the controller, and an accessibility hint carried
+    /// `String(describing:)` of the sheet's content.
+    /// (a) No reflection in the four targets — `Mirror` by any spelling, and
+    ///     the runtime's underscored field readers — but the redactions' own
+    ///     childless mirrors, on their pinned lines. (`ObservedStayAwakeMirror`
+    ///     and its kin are other words.)
+    /// (b) The values that hold the nonce (the state machine; the event that
+    ///     hands it in) or the payload (the sheet's content; the QR view)
+    ///     describe, debug-describe and reflect as their type's name alone:
+    ///     each conformance pinned whole, the type's own, so it holds however
+    ///     and wherever the value is described (the behaviour is
+    ///     `PairingPresentationTests.theCodeIsNeverPrintedDumpedOrReflected`).
+    /// (c) The QR view is named at its declaration, its redaction and its one
+    ///     use, nowhere else in the four targets.
+    ///
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security review's R1 and R5): its RP1
+    /// wrote a fake key into the slot from MenuStateModel through
+    /// `[pairing].customMirror.descendant(0, "keys", "items")` — no `Mirror`
+    /// named — and its RP5 rendered a second sheet view off screen. So:
+    /// (a) also bans `descendant` and every `_forEachField…` reader, and
+    ///     `customMirror` is named by the redactions' declarations alone (no
+    ///     mirror is read or walked);
+    /// (b) also covers what leads to the paired-key slot — the controller
+    ///     (on its declaration: an extension of it is banned, lock 6), the
+    ///     slot and the keychain store — so no print, description or
+    ///     `Mirror`-based walk, through any wrapper, reaches the slot's item
+    ///     or the real calls (the behaviour is
+    ///     `PairingControllerTests.noReflectionReachesThePairedKeySlot` and
+    ///     `KeychainTopicStoreTests.theStoreReflectsAndPrintsNothing`). The
+    ///     runtimes' own readers ignore the redaction: the bans of (a) stop
+    ///     the Swift runtime's field reader by name and the ObjC runtime's
+    ///     ivar reader; raw-pointer reads remain the accepted R-1 residual
+    ///     (AMENDED again below);
+    /// (c) also pins the sheet view to its declaration and its one
+    ///     presentation, and bans rendering a view, a window or the screen
+    ///     to an image or a document off screen, in the four targets.
+    static let reflectionPattern = #"\bMirror\b|\b_forEachField\w*|\b_reflect\b|\b_getChild\w*|\bdescendant\b"#
+    static let structMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }"
+    static let enumMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }"
+    static let classMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .class) }"
+    /// Each line holds two matches (the type and its construction).
+    static let mirrorSites: [String: [String: Int]] = [
+        ceremonyFile: [structMirror: 2, enumMirror: 2],
+        sheetFile: [structMirror: 2, "nonisolated " + structMirror: 2],
+        controllerFile: ["nonisolated " + classMirror: 2],
+        slotFile: [structMirror: 2],
+        storeFile: [structMirror: 2],
+    ]
+    /// R1: `customMirror` is named once on each of those lines — its
+    /// declaration — and nowhere else.
+    static let customMirrorSites = mirrorSites.mapValues { lines in lines.mapValues { _ in 1 } }
+    static let redactionConformances = "CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable"
+    static let conformance = ": " + redactionConformances + " {"
+    static func members(_ text: String, _ mirror: String, nonisolated: Bool = false) -> String {
+        let prefix = nonisolated ? "nonisolated " : ""
+        return prefix + "var description: String { \"" + text + "\" } " + prefix + "var debugDescription: String { description } "
+            + prefix + mirror
+    }
+    static func redaction(_ type: String, _ text: String, _ mirror: String, nonisolated: Bool = false) -> String {
+        "extension " + type + conformance + " " + members(text, mirror, nonisolated: nonisolated) + " }"
+    }
+    /// R1: the controller's conformance is on its declaration, its members
+    /// in its body (no extension of the controller is allowed, lock 6). The
+    /// fixed words name no type: a `PairingController(` or a
+    /// `KeychainTopicStore` in a string would be a site of locks 6 and 1.
+    static let controllerDeclaration = "final class PairingController: ObservableObject, " + redactionConformances + " {"
+    static let redactions: [(file: String, block: String)] = [
+        (ceremonyFile, redaction("PairingCeremonyState", "PairingCeremonyState(redacted)", structMirror)),
+        (ceremonyFile, redaction("PairingEvent", "PairingEvent(redacted)", enumMirror)),
+        (sheetFile, redaction("PairingSheetContent", "PairingSheetContent(redacted)", structMirror)),
+        (sheetFile, redaction("QRCodeView", "QR code (redacted)", structMirror, nonisolated: true)),
+        (controllerFile, controllerDeclaration),
+        (controllerFile, members("pairing (redacted)", classMirror, nonisolated: true)),
+        (slotFile, redaction("PairedKeyStore", "paired key slot (redacted)", structMirror)),
+        (storeFile, redaction("KeychainTopicStore", "keychain item (redacted)", structMirror)),
+    ]
+    /// The types that redact themselves, file by file, and the members that
+    /// do it: each declared once per type, in its redaction (no other
+    /// `description` and the like in their files).
+    static let redactingTypes = [ceremonyFile: 2, sheetFile: 2, controllerFile: 1, slotFile: 1, storeFile: 1]
+    static let redactionMembers = [#"\bvar\s+description\b"#, #"\bvar\s+debugDescription\b"#, #"\bvar\s+customMirror\b"#]
+    static let qrViewSites: [String: [String: Int]] = [
+        sheetFile: ["QRCodeView(payload: payload)": 1, "struct QRCodeView: View {": 1, "extension QRCodeView" + conformance: 1],
+    ]
+    /// R5: the sheet view, at its declaration and its one presentation (the
+    /// probe's second sheet view in a hosting view, and RP5's in an image
+    /// renderer, each name it).
+    static let sheetViewSites: [String: [String: Int]] = [
+        sheetFile: ["struct PairingSheetView: View {": 1],
+        "MenuContentView.swift": ["settingsWindow.presentSheet(PairingSheetView(pairing: pairing))": 1],
+    ]
+    /// R5: what renders a view, a window or the screen to an image or a
+    /// document off screen — SwiftUI's renderer, AppKit's cached display and
+    /// PDF/EPS forms, CoreGraphics' window and display captures (a word
+    /// prefix: every variant), ScreenCaptureKit's screenshots. Zero uses in
+    /// the four targets.
+    static let offscreenCaptureTokens = [#"\bImageRenderer\b"#, #"\bcacheDisplay\b"#, #"\bbitmapImageRepForCachingDisplay\b"#,
+                                         #"\bdataWithPDF\b"#, #"\bdataWithEPS\b"#, #"\bCGWindowListCreateImage\w*"#,
+                                         #"\bCGDisplayCreateImage\w*"#, #"\bSCScreenshotManager\b"#]
+
+    static func reflectionFailures(_ sources: Sources) -> [String] {
+        guard !text(ceremonyFile, in: sources).isEmpty, !text(sheetFile, in: sources).isEmpty,
+              redactingTypes.keys.allSatisfy({ !text($0, in: sources).isEmpty }) else {
+            return ["a pairing file is missing — the reflection lock would be vacuous"]
+        }
+        var failures = appSiteFailures(reflectionPattern, in: sources, allowed: mirrorSites,
+                                       rule: "nothing reflects but the redactions' own childless mirrors")
+        failures += appSiteFailures(#"\bcustomMirror\b"#, in: sources, allowed: customMirrorSites,
+                                    rule: "customMirror is the redactions' own declaration — no mirror is read or walked")
+        for (file, block) in redactions where ApprovalChannelStructureTests.count(block, in: MenuPanelStructureTests.flat(text(file, in: sources))) != 1 {
+            failures.append("a value holding the code or the slot redacts itself, as a type — exactly as pinned: \(block)")
+        }
+        for (name, text) in sources {
+            guard let expected = redactingTypes[name] else { continue }
+            for member in redactionMembers where ApprovalRecordPathStructureTests.matches(member, in: text).count != expected {
+                failures.append("'\(member)' in \(name) — declared by the redactions alone")
+            }
+        }
+        failures += appSiteFailures(#"\bQRCodeView\b"#, in: sources, allowed: qrViewSites,
+                                    rule: "the QR view is named at its declaration, its redaction and its one use")
+        failures += appSiteFailures(#"\bPairingSheetView\b"#, in: sources, allowed: sheetViewSites,
+                                    rule: "the sheet view is named at its declaration and its one presentation")
+        for token in offscreenCaptureTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing renders a view, a window or the screen off screen")
+        }
+        failures += runtimeEntryFailures(sources)
+        failures += objcRuntimeFailures(sources)
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-A): its G1b
+    /// declared the runtime's own field reader by name —
+    /// `@_silgen_name("swift_reflectionMirror_count")` and `_subscript` —
+    /// and read the slot's item straight through the redacted controller (at
+    /// runtime it wrote an attacker's key into the fake slot). That reader
+    /// is the one `_forEachField` wraps: it ignores `CustomReflectable` and
+    /// reads the stored fields as declared, so no type redaction can stop it,
+    /// and it names no `Mirror`, `descendant`, `customMirror` or
+    /// `_forEachField` — as planted it passed every lock. So (a) also bans,
+    /// in the four targets, in every scan copy, with no allowed site: an
+    /// `@_silgen_name` and an `@_extern` (each declares a runtime or C entry
+    /// point by name) and any `swift_reflectionMirror…` name (the reader's
+    /// entry points, however they would be reached). The redactions stop
+    /// printing, describing and `Mirror`-based walks; these bans, not the
+    /// redactions, stop the Swift runtime's field reader by name, and the
+    /// ObjC runtime bans below stop its ivar reader. Raw-pointer reads
+    /// remain the accepted R-1 residual.
+    static let runtimeEntryTokens = [#"\b_silgen_name\b"#, #"\b_extern\b"#, #"\bswift_reflectionMirror\w*"#]
+
+    static func runtimeEntryFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for token in runtimeEntryTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing declares a runtime entry point — the runtime's field reader ignores every redaction")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's round 2,
+    /// F-D): the ObjC runtime reads a pure Swift class's stored properties
+    /// too — `class_copyIvarList`, `ivar_getName` and `object_getIvar` list
+    /// and read every one, and ignore `CustomReflectable` (the re-check saw
+    /// the redacted controller's mirror show no child while its ivar list
+    /// showed all eighteen stored properties). Its N10b walked a live
+    /// database's own ivars to its private database from an extension in the
+    /// sender; its N10x walked pairing → source → live → database from
+    /// MenuStateModel, through the redacted controller. Neither named a
+    /// banned word; each passed every suite. So (a) also bans, in the four
+    /// targets, in every scan copy, with no allowed site (none today): the
+    /// ObjC runtime's C API by its families' prefixes (`class_`, `object_`,
+    /// `ivar_`, `method_`, `property_`, `protocol_`, `sel_`, `imp_`, `objc_`)
+    /// and `NSClassFromString`. These bans and the entry-point bans above
+    /// stop the Swift runtime's field reader by name and the ObjC runtime's
+    /// ivar reader; raw-pointer reads remain the accepted R-1 residual.
+    ///
+    /// AMENDED (S-PAIR-C1.5, the delta re-check's round 3, F-F): its S5
+    /// looked up `CKContainer` by `Bundle(identifier:)?.classNamed(_:)` and
+    /// built a real container by `perform(NSSelectorFromString(…))` from
+    /// MenuStateModel — no CloudKit import, neither factory, no entitlement
+    /// probe — and its S4b sent a real request by a looked-up selector: c9
+    /// banned `NSClassFromString` alone, and each passed every lock. So (a)
+    /// also bans, the same way, every lookup by name — of a class
+    /// (`NSClassFromString`, `classNamed`), a selector (`NSSelectorFromString`,
+    /// `Selector`) or a protocol (`NSProtocolFromString`) — with no allowed
+    /// site (none today; `#selector` names a declared method, and is another
+    /// word). What these two bans stop, and no more: a call of the runtime's
+    /// C API (its ivar, method and property readers among it), and a class,
+    /// a selector or a protocol reached by a string. Raw-pointer reads remain
+    /// the accepted R-1 residual.
+    static let objcRuntimeTokens: [String] = [#"\b(?:class|object|ivar|method|property|protocol|sel|imp|objc)_[A-Za-z]\w*"#]
+    static let objcLookupTokens: [String] = [#"\bNSClassFromString\b"#, #"\bNSSelectorFromString\b"#, #"\bSelector\b"#,
+                                             #"\bclassNamed\b"#, #"\bNSProtocolFromString\b"#]
+
+    /// The lookup ban alone.
+    static func objcLookupFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for token in objcLookupTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing looks up a class, a selector or a protocol by name — a string reaches what no pinned word names")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// Both ObjC bans: the runtime's C API, then lookup by name.
+    static func objcRuntimeFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for token in objcRuntimeTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing calls the ObjC runtime's C API — its ivar reader ignores every redaction")
+        }
+        failures += objcLookupFailures(sources)
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// The round-2 re-check's F-D, its canaries: N10b and N10x's model-side
+    /// chain, verbatim. Lock 7 catches each, and by the ObjC runtime ban
+    /// alone: its other rules miss both, the gap. Each family bites alone,
+    /// and N10b's four reader names match in every scan copy of its text.
+    /// AMENDED (round 3, F-F; renamed from `nothingReachesTheObjCRuntime`,
+    /// which claimed more than the bans stop): S5 and S4b, verbatim, each
+    /// caught within lock 7 by the lookup ban alone; each lookup word bites
+    /// its own probe alone; S5's lookups match in every scan copy.
+    @Test func nothingCallsTheObjCRuntimeOrLooksUpByName() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.objcRuntimeFailures(sources).isEmpty, "\(Self.objcRuntimeFailures(sources))")
+        let sender = "CloudKitMessageSender.swift"
+        let model = "MenuStateModel.swift"
+        #expect(!Self.text(sender, in: sources).isEmpty && !Self.text(model, in: sources).isEmpty, "vacuity: both files are in the scan")
+        // The re-check's texts (its gapplant.py), verbatim.
+        let n10b: String = "\nextension LivePairingRecordDatabase {\n    func zz(_ i: CKRecord.ID) {\n        var n: UInt32 = 0\n"
+            + "        guard let list = class_copyIvarList(object_getClass(self), &n) else { return }\n        defer { free(list) }\n"
+            + "        for k in 0..<Int(n) where ivar_getName(list[k]).map({ String(cString: $0) }) == \"data\" + \"base\" {\n"
+            + "            (object_getIvar(self, list[k]) as? CKDatabase)?.fetch(withRecordID: i) { _, _ in }\n        }\n    }\n}\n"
+        let n10xChain: [String] = [
+            "\nextension MenuStateModel {\n    func zzIvarChain(_ name: String) {\n        guard let pairing else { return }\n",
+            "        func get(_ o: AnyObject, _ label: String) -> AnyObject? {\n            var n: UInt32 = 0\n",
+            "            guard let list = class_copyIvarList(object_getClass(o), &n) else { return nil }\n            defer { free(list) }\n",
+            "            for k in 0..<Int(n) where ivar_getName(list[k]).map({ String(cString: $0) }) == label { return object_getIvar(o, list[k]) as AnyObject? }\n",
+            "            return nil\n        }\n",
+            "        zzUseDatabase(get(pairing, \"source\").flatMap { get($0, \"live\") }.flatMap { get($0, \"data\" + \"base\") }, name)\n    }\n}\n",
+        ]
+        let n10x: String = n10xChain.joined()
+        let lookup: String = "\nlet zz: AnyClass? = NSClassFromString(\"zz\")\n"
+        let mutants: [(String, Sources)] = [
+            ("N10b: a live database's own ivars walked to its private database", Self.mutate(sources, sender) { $0 + n10b }),
+            ("N10x: pairing, source, live, database walked from the model", Self.mutate(sources, model) { $0 + n10x }),
+            ("a class looked up by name, in the seam", Self.mutate(sources, ApprovalChannelStructureTests.seamFile) { $0 + lookup }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught = Self.objcRuntimeFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            // Within lock 7, the new ban alone: every other rule misses it.
+            #expect(Self.reflectionFailures(mutant) == caught, "canary '\(name)': another lock 7 rule fired")
+        }
+        // Each family bites, through the lock's own engine (and only its own
+        // pattern).
+        let families: [String] = ["class_copyIvarList(c, &n)", "object_getIvar(o, i)", "ivar_getName(i)", "method_getImplementation(m)",
+                                  "property_getName(p)", "protocol_copyPropertyList(p, &n)", "sel_registerName(s)",
+                                  "imp_implementationWithBlock(b)", "objc_getAssociatedObject(o, k)"]
+        for probe in families {
+            #expect(ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: probe), "'\(probe)' was NOT caught")
+            #expect(Self.objcLookupTokens.allSatisfy { !ApprovalRecordPathStructureTests.hits($0, in: probe) })
+        }
+        // N10b's four reader names, in every scan copy of its exact text.
+        let copies: [String] = [n10b, n10b.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(n10b)]
+        let readers: [String] = ["class_copyIvarList", "object_getClass", "ivar_getName", "object_getIvar"]
+        for copy in copies {
+            #expect(ApprovalRecordPathStructureTests.matches(Self.objcRuntimeTokens[0], in: copy) == readers)
+        }
+        // Round 3's F-F: S5 (a container built from a looked-up class and
+        // selector, in the model, with no CloudKit import) and S4b (a request
+        // sent by a looked-up selector), verbatim. Within lock 7, the lookup
+        // ban alone: the C API ban and every other rule miss both, the gap.
+        let roundThree: [(String, Sources)] = [
+            ("S5: a container built and asked by looked-up names", Self.mutate(sources, model) { $0 + PhoneTransportStructureTests.s5Model }),
+            ("S4b: a request sent by a looked-up selector", Self.mutate(sources, model) { $0 + PhoneTransportStructureTests.s4bModel }),
+        ]
+        for (name, mutant) in roundThree {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught: [String] = Self.objcLookupFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            #expect(Self.reflectionFailures(mutant) == caught, "canary '\(name)': another lock 7 rule fired")
+        }
+        // Each lookup word bites its own probe alone, through the lock's own
+        // engine (and the C API ban none of them).
+        let lookups: [String] = ["NSClassFromString(n)", "NSSelectorFromString(s)", "Selector((\"zz\"))", "b.classNamed(n)",
+                                 "NSProtocolFromString(n)"]
+        #expect(lookups.count == Self.objcLookupTokens.count)
+        for (i, token) in Self.objcLookupTokens.enumerated() {
+            for (j, probe) in lookups.enumerated() {
+                #expect(ApprovalRecordPathStructureTests.hits(token, in: probe) == (i == j), "'\(token)' against '\(probe)'")
+            }
+        }
+        #expect(lookups.allSatisfy { !ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: $0) })
+        // S5's lookups, in every scan copy of its exact text.
+        let s5: String = PhoneTransportStructureTests.s5Model
+        let s5Copies: [String] = [s5, s5.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(s5)]
+        for copy in s5Copies {
+            #expect(ApprovalRecordPathStructureTests.matches(Self.objcLookupTokens[3], in: copy) == ["classNamed"])
+            #expect(ApprovalRecordPathStructureTests.matches(Self.objcLookupTokens[1], in: copy)
+                    == ["NSSelectorFromString", "NSSelectorFromString"])
+        }
+        // Over-match controls: words that only contain the banned ones, the
+        // ObjC attributes, Swift's own `class` and `protocol`, a `#selector`
+        // and its argument label, and a whole-line comment naming the lookups.
+        let near: String = "\nlet zzclass_x = 1, isObject_y = 2, Ivar_z = 3, objcName = 4, selector = 5, method = 6"
+            + "\n@objc protocol ZZP {}\nfinal class ZZC: NSObject { @objc func zz() {} }\nlet zzNSClassFromStringCount = 7"
+            + "\nlet zzSelector = #selector(ZZC.zz), Selectors = 8, isClassNamed = 9, classNamedCount = 10, zzNSSelectorFromString = 11"
+            + "\nfunc zz(_ c: NotificationCenter, _ o: ZZC) { c.addObserver(o, selector: #selector(ZZC.zz), name: nil, object: nil) }"
+            + LidGuardStructureTests.codeOnly("\n/// never NSSelectorFromString(s), never Selector(\"zz\"), never classNamed(_:)")
+        #expect(Self.reflectionFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
+    }
+
+    @Test func nothingReflectsAndTheCodeNeverPrints() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.reflectionFailures(sources).isEmpty, "\(Self.reflectionFailures(sources))")
+        let model = "MenuStateModel.swift"
+        let hintAnchor = "                    .accessibilityFocused($titleFocused)\n"
+        // The delta check's MN1, as planted (both halves, each alone too).
+        let mn1Reflect = "\nextension MenuStateModel {\n    func zzReflectWrite(_ p: PairedPhone) -> Bool {\n"
+            + "        guard let pairing, let item = Mirror(reflecting: pairing).descendant(\"keys\", \"items\") as? any TopicStore else { return false }\n"
+            + "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n"
+        let mn1Hint = hintAnchor + "                    .accessibilityHint(Text(verbatim: String(describing: content)))\n"
+        #expect(Self.text(Self.sheetFile, in: sources).contains(hintAnchor), "vacuity: MN1's hint plants on the title")
+        let mutants: [(String, Sources)] = [
+            ("MN1 as planted", Self.mutate(Self.mutate(sources, model) { $0 + mn1Reflect }, Self.sheetFile) {
+                $0.replacingOccurrences(of: hintAnchor, with: mn1Hint) }),
+            ("MN1's Mirror route alone", Self.mutate(sources, model) { $0 + mn1Reflect }),
+            ("a module-qualified Mirror", Self.mutate(sources, model) { $0 + "\nfunc zz(_ x: Any) -> Int { Swift.Mirror(reflecting: x).children.count }" }),
+            ("a backticked Mirror", Self.mutate(sources, model) { $0 + "\nfunc zz(_ x: Any) -> Int { `Mirror`(reflecting: x).children.count }" }),
+            ("an aliased Mirror", Self.mutate(sources, "NapCatApp.swift") { $0 + "\ntypealias ZZ = Mirror" }),
+            ("the runtime's field reader", Self.mutate(sources, model) {
+                $0 + "\nfunc zz(_ t: Any.Type) { _ = _forEachField(of: t, options: []) { _, _, _, _ in true } }" }),
+            ("a reflection in another target", Self.mutate(sources, "SeamSocket.swift") { $0 + "\nfunc zz(_ x: Any) { _ = Mirror(reflecting: x) }" }),
+            ("another type's mirror, exposing the code", Self.mutate(sources, Self.controllerFile) {
+                $0 + "\nextension PairingController: CustomReflectable {\n    var customMirror: Mirror { Mirror(self, children: [\"code\": state.qrPayload as Any]) }\n}" }),
+            // (b): a redaction dropped, bent, or given children.
+            ("the content's redaction dropped", Self.mutate(sources, Self.sheetFile) {
+                $0.replacingOccurrences(of: "extension PairingSheetContent" + Self.conformance,
+                                        with: "extension PairingSheetContent: CustomDebugStringConvertible, CustomReflectable {") }),
+            ("the content described by its payload", Self.mutate(sources, Self.sheetFile) {
+                $0.replacingOccurrences(of: "var description: String { \"PairingSheetContent(redacted)\" }",
+                                        with: "var description: String { qrPayload ?? \"\" }") }),
+            ("the state's mirror given its parts", Self.mutate(sources, Self.ceremonyFile) {
+                $0.replacingOccurrences(of: "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }",
+                                        with: "var customMirror: Mirror { Mirror(reflecting: self) }") }),
+            ("the event's debug description its default", Self.mutate(sources, Self.ceremonyFile) {
+                $0.replacingOccurrences(of: "extension PairingEvent" + Self.conformance,
+                                        with: "extension PairingEvent: CustomStringConvertible, CustomReflectable {")
+                    .replacingOccurrences(of: "    var debugDescription: String { description }\n    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }",
+                                          with: "    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }") }),
+            ("a second description in the sheet", Self.mutate(sources, Self.sheetFile) {
+                $0 + "\nextension PairingCodeText: CustomStringConvertible {\n    nonisolated var description: String { \"x\" }\n}" }),
+            // (c): the QR view named elsewhere.
+            ("a second QR view", Self.mutate(sources, "MenuContentView.swift") { $0 + "\nlet zz = QRCodeView(payload: \"x\")" }),
+            ("the QR's image drawn elsewhere", Self.mutate(sources, model) { $0 + "\nlet zz = QRCodeView.image(\"x\")" }),
+            ("an aliased QR view", Self.mutate(sources, Self.sheetFile) { $0 + "\ntypealias ZZ = QRCodeView" }),
+        ]
+        // The C1.5 security review's R1: its RP1 (MN1 by another spelling: no
+        // `Mirror` named) and its Optional-wrapper variant, as planted; the
+        // banned words each alone; and each new redaction dropped or given
+        // its parts.
+        let rp1 = "\nextension MenuStateModel {\n    func zzSecRevReflectWrite(_ p: PairedPhone) -> Bool {\n"
+            + "        guard let pairing, let item = [pairing].customMirror.descendant(0, \"keys\", \"items\") as? any TopicStore else { return false }\n"
+            + "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n"
+        let rp1Optional = "\nextension MenuStateModel {\n"
+            + "    func zzA3() -> Any? { Optional(pairing).customMirror.descendant(\"some\", \"some\", \"keys\", \"items\") }\n}\n"
+        let r1: [(String, Sources)] = [
+            ("RP1: the slot written by customMirror.descendant", Self.mutate(sources, model) { $0 + rp1 }),
+            ("RP1 through an Optional wrapper", Self.mutate(sources, model) { $0 + rp1Optional }),
+            ("a mirror read, nothing walked", Self.mutate(sources, model) {
+                $0 + "\nfunc zz(_ x: [PairingController]) -> Int { x.customMirror.children.count }" }),
+            ("a field reader by a longer name", Self.mutate(sources, model) {
+                $0 + "\nfunc zz<T>(_ t: T.Type) { _ = _forEachFieldWithKeyPath(of: t, options: .classType) { _, _ in true } }" }),
+            ("the controller's redaction dropped", Self.mutate(sources, Self.controllerFile) {
+                $0.replacingOccurrences(of: Self.controllerDeclaration, with: "final class PairingController: ObservableObject {") }),
+            ("the controller's mirror given the slot", Self.mutate(sources, Self.controllerFile) {
+                $0.replacingOccurrences(of: "Mirror(self, children: [], displayStyle: .class)",
+                                        with: "Mirror(self, children: [\"keys\": keys], displayStyle: .class)") }),
+            ("the controller described by its state", Self.mutate(sources, Self.controllerFile) {
+                $0.replacingOccurrences(of: "nonisolated var description: String { \"pairing (redacted)\" }",
+                                        with: "nonisolated var description: String { \"pairing\" }") }),
+            ("the slot's redaction dropped", Self.mutate(sources, Self.slotFile) {
+                $0.replacingOccurrences(of: "extension PairedKeyStore" + Self.conformance,
+                                        with: "extension PairedKeyStore: CustomStringConvertible, CustomDebugStringConvertible {")
+                    .replacingOccurrences(of: "    var debugDescription: String { description }\n    " + Self.structMirror + "\n",
+                                          with: "    var debugDescription: String { description }\n") }),
+            ("the store's mirror given its calls", Self.mutate(sources, Self.storeFile) {
+                $0.replacingOccurrences(of: Self.structMirror,
+                                        with: "var customMirror: Mirror { Mirror(self, children: [\"calls\": calls], displayStyle: .struct) }") }),
+            ("another type's mirror in another file", Self.mutate(sources, "LidGuardController.swift") {
+                $0 + "\nextension LidGuardController: CustomReflectable {\n    var customMirror: Mirror { Mirror(self, children: []) }\n}" }),
+        ]
+        // The C1.5 security review's R5: its RP5 (the QR rendered off screen
+        // by a second sheet view), as planted; the probe's second sheet view
+        // in a hosting view; and each capture door alone.
+        let rp5 = "\nextension MenuStateModel {\n    func zzSecRevRender() -> NSImage? {\n        guard let pairing else { return nil }\n"
+            + "        return ImageRenderer(content: PairingSheetView(pairing: pairing)).nsImage\n    }\n}\n"
+        let r5: [(String, Sources)] = [
+            ("RP5: the sheet rendered off screen", Self.mutate(sources, model) { $0 + rp5 }),
+            ("a second sheet view in a hosting view", Self.mutate(sources, model) {
+                $0 + "\nextension MenuStateModel {\n    func zzC5() -> NSView? { pairing.map { NSHostingView(rootView: PairingSheetView(pairing: $0)) } }\n}\n" }),
+            ("an unapplied sheet view", Self.mutate(sources, "SettingsWindowController.swift") { $0 + "\nlet zz = PairingSheetView.init" }),
+            ("the window's view cached to a bitmap", Self.mutate(sources, "SettingsWindowController.swift") {
+                $0 + "\nfunc zz(_ v: NSView) -> NSBitmapImageRep? {\n    guard let r = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return nil }\n"
+                    + "    v.cacheDisplay(in: v.bounds, to: r)\n    return r\n}" }),
+            ("the window's view as a PDF", Self.mutate(sources, "SettingsWindowController.swift") {
+                $0 + "\nfunc zz(_ v: NSView) -> Data { v.dataWithPDF(inside: v.bounds) }" }),
+            ("the screen captured", Self.mutate(sources, "MenuContentView.swift") {
+                $0 + "\nlet zz = CGWindowListCreateImage(.null, .optionOnScreenOnly, kCGNullWindowID, [])" }),
+        ]
+        for (name, mutant) in mutants + r1 + r5 {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.reflectionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Each R1/R5 word bites through the lock's own engine, alone.
+        let captureProbes: [String] = ["ImageRenderer(content: v)", "v.cacheDisplay(in: r, to: b)", "v.bitmapImageRepForCachingDisplay(in: r)",
+                                       "v.dataWithPDF(inside: r)", "v.dataWithEPS(inside: r)", "CGWindowListCreateImageFromArray(r, a, o)",
+                                       "CGDisplayCreateImage(d)", "SCScreenshotManager.captureImage"]
+        var probes: [(String, String)] = [(Self.reflectionPattern, "x.descendant(0)"), (Self.reflectionPattern, "_forEachFieldWithKeyPath(of: t)"),
+                                          (#"\bcustomMirror\b"#, "[p].customMirror")]
+        probes += zip(Self.offscreenCaptureTokens, captureProbes).map { ($0, $1) }
+        #expect(probes.count == 3 + Self.offscreenCaptureTokens.count)
+        for (pattern, probe) in probes {
+            #expect(ApprovalRecordPathStructureTests.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+        // R1's canary that names neither `Mirror` nor `descendant` is caught
+        // by the customMirror pin alone; R5's hosting view by the sheet
+        // view's pin alone.
+        #expect(Self.appSiteFailures(Self.reflectionPattern, in: r1[2].1, allowed: Self.mirrorSites, rule: "").isEmpty)
+        #expect(!Self.appSiteFailures(#"\bcustomMirror\b"#, in: r1[2].1, allowed: Self.customMirrorSites, rule: "").isEmpty)
+        #expect(Self.offscreenCaptureTokens.allSatisfy { Self.appSiteFailures($0, in: r5[1].1, allowed: [:], rule: "").isEmpty })
+        #expect(!Self.appSiteFailures(#"\bPairingSheetView\b"#, in: r5[1].1, allowed: Self.sheetViewSites, rule: "").isEmpty)
+        // Over-match controls: the stay-awake mirror's names (other words,
+        // shipped today), words that only contain the banned ones, and a
+        // whole-line comment naming the shapes.
+        #expect(Self.text("NapCatApp.swift", in: sources).contains("stayAwakeMirror: sleepController.observedMirror"),
+                "vacuity: the stay-awake mirror is in the scan")
+        #expect(Self.reflectionFailures(Self.mutate(sources, model) {
+            $0 + "\nlet zzObservedStayAwakeMirror = 1, stayAwakeMirror = 2, observedMirror = 3, Mirrors = 4, reflected = 5"
+                + "\nlet zzQRCodeViews = 6, isQRCodeView = 7"
+                // R1/R5: words that only contain the new ones.
+                + "\nlet zzCustomMirrors = 8, customMirrorCount = 9, descendants = 10, isDescendant = 11, forEachFieldName = 12"
+                + "\nlet zzPairingSheetViews = 13, imageRendererName = 14, cacheDisplayed = 15, dataWithPDFCount = 16"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never Mirror(reflecting:), never QRCodeView(payload:) here"
+                    + "\n/// never [pairing].customMirror.descendant(0, \"keys\"), never _forEachFieldWithKeyPath"
+                    + "\n/// never ImageRenderer(content: PairingSheetView(pairing: p)), never cacheDisplay(in:to:)")
+        }).isEmpty)
+    }
+
+    /// The C1.5 security delta re-check's F-A, its canaries: G1b, verbatim
+    /// (the runtime's field reader declared by `@_silgen_name`, the fields
+    /// read by `T.self`), and the re-check's first spelling, by `type(of:)`
+    /// (caught before by lock 6's dynamic-type rule alone, an unrelated
+    /// one). Lock 7 catches each, and by the new ban alone: its other rules
+    /// miss both, the gap the re-check found. Each word bites alone, and
+    /// G1b's entry points match in every scan copy.
+    @Test func nothingDeclaresARuntimeEntryPoint() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.runtimeEntryFailures(sources).isEmpty, "\(Self.runtimeEntryFailures(sources))")
+        let model = "MenuStateModel.swift"
+        // The two declarations both spellings open with, as planted.
+        let entryPoints: [String] = [
+            "\ntypealias ZZFree = @convention(c) (UnsafePointer<CChar>?) -> Void\n",
+            "@_silgen_name(\"swift_reflectionMirror_count\") func zzN<T>(_: T, type: Any.Type) -> Int\n",
+            "@_silgen_name(\"swift_reflectionMirror_subscript\") func zzC<T>(of: T, type: Any.Type, index: Int, ",
+            "outName: UnsafeMutablePointer<UnsafePointer<CChar>?>, outFreeFunc: UnsafeMutablePointer<ZZFree?>) -> Any\n",
+        ]
+        let itemRead: String = "let item = zzField(keys, \"items\") as? any TopicStore else { return false }\n"
+        let g1bGuard: String = "        guard let pairing, let keys = zzField(pairing, \"keys\") as? PairedKeyStore, " + itemRead
+        let typeOfGuard: String = "        guard let pairing, let keys = zzField(pairing, \"keys\"), " + itemRead
+        let g1bReader: [String] = [
+            "func zzField<T>(_ v: T, _ label: String) -> Any? {\n    for i in 0..<zzN(v, type: T.self) {\n",
+            "        var n: UnsafePointer<CChar>?\n        var f: ZZFree?\n",
+            "        let c = zzC(of: v, type: T.self, index: i, outName: &n, outFreeFunc: &f)\n",
+            "        let name = n.map { String(cString: $0) }\n        f?(n)\n        if name == label { return c }\n    }\n    return nil\n}\n",
+            "extension MenuStateModel {\n    func zzSilgenWrite(_ p: PairedPhone) -> Bool {\n",
+            g1bGuard,
+            "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n",
+        ]
+        let typeOfReader: [String] = [
+            "func zzField(_ v: Any, _ label: String) -> Any? {\n    for i in 0..<zzN(v, type: type(of: v)) {\n",
+            "        var n: UnsafePointer<CChar>?\n        var f: ZZFree?\n",
+            "        let c = zzC(of: v, type: type(of: v), index: i, outName: &n, outFreeFunc: &f)\n",
+            "        let name = n.map { String(cString: $0) }\n        f?(n)\n        if name == label { return c }\n    }\n    return nil\n}\n",
+            "extension MenuStateModel {\n    func zzSilgenWrite(_ p: PairedPhone) -> Bool {\n",
+            typeOfGuard,
+            "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n",
+        ]
+        let head: String = entryPoints.joined()
+        let g1b: String = head + g1bReader.joined()
+        let typeOf: String = head + typeOfReader.joined()
+        let seamReader: String = "\n@_silgen_name(\"swift_reflectionMirror_count\") func zzN<T>(_: T, type: Any.Type) -> Int\n"
+        let wireExtern: String = "\n@_extern(c, \"zz_reader\") func zzReader() -> Int\n"
+        let mutants: [(String, Sources)] = [
+            ("G1b: the slot written through the runtime's field reader, by T.self", Self.mutate(sources, model) { $0 + g1b }),
+            ("G1b's first spelling, by type(of:)", Self.mutate(sources, model) { $0 + typeOf }),
+            ("the reader declared in another target", Self.mutate(sources, ApprovalChannelStructureTests.seamFile) { $0 + seamReader }),
+            ("an entry point by @_extern, in the wire", Self.mutate(sources, "AlertWire.swift") { $0 + wireExtern }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught = Self.runtimeEntryFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            // Within lock 7, the new ban alone: every other rule misses it.
+            #expect(Self.reflectionFailures(mutant) == caught, "canary '\(name)': another lock 7 rule fired")
+        }
+        // Each word bites alone, through the lock's own engine (and only
+        // its own probe).
+        let probes: [String] = ["@_silgen_name(\"zz\") func zz()", "@_extern(c, \"zz\") func zz()",
+                                "let zz = \"swift_reflectionMirror_subscript\""]
+        #expect(probes.count == Self.runtimeEntryTokens.count)
+        for (i, token) in Self.runtimeEntryTokens.enumerated() {
+            for (j, probe) in probes.enumerated() {
+                #expect(ApprovalRecordPathStructureTests.hits(token, in: probe) == (i == j), "'\(token)' against '\(probe)'")
+            }
+        }
+        // G1b's two entry points, in every scan copy of its exact text.
+        let copies: [String] = [g1b, g1b.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(g1b)]
+        let attributes: [String] = ["_silgen_name", "_silgen_name"]
+        let names: [String] = ["swift_reflectionMirror_count", "swift_reflectionMirror_subscript"]
+        for copy in copies {
+            #expect(ApprovalRecordPathStructureTests.matches(Self.runtimeEntryTokens[0], in: copy) == attributes)
+            #expect(ApprovalRecordPathStructureTests.matches(Self.runtimeEntryTokens[2], in: copy) == names)
+        }
+        // Over-match controls: words that only contain the banned ones.
+        let near: String = "\nlet zzSilgenName = 1, silgen_name = 2, _external = 3, extern = 4, swift_reflection = 5, reflectionMirror = 6"
+        #expect(Self.reflectionFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
     }
 }

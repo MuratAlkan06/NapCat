@@ -344,12 +344,28 @@ struct PairingCeremonyTests {
         #expect(cancelled.apply(.cancel) == [Self.deleted(), .audit(.cancelled)], "cancel leaves the old key alone")
     }
 
+    // MARK: - The one shape a pairing record name has (S-PAIR-C1.5, #170)
+
+    /// Exactly 64 lowercase hex digits, byte by byte: every name a nonce
+    /// derives has it, and nothing else does — no other length, case or
+    /// character, no line end (a `^…$` regex would let a trailing one pass).
+    @Test func aRecordNameIsExactly64LowercaseHexDigits() {
+        for nonce in [PhoneHalf.nonce, PhoneHalf.otherNonce, Array(repeating: UInt8(0xff), count: 32)] {
+            #expect(PairingResponseCheck.isRecordName(PhoneHalf.recordName(nonce)))
+        }
+        #expect(PairingResponseCheck.isRecordName(String(repeating: "0", count: 64)))
+        for name in CloudKitPairingRecordsTests.malformedNames + [String(repeating: "0", count: 64) + "\r\n",
+                                                                 String(repeating: "\u{0660}", count: 64), "é" + String(repeating: "a", count: 62)] {
+            #expect(!PairingResponseCheck.isRecordName(name), "'\(name)' is no pairing record name")
+        }
+    }
+
     // MARK: - The audit's closed vocabulary
 
     @Test func auditCodesNameNoSecret() throws {
         let response = try PhoneHalf.response()
         let codes = [PairingAudit.begun(rotating: false), .begun(rotating: true), .verified, .cancelled, .committed,
-                     .nonceUnavailable, .unpaired, .unpairFailed, .leftoverDeleted, .leftoverKept]
+                     .nonceUnavailable, .unpaired, .unpairFailed, .leftoverDeleted, .leftoverKept, .leftoverMalformed]
             .map(\.code)
             + PairingEnd.allCases.map { PairingAudit.ended($0).code }
             + PairingResponseFault.allCases.map { PairingAudit.refused(.malformed($0)).code }

@@ -141,3 +141,19 @@ struct PairedKeyStore: Sendable {
         }
     }
 }
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1.5 security review's R1)
+
+/// The slot's item is the slot's alone (PairingStructureTests locks 1 and 7):
+/// the slot prints, debug-prints, dumps and reflects as a fixed word and
+/// nothing more, so no print, description or `Mirror`-based walk, from any
+/// file and through any wrapper, reaches its private item to write it. It
+/// does NOT stop runtime reflection (the Swift runtime's field reader and
+/// the ObjC runtime's ivar reader both ignore `CustomReflectable`): lock 7's
+/// bans stop them — the Swift one by name, the ObjC one by its C API — not
+/// this redaction; raw-pointer reads remain the accepted R-1 residual.
+extension PairedKeyStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "paired key slot (redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}

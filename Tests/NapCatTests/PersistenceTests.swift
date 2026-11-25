@@ -158,6 +158,30 @@ struct PersistenceTests {
         }
     }
 
+    /// S-PAIR-C1.5 (#170): the leftover pairing record's name is read from
+    /// the app's OWN persistent domain only — the call `makeIfEnabled` makes,
+    /// on an isolated suite. A value the defaults search list holds anywhere
+    /// else (here, a registered default) is never read as one, and only text
+    /// is.
+    @Test func theLeftoverPairingNameIsReadFromTheAppsOwnDomainOnly() {
+        let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = DefaultsKey.pairingRecordToDelete
+        let name = String(repeating: "ab", count: 32)
+        defaults.register(defaults: [key: name])
+        #expect(defaults.string(forKey: key) == name, "the search list sees the registered value")
+        #expect(PairingController.rememberedName(in: defaults.persistentDomain(forName: suite)) == nil,
+                "the app's own domain does not hold it")
+        defaults.set(name, forKey: key)
+        #expect(PairingController.rememberedName(in: defaults.persistentDomain(forName: suite)) == name)
+        defaults.set(Data(name.utf8), forKey: key)
+        #expect(PairingController.rememberedName(in: defaults.persistentDomain(forName: suite)) == nil, "only text")
+        defaults.removeObject(forKey: key)
+        #expect(PairingController.rememberedName(in: defaults.persistentDomain(forName: suite)) == nil)
+        #expect(PairingController.rememberedName(in: nil) == nil, "no domain, no name")
+    }
+
     /// Fresh isolated defaults per test; the suite file is removed again.
     private func withDefaults(_ body: (UserDefaults) -> Void) {
         let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"

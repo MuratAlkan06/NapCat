@@ -293,7 +293,7 @@ actor CloudKitAlertSource: AlertSource {
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         operation.configuration = configuration
-        let saved = DecisionSaveResult()
+        let saved = CreatedRecordResult()
         operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }
         operation.modifyRecordsResultBlock = { batch in
             guard let outcome = saved.finish(batch: batch) else { return }
@@ -358,6 +358,85 @@ actor CloudKitAlertSource: AlertSource {
               let partial = error.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: Any],
               partial.count == 1, let only = partial.values.first as? NSError else { return error }
         return only
+    }
+
+    // MARK: - F4 pairing (slice S-PAIR-C1.5; built and tested here, run by nothing yet)
+
+    /// The pairing response's record: in the approvals zone, named by the
+    /// name the Mac's nonce derives (64 lowercase hex digits; the response
+    /// holds no other), so the Mac fetches it by that name alone.
+    static func pairingResponseRecordID(_ response: PairingResponse) -> CKRecord.ID {
+        CKRecord.ID(recordName: response.recordName, zoneID: approvalsZoneID)
+    }
+
+    /// THE one place a PairingResponse record is built: every
+    /// `ApprovalWire.PairingResponseField`, each stored encrypted exactly when
+    /// the wire lists it in `encryptedPairingResponseFields` — every field
+    /// but the version.
+    static func makePairingResponseRecord(_ response: PairingResponse) -> CKRecord {
+        let record = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue,
+                              recordID: pairingResponseRecordID(response))
+        for field in ApprovalWire.PairingResponseField.allCases {
+            let value = pairingResponseValue(field, of: response)
+            if ApprovalWire.encryptedPairingResponseFields.contains(field) {
+                record.encryptedValues[field.rawValue] = value
+            } else {
+                record[field.rawValue] = value
+            }
+        }
+        return record
+    }
+
+    /// One field's value, the response's own. Exhaustive on purpose: a new
+    /// wire field does not compile until it is decided here.
+    static func pairingResponseValue(_ field: ApprovalWire.PairingResponseField, of response: PairingResponse) -> CKRecordValue {
+        switch field {
+        case .wireVersion: return response.wireVersion as NSNumber
+        case .publicKey: return response.publicKey as NSData
+        case .confirmation: return response.confirmation as NSData
+        case .proof: return response.proof as NSData
+        }
+    }
+
+    /// THE save operation for the pairing response, built here so a test
+    /// can play CloudKit's part on the real thing. CREATE-ONLY, like a
+    /// decision's: the record is new (it has no change tag), so if one by its
+    /// name exists the server refuses it (`serverRecordChanged`) instead of
+    /// overwriting it. What `completion` receives, once: `pairingOutcome`.
+    static func makePairingResponseSaveOperation(
+        _ record: CKRecord,
+        completion: @escaping @Sendable (PairingWriteOutcome) -> Void
+    ) -> CKModifyRecordsOperation {
+        let operation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)
+        operation.savePolicy = .ifServerRecordUnchanged
+        operation.isAtomic = true
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        operation.configuration = configuration
+        let saved = CreatedRecordResult()
+        operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }
+        operation.modifyRecordsResultBlock = { batch in
+            guard let outcome = saved.finish(batch: batch).map(pairingOutcome) else { return }
+            if outcome != .saved { logger.error("pairing response not saved (\(outcome.rawValue, privacy: .public))") }
+            completion(outcome)
+        }
+        return operation
+    }
+
+    /// The pairing response's outcome: a decision's table, case for case
+    /// (`decisionOutcome`; both are create-only saves of one new record). A
+    /// response for this code saved already is `alreadyAnswered`, judged by
+    /// the error's code alone: the record the server holds is never read,
+    /// adopted or shown (S-PAIR amendment 1).
+    static func pairingOutcome(_ outcome: DecisionWriteOutcome) -> PairingWriteOutcome {
+        switch outcome {
+        case .saved: return .saved
+        case .alreadyAnswered: return .alreadyAnswered
+        case .failed: return .failed
+        case .unconfirmed: return .unconfirmed
+        }
     }
 
     /// Accounts other than `available` cannot receive anything.
@@ -435,10 +514,11 @@ private struct LiveCloudKitAlertDatabase: CloudKitAlertDatabase {
 
 // MARK: - F4 decisions: the writer and its seam (slice S3)
 
-/// THE seam over CloudKit I/O for decisions: run this operation against the
-/// owner's private database. In this slice nothing in the app conforms
-/// (lint-locked): the approvals zone and its schema are not deployed, so
-/// only test fakes run the operations built here.
+/// THE seam over CloudKit I/O for decisions (and, since S-PAIR-C1.5, the
+/// pairing response): run this operation against the owner's private
+/// database. In this slice nothing in the app conforms (lint-locked): the
+/// approvals zone and its schema are not deployed, so only test fakes run
+/// the operations built here.
 protocol CloudKitApprovalDatabase: Sendable {
     func submit(_ operation: CKModifyRecordsOperation)
 }
@@ -457,9 +537,30 @@ struct CloudKitDecisionWriter: DecisionWriter {
     }
 }
 
-/// Holds the decision record's own result until the batch result arrives,
-/// then says what the save came to, once (`CloudKitAlertSource.decisionOutcome`).
-private final class DecisionSaveResult: @unchecked Sendable {
+// MARK: - F4 pairing: the response writer (slice S-PAIR-C1.5)
+
+/// The CloudKit `PairingResponseWriter` (S-PAIR-C1.5, #170): the pairing's
+/// one record (`CloudKitAlertSource.makePairingResponseRecord`), created
+/// through the approvals seam and never an overwrite. A response saved
+/// already for the code reads as `alreadyAnswered`, and the record the
+/// server holds is never read or adopted. Built by no app source yet
+/// (lint-locked): the pairing screen opens for a fixture launch only.
+struct CloudKitPairingResponseWriter: PairingResponseWriter {
+    let database: any CloudKitApprovalDatabase
+
+    func write(_ response: PairingResponse) async -> PairingWriteOutcome {
+        let record = CloudKitAlertSource.makePairingResponseRecord(response)
+        return await withCheckedContinuation { continuation in
+            database.submit(CloudKitAlertSource.makePairingResponseSaveOperation(record) { continuation.resume(returning: $0) })
+        }
+    }
+}
+
+/// Holds one new record's own result (a decision, or the pairing response)
+/// until the batch result arrives, then says what the save came to, once
+/// (`CloudKitAlertSource.decisionOutcome`). It keeps only whether the
+/// record saved or why it did not: a saved record is dropped unread.
+private final class CreatedRecordResult: @unchecked Sendable {
     private let lock = NSLock()
     private var record: Result<Void, any Error>?
     private var finished = false

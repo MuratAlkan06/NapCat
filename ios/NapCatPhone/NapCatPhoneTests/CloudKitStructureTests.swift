@@ -253,13 +253,29 @@ import Testing
     /// Every fixture conformer is an actor, a struct or a final class.
     /// Read in every constructor scan copy: a `final` in a block comment is
     /// no `final`.
+    ///
+    /// AMENDED (S-PAIR-C1.5, #170, the C1 security delta check's (e)):
+    /// a `final` counts only as a modifier ON THE CLASS'S OWN LINE (its
+    /// attributes and an access level beside it, spaces between). The old
+    /// check read any `final` ending the text before the class, so an
+    /// identifier named `final` ending the line above (PN1:
+    /// `ReviewerFlags.final`, then a plain `class` adopting the writer) made
+    /// the class look final. And every `final` in Fixtures/ must be such a
+    /// modifier: a name spelled `final` there is a failure in itself.
+    static let finalModifier = #"\bfinal[ \t]+(?:(?:public|package|internal|fileprivate|private)[ \t]+)?class\b"#
+    static let finalClassLine =
+        #"^[ \t]*(?:@\w+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|package|internal|fileprivate|private)[ \t]+)?final[ \t]+"#
+            + #"(?:(?:public|package|internal|fileprivate|private)[ \t]+)?$"#
+
     static func fixtureConformerFailures(_ seam: String, in app: [Source]) -> [String] {
         let names = seamNames(seam, in: app).sorted()
-        // A class's own `final`, an access level between them at most.
-        let finalClass = #"\bfinal\s+(?:(?:public|package|internal|fileprivate|private)\s+)?$"#
         var failures: [String] = []
         for (path, text) in app where path.hasPrefix("\(appDir)/Fixtures/") {
             for copy in constructorScanCopies(codeOnly(text)) {
+                if matchCount(#"\bfinal\b"#, in: copy) != matchCount(finalModifier, in: copy) {
+                    failures.append("\(path) spells `final` other than as its class's modifier on the class's own line — "
+                                    + "an identifier named final could pass for one")
+                }
                 for name in names {
                     // Each header on its own, `oneDeclaration` at a time, so no
                     // other declaration's match swallows it (`class func` and
@@ -273,7 +289,10 @@ import Testing
                     }
                     guard let regex = try? NSRegularExpression(pattern: classHead) else { continue }
                     for match in regex.matches(in: copy, range: NSRange(copy.startIndex..., in: copy)) {
-                        guard let range = Range(match.range, in: copy), !hits(finalClass, in: String(copy[..<range.lowerBound])) else { continue }
+                        guard let range = Range(match.range, in: copy) else { continue }
+                        // The class keyword's own line, up to the keyword.
+                        let line = copy[..<range.lowerBound].split(separator: "\n", omittingEmptySubsequences: false).last ?? ""
+                        if hits(finalClassLine, in: String(line)) { continue }
                         failures.append("\(path) adopts \(name) in a class that is not final — a live subclass would inherit "
                                         + "the seam unseen; a fixture conformer is a struct, an enum, an actor or a final class")
                     }

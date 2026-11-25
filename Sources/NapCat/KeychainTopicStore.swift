@@ -171,3 +171,19 @@ struct KeychainTopicStore: TopicStore {
         return false
     }
 }
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1.5 security review's R1)
+
+/// The store holds the real keychain calls (PairingStructureTests lock 7): it
+/// prints, debug-prints, dumps and reflects as a fixed word and nothing
+/// more, so no print, description or `Mirror`-based walk reaches its calls
+/// or its item's name to make a keychain call of its own. It does NOT stop
+/// runtime reflection (the Swift runtime's field reader and the ObjC
+/// runtime's ivar reader both ignore `CustomReflectable`): lock 7's bans
+/// stop them — the Swift one by name, the ObjC one by its C API — not this
+/// redaction; raw-pointer reads remain the accepted R-1 residual.
+extension KeychainTopicStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "keychain item (redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}

@@ -7,7 +7,8 @@ the pure core described at the end, slice S1 (issue #125) adds the server
 side, slice S2 (issue #134) the Mac's control surface, slice S3 (issue
 #146) the CloudKit record path and the phone's request screen, and the
 S-PAIR slices (issue #161) pairing and signed decisions (CL-1); S-PAIR-C1
-(issue #168) is the Mac's half of pairing.
+(issue #168) is the Mac's half of pairing, and S-PAIR-C1.5 (issue #170) its
+live transport.
 
 ## Problem
 
@@ -690,7 +691,7 @@ arms anything.
     re-enrollment that shows as changed with no prompt and then unpairs the
     phone on its next answer, no passcode fallback ever offered, and a
     restored or new phone that arrives unpaired.
-- **S-PAIR-C1** (this slice, issue #168). The Mac pairs. Nothing arms:
+- **S-PAIR-C1** (issue #168). The Mac pairs. Nothing arms:
   the approval files' one armed literal is still `armed: { false }`, and
   the verifier is still unwired (no reader, intake or lifecycle names it,
   and it names no stored key).
@@ -751,17 +752,120 @@ arms anything.
     Settings buttons' press. Unpair… asks first — its Unpair button is
     marked destructive and answers no key, and Esc cancels — then deletes
     the key and turns Remote approvals off through its kill switch.
-  - *Not live yet.* The app's record seam (`NoPairingRecords`) finds
-    nothing and deletes nothing: no CloudKit operation for the pairing
-    record exists on either device, so a ceremony shows its code and ends
-    with its window. The live fetch and delete, and the phone's CloudKit
-    writer, arrive with the owner-run Production schema deploy of the
-    PairingResponse type. Tests play CloudKit's part with records built
-    in memory and touch no keychain, defaults or iCloud.
-- **Next.** The phone's CloudKit writer and the Mac's live fetch and
-  delete for the pairing record, the owner-run Production schema deploy
-  of the PairingResponse record type, then S-PAIR-C2 (the verifier wired
-  as the only road from a reading to the lifecycle, and "paired" as a
-  precondition for arming). Owed live drill: a forwarded prompt with an
-  NFD file name and non-ASCII text verifies end to end on real CloudKit,
-  which also proves the whole-second time's round trip.
+  - *Not live in C1.* The app's record seam was a stub that found and
+    deleted nothing, so a ceremony showed its code and ended with its
+    window; no release could ship with the pairing button over it. Tests
+    play CloudKit's part with records built in memory and touch no
+    keychain, defaults or iCloud. S-PAIR-C1.5 replaced the stub.
+- **S-PAIR-C1.5** (this slice, issue #170). The live pairing transport:
+  both devices learn to move the one pairing record for real. Nothing
+  arms: the verifier is still unwired, and the approval files' one armed
+  literal is still `armed: { false }`.
+  - *The Mac's fetch and delete* (`CloudKitPairingRecords`, in the record
+    path's file). The app's one pairing record source (lint-locked to its
+    declaration's line; the C1 stub is gone, named nowhere). It reaches
+    the record by its ID alone, the approvals zone and the name the nonce
+    derives (no query, no listing, no save), and acts only on a name of
+    exactly 64 lowercase hex digits. A fetch is a `CKFetchRecordsOperation`
+    of that one ID, and its outcome is a closed mapping: the record read →
+    found, read strictly with that same name (`PairingResponseReader`);
+    no record by that ID (`unknownItem`) → nothing; anything else → still
+    unreachable. The deletion is the record path's own operation, deleting
+    that one record and saving nothing. Both go to a seam
+    (`PairingRecordDatabase`) whose one app conformer is the live private
+    database in the container's file, built on the first fetch behind the
+    same entitlement probe as the alert lane's (the file's second container
+    site, lint-locked alike). The record path's CloudKit allow-list widens
+    by `CKFetchRecordsOperation` alone.
+  - *Fail-dark where iCloud is not there.* No iCloud account, no network,
+    no Production schema or approvals zone yet, or a build with no iCloud
+    entitlement (every ad-hoc `make` build): the fetch reads unreachable,
+    the sheet says "Waiting — iCloud is unreachable; still trying", and
+    the ceremony ends with its window. No other surface appears.
+  - *The leftover name.* The name remembered for the next launch's
+    cleanup is read from the app's own persistent defaults domain only,
+    never through the defaults search list (a launch argument, the global
+    domain or a registered default could otherwise name a record for the
+    launch to delete), and a name of any other shape than a pairing
+    record's deletes nothing and is forgotten.
+  - *The phone's writer* (`CloudKitPairingResponseWriter`). The pairing
+    response's record, built through the wire's field table (every field
+    but the version encrypted), saved CREATE-ONLY through the decisions'
+    seam: a new record under `.ifServerRecordUnchanged`, so a response
+    already saved for the code is refused as `alreadyAnswered` and is never
+    read, adopted or shown (the record a conflict hands back is named
+    nowhere in the file). It is the seam's one conformer outside the
+    fixtures, admitted by its declaration's exact line, and no app source
+    builds it yet: the pairing screen still opens for a `-NapCatPairing`
+    fixture launch only, the phone's approvals seam has no live conformer,
+    and nothing creates the approvals zone. The phone's live pairing entry
+    point, its live database and the zone are a later slice.
+  - *Locks that rode along.* No reflection anywhere in the Mac's four
+    targets but the redactions' own childless mirrors; the values holding
+    the nonce or the payload (the state machine, the event that hands the
+    nonce in, the sheet's content, the QR view) describe, dump and reflect
+    as their type's name alone, as types, so no spelling or file prints
+    them; the QR view is named at its sites alone; the keychain store's
+    calls and the one account it sets are pinned; and on the phone a
+    fixture's `final` counts only as a modifier on its class's own line.
+  - *The security review's fixes (R1–R5).* The live pairing database checks
+    what it is handed (`PairingRecordGuard`): only a fetch of one record,
+    and a deletion of one record that saves nothing, each by a pairing
+    record's ID (the approvals zone, a 64-digit lowercase hex name); anything
+    else is never added, and its own result block is told
+    `invalidArguments`, so its caller reads its closed failure. The
+    controller, the slot and the keychain store redact themselves as types
+    too, so no print, description or `Mirror`-based walk through any
+    wrapper reaches the slot's item or the real keychain calls. The
+    redaction does not stop runtime reflection — the Swift runtime's field
+    reader and the ObjC runtime's ivar reader both ignore
+    `CustomReflectable` — so bans do: `descendant`, every `_forEachField…`
+    reader, any read of `customMirror`, (the delta re-check's F-A) any
+    `_silgen_name` or `_extern` declaration and any
+    `swift_reflectionMirror…` name, (its round 2's F-D) the ObjC runtime's
+    C API (`class_…`, `object_…`, `ivar_…` and their kin) and
+    `NSClassFromString`, and (round 3's F-F) every other lookup by name —
+    `NSSelectorFromString`, `Selector`, `classNamed`, `NSProtocolFromString`
+    — are banned in the four targets. These bans stop the Swift runtime's
+    field reader by name, any call of the ObjC runtime's C API (its ivar
+    reader among it), and a class, a selector or a protocol reached by a
+    string; raw-pointer reads remain the accepted R-1 residual. Rendering a
+    view, a window or the screen off screen is banned too; the sheet view
+    is pinned to its one presentation. The two live factories are pinned
+    as words (an unapplied reference is a site, not only a call), and so is
+    every line naming the sender's `database` or (F-B) its `container`. A
+    line pin does not hold the line after it, so (F-C) the two live classes
+    are pinned whole and an extension of either is banned. Pinning the
+    bodies did not pin what the factories construct: a factory line finds
+    its class by name, and a member of the sender of that name declared in
+    another file wins over the file-private class and is handed the real
+    container (round 3's F-E). So the factories' construction is pinned by
+    name, four-target-wide: each live class's name sits on its head and its
+    factory's one construction and nowhere else in the four targets (a
+    shadow of any kind, an alias and an extension through an alias each
+    name it). Key-value coding, its key-path evaluators and its observers
+    are banned in the four targets, not the sender alone (round 3: the
+    shadow read the container by name from another file); only the ntfy
+    request's header lines and the notification observers name `setValue`
+    or `addObserver`, each pinned to its line. In the keychain store each
+    item call is named once, as a word, at its binding, and every `kSec…`
+    line is pinned.
+  - *Uninstall.* `scripts/uninstall.sh` deletes the paired-key item too,
+    as the user and value-silent like the topic's (parity-locked to
+    `KeychainItemName.pairedPhone`), and SECURITY.md describes the item.
+  - *Verification split.* CI plays CloudKit's part on the real operations
+    (their callbacks fired by hand) and touches no iCloud. Owed live, after
+    the owner deploys the PairingResponse record type to Production
+    (`wireVersion` a plain Int64; `publicKey`, `confirmation` and `proof`
+    encrypted Bytes) and the approvals zone exists: a first live ceremony,
+    a tampered record refused, a phone that cancels after the Mac, a
+    rotation, Unpair's kill switch, and the sheet under Full Keyboard
+    Access.
+- **Next.** The phone's live pairing entry point (its live approvals
+  database, the approvals zone, and the pairing screen outside the fixture
+  launch), the owner-run Production schema deploy of the PairingResponse
+  record type, then S-PAIR-C2 (the verifier wired as the only road from a
+  reading to the lifecycle, and "paired" as a precondition for arming).
+  Owed live drill: a forwarded prompt with an NFD file name and non-ASCII
+  text verifies end to end on real CloudKit, which also proves the
+  whole-second time's round trip.

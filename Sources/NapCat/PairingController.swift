@@ -13,20 +13,16 @@ import Security
 // ZERO IDLE COST: no timer, no fetch and no CloudKit traffic while no
 // ceremony is live; the tick and the polls live and die with the sheet.
 //
-// FAIL-DARK: in this slice the app's record seam is `NoPairingRecords` —
-// no CloudKit operation for the pairing record exists yet (the phone's
-// writer and the Production schema come first), so a ceremony shows its
-// code, finds nothing and ends with its window. Nothing here arms anything:
-// the stored key is read by no decision path until S-PAIR-C2.
+// LIVE TRANSPORT (S-PAIR-C1.5, #170): the app's record seam is
+// `CloudKitPairingRecords` (the record path's file), fetching and deleting
+// the pairing record by its derived name through the probe-gated live
+// database. FAIL-DARK where iCloud is not there for it — no account, no
+// network, no Production schema or zone yet, a build with no iCloud
+// entitlement: the fetch reads "unreachable", the sheet says "Waiting —
+// iCloud is unreachable; still trying", and the ceremony ends with its
+// window; no other surface appears. Nothing here arms anything: the stored
+// key is read by no decision path until S-PAIR-C2.
 // UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
-
-/// The app's record seam in this slice: no CloudKit operation for the
-/// pairing record exists yet, so nothing is ever found, and nothing this
-/// Mac could have caused needs deleting.
-final class NoPairingRecords: PairingRecordSource {
-    func fetch(recordName: String) async -> PairingFetch { .nothing }
-    func delete(recordName: String) async -> Bool { true }
-}
 
 /// The repeating one-second tick a live ceremony runs on.
 @MainActor
@@ -65,7 +61,7 @@ enum PairingPaneState: Equatable, Sendable {
 }
 
 @MainActor
-final class PairingController: ObservableObject {
+final class PairingController: ObservableObject, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     typealias TickerFactory = (@escaping @MainActor () -> Void) -> any PairingTicker
 
     @Published private(set) var state = PairingCeremonyState()
@@ -118,18 +114,32 @@ final class PairingController: ObservableObject {
 
     /// The app's controller, beside the remote-approvals toggle it stops on
     /// Unpair (none in debugBattery mode, like the toggle). Construction does
-    /// no I/O: the slot is read when Settings opens.
+    /// no I/O: the slot is read when Settings opens, and the live database is
+    /// built on the record source's first fetch or deletion. The remembered
+    /// name is read from the app's own persistent domain only
+    /// (`rememberedName`).
     static func makeIfEnabled(remoteApprovals: RemoteApprovalsController?, keys: PairedKeyStore,
                               defaults: UserDefaults) -> PairingController? {
         guard let remoteApprovals else { return nil }
+        let domain = Bundle.main.bundleIdentifier ?? ""
         return PairingController(
-            source: NoPairingRecords(), keys: keys,
-            readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },
+            source: CloudKitPairingRecords(database: { CloudKitMessageSender.makeLivePairingDatabase() }), keys: keys,
+            readRemembered: { Self.rememberedName(in: defaults.persistentDomain(forName: domain)) },
             writeRemembered: { name in
                 if let name { defaults.set(name, forKey: DefaultsKey.pairingRecordToDelete) }
                 else { defaults.removeObject(forKey: DefaultsKey.pairingRecordToDelete) }
             },
             killSwitch: { [weak remoteApprovals] in remoteApprovals?.setEnabled(false) })
+    }
+
+    /// The remembered record name as the app's OWN persistent domain holds
+    /// it (`domain`: that domain's contents), never through the defaults
+    /// search list — where a launch argument, the global domain or a
+    /// registered default could supply a name for the launch to delete a
+    /// record by. nil unless it is text; its shape is checked at the
+    /// deletion (`deleteRememberedRecord`).
+    nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {
+        domain?[DefaultsKey.pairingRecordToDelete] as? String
     }
 
     /// 32 bytes from the system's cryptographic random source, or nil if it
@@ -202,9 +212,17 @@ final class PairingController: ObservableObject {
 
     /// Launch: a record name remembered from a ceremony that never ended
     /// (NapCat quit or crashed mid-pairing) is deleted by that name, and
-    /// forgotten once it is gone. The nonce was never stored.
+    /// forgotten once it is gone. The nonce was never stored. Only a pairing
+    /// record name's shape is acted on (64 lowercase hex digits,
+    /// `PairingResponseCheck.isRecordName`): anything else names no record
+    /// this Mac made, so nothing is deleted by it, and it is forgotten.
     func deleteRememberedRecord() {
         guard state.phase == .idle, let name = readRemembered() else { return }
+        guard PairingResponseCheck.isRecordName(name) else {
+            writeRemembered(nil)
+            audit(.leftoverMalformed)
+            return
+        }
         work.append(Task { [weak self] in
             guard let self else { return }
             let gone = await source.delete(recordName: name)
@@ -280,6 +298,23 @@ final class PairingController: ObservableObject {
         }
         return nil
     }
+
+    // MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1.5 security review's R1)
+
+    /// The shell holds the paired-key slot (PairingStructureTests lock 7): it
+    /// prints, debug-prints, dumps and reflects as a fixed word and nothing
+    /// more, so no print, description or `Mirror`-based walk — a `Mirror`, or
+    /// `customMirror.descendant` from any wrapper, an array or an optional —
+    /// reaches the slot through it. It does NOT stop runtime reflection: the
+    /// Swift runtime's field reader and the ObjC runtime's ivar reader both
+    /// ignore `CustomReflectable` and read the stored fields as declared.
+    /// Lock 7's bans stop them — the Swift one by name, the ObjC one by its C
+    /// API — not this redaction; raw-pointer reads remain the accepted R-1
+    /// residual. The conformance is the class's own, on its declaration (an
+    /// extension of the controller is banned, lock 6).
+    nonisolated var description: String { "pairing (redacted)" }
+    nonisolated var debugDescription: String { description }
+    nonisolated var customMirror: Mirror { Mirror(self, children: [], displayStyle: .class) }
 }
 
 /// The `pairing` log category: closed codes only (`PairingAudit.code`).

@@ -509,6 +509,151 @@ enum PairingResponseReader {
     }
 }
 
+// MARK: - The pairing record, fetched and deleted (S-PAIR-C1.5, #170)
+
+/// THE seam over CloudKit I/O for the pairing record: run this operation
+/// against the owner's private database. Its one app conformer is the live
+/// database `CloudKitMessageSender.makeLivePairingDatabase()` builds (the
+/// container's own file, behind the entitlement probe), handed only to
+/// `CloudKitPairingRecords`, which hands it only the two operations below
+/// (all lint-locked).
+protocol PairingRecordDatabase: AnyObject, Sendable {
+    func submit(_ operation: CKFetchRecordsOperation)
+    func submit(_ operation: CKModifyRecordsOperation)
+}
+
+/// The app's pairing record source: the ONE conformer to `PairingRecordSource`
+/// in the four targets (lint-locked to this declaration's line). It reaches
+/// the pairing record by its ID alone — the approvals zone and the name the
+/// ceremony derived from its nonce: no query, no listing, no save — and it
+/// acts only on a well-formed name (64 lowercase hex digits).
+///
+/// A fetch comes to one of three outcomes, a CLOSED mapping
+/// (`fetchOutcome`): the record read → `found`, read strictly with that same
+/// name (`PairingResponseReader`); no record by that ID (`unknownItem`) →
+/// `nothing`; anything else — no network, a timeout, no iCloud account, no
+/// approvals zone or schema yet, a build with no iCloud entitlement, any
+/// other error — → `unreachable`, which the ceremony shows as "still trying"
+/// until its window ends it. A deletion is the record path's own operation
+/// (`ApprovalRecordWriter.makeOperation`), deleting that one record and
+/// saving none; gone (deleted now, or never there) is true.
+final class CloudKitPairingRecords: PairingRecordSource, @unchecked Sendable {
+    private let makeDatabase: @Sendable () -> (any PairingRecordDatabase)?
+    private let lock = NSLock()
+    private var resolved = false
+    private var live: (any PairingRecordDatabase)?
+
+    /// `database` is asked once, on the first fetch or deletion
+    /// (construction does no I/O); nil — a build with no iCloud entitlement —
+    /// leaves every fetch unreachable and every deletion undone.
+    init(database: @escaping @Sendable () -> (any PairingRecordDatabase)?) {
+        makeDatabase = database
+    }
+
+    func fetch(recordName: String) async -> PairingFetch {
+        guard PairingResponseCheck.isRecordName(recordName), let database = resolvedDatabase() else { return .unreachable }
+        return await withCheckedContinuation { continuation in
+            database.submit(Self.makeFetchOperation(recordName: recordName) { continuation.resume(returning: $0) })
+        }
+    }
+
+    func delete(recordName: String) async -> Bool {
+        guard PairingResponseCheck.isRecordName(recordName), let database = resolvedDatabase() else { return false }
+        return await withCheckedContinuation { continuation in
+            database.submit(ApprovalRecordWriter.makeOperation(saving: [], deleting: [Self.recordID(recordName)]) { outcome in
+                continuation.resume(returning: outcome == .confirmed)
+            })
+        }
+    }
+
+    private func resolvedDatabase() -> (any PairingRecordDatabase)? {
+        lock.lock()
+        defer { lock.unlock() }
+        if !resolved {
+            live = makeDatabase()
+            resolved = true
+        }
+        return live
+    }
+
+    /// The pairing record's ID: the approvals zone and the derived name.
+    static func recordID(_ recordName: String) -> CKRecord.ID {
+        CKRecord.ID(recordName: recordName, zoneID: ApprovalRecordWriter.zoneID)
+    }
+
+    /// THE fetch operation, built here so a test can play CloudKit's part on
+    /// the real thing: the one record by its ID, every field (the strict
+    /// reading needs them all), the record path's request/resource ceiling,
+    /// user-initiated. `completion` receives `fetchOutcome` once.
+    static func makeFetchOperation(recordName: String, completion: @escaping @Sendable (PairingFetch) -> Void)
+        -> CKFetchRecordsOperation {
+        let operation = CKFetchRecordsOperation(recordIDs: [recordID(recordName)])
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        configuration.isLongLived = false
+        configuration.timeoutIntervalForRequest = LidGuardTuning.requestTimeout
+        configuration.timeoutIntervalForResource = LidGuardTuning.requestTimeout
+        operation.configuration = configuration
+        let fetched = FetchedRecord()
+        operation.perRecordResultBlock = { _, result in fetched.note(result) }
+        operation.fetchRecordsResultBlock = { batch in
+            guard let outcome = fetched.finish(recordName: recordName, batch: batch) else { return }
+            completion(outcome)
+        }
+        return operation
+    }
+
+    /// The closed mapping, the record's own result first:
+    /// - the record came back → `found`, read strictly with the name asked
+    ///   for; nothing else is ever `found`;
+    /// - no record by that ID (`unknownItem`, alone or as the one item of a
+    ///   partial failure), for the record or, with no result of its own, the
+    ///   batch → `nothing`;
+    /// - every other error, network-class included, and a batch that
+    ///   reported no record at all → `unreachable`.
+    static func fetchOutcome(recordName: String, record: Result<CKRecord, any Error>?,
+                             batch: Result<Void, any Error>) -> PairingFetch {
+        switch record {
+        case .success(let read)?:
+            return .found(PairingResponseReader.reading(of: read, expectedName: recordName))
+        case .failure(let error)?:
+            return isMissing(error) ? .nothing : .unreachable
+        case nil:
+            if case .failure(let error) = batch, isMissing(error) { return .nothing }
+            return .unreachable
+        }
+    }
+
+    /// No record by that ID: `unknownItem`, alone or as the one item of a
+    /// partial failure.
+    static func isMissing(_ error: any Error) -> Bool {
+        ApprovalRecordWriter.isGone(CloudKitMessageSender.recordLevelError(error as NSError))
+    }
+}
+
+/// Holds the record's own result until the batch result arrives, then says
+/// what the fetch came to, once (`CloudKitPairingRecords.fetchOutcome`).
+private final class FetchedRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var record: Result<CKRecord, any Error>?
+    private var finished = false
+
+    /// The first result is the record's.
+    func note(_ result: Result<CKRecord, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if record == nil { record = result }
+    }
+
+    func finish(recordName: String, batch: Result<Void, any Error>) -> PairingFetch? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return nil }
+        finished = true
+        return CloudKitPairingRecords.fetchOutcome(recordName: recordName, record: record, batch: batch)
+    }
+}
+
 // MARK: - The audit trail (closed vocabulary)
 
 /// One record-path log line: the random prompt ID and closed codes, never a

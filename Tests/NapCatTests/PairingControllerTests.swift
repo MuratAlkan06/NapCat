@@ -2,6 +2,7 @@
 // Testing` triggers the _Testing_Foundation cross-import overlay, which the
 // CLT frameworks dir does not ship (see PLAN.md decision log 2026-07-09).
 import AppKit
+import Combine
 import CryptoKit
 import NapCatWire
 import Testing
@@ -240,6 +241,19 @@ struct PairingControllerTests {
         #expect(nothing.records.deletions.isEmpty && nothing.audits.isEmpty, "no leftover, no deletion")
     }
 
+    /// S-PAIR-C1.5 (#170): a remembered name of any shape but a pairing
+    /// record's (64 lowercase hex digits) names no record this Mac made:
+    /// nothing is deleted by it, and it is forgotten.
+    @Test(arguments: CloudKitPairingRecordsTests.malformedNames)
+    func aLeftoverOfAnyOtherShapeIsNeverDeleted(_ name: String) async {
+        let world = PairingWorld()
+        world.remembered = name
+        world.controller.deleteRememberedRecord()
+        await world.controller.settle()
+        #expect(world.records.deletions.isEmpty, "nothing is deleted by it")
+        #expect(world.remembered == nil && world.audits == [.leftoverMalformed])
+    }
+
     /// A late answer to an earlier ceremony's fetch is dropped.
     @Test func aStaleFetchIsDropped() async throws {
         let world = PairingWorld(records: ScriptedPairingRecords([.found(.response(try PhoneHalf.response()))]))
@@ -300,6 +314,79 @@ struct PairingControllerTests {
         for second in stride(from: 1.0, through: 299, by: 1) { await world.advance(to: second) }
         let countdowns = world.announcements.dropFirst(opening.count).filter { $0.hasPrefix("Code expires in") }
         #expect(countdowns == ["Code expires in 1:00", "Code expires in 0:10"])
+    }
+
+    /// S-PAIR-C1.5 (the C1 security delta check's (b)): a live ceremony's shell gives the code away
+    /// through no way of describing it — dumped whole, its state reflected —
+    /// because the state that holds the nonce redacts itself.
+    @Test func aLiveControllerPrintsAndReflectsNoCode() throws {
+        let world = PairingWorld()
+        world.controller.begin()
+        let payload = try #require(world.controller.sheetContent.qrPayload)
+        let secrets = Redaction.secrets(payload: payload, nonce: PhoneHalf.nonce)
+        #expect(world.controller.state.holdsNonce, "vacuity: the ceremony is live")
+        for (name, value) in [("the controller", world.controller as Any), ("its state", world.controller.state),
+                              ("its sheet", world.controller.sheetContent)] {
+            #expect(Redaction.leaks(value, secrets: secrets).isEmpty, "\(name) leaks through \(Redaction.leaks(value, secrets: secrets))")
+        }
+    }
+
+    /// S-PAIR-C1.5, the C1.5 security review's R1 (its RP1 probe wrote a fake
+    /// key into the slot through `[controller].customMirror.descendant(0,
+    /// "keys", "items")`): no reflection from any wrapper — an array's, an
+    /// optional's, the controller's own mirror, the slot's — reaches the slot
+    /// or its item, so nothing is written by that route; the controller and
+    /// the slot print and dump as fixed words. A control: an unredacted
+    /// holder of the same item is reached by the same route. (`Mirror`
+    /// routes only: the runtimes' own readers ignore the redaction —
+    /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` and
+    /// `nothingCallsTheObjCRuntimeOrLooksUpByName` stop them; raw-pointer
+    /// reads remain the accepted R-1 residual.)
+    @Test func noReflectionReachesThePairedKeySlot() throws {
+        let world = PairingWorld()
+        let controller: PairingController = world.controller
+        let slot = PairedKeyStore(items: world.items)
+        let attacker = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
+                                                pairedAt: world.clock))
+        let routes: [(String, Any?)] = [
+            ("RP1: an array's customMirror.descendant", [controller].customMirror.descendant(0, "keys", "items")),
+            ("RP1 through an optional", Optional(controller).customMirror.descendant("some", "keys", "items")),
+            ("the controller's own mirror", Mirror(reflecting: controller).descendant("keys", "items")),
+            ("the slot, by its label", Mirror(reflecting: controller).descendant("keys")),
+            ("the record source, by its label", Mirror(reflecting: controller).descendant("source")),
+            ("the slot's item, from the slot", Mirror(reflecting: slot).descendant("items")),
+            ("the slot's item, through an array", [slot].customMirror.descendant(0, "items")),
+        ]
+        for (name, reached) in routes {
+            #expect(reached == nil, "\(name) reached a part")
+            #expect((reached as? any TopicStore)?.write(PairedKeyStore.text(of: attacker)) == nil)
+        }
+        world.controller.refreshPaired()
+        #expect(world.items.writeCount == 0 && world.controller.paneState == .notPaired, "nothing was written")
+        for (name, value, word) in [("the controller", controller as Any, "pairing (redacted)"),
+                                    ("the slot", slot as Any, "paired key slot (redacted)")] {
+            #expect(Mirror(reflecting: value).children.isEmpty, "\(name) reflects a part")
+            var dumped = ""
+            dump(value, to: &dumped)
+            for text in [String(describing: value), String(reflecting: value), dumped] {
+                #expect(text.contains(word) && !text.contains("items") && !text.contains("keys"), "\(name): \(text)")
+            }
+        }
+        struct Slot { let items: any TopicStore }
+        struct Holder { let keys: Slot }
+        #expect([Holder(keys: Slot(items: world.items))].customMirror.descendant(0, "keys", "items") is any TopicStore,
+                "vacuity: the route reaches an unredacted holder's item")
+    }
+
+    /// The redaction leaves the controller observable: the sheet (SwiftUI's
+    /// `@ObservedObject`) still hears every change.
+    @Test func theRedactedControllerStillPublishes() {
+        let world = PairingWorld()
+        var changes = 0
+        let watch = world.controller.objectWillChange.sink { changes += 1 }
+        world.controller.begin()
+        #expect(changes > 0, "a change the sheet would not hear")
+        watch.cancel()
     }
 
     /// Hidden while not key or occluded (S1b), announced; back on key.

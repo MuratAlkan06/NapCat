@@ -49,7 +49,14 @@ import Testing
 ///    means what it says: nothing re-declares or extends what its check is
 ///    spelled in, every unsafe-memory site and every line naming the S0 type
 ///    is pinned, the signature check is one adjacent block, the verifier's
-///    top level is exactly its types, and no Mac source signs.
+///    top level is exactly its types, and no Mac source signs;
+/// 10. (#170, S-PAIR-C1.5, the live pairing transport) the pairing record is
+///    reached by its ID alone, through its one source and its one live
+///    database, and a fetch is found only from a record actually read.
+///    Locks 4 and 8 are AMENDED with it, deliberately: the CloudKit allow-list
+///    widens by `CKFetchRecordsOperation` alone, and the seam-flow pins gain
+///    the pairing source's fetch and its deletion (the record path's own
+///    factory, saving nothing).
 ///
 /// Since #153 the constructor bans (locks 3, 7 and 8) read the cleaned
 /// copies too (`LidGuardStructureTests.constructorScanCopies`: backticks
@@ -1196,18 +1203,26 @@ struct ApprovalRecordPathStructureTests {
     /// operation to its database seam. It never holds a container or a
     /// database, checks an account, queries, subscribes, or adds an
     /// operation to a database itself.
+    ///
+    /// AMENDED (S-PAIR-C1.5, #170 — deliberate): `CKFetch` left this list for
+    /// the allow-list below, which now holds exactly one fetch door,
+    /// `CKFetchRecordsOperation` (the pairing record, by ID); every other
+    /// `CKFetch…` operation is off the allow-list and fails as before.
     static let iCloudTokens = ["CKContainer", "CKDatabase", "privateCloudDatabase", "publicCloudDatabase",
-                               "sharedCloudDatabase", "accountStatus", "CKFetch", "CKQuery", "CKSubscription",
+                               "sharedCloudDatabase", "accountStatus", "CKQuery", "CKSubscription",
                                "CKSyncEngine", "SecTask", ".add(", "URLSession"]
 
     /// AMENDED after security review 2 (#146): the record path's CloudKit
     /// identifiers are an ALLOW-LIST, exactly the ones it uses, matched as
     /// whole words (`CKRecord` does not cover `CKRecordZone`), so any other
-    /// door (`CKFetchRecordsOperation`, `CKModifyRecordZonesOperation`, …)
-    /// fails by default instead of waiting for its own ban.
+    /// door (`CKFetchRecordZonesOperation`, `CKModifyRecordZonesOperation`, …)
+    /// fails by default instead of waiting for its own ban. AMENDED
+    /// (S-PAIR-C1.5, #170): widened by exactly what the pairing record's fetch
+    /// needs — `CKFetchRecordsOperation` (one record, by its ID); lock 10 pins
+    /// where it is built and where it goes.
     static let recordPathCloudKitIdentifiers: Set<String> = [
         "CKRecord", "CKRecordZone", "CKRecordValue", "CKCurrentUserDefaultName",
-        "CKModifyRecordsOperation", "CKOperation", "CKError", "CKErrorDomain",
+        "CKModifyRecordsOperation", "CKOperation", "CKError", "CKErrorDomain", "CKFetchRecordsOperation",
     ]
 
     /// Every way to RUN an operation but the seam (security review 2, G1).
@@ -1324,7 +1339,13 @@ struct ApprovalRecordPathStructureTests {
             // … and a CloudKit door off the allow-list.
             ("a zone operation", Self.mutate(withFile, record) {
                 $0 + "\nlet z = CKModifyRecordZonesOperation(recordZonesToSave: [], recordZoneIDsToDelete: nil)" }),
-            ("a fetch operation", Self.mutate(withFile, record) { $0 + "\nlet f = CKFetchRecordsOperation(recordIDs: [])" }),
+            // S-PAIR-C1.5 (#170): the one fetch door allowed is the record
+            // fetch by ID (a second one is lock 8's); every other is off-list.
+            ("a zone-changes fetch", Self.mutate(withFile, record) {
+                $0 + "\nlet f = CKFetchRecordZoneChangesOperation(recordZoneIDs: [], configurationsByRecordZoneID: nil)" }),
+            ("a database-changes fetch", Self.mutate(withFile, record) {
+                $0 + "\nlet f = CKFetchDatabaseChangesOperation(previousServerChangeToken: nil)" }),
+            ("a query", Self.mutate(withFile, record) { $0 + "\nlet q = CKQueryOperation(query: q)" }),
             ("a share", Self.mutate(withFile, record) { $0 + "\nlet s: CKShare? = nil" }),
             ("an allow-listed identifier dropped", Self.mutate(withFile, record) {
                 $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
@@ -1584,11 +1605,14 @@ struct ApprovalRecordPathStructureTests {
         return unique(failures)
     }
 
-    /// The record path's one record and one operation.
+    /// The record path's one record and one operation — and (S-PAIR-C1.5,
+    /// #170) the pairing record's one fetch.
     static let recordPathConstructions = [
         "CKRecord": "let record = CKRecord(recordType: ApprovalWire.RecordType.prompt.rawValue,",
         "CKModifyRecordsOperation": "let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: doomed)",
+        "CKFetchRecordsOperation": fetchConstruction,
     ]
+    static let fetchConstruction = "let operation = CKFetchRecordsOperation(recordIDs: [recordID(recordName)])"
 
     @Test func theRecordPathBuildsOneRecordAndOneOperation() throws {
         let file = Self.text(Self.recordPathFile, in: try Self.uncutSources())
@@ -1621,6 +1645,11 @@ struct ApprovalRecordPathStructureTests {
             ("an implicit init behind try?", file + "\nfunc spare() throws -> CKRecord { try? .init(coder: c) ?? r }"),
             ("the one record moved", file.replacingOccurrences(of: built, with: "let record = CKRecord.init(recordType: "
                 + "ApprovalWire.RecordType.prompt.rawValue,")),
+            // S-PAIR-C1.5 (#170): the pairing record's one fetch, however spelled.
+            ("a second fetch", file + "\nlet f = CKFetchRecordsOperation(recordIDs: [])"),
+            ("a second fetch, init-spelled", file + "\nlet f = CKFetchRecordsOperation.init(recordIDs: [])"),
+            ("the fetch's metatype", file + "\nlet t = CKFetchRecordsOperation.self"),
+            ("a fetch by implicit init", file + "\nfunc spare() -> CKFetchRecordsOperation {\n    return .init(recordIDs: [])\n}"),
         ]
         for (name, mutant) in mutants {
             #expect(mutant != file, "canary '\(name)' did not apply")
@@ -1659,49 +1688,80 @@ struct ApprovalRecordPathStructureTests {
     /// its pinned line; the seam's `submit` named only by its requirement and
     /// those two calls; and the operation type named only by the
     /// requirement, the factory's return type and the construction.
+    ///
+    /// AMENDED (S-PAIR-C1.5, #170 — deliberate): the pairing record's source
+    /// is the factory's third caller (its deletion: that one record, nothing
+    /// saved) and the pairing database's seam the second set of `submit`s.
+    /// The seams' modify requirements are spelled alike, so that line counts
+    /// twice. The fetch factory (`makeFetchOperation`) is pinned the same way:
+    /// declared once, reached by the source's one fetch submit, its operation
+    /// built once (lock 8's construction check), configured and returned.
+    static let pairingDeleteSubmit = "database.submit(ApprovalRecordWriter.makeOperation(saving: [], deleting: [Self.recordID(recordName)]) { outcome in"
+    static let pairingFetchSubmit = "database.submit(Self.makeFetchOperation(recordName: recordName) { continuation.resume(returning: $0) })"
+    static let fetchFactoryHead = "static func makeFetchOperation(recordName: String, completion: @escaping @Sendable (PairingFetch) -> Void)"
     static let factorySites = [
         "static func makeOperation(saving records: [CKRecord], deleting doomed: [CKRecord.ID],": 1,
         "database.submit(Self.makeOperation(saving: [record], deleting: []) { outcome in": 1,
         "database.submit(Self.makeOperation(saving: [], deleting: doomed) { outcome in": 1,
+        pairingDeleteSubmit: 1,
     ]
     static let submitSites = [
-        "func submit(_ operation: CKModifyRecordsOperation)": 1,
+        "func submit(_ operation: CKModifyRecordsOperation)": 2,
+        "func submit(_ operation: CKFetchRecordsOperation)": 1,
         "database.submit(Self.makeOperation(saving: [record], deleting: []) { outcome in": 1,
         "database.submit(Self.makeOperation(saving: [], deleting: doomed) { outcome in": 1,
+        pairingDeleteSubmit: 1,
+        pairingFetchSubmit: 1,
     ]
-    /// Every line naming `operation`: the seam's parameter, then the factory
-    /// building, configuring and returning its operation.
+    /// Every line naming `operation`: the seams' parameters, then each
+    /// factory building, configuring and returning its operation.
     static let operationSites = [
-        "func submit(_ operation: CKModifyRecordsOperation)": 1,
+        "func submit(_ operation: CKModifyRecordsOperation)": 2,
+        "func submit(_ operation: CKFetchRecordsOperation)": 1,
         "let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: doomed)": 1,
         "operation.savePolicy = .ifServerRecordUnchanged": 1,
         "operation.isAtomic = true": 1,
-        "operation.configuration = configuration": 1,
+        "operation.configuration = configuration": 2,
         "operation.perRecordSaveBlock = { _, result in results.note(result.map { _ in () }, deleting: false) }": 1,
         "operation.perRecordDeleteBlock = { _, result in results.note(result, deleting: true) }": 1,
         "operation.modifyRecordsResultBlock = { batch in completion(results.outcome(batch: batch)) }": 1,
-        "return operation": 1,
+        fetchConstruction: 1,
+        "operation.perRecordResultBlock = { _, result in fetched.note(result) }": 1,
+        "operation.fetchRecordsResultBlock = { batch in": 1,
+        "return operation": 2,
     ]
     static let operationTypeSites = [
-        "func submit(_ operation: CKModifyRecordsOperation)": 1,
+        "func submit(_ operation: CKModifyRecordsOperation)": 2,
         "-> CKModifyRecordsOperation {": 1,
         "let operation = CKModifyRecordsOperation(recordsToSave: records, recordIDsToDelete: doomed)": 1,
     ]
+    static let fetchTypeSites = [
+        "func submit(_ operation: CKFetchRecordsOperation)": 1,
+        "-> CKFetchRecordsOperation {": 1,
+        fetchConstruction: 1,
+    ]
+    static let fetchFactorySites = [fetchFactoryHead: 1, pairingFetchSubmit: 1]
 
     /// `sources`: `uncutSources()`.
     static func seamFlowFailures(_ sources: Sources) -> [String] {
         let file = text(recordPathFile, in: sources)
         var failures = siteFailures(#"\bmakeOperation\b"#, in: file, file: recordPathFile, allowed: factorySites,
-                                    rule: "the operation factory is reached only by the writer's two submits")
-        for (name, text) in sources where name != recordPathFile && hits(#"\bmakeOperation\b"#, in: text) {
-            failures.append("'makeOperation' in \(name) — only the record path's writer reaches the operation factory")
+                                    rule: "the operation factory is reached only by the writer's two submits and the pairing deletion")
+        for factory in ["makeOperation", "makeFetchOperation"] {
+            for (name, text) in sources where name != recordPathFile && hits(#"\b"# + factory + #"\b"#, in: text) {
+                failures.append("'\(factory)' in \(name) — only the record path reaches its operation factories")
+            }
         }
+        failures += siteFailures(#"\bmakeFetchOperation\b"#, in: file, file: recordPathFile, allowed: fetchFactorySites,
+                                 rule: "the fetch factory is reached only by the pairing source's one fetch")
         failures += siteFailures(#"\bsubmit\b"#, in: file, file: recordPathFile, allowed: submitSites,
-                                 rule: "the seam is named only by its requirement and the writer's two submits")
+                                 rule: "the seams are named only by their requirements, the writer's two submits and the pairing source's two")
         failures += siteFailures(#"\boperation\b"#, in: file, file: recordPathFile, allowed: operationSites,
-                                 rule: "the factory builds, configures and returns its operation, nothing else")
+                                 rule: "each factory builds, configures and returns its operation, nothing else")
         failures += siteFailures(#"\bCKModifyRecordsOperation\b"#, in: file, file: recordPathFile, allowed: operationTypeSites,
-                                 rule: "the operation type is named by the seam, the factory and the one construction")
+                                 rule: "the operation type is named by the seams, the factory and the one construction")
+        failures += siteFailures(#"\bCKFetchRecordsOperation\b"#, in: file, file: recordPathFile, allowed: fetchTypeSites,
+                                 rule: "the fetch operation's type is named by its seam, its factory and its one construction")
         return failures
     }
 
@@ -1758,6 +1818,208 @@ struct ApprovalRecordPathStructureTests {
             $0 + "\nfunc f(_ operations: [Int], submitted: Bool) -> Operation? { nil }"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n    /// never makeOperation(…).go(), never a second submit(operation)")
         }).isEmpty)
+    }
+
+    // MARK: - 10. The pairing record is reached by its ID alone, through its one source (S-PAIR-C1.5)
+
+    /// The live pairing transport (#170): what the behaviour tests show by
+    /// example (`CloudKitPairingRecordsTests`), pinned so no other road
+    /// exists.
+    /// - ONE `PairingRecordSource` conformer in the four targets, on its
+    ///   declaration's exact line in the record path (the C1 stub
+    ///   `NoPairingRecords` is gone, named nowhere), built once, by the
+    ///   controller's wiring; ONE `PairingRecordDatabase` conformer, the live
+    ///   database, on its exact line in the container's file. Every line
+    ///   naming either type is pinned, so nothing else holds the live
+    ///   database or reaches the source (a typed implicit init, an unapplied
+    ///   one, an alias or an extension all name the type; `type(of:)` is
+    ///   banned app-wide by PairingStructureTests lock 6; no `Self(` in the
+    ///   record path).
+    /// - The source's fetch and delete, whole: the name's shape first, then
+    ///   the fetch by `makeFetchOperation` alone, and a deletion of that one
+    ///   record that saves nothing.
+    /// - The fetch, whole: one record ID — the approvals zone and the name
+    ///   (`recordID`, whole), no query — and its outcome from `fetchOutcome`.
+    /// - The closed mapping, whole: `found` only from a record actually read,
+    ///   read with the same name; `nothing` only for `unknownItem`; anything
+    ///   else `unreachable`. The record path's one `.found` and its one
+    ///   `expectedName:` read are those lines.
+    static let sourceDeclaration = "final class CloudKitPairingRecords: PairingRecordSource, @unchecked Sendable {"
+    static let liveDatabaseDeclaration = "private final class LivePairingRecordDatabase: PairingRecordDatabase, @unchecked Sendable {"
+    static let senderFile = "CloudKitMessageSender.swift"
+    static let pairingWiring = "source: CloudKitPairingRecords(database: { CloudKitMessageSender.makeLivePairingDatabase() }), keys: keys,"
+
+    /// An adoption of `name` however it is declared: a type, an extension or
+    /// a refining protocol naming it in its clause, over any number of lines,
+    /// or a typealias of it — one declaration at a time (`oneDeclaration`,
+    /// the phone's: a clause never runs into the next declaration, so a
+    /// typealias above a stored property of the seam's type is not read as
+    /// an alias of it).
+    static func adoptionPattern(_ name: String) -> String {
+        let word = #"\b"# + name + #"\b"#
+        return #"\b(?:class|struct|actor|enum|extension|protocol)\b"# + oneDeclaration + ":" + oneDeclaration + word
+            + #"|\btypealias\b"# + oneDeclaration + "=" + oneDeclaration + word
+    }
+    static let oneDeclaration = #"(?:(?!\b(?:typealias|protocol|struct|class|actor|enum|extension|func|var|let)\b)[^{};])*?"#
+
+    static let sourceWordSites: [String: [String: Int]] = [
+        recordPathFile: [sourceDeclaration: 1,
+                         "return CloudKitPairingRecords.fetchOutcome(recordName: recordName, record: record, batch: batch)": 1],
+        "PairingController.swift": [pairingWiring: 1],
+    ]
+    static let databaseWordSites: [String: [String: Int]] = [
+        recordPathFile: ["protocol PairingRecordDatabase: AnyObject, Sendable {": 1,
+                         "private let makeDatabase: @Sendable () -> (any PairingRecordDatabase)?": 1,
+                         "private var live: (any PairingRecordDatabase)?": 1,
+                         "init(database: @escaping @Sendable () -> (any PairingRecordDatabase)?) {": 1,
+                         "private func resolvedDatabase() -> (any PairingRecordDatabase)? {": 1],
+        senderFile: ["static func makeLivePairingDatabase() -> (any PairingRecordDatabase)? {": 1, liveDatabaseDeclaration: 1],
+    ]
+
+    static let fetchBody = "guard PairingResponseCheck.isRecordName(recordName), let database = resolvedDatabase() else { return .unreachable } "
+        + "return await withCheckedContinuation { continuation in " + pairingFetchSubmit + " }"
+    static let deleteBody = "guard PairingResponseCheck.isRecordName(recordName), let database = resolvedDatabase() else { return false } "
+        + "return await withCheckedContinuation { continuation in " + pairingDeleteSubmit
+        + " continuation.resume(returning: outcome == .confirmed) }) }"
+    static let recordIDBody = "CKRecord.ID(recordName: recordName, zoneID: ApprovalRecordWriter.zoneID)"
+    static let fetchFactoryBody = "-> CKFetchRecordsOperation { " + fetchConstruction
+        + " let configuration = CKOperation.Configuration() configuration.qualityOfService = .userInitiated"
+        + " configuration.isLongLived = false configuration.timeoutIntervalForRequest = LidGuardTuning.requestTimeout"
+        + " configuration.timeoutIntervalForResource = LidGuardTuning.requestTimeout operation.configuration = configuration"
+        + " let fetched = FetchedRecord() operation.perRecordResultBlock = { _, result in fetched.note(result) }"
+        + " operation.fetchRecordsResultBlock = { batch in guard let outcome = fetched.finish(recordName: recordName, batch: batch)"
+        + " else { return } completion(outcome) } return operation"
+    static let foundLine = "return .found(PairingResponseReader.reading(of: read, expectedName: recordName))"
+    static let outcomeBody = "switch record { case .success(let read)?: " + foundLine
+        + " case .failure(let error)?: return isMissing(error) ? .nothing : .unreachable"
+        + " case nil: if case .failure(let error) = batch, isMissing(error) { return .nothing } return .unreachable }"
+    static let missingBody = "ApprovalRecordWriter.isGone(CloudKitMessageSender.recordLevelError(error as NSError))"
+    static let bodies: [(head: String, body: String, rule: String)] = [
+        ("func fetch(recordName: String) async -> PairingFetch {", fetchBody,
+         "the fetch checks the name's shape, then fetches by the one factory"),
+        ("func delete(recordName: String) async -> Bool {", deleteBody,
+         "the deletion checks the name's shape, then deletes that one record and saves nothing"),
+        ("static func recordID(_ recordName: String) -> CKRecord.ID {", recordIDBody,
+         "the pairing record's ID is the approvals zone and the derived name"),
+        (fetchFactoryHead, fetchFactoryBody, "the fetch asks for one record by its ID, and reports the closed mapping"),
+        ("static func fetchOutcome(recordName: String, record: Result<CKRecord, any Error>?,",
+         "batch: Result<Void, any Error>) -> PairingFetch { " + outcomeBody,
+         "found only from a record read, read with the name asked for; nothing only for unknownItem; else unreachable"),
+        ("static func isMissing(_ error: any Error) -> Bool {", missingBody, "missing means unknownItem, alone or as the one item"),
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func pairingTransportFailures(_ sources: Sources) -> [String] {
+        let file = text(recordPathFile, in: sources)
+        guard file.contains(sourceDeclaration), text(senderFile, in: sources).contains(liveDatabaseDeclaration) else {
+            return ["the pairing source or its live database is missing — the pairing transport lock would be vacuous"]
+        }
+        var failures: [String] = []
+        for (name, text) in sources {
+            let copies = LidGuardStructureTests.constructorScanCopies(text)
+            for (seam, allowed) in [("PairingRecordSource", name == recordPathFile ? [sourceDeclaration: 1] : [:]),
+                                    ("PairingRecordDatabase", name == senderFile ? [liveDatabaseDeclaration: 1] : [:])] {
+                for copy in copies where siteTally(adoptionPattern(seam), in: copy) != allowed {
+                    failures.append("\(name) adopts \(seam) off its pin: \(siteTally(adoptionPattern(seam), in: copy))")
+                }
+            }
+            if hits(#"\bNoPairingRecords\b"#, in: text) {
+                failures.append("'NoPairingRecords' in \(name) — the C1 stub is gone; the live source is the one conformer")
+            }
+        }
+        failures += PairingStructureTests.appSiteFailures(#"\bCloudKitPairingRecords\b"#, in: sources, allowed: sourceWordSites,
+                                                          rule: "the pairing source is declared once and built once, by the controller's wiring")
+        failures += PairingStructureTests.appSiteFailures(#"\bPairingRecordDatabase\b"#, in: sources, allowed: databaseWordSites,
+                                                          rule: "the live pairing database is held by the pairing source alone")
+        for copy in LidGuardStructureTests.constructorScanCopies(file) where hits(#"\bSelf\s*(?:\(|\.\s*init\b)"#, in: copy) {
+            failures.append("the record path builds through Self( or Self.init — it spells every construction")
+        }
+        for (head, body, rule) in bodies {
+            guard let found = PhoneTransportStructureTests.body(after: head, in: file) else {
+                failures.append("'\(head)' not found in \(recordPathFile) — \(rule)")
+                continue
+            }
+            if MenuPanelStructureTests.flat(found) != body { failures.append("\(rule) — exactly as pinned") }
+        }
+        failures += siteFailures(#"\.\s*found\b"#, in: file, file: recordPathFile, allowed: [foundLine: 1],
+                                 rule: "a fetch is found only from a record actually read")
+        failures += PairingStructureTests.appSiteFailures(#"\bexpectedName\b"#, in: sources, allowed: [recordPathFile: [
+            "static func reading(of record: CKRecord, expectedName: String) -> PairingResponseReading {": 1,
+            "guard record.recordID.recordName == expectedName else { return .malformed(.wrongRecordName) }": 1, foundLine: 1]],
+            rule: "a pairing record is read once, with the very name it was fetched by")
+        return unique(failures)
+    }
+
+    @Test func thePairingRecordIsReachedByItsIDAloneThroughItsOneSource() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.pairingTransportFailures(sources).isEmpty, "\(Self.pairingTransportFailures(sources))")
+        let record = Self.recordPathFile
+        let sender = Self.senderFile
+        let mutants: [(String, Sources)] = [
+            // The mapping and the name: a record read with the name it carries,
+            // a query, another zone, a found from nothing, an error read as
+            // nothing, a shape check skipped.
+            ("read with the name the record carries", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "expectedName: recordName))", with: "expectedName: read.recordID.recordName))") }),
+            ("a fetch by query", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: Self.fetchConstruction, with: "let operation = CKFetchRecordsOperation(recordIDs: spareIDs)") }),
+            ("the record in the default zone", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: Self.recordIDBody, with: "CKRecord.ID(recordName: recordName, zoneID: .default)") }),
+            ("found from no record", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "if case .failure(let error) = batch, isMissing(error) { return .nothing }\n            return .unreachable",
+                                        with: "return .found(.malformed(.missingField))") }),
+            ("every error read as nothing", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "return isMissing(error) ? .nothing : .unreachable", with: "return .nothing") }),
+            ("the shape check skipped", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "guard PairingResponseCheck.isRecordName(recordName), let database = resolvedDatabase() else { return false }",
+                                        with: "guard let database = resolvedDatabase() else { return false }") }),
+            ("a deletion that saves", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "makeOperation(saving: [], deleting: [Self.recordID(recordName)])",
+                                        with: "makeOperation(saving: spare, deleting: [Self.recordID(recordName)])") }),
+            ("missing widened", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: Self.missingBody, with: "true") }),
+            ("a second read of a pairing record", Self.mutate(sources, "PairingCeremony.swift") {
+                $0 + "\nfunc spare(r: CKRecord) -> Any { PairingResponseReader.reading(of: r, expectedName: \"x\") }" }),
+            // The conformers and their holders.
+            ("NoPairingRecords back, beside the live source", Self.mutate(sources, "PairingController.swift") {
+                $0 + "\nfinal class NoPairingRecords: PairingRecordSource {\n    func fetch(recordName: String) async -> PairingFetch { .nothing }\n"
+                    + "    func delete(recordName: String) async -> Bool { true }\n}" }),
+            ("the stub named only", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet zz = NoPairingRecords.self" }),
+            ("a second source, its conformance on the next line", Self.mutate(sources, record) {
+                $0 + "\nfinal class SpareRecords:\n    PairingRecordSource {}" }),
+            ("a source by extension", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nextension MenuStateModel: PairingRecordSource {}" }),
+            ("a refining protocol", Self.mutate(sources, "PairingCeremony.swift") { $0 + "\nprotocol SpareSource: PairingRecordSource {}" }),
+            ("an alias of the database seam", Self.mutate(sources, sender) { $0 + "\ntypealias SpareDatabase = PairingRecordDatabase" }),
+            ("a second live database", Self.mutate(sources, sender) {
+                $0 + "\nprivate final class SpareDatabase: PairingRecordDatabase, @unchecked Sendable {}" }),
+            ("the live database held elsewhere", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz: (any PairingRecordDatabase)? = nil" }),
+            ("a second source built", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet zz = CloudKitPairingRecords(database: { nil })" }),
+            ("a second source by typed implicit init", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz: CloudKitPairingRecords = .init(database: { nil })" }),
+            ("the source's unapplied init", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet zz = CloudKitPairingRecords.init" }),
+            ("a second source through Self(", Self.mutate(sources, record) {
+                $0.replacingOccurrences(of: "    static func recordID(_ recordName: String) -> CKRecord.ID {\n",
+                                        with: "    static let spare = Self(database: { nil })\n"
+                                            + "    static func recordID(_ recordName: String) -> CKRecord.ID {\n") }),
+            ("a backticked second source", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz = `CloudKitPairingRecords`(database: { nil })" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.pairingTransportFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: the seam's own declaration and a protocol
+        // extension of it adopt nothing; words that only contain the pinned
+        // ones; `Self.` members; and a whole-line comment.
+        #expect(Self.pairingTransportFailures(Self.mutate(sources, "MenuStateModel.swift") {
+            $0 + "\nextension PairingRecordSource where Self: AnyObject {}"
+                + "\nlet spareCloudKitPairingRecordsCount = 1, foundation = 2, expectedNames = 3"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never NoPairingRecords(), never CloudKitPairingRecords(database:)")
+        }).isEmpty)
+        for probe in ["final class X:\n    PairingRecordSource {", "typealias S = Sendable &\n    PairingRecordSource"] {
+            #expect(Self.hits(Self.adoptionPattern("PairingRecordSource"), in: probe), "missed '\(probe)'")
+        }
     }
 
     // MARK: - 5. The S3 tests touch nothing live
