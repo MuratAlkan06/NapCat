@@ -15,10 +15,20 @@ import Testing
 /// So a container is constructed at exactly ONE site, in the one sanctioned
 /// file, inside `makeLiveStore()`, whose FIRST statement is the entitlement
 /// probe's guard — and nothing else can build the live store.
+///
+/// AMENDED (S-PAIR-C1.5, #170, the live pairing transport — deliberate): a
+/// SECOND container site joins the first, for the pairing record's live
+/// database, under the same rule — in the sanctioned file, inside its own
+/// factory (`makeLivePairingDatabase()`), whose first statement is the same
+/// probe guard; its live database is built only there, and the factory is
+/// called only by the pairing controller's wiring (`makeIfEnabled`).
 struct PhoneTransportStructureTests {
     static let cloudKitFile = "CloudKitMessageSender.swift"
     static let factoryHead = "static func makeLiveStore() -> (any CloudKitAlertStore)? {"
+    static let pairingFactoryHead = "static func makeLivePairingDatabase() -> (any PairingRecordDatabase)? {"
     static let probeGuard = "guard CloudKitEntitlementProbe.isEntitled else { return nil }"
+    /// The pairing factory's one caller: the controller's wiring.
+    static let pairingWiring = "source: CloudKitPairingRecords(database: { CloudKitMessageSender.makeLivePairingDatabase() }), keys: keys,"
 
     static func sources() throws -> [(name: String, text: String)] {
         try LidGuardStructureTests.swiftSources()
@@ -46,48 +56,62 @@ struct PhoneTransportStructureTests {
 
     static func containerConstructionFailures(_ sources: [(name: String, text: String)]) -> [String] {
         var failures: [String] = []
-        // 1. ONE construction site, repo wide, in the sanctioned file.
+        // 1. TWO construction sites (S-PAIR-C1.5), repo wide, both in the
+        //    sanctioned file.
         let sites = sources.flatMap { source in
             Array(repeating: source.name, count: occurrences(of: "CKContainer(", in: source.text))
         }
-        if sites != [cloudKitFile] {
-            failures.append("CKContainer( appears at \(sites) — expected exactly once, in \(cloudKitFile)")
+        if sites != [cloudKitFile, cloudKitFile] {
+            failures.append("CKContainer( appears at \(sites) — expected exactly twice, in \(cloudKitFile)")
         }
         // 2. No other way to reach a container.
         for (name, text) in sources {
             for token in ["CKContainer.default", "CKContainer.init", "CKContainer.self"] where text.contains(token) {
-                failures.append("'\(token)' in \(name) — the probe-gated factory is the only route to a container")
+                failures.append("'\(token)' in \(name) — the probe-gated factories are the only routes to a container")
             }
         }
-        // 3. That site sits inside makeLiveStore, behind the probe guard,
+        // 3. Each site sits inside its factory, behind the probe guard,
         //    which is the function's FIRST statement.
         let file = sources.first { $0.name == cloudKitFile }?.text ?? ""
-        if let factory = body(after: factoryHead, in: file) {
+        for (head, name) in [(factoryHead, "makeLiveStore"), (pairingFactoryHead, "makeLivePairingDatabase")] {
+            guard let factory = body(after: head, in: file) else {
+                failures.append("'\(head)' not found in \(cloudKitFile)")
+                continue
+            }
             let statements = factory.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             if statements.first != probeGuard {
-                failures.append("makeLiveStore must open with '\(probeGuard)' — found '\(statements.first ?? "")'")
+                failures.append("\(name) must open with '\(probeGuard)' — found '\(statements.first ?? "")'")
             }
             if occurrences(of: "CKContainer(", in: factory) != 1 {
-                failures.append("the one CKContainer( must be inside makeLiveStore")
+                failures.append("one CKContainer( must be inside \(name)")
             }
             if let guardAt = factory.range(of: probeGuard), let buildAt = factory.range(of: "CKContainer("),
                buildAt.lowerBound < guardAt.upperBound {
-                failures.append("the container is built before the probe guard")
+                failures.append("the container is built before the probe guard in \(name)")
             }
-        } else {
-            failures.append("'\(factoryHead)' not found in \(cloudKitFile)")
         }
-        // 4. The live store (which holds the container) is built only there,
-        //    and the factory is reached only from the sanctioned file.
-        let storeSites = sources.flatMap { source in
-            Array(repeating: source.name, count: occurrences(of: "LiveCloudKitAlertStore(", in: source.text))
-        }
-        if storeSites != [cloudKitFile] {
-            failures.append("LiveCloudKitAlertStore( appears at \(storeSites) — expected once, in makeLiveStore")
+        // 4. Each live database (which holds a container) is built only in
+        //    its factory; the alert store's factory is reached only from the
+        //    sanctioned file, the pairing one only by the controller's wiring.
+        for (type, factory) in [("LiveCloudKitAlertStore(", "makeLiveStore"),
+                                ("LivePairingRecordDatabase(", "makeLivePairingDatabase")] {
+            let storeSites = sources.flatMap { source in
+                Array(repeating: source.name, count: occurrences(of: type, in: source.text))
+            }
+            if storeSites != [cloudKitFile] {
+                failures.append("\(type) appears at \(storeSites) — expected once, in \(factory)")
+            }
         }
         for (name, text) in sources where name != cloudKitFile && text.contains("makeLiveStore(") {
             failures.append("makeLiveStore( called from \(name) — only the sender's default store factory may")
+        }
+        let pairingCalls = sources.flatMap { source in
+            Array(repeating: source.name, count: occurrences(of: "makeLivePairingDatabase(", in: source.text))
+        }
+        if pairingCalls.sorted() != [cloudKitFile, "PairingController.swift"]
+            || occurrences(of: pairingWiring, in: sources.first { $0.name == "PairingController.swift" }?.text ?? "") != 1 {
+            failures.append("makeLivePairingDatabase( at \(pairingCalls) — declared once, called once, by the pairing controller's wiring")
         }
         return failures
     }
@@ -131,6 +155,24 @@ struct PhoneTransportStructureTests {
             ("a site behind a URL", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + LidGuardStructureTests.codeOnly(
                     "\nlet u = \"https://www.icloud.com\"; let stray = CKContainer(identifier: \"x\")") }),
+            // S-PAIR-C1.5 (#170): the pairing database's factory, as the store's.
+            ("the pairing factory's guard removed", Self.mutate(sources, Self.cloudKitFile) {
+                $0.replacingOccurrences(of: Self.pairingFactoryHead + "\n        " + Self.probeGuard, with: Self.pairingFactoryHead) }),
+            ("the pairing factory's guard weakened", Self.mutate(sources, Self.cloudKitFile) {
+                $0.replacingOccurrences(of: Self.pairingFactoryHead + "\n        " + Self.probeGuard,
+                                        with: Self.pairingFactoryHead + "\n        guard true else { return nil }") }),
+            ("a third container, in a third factory", Self.mutate(sources, Self.cloudKitFile) {
+                $0 + "\nenum Spare {\n    static func make() -> CKContainer? {\n        " + Self.probeGuard
+                    + "\n        return CKContainer(identifier: \"x\")\n    }\n}" }),
+            ("the pairing database built elsewhere", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet stray = LivePairingRecordDatabase(container: c)" }),
+            ("the pairing factory called elsewhere", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet stray = CloudKitMessageSender.makeLivePairingDatabase()" }),
+            ("the pairing factory called twice in the wiring", Self.mutate(sources, "PairingController.swift") {
+                $0 + "\nlet stray = CloudKitMessageSender.makeLivePairingDatabase()" }),
+            ("the wiring hands the source another database", Self.mutate(sources, "PairingController.swift") {
+                $0.replacingOccurrences(of: Self.pairingWiring, with: "source: CloudKitPairingRecords(database: { spare }), keys: keys,"
+                                            + " _ = CloudKitMessageSender.makeLivePairingDatabase()") }),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.containerFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
@@ -171,10 +213,22 @@ struct PhoneTransportStructureTests {
     ///   the operation type, each pinned to its lines);
     /// - and no other database write, other database, or operation runner is
     ///   named at all.
+    ///
+    /// AMENDED (S-PAIR-C1.5, #170 — deliberate): the file also holds the
+    /// pairing record's live database, which runs the two operations the
+    /// record path builds for the pairing record and builds none itself. The
+    /// allow-list widens by the fetch operation's type alone; `add` gains
+    /// that database's two `database.add(operation)` lines (its `submit`s,
+    /// each named once here and called nowhere in this file); the private
+    /// database gains its one read; and `operation` and the modify type gain
+    /// those `submit` lines only.
     static let alertLaneIdentifiers: Set<String> = [
-        "CKAccountStatus", "CKContainer", "CKDatabase", "CKError", "CKErrorDomain", "CKModifyRecordsOperation",
-        "CKOperation", "CKPartialErrorsByItemIDKey", "CKRecord", "CKRecordZone",
+        "CKAccountStatus", "CKContainer", "CKDatabase", "CKError", "CKErrorDomain", "CKFetchRecordsOperation",
+        "CKModifyRecordsOperation", "CKOperation", "CKPartialErrorsByItemIDKey", "CKRecord", "CKRecordZone",
     ]
+    static let pairingSubmits = ["func submit(_ operation: CKFetchRecordsOperation) {": 1,
+                                 "func submit(_ operation: CKModifyRecordsOperation) {": 1]
+    static let pairingAdd = "database.add(operation)"
 
     static let alertLaneConstructions = [
         "CKRecord": "let record = CKRecord(recordType: AlertWire.recordType, recordID: recordID)",
@@ -187,24 +241,30 @@ struct PhoneTransportStructureTests {
 
     /// Each word, and every line of the alert-lane file allowed to name it.
     static let alertLaneSites: [(pattern: String, sites: [String: Int], rule: String)] = [
-        (#"\badd\b"#, [alertSave: 1], "the one database write adds the alert's own operation"),
+        (#"\badd\b"#, [alertSave: 1, pairingAdd: 2],
+         "the database writes add the alert's own operation, and the pairing database's two handed-in operations"),
         (#"\bsave\b"#, ["func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void)": 1,
                         "func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void) {": 1,
                         "store.save(payload) { [weak self] error in": 1,
                         "static let permissionText = \"iCloud denied permission to save the alert\"": 1],
          "save is the alert store's seam, never a database's"),
-        (#"\bprivateCloudDatabase\b"#, ["self.database = container.privateCloudDatabase": 1],
-         "the private database is reached once, by the live store"),
+        (#"\bprivateCloudDatabase\b"#, ["self.database = container.privateCloudDatabase": 2],
+         "the private database is reached once by each live database"),
         (#"\bmakeSaveOperation\b"#, ["static func makeSaveOperation(": 1, alertSave: 1],
          "the save operation goes only to the one add"),
         (#"\bmakeRecord\b"#, ["static func makeRecord(_ payload: CloudKitAlertPayload) -> CKRecord {": 1, alertOperation: 1],
          "the alert record goes only into the save operation"),
         (#"\boperation\b"#, [alertOperation: 1, "operation.savePolicy = .ifServerRecordUnchanged": 1, "operation.isAtomic = true": 1,
                              "operation.configuration = configuration": 1, "operation.perRecordSaveBlock = { _, result in": 1,
-                             "operation.modifyRecordsResultBlock = { result in": 1, "return operation": 1],
-         "the factory builds, configures and returns its operation, nothing else"),
-        (#"\bCKModifyRecordsOperation\b"#, [") -> CKModifyRecordsOperation {": 1, alertOperation: 1],
-         "the operation type is named by the factory and its one construction"),
+                             "operation.modifyRecordsResultBlock = { result in": 1, "return operation": 1]
+            .merging(pairingSubmits) { $0 + $1 }.merging([pairingAdd: 2]) { $0 + $1 },
+         "the factory builds, configures and returns its operation; the pairing database only adds what it is handed"),
+        (#"\bCKModifyRecordsOperation\b"#, [") -> CKModifyRecordsOperation {": 1, alertOperation: 1,
+                                            "func submit(_ operation: CKModifyRecordsOperation) {": 1],
+         "the operation type is named by the factory, its one construction and the pairing database's submit"),
+        (#"\bCKFetchRecordsOperation\b"#, ["func submit(_ operation: CKFetchRecordsOperation) {": 1],
+         "the fetch operation's type is named by the pairing database's submit alone: nothing here builds one"),
+        (#"\bsubmit\b"#, pairingSubmits, "the pairing database's two submits are declared here and called nowhere in this file"),
     ]
 
     /// Named nowhere in the alert-lane file: every other database write, the
@@ -284,6 +344,19 @@ struct PhoneTransportStructureTests {
                 $0 + "\nextension LiveCloudKitAlertStore { func f(_ i: CKRecord.ID) async throws { _ = try await database.deleteRecord(withID: i) } }" }),
             ("an allow-listed identifier dropped", Self.mutate(sources, file) {
                 $0.replacingOccurrences(of: "zoneID: CKRecordZone.ID.default)", with: "zoneID: .default)") }),
+            // S-PAIR-C1.5 (#170): the pairing database runs only what it is
+            // handed — no operation of its own, no alert, no third add.
+            ("the pairing database builds its own fetch", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { func f(_ i: CKRecord.ID) { submit(CKFetchRecordsOperation(recordIDs: [i])) } }" }),
+            ("the pairing database adds a hand-built save", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { func f(_ r: CKRecord) { "
+                    + "database.add(CKModifyRecordsOperation(recordsToSave: [r], recordIDsToDelete: nil)) } }" }),
+            ("the alert's operation handed to the pairing database", Self.mutate(sources, file) {
+                $0 + "\nextension CloudKitMessageSender { static func f(d: any PairingRecordDatabase, p: CloudKitAlertPayload) { "
+                    + "d.submit(makeSaveOperation(p) { _ in }) } }" }),
+            ("a third add of a handed-in operation", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { func again(_ operation: CKModifyRecordsOperation) {\n"
+                    + "        database.add(operation)\n    } }" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")

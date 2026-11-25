@@ -359,9 +359,12 @@ struct PairingStructureTests {
             failures.append("'\(token)' in \(controllerFile) — only the record's name is remembered")
         }
         let controller = text(controllerFile, in: sources)
+        // AMENDED (S-PAIR-C1.5, #170): and a remembered name of any other
+        // shape than a pairing record's is forgotten, unused.
         let remembered = ApprovalRecordPathStructureTests.siteTally(#"\bwriteRemembered\s*\("#, in: controller)
         if remembered != ["writeRemembered(name)": 1, "if gone, readRemembered() == name { writeRemembered(nil) }": 1,
-                          "if await source.delete(recordName: name), readRemembered() == name { writeRemembered(nil) }": 1] {
+                          "if await source.delete(recordName: name), readRemembered() == name { writeRemembered(nil) }": 1,
+                          "writeRemembered(nil)": 1] {
             failures.append("only the record's NAME is remembered, and forgotten once the record is gone: \(remembered)")
         }
         let logged = ApprovalRecordPathStructureTests.siteTally(#"\blogger\s*\."#, in: controller)
@@ -475,15 +478,21 @@ struct PairingStructureTests {
 
     // MARK: - 4. The C1 tests touch nothing live
 
+    /// AMENDED (S-PAIR-C1.5, #170): and the live transport's tests, which
+    /// play CloudKit's part on the real operations through a scripted
+    /// database — never the live one or its factory.
     static let testFiles = ["PairingCeremonyTests.swift", "PairingControllerTests.swift", "PairingPresentationTests.swift",
-                            "PairingResponseReaderTests.swift", "PairedKeyStoreTests.swift", "PairingFingerprintVectorTests.swift"]
+                            "PairingResponseReaderTests.swift", "PairedKeyStoreTests.swift", "PairingFingerprintVectorTests.swift",
+                            "CloudKitPairingRecordsTests.swift"]
     /// The live parts: the real keychain items and bindings (split so no
     /// test file spells them), the real defaults, the app's factories, the
     /// live tick, the system random source, the announcer, and CloudKit's
-    /// container and database.
+    /// container and database (and, since S-PAIR-C1.5, the live pairing
+    /// database and its factory).
     static let liveTokens = ["pairedPhone" + "Keychain", "login" + "Keychain", "security" + "Framework", "Sec" + "Item",
                              "UserDefaults.standard", "makeIfEnabled(", "TimerPairingTicker", "secureNonce", "Pairing" + "Announcer",
-                             "CKContainer", "CKDatabase", "SecRandomCopyBytes", "NSApp.", "makeKeyAndOrderFront"]
+                             "CKContainer", "CKDatabase", "SecRandomCopyBytes", "NSApp.", "makeKeyAndOrderFront",
+                             "makeLive" + "PairingDatabase", "Live" + "PairingRecordDatabase"]
 
     static func liveFailures(_ tests: Sources) -> [String] {
         tests.flatMap { name, text in
@@ -592,7 +601,9 @@ struct PairingStructureTests {
     /// whole nonce: `secureNonce`, whole, its size the wire's
     /// `pairingNonceByteCount` (M5 drew 2 random bytes into the 32). The
     /// app's one controller is `makeIfEnabled`'s, whole: the record source
-    /// `NoPairingRecords`, and no seam overridden there or by a changed
+    /// (since S-PAIR-C1.5 the live `CloudKitPairingRecords`; the C1 stub
+    /// `NoPairingRecords` is gone — ApprovalRecordPathStructureTests lock 10),
+    /// and no seam overridden there or by a changed
     /// default in the init (M6 passed a fixed nonce). And nothing else builds
     /// a controller, however it is spelled: `PairingController(` at its one
     /// site; every call of the init names `readRemembered` (it has no
@@ -610,11 +621,17 @@ struct PairingStructureTests {
         + " clock: @escaping () -> Date = Date.init, killSwitch: @escaping () -> Void,"
         + " audit: @escaping (PairingAudit) -> Void = PairingLog.record,"
         + " makeTicker: @escaping TickerFactory = { TimerPairingTicker($0) }) {"
+    /// AMENDED (S-PAIR-C1.5, #170): the record source is the live one
+    /// (`CloudKitPairingRecords` over the probe-gated live database; the C1
+    /// stub is gone), and the remembered name is read from the app's own
+    /// persistent domain only — never the defaults search list.
+    static let readRememberedLine = "readRemembered: { Self.rememberedName(in: defaults.persistentDomain(forName: domain)) },"
     static let makeIfEnabledBody = "static func makeIfEnabled(remoteApprovals: RemoteApprovalsController?, keys: PairedKeyStore,"
         + " defaults: UserDefaults) -> PairingController? {"
         + " guard let remoteApprovals else { return nil }"
-        + " return PairingController( source: NoPairingRecords(), keys: keys,"
-        + " readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },"
+        + " let domain = Bundle.main.bundleIdentifier ?? \"\""
+        + " return PairingController( " + PhoneTransportStructureTests.pairingWiring
+        + " " + readRememberedLine
         + " writeRemembered: { name in"
         + " if let name { defaults.set(name, forKey: DefaultsKey.pairingRecordToDelete) }"
         + " else { defaults.removeObject(forKey: DefaultsKey.pairingRecordToDelete) } },"
@@ -630,9 +647,18 @@ struct PairingStructureTests {
          "the app's controller is built by makeIfEnabled alone"),
         (#"\breadRemembered\s*:"#, [controllerFile: ["private let readRemembered: () -> String?": 1,
                                                      "readRemembered: @escaping () -> String?, writeRemembered: @escaping (String?) -> Void,": 1,
-                                                     "readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },": 1]],
+                                                     readRememberedLine: 1]],
          "every call of the controller's init names readRemembered — makeIfEnabled's is the one"),
+        // S-PAIR-C1.5 (#170): the app's own persistent domain is read once,
+        // by the remembered name's one reader.
+        (#"\bpersistentDomain\b"#, [controllerFile: [readRememberedLine: 1]],
+         "the remembered name is read from the app's own persistent domain, by makeIfEnabled alone"),
+        (#"\brememberedName\b"#, [controllerFile: [readRememberedLine: 1,
+                                                   "nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {": 1]],
+         "the remembered name has one reader, called by makeIfEnabled alone"),
     ]
+    static let rememberedNameBody = "nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {"
+        + " domain?[DefaultsKey.pairingRecordToDelete] as? String }"
     /// A dynamic type, taken anywhere in the four targets (none takes one).
     static let dynamicType = #"\btype\s*\(\s*of\s*:"#
 
@@ -645,7 +671,9 @@ struct PairingStructureTests {
         let flat = MenuPanelStructureTests.flat(controller)
         for (body, what) in [(secureNonceBody, "secureNonce fills the wire's whole nonce from SecRandomCopyBytes — exactly as pinned"),
                              (initHead, "the init's seams default to the live ones — exactly as pinned"),
-                             (makeIfEnabledBody, "makeIfEnabled builds the controller on NoPairingRecords, no seam overridden — exactly as pinned")]
+                             (makeIfEnabledBody, "makeIfEnabled builds the controller on the live record source, reading the "
+                                + "remembered name from the app's own domain, no seam overridden — exactly as pinned"),
+                             (rememberedNameBody, "the remembered name is the app domain's text, nothing else — exactly as pinned")]
         where ApprovalChannelStructureTests.count(body, in: flat) != 1 {
             failures.append(what)
         }
@@ -691,7 +719,22 @@ struct PairingStructureTests {
             ("the clock overridden in the wiring", Self.mutate(sources, controller) {
                 $0.replacingOccurrences(of: wiring, with: "            clock: { Date(timeIntervalSince1970: 0) },\n" + wiring) }),
             ("another record source in the wiring", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: "source: NoPairingRecords(), keys: keys,", with: "source: SpareRecords(), keys: keys,") }),
+                $0.replacingOccurrences(of: "source: CloudKitPairingRecords(database: { CloudKitMessageSender.makeLivePairingDatabase() }), keys: keys,",
+                                        with: "source: SpareRecords(), keys: keys,") }),
+            // S-PAIR-C1.5 (#170): the remembered name read through the
+            // defaults search list again, from another domain, or as more
+            // than text; and a second reader of the persistent domain.
+            ("the remembered name read through the search list", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: Self.readRememberedLine,
+                                        with: "readRemembered: { defaults.string(forKey: DefaultsKey.pairingRecordToDelete) },") }),
+            ("the remembered name read from the global domain", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: "let domain = Bundle.main.bundleIdentifier ?? \"\"",
+                                        with: "let domain = UserDefaults.globalDomain") }),
+            ("the remembered name taken in any form", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: "domain?[DefaultsKey.pairingRecordToDelete] as? String",
+                                        with: "domain?[DefaultsKey.pairingRecordToDelete].map { \"\\($0)\" }") }),
+            ("a second reader of the persistent domain", Self.mutate(sources, controller) {
+                $0 + "\nextension PairingController { static func zz(_ d: UserDefaults) -> Any? { d.persistentDomain(forName: \"x\") } }" }),
             ("a second controller in the app", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + "\nlet zz = PairingController(source: s, keys: k, readRemembered: r, writeRemembered: w, killSwitch: {})" }),
             ("a second controller, init-spelled", Self.mutate(sources, "MenuStateModel.swift") {
@@ -723,4 +766,5 @@ struct PairingStructureTests {
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never PairingController(…), never type(of: p).init, never secureNonce()")
         }).isEmpty)
     }
+
 }

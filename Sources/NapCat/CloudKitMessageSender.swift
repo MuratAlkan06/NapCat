@@ -54,6 +54,12 @@ import Security
 /// PER-LANE SINGLE FLIGHT, mirroring NtfyMessageSender: a busy lane refuses a
 /// second send inline; the other lane is unaffected.
 ///
+/// THE PAIRING RECORD'S DATABASE (S-PAIR-C1.5, #170): the container and the
+/// database stay in this file, so the pairing record's live database lives
+/// here too (`makeLivePairingDatabase`, behind the same probe). It runs only
+/// the two operations the record path builds for the pairing record (a
+/// fetch by ID, a deletion of that record) and builds nothing itself.
+///
 /// UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
 final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "phone")
@@ -104,6 +110,17 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
     static func makeLiveStore() -> (any CloudKitAlertStore)? {
         guard CloudKitEntitlementProbe.isEntitled else { return nil }
         return LiveCloudKitAlertStore(container: CKContainer(identifier: AlertWire.containerIdentifier))
+    }
+
+    /// S-PAIR-C1.5 (#170): the OTHER place a CKContainer is constructed —
+    /// for the pairing record's live database, behind the same probe guard
+    /// (an unentitled build gets nil: its ceremony shows its code and waits,
+    /// "iCloud is unreachable", until the window ends). Called only by the
+    /// pairing controller's record source, on its first fetch or deletion
+    /// (`PhoneTransportStructureTests` locks both factories alike).
+    static func makeLivePairingDatabase() -> (any PairingRecordDatabase)? {
+        guard CloudKitEntitlementProbe.isEntitled else { return nil }
+        return LivePairingRecordDatabase(container: CKContainer(identifier: ApprovalWire.containerIdentifier))
     }
 
     // MARK: - Record construction (pure — unit-tested without iCloud)
@@ -477,6 +494,30 @@ private final class LiveCloudKitAlertStore: CloudKitAlertStore, @unchecked Senda
 
     func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void) {
         database.add(CloudKitMessageSender.makeSaveOperation(payload, completion: completion))
+    }
+}
+
+/// The pairing record's live database (S-PAIR-C1.5, #170): the owner's
+/// private database, running the operations the record path's pairing
+/// source hands it — the fetch of one record by its ID, and the deletion of
+/// that one record — exactly as handed (each already configured there). It
+/// builds no record and no operation of its own, and nothing but that
+/// source holds it (lint-locked).
+private final class LivePairingRecordDatabase: PairingRecordDatabase, @unchecked Sendable {
+    private let container: CKContainer
+    private let database: CKDatabase
+
+    init(container: CKContainer) {
+        self.container = container
+        self.database = container.privateCloudDatabase
+    }
+
+    func submit(_ operation: CKFetchRecordsOperation) {
+        database.add(operation)
+    }
+
+    func submit(_ operation: CKModifyRecordsOperation) {
+        database.add(operation)
     }
 }
 

@@ -240,6 +240,19 @@ struct PairingControllerTests {
         #expect(nothing.records.deletions.isEmpty && nothing.audits.isEmpty, "no leftover, no deletion")
     }
 
+    /// S-PAIR-C1.5 (#170): a remembered name of any shape but a pairing
+    /// record's (64 lowercase hex digits) names no record this Mac made:
+    /// nothing is deleted by it, and it is forgotten.
+    @Test(arguments: CloudKitPairingRecordsTests.malformedNames)
+    func aLeftoverOfAnyOtherShapeIsNeverDeleted(_ name: String) async {
+        let world = PairingWorld()
+        world.remembered = name
+        world.controller.deleteRememberedRecord()
+        await world.controller.settle()
+        #expect(world.records.deletions.isEmpty, "nothing is deleted by it")
+        #expect(world.remembered == nil && world.audits == [.leftoverMalformed])
+    }
+
     /// A late answer to an earlier ceremony's fetch is dropped.
     @Test func aStaleFetchIsDropped() async throws {
         let world = PairingWorld(records: ScriptedPairingRecords([.found(.response(try PhoneHalf.response()))]))

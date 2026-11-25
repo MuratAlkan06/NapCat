@@ -268,7 +268,10 @@ struct CloudKitRecordResultTests {
         let code = try Self.cloudKitCode()
         let count = PhoneTransportStructureTests.occurrences
         #expect(count("database.add(CloudKitMessageSender.makeSaveOperation(payload, completion: completion))", code) == 1)
-        #expect(count("database.add(", code) == 1, "the live store adds exactly one kind of operation")
+        // S-PAIR-C1.5 (#170): the pairing record's live database adds the two
+        // operations it is handed, and nothing else (PhoneTransportStructureTests).
+        #expect(count("database.add(", code) == 3, "the live store adds exactly one kind of operation")
+        #expect(count("database.add(operation)", code) == 2, "the pairing database adds what it is handed, at its two submits")
         #expect(count("CKModifyRecordsOperation(", code) == 1, "one operation site: makeSaveOperation")
         #expect(count(".perRecordSaveBlock = ", code) == 1)
         #expect(count(".modifyRecordsResultBlock = ", code) == 1)
