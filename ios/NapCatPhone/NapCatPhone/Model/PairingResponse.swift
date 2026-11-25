@@ -58,11 +58,11 @@ enum PairingWriteOutcome: String, Equatable, Sendable {
 }
 
 /// THE seam behind the pairing's one write. Its record (a new record type
-/// in the approvals zone, every value but the version encrypted) is not
-/// in the Production schema yet: its CloudKit conformer arrives with the
-/// wire's record names, before the Mac's ceremony (slice S-PAIR-C1). Until
-/// then only the fixtures and the tests conform (lint-locked), so nothing
-/// a pairing does leaves the phone.
+/// in the approvals zone, every value but the version encrypted) is
+/// written by `CloudKitPairingResponseWriter` (slice S-PAIR-C1.5), create
+/// only, the one conformer outside the fixtures (lint-locked to its
+/// declaration's line). No app source builds that writer yet, so a fixture
+/// launch writes to a fixture and nothing a pairing does leaves the phone.
 protocol PairingResponseWriter: Sendable {
     func write(_ response: PairingResponse) async -> PairingWriteOutcome
 }

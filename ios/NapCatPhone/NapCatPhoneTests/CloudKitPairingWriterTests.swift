@@ -1,0 +1,189 @@
+import CloudKit
+import CryptoKit
+import Foundation
+import NapCatWire
+@testable import NapCatPhone
+import Testing
+
+/// F4 slice S-PAIR-C1.5 (#170): the pairing response the phone writes, and
+/// what each CloudKit answer to it means. The record is a plain value; the
+/// operation is the real one, its callbacks fired by hand
+/// (`ModifyOperationScript`) through the decisions' scripted seam. Nothing
+/// reaches iCloud.
+@Suite struct CloudKitPairingWriterTests {
+    typealias Field = ApprovalWire.PairingResponseField
+    static let nonce = Array((0..<32).map { UInt8(($0 * 5 + 3) & 0xff) })
+    static let recordName = ApprovalSigning.pairingRecordNameInput(nonce: nonce)
+        .flatMap { ApprovalSigning.pairingRecordName(digest: Array(SHA256.hash(data: $0))) }!
+    static let publicKey = Data([0x04] + (1...64).map { UInt8($0) })
+    static let confirmation = Data((0..<32).map { UInt8(0xa0 + $0) })
+    static let proof = Data((0..<64).map { UInt8(0x40 ^ $0) })
+    static let response = PairingResponse(recordName: recordName, wireVersion: ApprovalWire.wireVersion, publicKey: publicKey,
+                                          confirmation: confirmation, proof: proof)!
+
+    static func ck(_ code: CKError.Code, _ underlying: NSError? = nil) -> NSError {
+        ModifyOperationScript.ck(code, underlying: underlying)
+    }
+
+    // MARK: The record
+
+    /// The wire's PairingResponse, in the approvals zone, named by the
+    /// response's own record name: the key, the confirmation MAC and the
+    /// proof encrypted, the version alone in the clear, nothing else.
+    @Test func theRecordIsTheWiresPairingResponse() {
+        let record = CloudKitAlertSource.makePairingResponseRecord(Self.response)
+        #expect(record.recordType == ApprovalWire.RecordType.pairingResponse.rawValue)
+        #expect(record.recordID.zoneID.zoneName == ApprovalWire.zoneName)
+        #expect(record.recordID.zoneID.ownerName == CKCurrentUserDefaultName)
+        #expect(record.recordID.recordName == Self.recordName && Self.recordName.utf8.count == 64)
+        let encrypted = Set(record.encryptedValues.allKeys())
+        let plain = Set(record.allKeys()).subtracting(encrypted)
+        #expect(encrypted == [Field.publicKey.rawValue, Field.confirmation.rawValue, Field.proof.rawValue])
+        #expect(encrypted == Set(ApprovalWire.encryptedPairingResponseFields.map(\.rawValue)))
+        #expect(plain == [Field.wireVersion.rawValue])
+        #expect(Set(record.allKeys()) == Set(Field.allCases.map(\.rawValue)), "every wire field, nothing else")
+        #expect(record[Field.wireVersion.rawValue] as? Int == ApprovalWire.wireVersion)
+        #expect(record.encryptedValues[Field.publicKey.rawValue] as? Data == Self.publicKey)
+        #expect(record.encryptedValues[Field.confirmation.rawValue] as? Data == Self.confirmation)
+        #expect(record.encryptedValues[Field.proof.rawValue] as? Data == Self.proof)
+    }
+
+    /// One record per code: another nonce names another record, and none
+    /// is a prompt's or a decision's.
+    @Test func eachCodeHasItsOwnRecord() throws {
+        let other = Array(Self.nonce.reversed())
+        let otherName = try #require(ApprovalSigning.pairingRecordNameInput(nonce: other)
+            .flatMap { ApprovalSigning.pairingRecordName(digest: Array(SHA256.hash(data: $0))) })
+        let otherResponse = try #require(PairingResponse(recordName: otherName, wireVersion: ApprovalWire.wireVersion,
+                                                         publicKey: Self.publicKey, confirmation: Self.confirmation, proof: Self.proof))
+        #expect(CloudKitAlertSource.pairingResponseRecordID(otherResponse) != CloudKitAlertSource.pairingResponseRecordID(Self.response))
+        #expect(PromptID(hex: Self.recordName) == nil, "a pairing record is never named as a prompt")
+        #expect(!Self.recordName.hasSuffix("-decision"))
+    }
+
+    // MARK: Create only
+
+    /// A new record only: a response saved already is never overwritten,
+    /// and the write names nothing to delete.
+    @Test func theSaveIsCreateOnly() async throws {
+        let database = ScriptedApprovalDatabase(ModifyOperationScript([.saved(0), .batchSucceeded]))
+        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .saved)
+        let operation = try #require(database.submitted.first)
+        #expect(database.submitted.count == 1, "one write, one operation")
+        #expect(operation.savePolicy == .ifServerRecordUnchanged)
+        #expect(operation.isAtomic)
+        #expect(operation.configuration.qualityOfService == .userInitiated)
+        #expect(operation.recordsToSave?.map(\.recordID) == [CloudKitAlertSource.pairingResponseRecordID(Self.response)])
+        #expect(operation.recordsToSave?.first?.recordChangeTag == nil, "a new record carries no change tag")
+        #expect(operation.recordIDsToDelete?.isEmpty ?? true)
+    }
+
+    /// A conflict is `alreadyAnswered`, decided by the error's code alone:
+    /// the record the server holds (handed back inside the error) is never
+    /// read, adopted or shown, whatever it carries.
+    @Test func aConflictNeverReadsTheRecordTheServerHolds() async {
+        let theirs = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue,
+                              recordID: CloudKitAlertSource.pairingResponseRecordID(Self.response))
+        theirs.encryptedValues[Field.publicKey.rawValue] = Data([0x04] + Array(repeating: UInt8(0xee), count: 64)) as NSData
+        let conflict = NSError(domain: CKErrorDomain, code: CKError.Code.serverRecordChanged.rawValue,
+                               userInfo: [CKRecordChangedErrorServerRecordKey: theirs,
+                                          CKRecordChangedErrorAncestorRecordKey: theirs,
+                                          CKRecordChangedErrorClientRecordKey: theirs])
+        for steps: [ModifyOperationScript.Step] in [[.saveFailed(0, conflict), .batchSucceeded],
+                                                    [.saveFailed(0, conflict), .batchFailed(Self.ck(.partialFailure))],
+                                                    [.batchFailed(conflict)]] {
+            let database = ScriptedApprovalDatabase(ModifyOperationScript(steps))
+            #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .alreadyAnswered)
+        }
+    }
+
+    // MARK: Each record's own result counts
+
+    struct Row: CustomTestStringConvertible, Sendable {
+        let name: String
+        let steps: [ModifyOperationScript.Step]
+        let expected: PairingWriteOutcome
+        var testDescription: String { name }
+    }
+
+    static let rows: [Row] = [
+        Row(name: "saved + batch success", steps: [.saved(0), .batchSucceeded], expected: .saved),
+        Row(name: "already answered + batch success", steps: [.saveFailed(0, ck(.serverRecordChanged)), .batchSucceeded],
+            expected: .alreadyAnswered),
+        Row(name: "already answered at the batch", steps: [.batchFailed(ck(.serverRecordChanged))], expected: .alreadyAnswered),
+        Row(name: "refused (quotaExceeded) + batch success", steps: [.saveFailed(0, ck(.quotaExceeded)), .batchSucceeded],
+            expected: .failed),
+        Row(name: "refused (zoneNotFound) + batch success", steps: [.saveFailed(0, ck(.zoneNotFound)), .batchSucceeded],
+            expected: .failed),
+        Row(name: "refused (unknown record type) + batch success", steps: [.saveFailed(0, ck(.serverRejectedRequest)), .batchSucceeded],
+            expected: .failed),
+        Row(name: "batch success with no per-record result", steps: [.batchSucceeded], expected: .unconfirmed),
+        Row(name: "batch failure (networkUnavailable)", steps: [.batchFailed(ck(.networkUnavailable))], expected: .failed),
+        Row(name: "batch failure (notAuthenticated)", steps: [.batchFailed(ck(.notAuthenticated))], expected: .failed),
+        Row(name: "batch failure (networkFailure over a timeout)",
+            steps: [.batchFailed(ck(.networkFailure, ModifyOperationScript.url(.timedOut)))], expected: .unconfirmed),
+        Row(name: "batch failure (serverResponseLost)", steps: [.batchFailed(ck(.serverResponseLost))], expected: .unconfirmed),
+        Row(name: "saved + batch failure (internalError)", steps: [.saved(0), .batchFailed(ck(.internalError))],
+            expected: .unconfirmed),
+        Row(name: "batch failure from another domain", steps: [.batchFailed(NSError(domain: "x", code: 1))],
+            expected: .unconfirmed),
+    ]
+
+    @Test(arguments: rows)
+    func aWriteHonoursTheRecordsOwnResult(_ row: Row) async {
+        let database = ScriptedApprovalDatabase(ModifyOperationScript(row.steps))
+        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == row.expected)
+    }
+
+    /// The pairing outcome is the decision's table, case for case.
+    @Test(arguments: [(DecisionWriteOutcome.saved, PairingWriteOutcome.saved), (.alreadyAnswered, .alreadyAnswered),
+                      (.failed, .failed), (.unconfirmed, .unconfirmed)])
+    func theOutcomeIsTheDecisionsTable(_ decision: DecisionWriteOutcome, _ pairing: PairingWriteOutcome) {
+        #expect(CloudKitAlertSource.pairingOutcome(decision) == pairing)
+    }
+
+    /// The outcome is decided once, on the first batch result.
+    @Test func aSecondBatchResultChangesNothing() async {
+        let database = ScriptedApprovalDatabase(ModifyOperationScript([.saved(0), .batchSucceeded,
+                                                                       .batchFailed(Self.ck(.serverRecordChanged))]))
+        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .saved)
+    }
+
+    // MARK: Through the ceremony
+
+    /// The whole phone half over the real record and operation: the
+    /// ceremony's one response becomes the one record, field for field, and
+    /// CloudKit's answer decides what the phone shows. On a conflict the
+    /// pairing fails loudly and shows no code at all.
+    @MainActor
+    @Test(arguments: [PairingWriteOutcome.saved, .alreadyAnswered])
+    func theCeremonysResponseTravelsTheRecordPath(_ outcome: PairingWriteOutcome) async throws {
+        let steps: [ModifyOperationScript.Step] = outcome == .saved
+            ? [.saved(0), .batchSucceeded] : [.saveFailed(0, Self.ck(.serverRecordChanged)), .batchSucceeded]
+        let database = ScriptedApprovalDatabase(ModifyOperationScript(steps))
+        let clock = TestClock()
+        let keys = PhoneKeyringTests.World()
+        let ceremony = PairingCeremony(keyring: keys.keyring, biometrics: ScriptedBiometricGate(),
+                                       writer: CloudKitPairingResponseWriter(database: database), clock: { clock.now })
+        await ceremony.scanned(try #require(ApprovalSigning.pairingPayload(nonce: Self.nonce)))
+        try #require(database.submitted.count == 1)
+        let record = try #require(database.submitted.first?.recordsToSave?.first)
+        #expect(record.recordID.recordName == Self.recordName, "named from the scanned code's nonce")
+        let publicKey = try #require(record.encryptedValues[Field.publicKey.rawValue] as? Data)
+        let mac = try #require(record.encryptedValues[Field.confirmation.rawValue] as? Data)
+        let proof = try #require(record.encryptedValues[Field.proof.rawValue] as? Data)
+        let confirmation = try #require(ApprovalSigning.pairingConfirmationMessage(wireVersion: ApprovalWire.wireVersion,
+                                                                                    publicKey: Array(publicKey)))
+        #expect(HMAC<SHA256>.isValidAuthenticationCode(mac, authenticating: confirmation, using: SymmetricKey(data: Self.nonce)))
+        let proofMessage = try #require(ApprovalSigning.pairingProofMessage(nonce: Self.nonce, publicKey: Array(publicKey)))
+        #expect(SignatureCheck.verifies(proof, over: proofMessage, by: Array(publicKey)))
+        switch outcome {
+        case .saved:
+            let fingerprint = try #require(KeyFingerprint(publicKey: Array(publicKey)))
+            #expect(ceremony.phase == .waiting(fingerprint, until: clock.now.addingTimeInterval(PairingCeremony.window)))
+        default:
+            #expect(ceremony.phase == .failed(.alreadyAnswered))
+            #expect(keys.provisional() == nil, "the new key is discarded")
+        }
+    }
+}

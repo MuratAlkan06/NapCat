@@ -412,6 +412,14 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// writer only in a type nothing inherits from
     /// (`CloudKitStructureTests.fixtureConformerFailures`) — a live subclass
     /// of a fixture class was a live writer with no seam in its clause.
+    ///
+    /// AMENDED (S-PAIR-C1.5, #170): the one live conformer, the CloudKit
+    /// writer, is admitted by its declaration's exact line; how it may be
+    /// built (by no app source yet, never unnamed) is
+    /// `RecordPathStructureTests`' locks 2 and 8.
+    static let liveWriterAdoption = ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1]
+    static let liveWriterSites = ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1]
+
     static func ceremonyFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         let file = CloudKitStructureTests.codeOnly(app.first { $0.path == ceremonyFile }?.text ?? "")
@@ -469,18 +477,32 @@ final class RecordingPairingWriter: PairingResponseWriter {
         }
         // #168 (the PR #167 review's (c)): and every other name for the
         // writer seam, declared in any file, Fixtures/ included.
+        // AMENDED (S-PAIR-C1.5, #170): the record path exists, and outside
+        // Fixtures/ the seam is adopted by its CloudKit writer alone, on its
+        // declaration's EXACT line (`liveWriterAdoption`) — a second adopter,
+        // a changed line, or a clause moved onto the next line is off the pin.
         let conformances = CloudKitStructureTests.seamNames("PairingResponseWriter", in: app).sorted()
             .map(CloudKitStructureTests.adoptionPattern)
         for (path, text) in app {
             let code = CloudKitStructureTests.codeOnly(text)
             let fixture = path.hasPrefix("\(appDir)/Fixtures/")
-            if !fixture, CloudKitStructureTests.constructorScanCopies(code).contains(where: { copy in
-                conformances.contains { CloudKitStructureTests.hits($0, in: copy) } }) {
-                failures.append("\(path) conforms to the pairing writer — only fixtures, until the record path exists")
+            let allowed = path == CloudKitStructureTests.cloudKitFile ? Self.liveWriterAdoption : [:]
+            for copy in CloudKitStructureTests.constructorScanCopies(code) where !fixture {
+                let tally = conformances.reduce(into: [String: Int]()) { tally, pattern in
+                    tally.merge(CloudKitStructureTests.siteTally(pattern, in: copy)) { $0 + $1 }
+                }
+                if tally != allowed {
+                    failures.append("\(path) conforms to the pairing writer off its pin — outside Fixtures/ only the "
+                                    + "CloudKit writer's declaration may: \(tally.sorted { $0.key < $1.key })")
+                }
             }
             if !fixture, CloudKitStructureTests.hits(#"\bPairingCeremony\s*(?:\.\s*init\s*)?\("#, in: code) {
                 failures.append("\(path) builds a ceremony — only the fixture launch, in this slice")
             }
+        }
+        let cloudKit = CloudKitStructureTests.codeOnly(app.first { $0.path == CloudKitStructureTests.cloudKitFile }?.text ?? "")
+        if CloudKitStructureTests.siteTally(#"\bCloudKitPairingResponseWriter\b"#, in: cloudKit) != Self.liveWriterSites {
+            failures.append("the CloudKit pairing writer is declared once, in the CloudKit file, and named nowhere else there")
         }
         // The S-PAIR-C1 security review's R2: and no fixture conformer a live
         // class could inherit the writer from.
@@ -598,6 +620,25 @@ final class RecordingPairingWriter: PairingResponseWriter {
                 $0 + "\ntypealias SpareSeam = PairingResponseWriter\nclass SpareBase:\n    SpareSeam, @unchecked Sendable {}" }),
             ("a fixture class final in a block comment only", mutate(fixture) {
                 $0 + "\n/* final */ class SpareBase: PairingResponseWriter, @unchecked Sendable {}" }),
+            // S-PAIR-C1.5 (#170): the live writer's exact-line pin — a second
+            // live writer beside it, its pinned line copied, its clause moved
+            // onto the next line, the seam handed on by an extension there,
+            // the writer turned into a class, and the pinned line elsewhere.
+            ("a second live writer in the CloudKit file", mutate(CloudKitStructureTests.cloudKitFile) {
+                $0 + "\nstruct SpareCloudWriter: PairingResponseWriter {\n    func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }),
+            ("the pinned line twice", mutate(CloudKitStructureTests.cloudKitFile) {
+                $0 + "\nenum Spare {\n" + Self.liveWriterAdoption.keys.first! + "\n        let database: any CloudKitApprovalDatabase\n    }\n}" }),
+            ("the live writer's clause on the next line", mutate(CloudKitStructureTests.cloudKitFile) {
+                $0.replacingOccurrences(of: "struct CloudKitPairingResponseWriter: PairingResponseWriter {",
+                                        with: "struct CloudKitPairingResponseWriter:\n    PairingResponseWriter {") }),
+            ("the seam handed on by an extension in the CloudKit file", mutate(CloudKitStructureTests.cloudKitFile) {
+                $0 + "\nextension CloudKitDecisionWriter: PairingResponseWriter {\n"
+                    + "    func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }),
+            ("the live writer a class", mutate(CloudKitStructureTests.cloudKitFile) {
+                $0.replacingOccurrences(of: "struct CloudKitPairingResponseWriter: PairingResponseWriter {",
+                                        with: "class CloudKitPairingResponseWriter: PairingResponseWriter {") }),
+            ("the pinned line in another file", mutate(inbox) {
+                $0 + "\n" + Self.liveWriterAdoption.keys.first! + "\n    let database: any CloudKitApprovalDatabase\n}" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

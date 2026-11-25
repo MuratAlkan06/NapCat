@@ -50,6 +50,14 @@ import Testing
 /// unnamed (no `Self(`, no operator declaration), and 9, no unsafe-memory
 /// API (the Mac's lock 9b families).
 ///
+/// AMENDED (S-PAIR-C1.5, #170, the live pairing transport): the CloudKit
+/// file gains the pairing response's writer. Lock 2 builds it by no app
+/// source either (and lock 8 never unnamed); lock 5 counts its record and a
+/// twin of lock 5 pins its fields; lock 6 counts its create-only operation
+/// beside the decision's; the new lock 6b pins its factory whole, its one
+/// write, its outcome table, and bans every name for the record a conflict
+/// hands back; lock 7 pins each record and operation construction's line.
+///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
 /// whole-line comments only (trailing comments stay in, so it can only
@@ -111,6 +119,11 @@ import Testing
     // MARK: 2. No live decision writer
 
     static let writerType = "CloudKitDecisionWriter"
+    /// AMENDED (S-PAIR-C1.5, #170): the pairing response's CloudKit writer
+    /// joins it, under the same rule — built by no app source in this slice
+    /// (by name or not: the implicit-init ban below, lock 8's unnamed
+    /// constructions and dynamic types), over the same unconformed seam.
+    static let pairingWriterType = "CloudKitPairingResponseWriter"
     /// AMENDED (#166): a clause on any number of lines, a refining protocol
     /// or a typealias (the one-line scan missed all three).
     static let seamConformance = CloudKitStructureTests.adoptionPattern("CloudKitApprovalDatabase")
@@ -121,6 +134,9 @@ import Testing
             let code = CloudKitStructureTests.codeOnly(text)
             if constructionSpelling(code).contains(writerType + "(") {
                 failures.append("\(path) builds the CloudKit decision writer — in this slice only tests may")
+            }
+            if constructionSpelling(code).contains(pairingWriterType + "(") {
+                failures.append("\(path) builds the CloudKit pairing writer — in this slice only tests may")
             }
             if code.range(of: seamConformance, options: .regularExpression) != nil {
                 failures.append("\(path) conforms to CloudKitApprovalDatabase — in this slice only test fakes may")
@@ -149,11 +165,24 @@ import Testing
         #expect(Self.liveWriterFailuresInEveryCopy(app).isEmpty, "\(Self.liveWriterFailuresInEveryCopy(app))")
         let cloudKit = CloudKitStructureTests.codeOnly(app.first { $0.path == Self.cloudKitFile }?.text ?? "")
         for declaration in ["struct CloudKitDecisionWriter: DecisionWriter", "protocol CloudKitApprovalDatabase: Sendable",
-                            "func submit(_ operation: CKModifyRecordsOperation)"] {
+                            "func submit(_ operation: CKModifyRecordsOperation)",
+                            "struct CloudKitPairingResponseWriter: PairingResponseWriter"] {
             #expect(cloudKit.contains(declaration), "vacuity: '\(declaration)' is what the lock looks for")
         }
         let feed = "\(Self.appDir)/Model/AlertFeed.swift"
+        let fixturePairing = "\(Self.appDir)/Fixtures/FixturePairing.swift"
         let mutants: [(String, [Source])] = [
+            // S-PAIR-C1.5 (#170): the pairing writer built by an app source,
+            // however spelled — a fixture included (a fixture launch writes
+            // to a fixture).
+            ("the pairing writer built by the fixture", Self.mutate(app, fixturePairing) {
+                $0 + "\nfunc spare(d: any CloudKitApprovalDatabase) -> any PairingResponseWriter { CloudKitPairingResponseWriter(database: d) }" }),
+            ("the pairing writer, init-spelled", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitPairingResponseWriter.init(database: d)" }),
+            ("the pairing writer by typed implicit init", Self.mutate(app, feed) {
+                $0 + "\nlet w: CloudKitPairingResponseWriter = .init(database: d)" }),
+            ("a backticked pairing writer", Self.mutate(app, feed) { $0 + "\nlet w = `CloudKitPairingResponseWriter`(database: d)" }),
+            ("a comment-split pairing writer", Self.mutate(app, Self.cloudKitFile) {
+                $0 + "\nlet w = CloudKitPairingResponseWriter/* x */(database: d)" }),
             ("the feed builds it", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitDecisionWriter(database: d)" }),
             ("the init spelling", Self.mutate(app, feed) { $0 + "\nlet w = CloudKitDecisionWriter.init(database: d)" }),
             ("a spaced call", Self.mutate(app, Self.cloudKitFile) { $0 + "\nlet w = CloudKitDecisionWriter (database: d)" }),
@@ -199,7 +228,8 @@ import Testing
     /// The S3 test files that run anything (this file only reads sources).
     static let s3TestFiles = ["ApprovalRecordFakes.swift", "RequestInboxTests.swift", "CloudKitRequestRecordTests.swift",
                               "RequestAnsweringTests.swift", "PendingRequestScreenTests.swift",
-                              "CloudKitDecisionWriterTests.swift", "VisibleWhitespaceTests.swift"]
+                              "CloudKitDecisionWriterTests.swift", "VisibleWhitespaceTests.swift",
+                              "CloudKitPairingWriterTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
     /// notification center and the real biometric prompt. AMENDED (#166):
@@ -430,8 +460,11 @@ import Testing
     static func decisionSchemaFailures(_ file: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(file)
         var failures: [String] = []
-        if CloudKitStructureTests.occurrences(of: "CKRecord(recordType:", in: code) != 1 {
-            failures.append("a decision record must be constructed in exactly one place (makeDecisionRecord)")
+        // AMENDED (S-PAIR-C1.5, #170): two records, each built in one place —
+        // the decision and the pairing response (lock 7 pins each line).
+        if CloudKitStructureTests.occurrences(of: "CKRecord(recordType:", in: code) != 2 {
+            failures.append("a decision record and a pairing response must each be constructed in exactly one place "
+                            + "(makeDecisionRecord, makePairingResponseRecord)")
         }
         for token in ["setValuesForKeys", "setObject(", "setValue(", "CKAsset", "CKRecord.Reference"] where code.contains(token) {
             failures.append("'\(token)' — decision fields are written only through the ApprovalWire field keys")
@@ -472,6 +505,60 @@ import Testing
         }
     }
 
+    /// S-PAIR-C1.5 (#170): the pairing response is written only through the
+    /// wire, as the decision is — every `ApprovalWire.PairingResponseField`,
+    /// encrypted exactly as `encryptedPairingResponseFields` says (every
+    /// field but the version), each value the response's own, in the
+    /// approvals zone under the response's own record name.
+    static let pairingRecordShape = "let record = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue, "
+        + "recordID: pairingResponseRecordID(response)) for field in ApprovalWire.PairingResponseField.allCases { "
+        + "let value = pairingResponseValue(field, of: response) if ApprovalWire.encryptedPairingResponseFields.contains(field) { "
+        + "record.encryptedValues[field.rawValue] = value } else { record[field.rawValue] = value } } return record"
+    static let pairingValues = ["case .wireVersion: return response.wireVersion as NSNumber",
+                                "case .publicKey: return response.publicKey as NSData",
+                                "case .confirmation: return response.confirmation as NSData",
+                                "case .proof: return response.proof as NSData"]
+    static let pairingRecordID = "CKRecord.ID(recordName: response.recordName, zoneID: approvalsZoneID)"
+
+    static func pairingSchemaFailures(_ file: String) -> [String] {
+        let flat = SettingsReachabilityTests.flat(CloudKitStructureTests.codeOnly(file))
+        var failures: [String] = []
+        if !flat.contains(pairingRecordShape) {
+            failures.append("the pairing response's fields must be the wire's, encrypted as the wire's table says")
+        }
+        for value in pairingValues where CloudKitStructureTests.occurrences(of: value, in: flat) != 1 {
+            failures.append("the pairing response carries its own value, once: '\(value)'")
+        }
+        if CloudKitStructureTests.occurrences(of: pairingRecordID, in: flat) != 1 {
+            failures.append("the pairing response is named by its own record name, in the approvals zone")
+        }
+        return failures
+    }
+
+    @Test func thePairingResponseIsWrittenOnlyThroughTheWire() throws {
+        let file = try #require(try Self.app().first { $0.path == Self.cloudKitFile }).text
+        #expect(Self.pairingSchemaFailures(file).isEmpty, "\(Self.pairingSchemaFailures(file))")
+        let mutants: [(String, String)] = [
+            ("everything in the clear", file.replacingOccurrences(of: "if ApprovalWire.encryptedPairingResponseFields.contains(field) {",
+                                                                  with: "if false {")),
+            ("a proof made up", file.replacingOccurrences(of: "case .proof: return response.proof as NSData",
+                                                          with: "case .proof: return Data(count: 64) as NSData")),
+            ("the key from elsewhere", file.replacingOccurrences(of: "case .publicKey: return response.publicKey as NSData",
+                                                                 with: "case .publicKey: return spareKey as NSData")),
+            ("the default zone", file.replacingOccurrences(of: Self.pairingRecordID,
+                                                           with: "CKRecord.ID(recordName: response.recordName, zoneID: .default)")),
+            ("a name of its own", file.replacingOccurrences(of: Self.pairingRecordID,
+                                                            with: "CKRecord.ID(recordName: UUID().uuidString, zoneID: approvalsZoneID)")),
+            ("a field skipped", file.replacingOccurrences(of: "            let value = pairingResponseValue(field, of: response)\n",
+                                                          with: "            guard field != .proof else { continue }\n"
+                                                              + "            let value = pairingResponseValue(field, of: response)\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != file, "canary '\(name)' did not apply")
+            #expect(!Self.pairingSchemaFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: 6. The decision operation runs only through the seam
 
     /// A record operation run with no database set targets the user's
@@ -507,17 +594,23 @@ import Testing
     /// writer.
     static let decisionOperation = "let operation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)"
     static let seamRequirement = "func submit(_ operation: CKModifyRecordsOperation)"
+    /// AMENDED (S-PAIR-C1.5, #170): the pairing response's factory builds
+    /// the same create-only operation, line for line (its body is pinned
+    /// whole by `pairingRunFailures`), so each line counts twice; its writer
+    /// is the seam's one other caller.
+    static let pairingSubmit = "database.submit(CloudKitAlertSource.makePairingResponseSaveOperation(record) "
+        + "{ continuation.resume(returning: $0) })"
     static let operationSites: [(pattern: String, sites: [String: Int], rule: String)] = [
-        (#"\boperation\b"#, [seamRequirement: 1, decisionOperation: 1, "operation.savePolicy = .ifServerRecordUnchanged": 1,
-                             "operation.isAtomic = true": 1, "operation.configuration = configuration": 1,
-                             "operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }": 1,
-                             "operation.modifyRecordsResultBlock = { batch in": 1, "return operation": 1],
-         "the factory builds, configures and returns its operation, nothing else"),
-        (#"\bCKModifyRecordsOperation\b"#, [seamRequirement: 1, ") -> CKModifyRecordsOperation {": 1, decisionOperation: 1],
-         "the operation type is named by the seam, the factory and the one construction"),
+        (#"\boperation\b"#, [seamRequirement: 1, decisionOperation: 2, "operation.savePolicy = .ifServerRecordUnchanged": 2,
+                             "operation.isAtomic = true": 2, "operation.configuration = configuration": 2,
+                             "operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }": 2,
+                             "operation.modifyRecordsResultBlock = { batch in": 2, "return operation": 2],
+         "the two factories build, configure and return their operations, nothing else"),
+        (#"\bCKModifyRecordsOperation\b"#, [seamRequirement: 1, ") -> CKModifyRecordsOperation {": 2, decisionOperation: 2],
+         "the operation type is named by the seam, the two factories and their constructions"),
         (#"\bsubmit\b"#, [seamRequirement: 1, "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) "
-                          + "{ continuation.resume(returning: $0) })": 1],
-         "the seam is named only by its requirement and the writer"),
+                          + "{ continuation.resume(returning: $0) })": 1, pairingSubmit: 1],
+         "the seam is named only by its requirement and the two writers"),
     ]
 
     static func decisionRunFailures(_ app: [Source]) -> [String] {
@@ -618,6 +711,147 @@ import Testing
         #expect(app.contains { $0.text.contains("await feed.start()") }, "vacuity: a legitimate start() lives outside the CloudKit file")
     }
 
+    // MARK: 6b. The pairing response is created only through the seam (S-PAIR-C1.5, #170)
+
+    /// The pairing response's record and its save are each reached once, in
+    /// `CloudKitPairingResponseWriter.write`, whose body is exactly "build
+    /// the record, hand its operation to the seam" (the ceremony's one write
+    /// stays the ceremony's: `PairingCeremonyTests`). The save is CREATE
+    /// ONLY, its factory pinned whole: a new record under
+    /// `.ifServerRecordUnchanged`, so a response saved already is refused,
+    /// never overwritten; the saved record is dropped unread; the outcome is
+    /// the decision's table, case for case. And nothing in the CloudKit file
+    /// names what a conflict hands back — the record the server holds and
+    /// its relatives — so an existing response is never read or adopted.
+    static let pairingFactories = ["makePairingResponseRecord", "makePairingResponseSaveOperation"]
+    static let pairingWriterHead = "struct CloudKitPairingResponseWriter: PairingResponseWriter {"
+    static let pairingWriteHead = "func write(_ response: PairingResponse) async -> PairingWriteOutcome {"
+    static let pairingWriteBody = "let record = CloudKitAlertSource.makePairingResponseRecord(response) "
+        + "return await withCheckedContinuation { continuation in " + pairingSubmit + " }"
+    static let pairingSaveHead = "static func makePairingResponseSaveOperation("
+    static let pairingSaveBody = "_ record: CKRecord, completion: @escaping @Sendable (PairingWriteOutcome) -> Void ) "
+        + "-> CKModifyRecordsOperation { " + decisionOperation + " operation.savePolicy = .ifServerRecordUnchanged "
+        + "operation.isAtomic = true let configuration = CKOperation.Configuration() "
+        + "configuration.qualityOfService = .userInitiated configuration.timeoutIntervalForRequest = 30 "
+        + "configuration.timeoutIntervalForResource = 60 operation.configuration = configuration "
+        + "let saved = CreatedRecordResult() operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) } "
+        + "operation.modifyRecordsResultBlock = { batch in guard let outcome = saved.finish(batch: batch).map(pairingOutcome) "
+        + "else { return } if outcome != .saved { logger.error(\"pairing response not saved "
+        + "(\\(outcome.rawValue, privacy: .public))\") } completion(outcome) } return operation"
+    static let pairingOutcomeHead = "static func pairingOutcome(_ outcome: DecisionWriteOutcome) -> PairingWriteOutcome {"
+    static let pairingOutcomeBody = "switch outcome { case .saved: return .saved case .alreadyAnswered: return .alreadyAnswered "
+        + "case .failed: return .failed case .unconfirmed: return .unconfirmed }"
+    /// Each helper word, and every line of the CloudKit file naming it.
+    static let pairingHelperSites: [(String, [String: Int])] = [
+        ("pairingOutcome", [pairingOutcomeHead: 1,
+                            "guard let outcome = saved.finish(batch: batch).map(pairingOutcome) else { return }": 1]),
+        ("pairingResponseValue", ["static func pairingResponseValue(_ field: ApprovalWire.PairingResponseField, of response: "
+                                  + "PairingResponse) -> CKRecordValue {": 1,
+                                  "let value = pairingResponseValue(field, of: response)": 1]),
+        ("pairingResponseRecordID", ["static func pairingResponseRecordID(_ response: PairingResponse) -> CKRecord.ID {": 1,
+                                     "recordID: pairingResponseRecordID(response))": 1]),
+    ]
+    /// What a conflict hands back, by any name the CloudKit file could read
+    /// it under (`CKError`'s members and the user-info keys).
+    static let serverRecordReads = #"\b(?:serverRecord|clientRecord|ancestorRecord)\b|\bCKRecordChangedError\w*"#
+
+    static func pairingRunFailures(_ app: [Source]) -> [String] {
+        let uncut = app.map { (path: $0.path, text: CloudKitStructureTests.wholeLineCommentsRemoved($0.text)) }
+        let file = uncut.first { $0.path == cloudKitFile }?.text ?? ""
+        guard let writer = CloudKitStructureTests.body(after: pairingWriterHead, in: file),
+              let write = CloudKitStructureTests.body(after: pairingWriteHead, in: writer),
+              let save = CloudKitStructureTests.body(after: pairingSaveHead, in: file),
+              let outcome = CloudKitStructureTests.body(after: pairingOutcomeHead, in: file) else {
+            return ["CloudKitPairingResponseWriter.write, its factory or its outcome moved (the lock would be vacuous)"]
+        }
+        var failures: [String] = []
+        for factory in pairingFactories {
+            let word = #"\b"# + factory + #"\b"#
+            let total = uncut.reduce(0) { $0 + CloudKitStructureTests.matchCount(word, in: $1.text) }
+            let declared = CloudKitStructureTests.occurrences(of: "static func \(factory)(", in: file)
+            if declared != 1 || total != 2 || CloudKitStructureTests.matchCount(word, in: write) != 1 {
+                failures.append("'\(factory)' must be declared once and reached once, in CloudKitPairingResponseWriter.write "
+                                + "(\(declared) declaration(s), \(total) mention(s) in the app)")
+            }
+        }
+        if SettingsReachabilityTests.flat(write) != pairingWriteBody {
+            failures.append("CloudKitPairingResponseWriter.write builds the record and hands its operation to the seam, nothing else")
+        }
+        if SettingsReachabilityTests.flat(save) != pairingSaveBody {
+            failures.append("the pairing response's save is create-only and drops the saved record unread — exactly as pinned")
+        }
+        if SettingsReachabilityTests.flat(outcome) != pairingOutcomeBody {
+            failures.append("the pairing response's outcome is the decision's table, case for case — exactly as pinned")
+        }
+        for (word, sites) in pairingHelperSites {
+            failures += CloudKitStructureTests.siteFailures(#"\b"# + word + #"\b"#, in: file, file: cloudKitFile, allowed: sites,
+                                                            rule: "'\(word)' is declared once and used once")
+            for (path, text) in uncut where path != cloudKitFile && CloudKitStructureTests.hits(#"\b"# + word + #"\b"#, in: text) {
+                failures.append("'\(word)' in \(path) — only the CloudKit file builds the pairing response")
+            }
+        }
+        if CloudKitStructureTests.hits(serverRecordReads, in: file) {
+            failures.append("\(cloudKitFile) names what a conflict hands back — an existing response is never read or adopted")
+        }
+        return failures
+    }
+
+    @Test func thePairingResponseIsCreatedOnlyThroughTheSeam() throws {
+        let app = try Self.app()
+        #expect(Self.pairingRunFailures(app).isEmpty, "\(Self.pairingRunFailures(app))")
+        let ck = Self.cloudKitFile
+        let block = "operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }\n"
+            + "        operation.modifyRecordsResultBlock = { batch in\n"
+            + "            guard let outcome = saved.finish(batch: batch).map(pairingOutcome) else { return }"
+        #expect(try #require(app.first { $0.path == ck }).text.contains(block), "vacuity: the pairing save's callbacks are the anchor")
+        let mutants: [(String, [Source])] = [
+            ("the server's response adopted on a conflict", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: block, with: block.replacingOccurrences(
+                    of: "saved.note(result.map { _ in () })",
+                    with: "saved.note(result.map { _ in () }.flatMapError { (($0 as? CKError)?.serverRecord != nil) ? .success(()) : .failure($0) })")) }),
+            ("the server's record read through the user info", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(e: NSError) -> Any? { e.userInfo[CKRecordChangedErrorServerRecordKey] }" }),
+            ("an overwrite", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: Self.decisionOperation + "\n        operation.savePolicy = .ifServerRecordUnchanged\n"
+                                            + "        operation.isAtomic = true\n        let configuration = CKOperation.Configuration()\n"
+                                            + "        configuration.qualityOfService = .userInitiated\n        configuration.timeoutIntervalForRequest = 30\n"
+                                            + "        configuration.timeoutIntervalForResource = 60\n        operation.configuration = configuration\n"
+                                            + "        let saved = CreatedRecordResult()\n        operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }\n"
+                                            + "        operation.modifyRecordsResultBlock = { batch in\n            guard let outcome = saved.finish(batch: batch).map(pairingOutcome)",
+                                        with: Self.decisionOperation + "\n        operation.savePolicy = .allKeys\n"
+                                            + "        operation.isAtomic = true\n        let configuration = CKOperation.Configuration()\n"
+                                            + "        configuration.qualityOfService = .userInitiated\n        configuration.timeoutIntervalForRequest = 30\n"
+                                            + "        configuration.timeoutIntervalForResource = 60\n        operation.configuration = configuration\n"
+                                            + "        let saved = CreatedRecordResult()\n        operation.perRecordSaveBlock = { _, result in saved.note(result.map { _ in () }) }\n"
+                                            + "        operation.modifyRecordsResultBlock = { batch in\n            guard let outcome = saved.finish(batch: batch).map(pairingOutcome)") }),
+            ("a conflict read as saved", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "case .alreadyAnswered: return .alreadyAnswered", with: "case .alreadyAnswered: return .saved") }),
+            ("a second pairing write", Self.mutate(app, ck) {
+                $0 + "\nextension CloudKitPairingResponseWriter {\n    func again(_ r: CKRecord) {\n"
+                    + "        database.submit(CloudKitAlertSource.makePairingResponseSaveOperation(r) { _ in })\n    }\n}" }),
+            ("the writer writes twice", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: Self.pairingSubmit, with: Self.pairingSubmit + "\n            " + Self.pairingSubmit) }),
+            ("an unapplied pairing factory elsewhere", Self.mutate(app, "\(Self.appDir)/Model/PairingCeremony.swift") {
+                $0 + "\nlet spareMake = CloudKitAlertSource.makePairingResponseRecord" }),
+            ("a second record for the pairing writer", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(r: PairingResponse) -> CKRecord { CloudKitAlertSource.makePairingResponseRecord(r) }" }),
+            ("the outcome taken elsewhere", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(o: DecisionWriteOutcome) -> PairingWriteOutcome { CloudKitAlertSource.pairingOutcome(o) }" }),
+            ("a value read twice", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(r: PairingResponse) -> CKRecordValue { CloudKitAlertSource.pairingResponseValue(.proof, of: r) }" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.pairingRunFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: the conflict's own code (`serverRecordChanged`)
+        // and words that only contain a banned one, and a whole-line comment.
+        #expect(Self.pairingRunFailures(Self.mutate(app, ck) {
+            $0 + "\nlet spareServerRecords = 1, isServerRecordChanged = CKError.Code.serverRecordChanged"
+                + "\n/// never error.serverRecord, never userInfo[CKRecordChangedErrorServerRecordKey]\n"
+        }).isEmpty)
+    }
+
     // MARK: 7. One record, one operation, one subscription, however spelled (#153)
 
     /// A construction of `type`, however it is applied: `T(`, `T (`,
@@ -664,28 +898,35 @@ import Testing
         }
     }
 
-    /// The CloudKit file's one record (the decision), one operation (its
-    /// save) and one subscription (the alert lane's push).
-    static let constructions = [
-        "CKRecord": "let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,",
-        "CKModifyRecordsOperation": decisionOperation,
-        "CKQuerySubscription": "let subscription = CKQuerySubscription(",
+    /// The CloudKit file's records (the decision's and, since S-PAIR-C1.5,
+    /// the pairing response's), their two save operations (one line each,
+    /// the same text) and one subscription (the alert lane's push), each
+    /// type with every line it is built on.
+    static let constructions: [String: [String: Int]] = [
+        "CKRecord": ["let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,": 1,
+                     "let record = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue,": 1],
+        "CKModifyRecordsOperation": [decisionOperation: 2],
+        "CKQuerySubscription": ["let subscription = CKQuerySubscription(": 1],
     ]
 
     /// The security re-check's L6 (`CKRecord.init(` slipped past a count of
     /// `CKRecord(recordType:`): in the raw text each construction sits on
-    /// its pinned line; in every scan copy each type is built once and never
-    /// reached unnamed; and no implicit `.init(` appears at all.
+    /// its pinned line; in every scan copy each type is built as many times
+    /// as it has pinned sites and never reached unnamed; and no implicit
+    /// `.init(` appears at all.
     static func constructionFailures(_ app: [Source]) -> [String] {
         let file = CloudKitStructureTests.wholeLineCommentsRemoved(app.first { $0.path == cloudKitFile }?.text ?? "")
         var failures: [String] = []
         let copies = CloudKitStructureTests.constructorScanCopies(file)
-        for (type, line) in constructions.sorted(by: { $0.key < $1.key }) {
+        for (type, lines) in constructions.sorted(by: { $0.key < $1.key }) {
+            let expected = lines.values.reduce(0, +)
             failures += CloudKitStructureTests.siteFailures(constructionPattern(type), in: file, file: cloudKitFile,
-                                                            allowed: [line: 1], rule: "the one \(type) is built at its one site")
+                                                            allowed: lines, rule: "each \(type) is built at its pinned site")
             for copy in copies {
                 let built = CloudKitStructureTests.matches(constructionPattern(type), in: copy).count
-                if built != 1 { failures.append("\(cloudKitFile) builds \(type) \(built) time(s) in a scan copy — exactly once") }
+                if built != expected {
+                    failures.append("\(cloudKitFile) builds \(type) \(built) time(s) in a scan copy — exactly \(expected)")
+                }
                 if CloudKitStructureTests.hits(indirectConstructionPattern(type), in: copy) {
                     failures.append("\(cloudKitFile) reaches \(type)'s constructor unnamed")
                 }
@@ -753,8 +994,10 @@ import Testing
     /// own (G9 built a decision with `0 ~> .init(…)`): no source declares an
     /// operator at all. AMENDED (the S-PAIR-C1 security review's R1): nor
     /// through a dynamic type — no source takes `type(of:)`.
+    /// AMENDED (S-PAIR-C1.5, #170): and the pairing response's CloudKit
+    /// writer, which lock 2 says no app source builds by name.
     static let guardedTypes = ["PhoneDecision", "PendingRequest", "PairingCeremony", "PhoneKeyring", "KeyFingerprint",
-                               "LocalAuthenticationMatch"]
+                               "LocalAuthenticationMatch", "CloudKitPairingResponseWriter"]
     static let selfInit = #"\bSelf\s*(?:\(|\.\s*init\b)"#
     static let operatorDeclaration = #"\boperator\b"#
     /// AMENDED (the S-PAIR-C1 security review's R1): a value's dynamic type,
