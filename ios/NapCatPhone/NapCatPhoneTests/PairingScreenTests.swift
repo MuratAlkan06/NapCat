@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 @testable import NapCatPhone
 import Testing
@@ -69,6 +70,7 @@ import UIKit
         #expect(text(.refused) == "Refused — that isn't a NapCat pairing code; nothing was saved")
         #expect(text(.failed(.alreadyAnswered)) == "Refused — this code was already answered; start again on your Mac")
         #expect(text(.failed(.notConfirmed)) == "Unverified — pairing wasn't confirmed, so nothing was saved")
+        #expect(text(.failed(.noCamera)) == "Unavailable — the camera couldn't start scanning; nothing was saved")
         #expect(text(.cancelled) == "Cancelled — nothing changed on this iPhone")
         #expect(text(.expired) == "Expired — the code's five minutes ran out; start again on your Mac")
         #expect(PairingScreen.privateNote == "Pair in private: the code on your Mac is a secret while it's on screen.")
@@ -163,6 +165,36 @@ import UIKit
         }
         // The camera matters while scanning only.
         #expect(Self.offer(.waiting(Self.fingerprint, until: Self.until), .off) == .compare)
+    }
+
+    // MARK: The camera's reading
+
+    /// VisionKit's support, the camera's authorization, VisionKit's
+    /// availability, and what the live camera reads as: every combination.
+    typealias CameraReading = (supported: Bool, authorization: AVAuthorizationStatus, available: Bool, reads: CameraState)
+    static let cameraReadings: [CameraReading] = [
+        (true, .authorized, true, .ready), (true, .authorized, false, .unsupported),
+        (true, .notDetermined, true, .notAsked), (true, .notDetermined, false, .notAsked),
+        (true, .denied, true, .off), (true, .denied, false, .off),
+        (true, .restricted, true, .off), (true, .restricted, false, .off),
+        (false, .authorized, true, .unsupported), (false, .authorized, false, .unsupported),
+        (false, .notDetermined, true, .unsupported), (false, .notDetermined, false, .unsupported),
+        (false, .denied, true, .unsupported), (false, .denied, false, .unsupported),
+        (false, .restricted, true, .unsupported), (false, .restricted, false, .unsupported),
+    ]
+
+    /// The live camera's reading (the S-PAIR-C1.6 design review, M2): a
+    /// camera NapCat may use that VisionKit still can't scan with reads as
+    /// unsupported, so its line never says access is off and nothing sends
+    /// the owner to Settings; only a refusal or a restriction reads as off.
+    @Test func anAllowedCameraIsNeverSaidToBeOff() {
+        for row in Self.cameraReadings {
+            let reads = LiveCameraAccess.state(supported: row.supported, authorization: row.authorization, available: row.available)
+            #expect(reads == row.reads, "\(row)")
+        }
+        let allowed = LiveCameraAccess.state(supported: true, authorization: .authorized, available: false)
+        #expect(Self.line(.scanning, allowed).text == "Unavailable — this iPhone can't scan codes")
+        #expect(Self.offer(.scanning, allowed) == PairingScreen.Offer.none)
     }
 
     // MARK: What VoiceOver hears
@@ -272,7 +304,7 @@ import UIKit
         }
         for shape in ["} .frame(maxWidth: .infinity, alignment: .leading) .padding(.horizontal, theme.margin)",
                       "if Self.offer(for: phase, camera: camera, biometry: biometry) == .viewfinder { viewfinder }",
-                      "if liveCamera { QRScannerView(scanned: scanned) } else {",
+                      "if liveCamera { QRScannerView(scanned: scanned, failed: scanFailed) } else {",
                       "case .compare: Button(action: confirm) { Label(Self.matchTitle, systemImage: Self.matchSymbol) } "
                         + ".buttonStyle(RequestButtonStyle(emphasis: .accent)) Button(action: cancel) {",
                       ".onChange(of: phase) { old, new in "
@@ -355,6 +387,72 @@ import UIKit
             #expect(mutantScreen != screen || mutantRoot != root, "canary '\(name)' did not apply")
             #expect(!Self.wiringFailures(screen: mutantScreen, root: mutantRoot).isEmpty, "canary '\(name)' was NOT caught")
         }
+    }
+
+    // MARK: A scanner that won't start
+
+    static let scannerFile = "\(appDir)/Live/QRScanner.swift"
+    /// The scanner's start, whole: VisionKit's refusal is reported on the
+    /// next turn, never dropped and never inside the view update.
+    static let startHead = "func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {"
+    static let startBody: String = "guard !context.coordinator.handedOn, !scanner.isScanning else { return } "
+        + "do { try scanner.startScanning() } catch { Task { failed() } }"
+    static let scannerHandOn = "if liveCamera { QRScannerView(scanned: scanned, failed: scanFailed) } else {"
+    static let scanFailureSites = CloudKitStructureTests.appSites([
+        "Model/PairingCeremony.swift": ["func scannerFailed() {": 1],
+        "Screen/PairingScreen.swift": ["scanFailed: { ceremony.scannerFailed() },": 1],
+    ])
+
+    /// The S-PAIR-C1.6 design review's M2: a scanner VisionKit won't start
+    /// ends the ceremony at its start (its failure line, Scan Again, Close),
+    /// never a dark viewfinder under "Scanning". The scanner reports it, the
+    /// screen hands it on, and the sheet alone routes it to the ceremony.
+    static func scanFailureFailures(_ app: [CloudKitStructureTests.Source]) -> [String] {
+        var failures: [String] = []
+        let scanner = CloudKitStructureTests.codeOnly(app.first { $0.path == scannerFile }?.text ?? "")
+        if CloudKitStructureTests.body(after: startHead, in: scanner).map(SettingsReachabilityTests.flat) != startBody {
+            failures.append("the scanner reports a start VisionKit refuses, on the next turn — exactly as pinned")
+        }
+        if CloudKitStructureTests.hits(#"\btry\?"#, in: scanner) {
+            failures.append("the scanner drops a failure (try?)")
+        }
+        if !SettingsReachabilityTests.flat(app.first { $0.path == screenFile }?.text ?? "").contains(scannerHandOn) {
+            failures.append("the screen hands the live scanner its failure")
+        }
+        let stripped: [CloudKitStructureTests.Source] = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
+        failures += CloudKitStructureTests.appSiteFailures(#"\bscannerFailed\b"#, in: stripped, allowed: scanFailureSites,
+                                                           rule: "a scanner that won't start ends the ceremony from the sheet alone")
+        return failures
+    }
+
+    @Test func aScannerThatWontStartIsSaidNotLeftDark() throws {
+        let app = try CloudKitStructureTests.swiftFiles(under: Self.appDir)
+        #expect(app.contains { $0.path == Self.scannerFile }, "vacuity: the scanner is where the lock looks")
+        #expect(Self.scanFailureFailures(app).isEmpty, "\(Self.scanFailureFailures(app))")
+        let scanner = Self.scannerFile
+        let screen = Self.screenFile
+        let mutants: [(String, [CloudKitStructureTests.Source])] = [
+            ("the failure dropped", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "            Task { failed() }\n", with: "") }),
+            ("the failure reported inside the update", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "Task { failed() }", with: "failed()") }),
+            ("the start tried silently", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "try scanner.startScanning()", with: "try? scanner.startScanning()") }),
+            ("the scanner handed no failure", PairingEntryStructureTests.mutate(app, screen) {
+                $0.replacingOccurrences(of: "failed: scanFailed)", with: "failed: {})") }),
+            ("the failure routed to Cancel", PairingEntryStructureTests.mutate(app, screen) {
+                $0.replacingOccurrences(of: "scanFailed: { ceremony.scannerFailed() },", with: "scanFailed: { ceremony.cancel() },") }),
+            ("the failure ends a ceremony elsewhere", PairingEntryStructureTests.mutate(app, Self.rootFile) {
+                $0 + "\nfunc spare(c: PairingCeremony) { c.scannerFailed() }" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.scanFailureFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match control: a doc comment may name what the lock bans.
+        #expect(Self.scanFailureFailures(PairingEntryStructureTests.mutate(app, scanner) {
+            $0 + "\n/// never try? scanner.startScanning(), never scannerFailed() elsewhere"
+        }).isEmpty)
     }
 
     // MARK: The window's clock

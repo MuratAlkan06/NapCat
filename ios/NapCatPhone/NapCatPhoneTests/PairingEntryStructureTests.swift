@@ -164,13 +164,17 @@ import Testing
     /// Every line naming `scanned` outside Fixtures/: the ceremony's entry,
     /// the screen's and the scanner's closures, the sheet's one call and the
     /// root's (a fixture launch's own code, to its fixture ceremony).
+    /// AMENDED (the S-PAIR-C1.6 design review, M2): the screen's scanner
+    /// line also hands on the scanner's start failure
+    /// (`PairingScreenTests.scanFailureFailures` pins where it goes).
     static let previewLine: String = "PairingScreen(phase: .scanning, camera: .ready, biometry: .available(.faceID), liveCamera: false, "
         + "scanned: { _ in },"
     static let scannedSites = CloudKitStructureTests.appSites([
         "Live/QRScanner.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 2, "Coordinator(scanned: scanned)": 2,
                                  "init(scanned: @escaping @MainActor (ScannedCode) -> Void) {": 1, "self.scanned = scanned": 2,
                                  cameraHandOn: 1],
-        "Screen/PairingScreen.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 1, "QRScannerView(scanned: scanned)": 2,
+        "Screen/PairingScreen.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 1,
+                                       "QRScannerView(scanned: scanned, failed: scanFailed)": 2,
                                        "scanned: { code in Task { await ceremony.scanned(code) } },": 2,
                                        previewLine: 1],
         "Model/PairingCeremony.swift": ["func scanned(_ code: ScannedCode) async {": 1],

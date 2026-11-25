@@ -27,7 +27,11 @@ struct SettingsScreen: View {
     nonisolated static let statusLabel = "Status"
     nonisolated static let pairingHeader = "Pairing"
     nonisolated static let pairTitle = PairingScreen.title
-    nonisolated static let pairingFooter = "Choose Pair iPhone… in Settings › Claude on your Mac, then scan the code it shows."
+    /// Names both of the Mac's buttons (a paired Mac shows Pair a New
+    /// iPhone…), says the pane is NapCat's own, and names the Face ID that
+    /// comes with the scan.
+    nonisolated static let pairingFooter = "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
+        + "then scan the code it shows and confirm with Face ID."
     nonisolated static let aboutHeader = "About"
     nonisolated static let versionLabel = "Version"
     nonisolated static let siteLabel = "Website"

@@ -10,7 +10,9 @@ enum CameraState: Equatable, Sendable, CaseIterable {
     case notAsked
     /// Refused in Settings, or restricted on this iPhone.
     case off
-    /// This device has no scanner (the simulator).
+    /// This device has no scanner (the simulator), or NapCat may use the
+    /// camera but VisionKit can't scan with it (`isAvailable` false): not a
+    /// setting the owner turned off.
     case unsupported
 }
 
@@ -33,9 +35,19 @@ struct LiveCameraAccess: CameraAccess {
     var isLive: Bool { true }
 
     func state() -> CameraState {
-        guard DataScannerViewController.isSupported else { return .unsupported }
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized: return DataScannerViewController.isAvailable ? .ready : .off
+        Self.state(supported: DataScannerViewController.isSupported, authorization: AVCaptureDevice.authorizationStatus(for: .video),
+                   available: DataScannerViewController.isAvailable)
+    }
+
+    /// The reading from VisionKit's support, the camera's authorization and
+    /// VisionKit's availability. A camera NapCat may use that VisionKit
+    /// still can't scan with reads as unsupported, never off: the owner
+    /// turned nothing off, so no line may send them to Settings to turn it
+    /// on.
+    nonisolated static func state(supported: Bool, authorization: AVAuthorizationStatus, available: Bool) -> CameraState {
+        guard supported else { return .unsupported }
+        switch authorization {
+        case .authorized: return available ? .ready : .unsupported
         case .notDetermined: return .notAsked
         case .denied, .restricted: return .off
         @unknown default: return .off
@@ -68,9 +80,13 @@ struct ScannedCode: Sendable, CustomStringConvertible, CustomDebugStringConverti
 /// at a time, with Apple's own guidance and highlighting. It hands on the
 /// FIRST code it reads and stops: one scan per ceremony, checked again by
 /// the ceremony itself. What a code says is never shown; the ceremony reads
-/// it strictly or refuses it.
+/// it strictly or refuses it. A scanner VisionKit won't start is reported
+/// (`failed`), never left as a dark viewfinder.
 struct QRScannerView: UIViewControllerRepresentable {
     let scanned: @MainActor (ScannedCode) -> Void
+    /// Told when VisionKit won't start the scanner (the camera can't be
+    /// used), after the update that tried. What VisionKit said is not kept.
+    let failed: @MainActor () -> Void
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], qualityLevel: .balanced,
@@ -82,7 +98,13 @@ struct QRScannerView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
         guard !context.coordinator.handedOn, !scanner.isScanning else { return }
-        try? scanner.startScanning()
+        do {
+            try scanner.startScanning()
+        } catch {
+            // Reported on the next turn: the ceremony's phase must not
+            // change inside this view update.
+            Task { failed() }
+        }
     }
 
     static func dismantleUIViewController(_ scanner: DataScannerViewController, coordinator: Coordinator) {

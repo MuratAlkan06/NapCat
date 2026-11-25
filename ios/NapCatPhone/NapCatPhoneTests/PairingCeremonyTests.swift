@@ -221,6 +221,9 @@ final class RecordingPairingWriter: PairingResponseWriter {
                 world.keys.enclave.forced = .keyUnusable
                 await world.ceremony.scanned(Self.code)
             }),
+            ("the scanner won't start", .failed(.noCamera), { world in
+                world.ceremony.scannerFailed()
+            }),
         ]
         for (name, expected, run) in ends {
             let world = World()
@@ -303,6 +306,34 @@ final class RecordingPairingWriter: PairingResponseWriter {
         await world.ceremony.scanned(Self.code)
         #expect(world.ceremony.phase == .failed(.noKey))
         #expect(world.gate.requests.isEmpty && world.writer.written.isEmpty)
+    }
+
+    /// A scanner that won't start (the S-PAIR-C1.6 design review, M2) ends
+    /// the ceremony at its start: nothing is made, asked or written, no
+    /// window opens, and the screen says so with Scan Again, which takes the
+    /// one scan as before. Once a code is scanned it ends nothing.
+    @Test func aScannerThatWontStartEndsTheCeremonyAtItsStart() async throws {
+        let world = World()
+        world.ceremony.scannerFailed()
+        let failed = world.ceremony.phase
+        #expect(failed == .failed(.noCamera))
+        #expect(world.ceremony.deadline == nil)
+        #expect(world.gate.requests.isEmpty && world.writer.written.isEmpty)
+        #expect(world.keys.provisional() == nil && world.keys.committed() == nil)
+        #expect(PairingScreen.line(for: failed, camera: .ready, biometry: world.ceremony.biometry) == PairingScreen.failureLine(.noCamera))
+        #expect(PairingScreen.offer(for: failed, camera: .ready, biometry: world.ceremony.biometry) == .again)
+        world.ceremony.restart()
+        #expect(world.ceremony.phase == .scanning && world.ceremony.deadline == nil)
+        await world.ceremony.scanned(Self.code)
+        try #require(world.writer.written.count == 1)
+        let waiting = world.ceremony.phase
+        world.ceremony.scannerFailed()
+        #expect(world.ceremony.phase == waiting, "a late failure ended a scanned ceremony")
+        let busy = World()
+        busy.gate.during = { busy.ceremony.scannerFailed() }
+        busy.writer.during = { busy.ceremony.scannerFailed() }
+        await busy.ceremony.scanned(Self.code)
+        if case .waiting = busy.ceremony.phase {} else { Issue.record("a failure during the match or the save ended it: \(busy.ceremony.phase)") }
     }
 
     /// A finished ceremony starts over on Scan Again: a new ceremony, which

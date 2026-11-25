@@ -91,6 +91,7 @@ struct PairingScreen: View {
         case .unsent: "Unsent — couldn't save to iCloud; start again on your Mac"
         case .unconfirmed: "Unconfirmed — iCloud didn't confirm the save; start again on your Mac"
         case .notKept: "Unsaved — this iPhone couldn't keep its new key; start again on your Mac"
+        case .noCamera: "Unavailable — the camera couldn't start scanning; nothing was saved"
         }
         return PhoneLine(text: text, severity: .warning)
     }
@@ -173,6 +174,8 @@ struct PairingScreen: View {
     /// Whether the viewfinder is the real camera (fixtures draw its frame).
     let liveCamera: Bool
     let scanned: @MainActor (ScannedCode) -> Void
+    /// The live scanner would not start.
+    let scanFailed: @MainActor () -> Void
     let askCamera: () -> Void
     let confirm: () -> Void
     let cancel: () -> Void
@@ -252,7 +255,7 @@ struct PairingScreen: View {
             .frame(maxWidth: .infinity)
             .overlay {
                 if liveCamera {
-                    QRScannerView(scanned: scanned)
+                    QRScannerView(scanned: scanned, failed: scanFailed)
                 } else {
                     Image(systemName: Self.scanSymbol)
                         .symbolVariant(theme.symbolVariant)
@@ -360,6 +363,7 @@ struct PairingSheet: View {
         NavigationStack {
             PairingScreen(phase: ceremony.phase, camera: cameraState, biometry: ceremony.biometry, liveCamera: camera.isLive,
                           scanned: { code in Task { await ceremony.scanned(code) } },
+                          scanFailed: { ceremony.scannerFailed() },
                           askCamera: { Task { cameraState = await camera.request() } },
                           confirm: { ceremony.confirmCodesMatch() },
                           cancel: { ceremony.cancel() },
@@ -391,5 +395,5 @@ struct PairingSheet: View {
 
 #Preview("Scanning") {
     PairingScreen(phase: .scanning, camera: .ready, biometry: .available(.faceID), liveCamera: false, scanned: { _ in },
-                  askCamera: {}, confirm: {}, cancel: {}, again: {})
+                  scanFailed: {}, askCamera: {}, confirm: {}, cancel: {}, again: {})
 }

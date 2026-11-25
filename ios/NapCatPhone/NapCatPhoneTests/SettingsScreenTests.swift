@@ -33,15 +33,22 @@ import UIKit
     }
 
     /// S-PAIR-C1.6 (#172): the Pairing row's words. The footer names the
-    /// Mac's own button and pane, word for word, read from the Mac's source.
+    /// Mac's own buttons and pane, word for word, read from the Mac's source.
+    /// AMENDED (the S-PAIR-C1.6 design review, M1): it names both buttons (a
+    /// Mac already paired shows Pair a New iPhone… instead), says the pane
+    /// is NapCat's own, and names the Face ID that comes with the scan.
     @Test func thePairingRowSaysExactlyThis() throws {
         #expect(SettingsScreen.pairingHeader == "Pairing")
         #expect(SettingsScreen.pairTitle == "Pair with Mac")
         #expect(SettingsScreen.pairTitle == PairingScreen.title, "the row names the screen it opens")
-        #expect(SettingsScreen.pairingFooter == "Choose Pair iPhone… in Settings › Claude on your Mac, then scan the code it shows.")
+        let footer: String = "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
+            + "then scan the code it shows and confirm with Face ID."
+        #expect(SettingsScreen.pairingFooter == footer)
         let mac = try CloudKitStructureTests.swiftFiles(under: "Sources/NapCat")
         let settings = try #require(mac.first { $0.path == "Sources/NapCat/SettingsContent.swift" }).text
         #expect(settings.contains("static let pairButtonTitle = \"Pair iPhone…\""), "the Mac's button is still Pair iPhone…")
+        #expect(settings.contains("static let pairNewButtonTitle = \"Pair a New iPhone…\""),
+                "the paired Mac's button is still Pair a New iPhone…")
         #expect(settings.contains("case .claude: return \"Claude\""), "the Mac's pane is still Claude")
     }
 
