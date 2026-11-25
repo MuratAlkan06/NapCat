@@ -30,6 +30,12 @@ import Testing
 ///    key part or the live pairing, so no fixture can mix one with a
 ///    software key.
 ///
+/// 7. (S-PAIR-C1.6, #172, N-25) The one signing line: a failed biometric
+///    evaluation, key making, restore or signature is logged on ONE fixed
+///    public line (`SigningFailureLog`), naming a domain from its closed
+///    table and a number, nothing else; it is reached from the gate's and
+///    the enclave's catches alone, and nothing else in those files logs.
+///
 /// AMENDED (#166, the S-PAIR-B security review): lock 4 also bans software
 /// keys by SHAPE: outside Fixtures/, each key seam (the enclave, the store,
 /// the enrollment) is adopted by its one live conformer only, however the
@@ -180,7 +186,9 @@ import Testing
 
     static let accessControlLine =
         "SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage, .biometryCurrentSet], nil)"
-    static let makeLine = "let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else { return nil }"
+    /// AMENDED (S-PAIR-C1.6, #172, N-25): made in a `do`, so a failure is
+    /// logged on the one signing line.
+    static let makeLine = "let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)"
     static let restoreLine =
         "let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keyData, authenticationContext: context)"
 
@@ -590,6 +598,106 @@ import Testing
         // gate (the fixtures do).
         #expect(Self.liveWiringFailures(Self.mutate(app, fixture) {
             $0 + "\n/// unlike KeychainSigningKeyStore.phoneKeychain, nothing here persists\nlet spare = LocalAuthenticationGate()"
+        }).isEmpty)
+    }
+
+    // MARK: 7. The one signing line (S-PAIR-C1.6, #172, N-25)
+
+    static let logFile = "\(appDir)/Live/SigningFailureLog.swift"
+    static let matchFile = "\(appDir)/Live/LocalAuthenticationMatch.swift"
+    static let logDeclaration = "private static let logger = Logger(subsystem: \"com.muratalkan.napcat.phone\", category: \"signing\")"
+    /// THE line, as written: the closed domain's raw value and the code,
+    /// each public, and no other interpolation.
+    static let logLine = #"logger.error("biometric or enclave operation failed (domain \(domain.rawValue, privacy: .public), "#
+        + #"code \(code, privacy: .public))")"#
+    static let recordHead = "static func record(_ error: any Error) {"
+    static let recordBody = "let (domain, code) = Self.reading(error) " + logLine
+    static let readingHead = "static func reading(_ error: any Error) -> (domain: Domain, code: Int) {"
+    static let readingBody = "if case CryptoKitError.underlyingCoreCryptoError(let status) = error { return (.coreCrypto, Int(status)) } "
+        + "let nsError = error as NSError if error is CryptoKitError { return (.cryptoKit, nsError.code) } "
+        + "switch nsError.domain { case LAError.errorDomain: return (.localAuthentication, nsError.code) "
+        + "case NSOSStatusErrorDomain: return (.osStatus, nsError.code) default: return (.other, nsError.code) }"
+    /// The line is reached from these catches alone: the gate's evaluation,
+    /// and the enclave's key making and its restore or signature.
+    static let recordSites = CloudKitStructureTests.appSites([
+        "Live/SigningFailureLog.swift": ["enum SigningFailureLog {": 1],
+        "Live/LocalAuthenticationGate.swift": ["SigningFailureLog.record(error)": 1],
+        "Live/SecureEnclaveSigner.swift": ["SigningFailureLog.record(error)": 2],
+    ])
+    /// Any other way to log, in the four files the line covers.
+    static let otherLogging = [#"\bLogger\b"#, #"\bos_log\b"#, #"\bNSLog\b"#, #"\b(?:print|debugPrint|dump)\s*\("#,
+                               #"\bOSLog\b"#, #"\bos\s*\."#, #"\bfputs\b"#, #"\bFileHandle\b"#]
+
+    static func signingLineFailures(_ app: [Source]) -> [String] {
+        var failures: [String] = []
+        let log = CloudKitStructureTests.codeOnly(app.first { $0.path == logFile }?.text ?? "")
+        guard let record = CloudKitStructureTests.body(after: recordHead, in: log),
+              let reading = CloudKitStructureTests.body(after: readingHead, in: log) else {
+            return ["the signing line or its reading moved (the lock would be vacuous)"]
+        }
+        if SettingsReachabilityTests.flat(record) != recordBody {
+            failures.append("the signing line logs the closed domain and the code, public, and nothing else — exactly as pinned")
+        }
+        if SettingsReachabilityTests.flat(reading) != readingBody {
+            failures.append("the signing line's reading is its closed table — exactly as pinned")
+        }
+        failures += CloudKitStructureTests.siteFailures(#"\blogger\b"#, in: log, file: logFile,
+                                                       allowed: [logDeclaration: 1, logLine: 1], rule: "one logger, one line")
+        failures += CloudKitStructureTests.siteFailures(#"\bLogger\b"#, in: log, file: logFile, allowed: [logDeclaration: 1],
+                                                       rule: "one logger, in the signing category")
+        for pattern in otherLogging where pattern != #"\bLogger\b"# && CloudKitStructureTests.hits(pattern, in: log) {
+            failures.append("'\(pattern)' in \(logFile) — the signing line is its one way to log")
+        }
+        for file in [gateFile, matchFile, enclaveFile] {
+            let code = CloudKitStructureTests.codeOnly(app.first { $0.path == file }?.text ?? "")
+            for pattern in otherLogging where CloudKitStructureTests.hits(pattern, in: code) {
+                failures.append("'\(pattern)' in \(file) — a failure there is logged on the signing line alone")
+            }
+        }
+        failures += CloudKitStructureTests.appSiteFailures(#"\bSigningFailureLog\b"#,
+                                                           in: app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) },
+                                                           allowed: recordSites,
+                                                           rule: "the signing line is reached from the gate's and the enclave's catches alone")
+        return failures
+    }
+
+    @Test func aFailedMatchOrKeyIsLoggedOnTheOneSigningLine() throws {
+        let app = try Self.app()
+        #expect(app.contains { $0.path == Self.logFile }, "vacuity: the scan sees the signing line's file")
+        #expect(Self.signingLineFailures(app).isEmpty, "\(Self.signingLineFailures(app))")
+        let log = Self.logFile
+        let mutants: [(String, [Source])] = [
+            ("the error's own text logged", Self.mutate(app, log) {
+                $0.replacingOccurrences(of: "code \\(code, privacy: .public))", with: "code \\(code, privacy: .public)) \\(error)") }),
+            ("the domain logged raw", Self.mutate(app, log) {
+                $0.replacingOccurrences(of: "domain \\(domain.rawValue, privacy: .public)",
+                                        with: "domain \\((error as NSError).domain, privacy: .public)") }),
+            ("the code logged private", Self.mutate(app, log) {
+                $0.replacingOccurrences(of: "code \\(code, privacy: .public)", with: "code \\(code, privacy: .private)") }),
+            ("any domain passed through", Self.mutate(app, log) {
+                $0.replacingOccurrences(of: "        default: return (.other, nsError.code)\n",
+                                        with: "        default: return (Domain(rawValue: nsError.domain) ?? .other, nsError.code)\n") }),
+            ("a second line", Self.mutate(app, log) {
+                $0.replacingOccurrences(of: "        let (domain, code) = Self.reading(error)\n",
+                                        with: "        let (domain, code) = Self.reading(error)\n        logger.debug(\"\\(error.localizedDescription)\")\n") }),
+            ("a print in the enclave", Self.mutate(app, Self.enclaveFile) {
+                $0.replacingOccurrences(of: "            SigningFailureLog.record(error)\n            return Self.outcome(of: error)",
+                                        with: "            print(error)\n            return Self.outcome(of: error)") }),
+            ("a logger in the gate", Self.mutate(app, Self.gateFile) {
+                $0 + "\nprivate let spareLog = Logger(subsystem: \"x\", category: \"y\")" }),
+            ("os_log in the carrier", Self.mutate(app, Self.matchFile) { $0 + "\nfunc spare() { os_log(\"x\") }" }),
+            ("the line reached from the ceremony", Self.mutate(app, "\(Self.appDir)/Model/PairingCeremony.swift") {
+                $0 + "\nfunc spare(e: any Error) { SigningFailureLog.record(e) }" }),
+            ("the gate's failure unlogged", Self.mutate(app, Self.gateFile) {
+                $0.replacingOccurrences(of: "            SigningFailureLog.record(error)\n", with: "") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.signingLineFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match control: a doc comment may name what the lock bans.
+        #expect(Self.signingLineFailures(Self.mutate(app, Self.enclaveFile) {
+            $0 + "\n/// never print(error), never a Logger here: SigningFailureLog.record(error) alone"
         }).isEmpty)
     }
 }

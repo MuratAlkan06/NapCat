@@ -21,6 +21,8 @@ import Security
 ///   covers the app's own check and the key's (S-PAIR amendment 2). The
 ///   match is invalidated after the signature, on every path, and nothing
 ///   here is kept: no key handle, no context.
+/// - A key that could not be made, restored or used is logged on the N-25
+///   line (`SigningFailureLog`, S-PAIR-C1.6), by its domain and code only.
 struct SecureEnclaveSigner: SigningEnclave {
     var isAvailable: Bool { SecureEnclave.isAvailable }
 
@@ -30,9 +32,14 @@ struct SecureEnclaveSigner: SigningEnclave {
     }
 
     func makeKey() -> MadeKey? {
-        guard SecureEnclave.isAvailable, let access = Self.accessControl(),
-              let key = try? SecureEnclave.P256.Signing.PrivateKey(accessControl: access) else { return nil }
-        return MadeKey(keyData: key.dataRepresentation, publicKey: Array(key.publicKey.x963Representation))
+        guard SecureEnclave.isAvailable, let access = Self.accessControl() else { return nil }
+        do {
+            let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
+            return MadeKey(keyData: key.dataRepresentation, publicKey: Array(key.publicKey.x963Representation))
+        } catch {
+            SigningFailureLog.record(error)
+            return nil
+        }
     }
 
     func sign(_ message: [UInt8], with keyData: Data, match: any BiometricMatch) -> SigningOutcome {
@@ -42,6 +49,7 @@ struct SecureEnclaveSigner: SigningEnclave {
             let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keyData, authenticationContext: context)
             return .signed(try key.signature(for: SHA256.hash(data: message)).rawRepresentation)
         } catch {
+            SigningFailureLog.record(error)
             return Self.outcome(of: error)
         }
     }
