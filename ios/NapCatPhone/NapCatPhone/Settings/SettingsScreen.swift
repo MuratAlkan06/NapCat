@@ -6,11 +6,17 @@ import SwiftUI
 ///   whole app (this screen included) redraws in it at once.
 /// - Notifications shows whether the iPhone may buzz, with the way to this
 ///   app's page in the system's notification settings.
+/// - Pairing (F4 slice S-PAIR-C1.6, #172): Pair with Mac opens the pairing
+///   screen as a sheet over Settings, a new ceremony each time, and only on
+///   the owner's tap. Shown only when the launch has a live pairing (a
+///   request fixture launch, and previews, have none).
 /// - About shows the running build, read from the bundle, and the project
 ///   site.
 ///
 /// It works only on what it is handed and on the bundle's Info.plist: no
-/// iCloud, no network. Every color and font is a theme token.
+/// iCloud, no network of its own (the pairing it opens writes its one
+/// record through the live pairing it is handed). Every color and font is a
+/// theme token.
 struct SettingsScreen: View {
     nonisolated static let title = "Settings"
     nonisolated static let done = "Done"
@@ -19,6 +25,9 @@ struct SettingsScreen: View {
     nonisolated static let paletteFooter = "Changes colors only. Each palette follows your iPhone's light or dark appearance."
     nonisolated static let notificationsHeader = "Notifications"
     nonisolated static let statusLabel = "Status"
+    nonisolated static let pairingHeader = "Pairing"
+    nonisolated static let pairTitle = PairingScreen.title
+    nonisolated static let pairingFooter = "Choose Pair iPhone… in Settings › Claude on your Mac, then scan the code it shows."
     nonisolated static let aboutHeader = "About"
     nonisolated static let versionLabel = "Version"
     nonisolated static let siteLabel = "Website"
@@ -26,16 +35,24 @@ struct SettingsScreen: View {
 
     @Binding var palette: PaletteID
     let notifications: NotificationPermission
+    /// The launch's live pairing, if it has one.
+    var pairing: LivePairing?
     var version = AppVersion(bundle: .main)
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    /// The ceremony the pairing sheet runs: a new one for each tap.
+    @State private var ceremony: PairingCeremony?
+    @State private var showsPairing = false
 
     var body: some View {
         NavigationStack {
             Form {
                 appearance
                 notificationsSection
+                if let pairing {
+                    pairingSection(pairing)
+                }
                 about
             }
             .scrollContentBackground(.hidden)
@@ -50,6 +67,9 @@ struct SettingsScreen: View {
             }
         }
         .tint(theme.accent)
+        .sheet(isPresented: $showsPairing, onDismiss: { ceremony = nil }) {
+            if let pairing, let ceremony { PairingSheet(ceremony: ceremony, camera: pairing.camera) }
+        }
     }
 
     // MARK: Sections
@@ -100,6 +120,21 @@ struct SettingsScreen: View {
             if let detail = notifications.detail {
                 footer(detail)
             }
+        }
+        .listRowBackground(theme.surface)
+    }
+
+    /// One row: Pair with Mac, which opens a new ceremony's sheet.
+    private func pairingSection(_ pairing: LivePairing) -> some View {
+        Section {
+            Button(Self.pairTitle) {
+                ceremony = pairing.makeCeremony()
+                showsPairing = true
+            }
+        } header: {
+            header(Self.pairingHeader)
+        } footer: {
+            footer(Self.pairingFooter)
         }
         .listRowBackground(theme.surface)
     }

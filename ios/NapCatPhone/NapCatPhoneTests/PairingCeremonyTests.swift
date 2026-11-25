@@ -32,6 +32,8 @@ final class RecordingPairingWriter: PairingResponseWriter {
 @Suite struct PairingCeremonyTests {
     nonisolated static let nonce = Array((0..<32).map { UInt8($0 * 7 & 0xff) })
     nonisolated static let payload = ApprovalSigning.pairingPayload(nonce: nonce)!
+    /// The payload as the camera would hand it on (S-PAIR-C1.6).
+    nonisolated static let code = ScannedCode(payload: payload)
 
     @MainActor
     final class World {
@@ -66,7 +68,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// waits: the key is provisional, and nothing reads "Paired".
     @Test func aScanWritesOneResponseAndWaits() async throws {
         let world = World()
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         #expect(world.gate.requests == [PairingCeremony.reason])
         try #require(world.writer.written.count == 1)
         let response = world.writer.written[0]
@@ -92,7 +94,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// signed by the key the pairing showed.
     @Test func theConfirmCommitsTheKey() async throws {
         let world = World()
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         let publicKey = Array(try #require(world.writer.written.first).publicKey)
         let fingerprint = try #require(KeyFingerprint(publicKey: publicKey))
         world.ceremony.confirmCodesMatch()
@@ -105,7 +107,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// one it wrote — never from anything it read.
     @Test func theCodeIsThePhonesOwnKeys() async throws {
         let world = World()
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         guard case .waiting(let shown, _) = world.ceremony.phase else {
             Issue.record("not waiting: \(world.ceremony.phase)")
             return
@@ -140,12 +142,12 @@ final class RecordingPairingWriter: PairingResponseWriter {
     @Test(arguments: refusedPayloads)
     func anythingElseIsRefused(_ payload: String) async {
         let world = World()
-        await world.ceremony.scanned(payload)
+        await world.ceremony.scanned(ScannedCode(payload: payload))
         #expect(world.ceremony.phase == .refused)
         #expect(world.gate.requests.isEmpty)
         #expect(world.writer.written.isEmpty)
         #expect(world.keys.provisional() == nil && world.keys.committed() == nil)
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         #expect(world.ceremony.phase == .refused, "one scan per ceremony")
         #expect(world.writer.written.isEmpty)
     }
@@ -153,12 +155,12 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// A second scan, in any later phase, changes nothing.
     @Test func aSecondScanIsIgnored() async throws {
         let world = World()
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         let first = try #require(world.writer.written.first)
         let other = ApprovalSigning.pairingPayload(nonce: Array(repeating: 9, count: 32))!
-        await world.ceremony.scanned(other)
+        await world.ceremony.scanned(ScannedCode(payload: other))
         world.ceremony.confirmCodesMatch()
-        await world.ceremony.scanned(other)
+        await world.ceremony.scanned(ScannedCode(payload: other))
         #expect(world.writer.written == [first])
         #expect(world.gate.requests.count == 1)
     }
@@ -170,54 +172,54 @@ final class RecordingPairingWriter: PairingResponseWriter {
     @Test func everyEndWithoutTheConfirmKeepsTheEarlierPairing() async throws {
         let ends: [(String, PairingCeremony.Phase, (World) async -> Void)] = [
             ("cancelled while waiting", .cancelled, { world in
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
                 world.ceremony.cancel()
             }),
             ("cancelled during the match", .cancelled, { world in
                 world.gate.during = { world.ceremony.cancel() }
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("cancelled during the save", .cancelled, { world in
                 world.writer.during = { world.ceremony.cancel() }
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("the window closes while waiting", .expired, { world in
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
                 world.clock.advance(PairingCeremony.window)
                 world.ceremony.tick()
             }),
             ("the confirm comes too late", .expired, { world in
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
                 world.clock.advance(PairingCeremony.window + 1)
                 world.ceremony.confirmCodesMatch()
             }),
             ("the window closes during the match", .expired, { world in
                 world.gate.during = { world.clock.advance(PairingCeremony.window) }
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("the window closes during the save", .expired, { world in
                 world.writer.during = { world.clock.advance(PairingCeremony.window) }
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("not confirmed", .failed(.notConfirmed), { world in
                 world.gate.confirms = false
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("already answered", .failed(.alreadyAnswered), { world in
                 world.writer.outcome = .alreadyAnswered
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("unsent", .failed(.unsent), { world in
                 world.writer.outcome = .failed
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("unconfirmed", .failed(.unconfirmed), { world in
                 world.writer.outcome = .unconfirmed
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
             ("the proof not signed", .failed(.notSigned), { world in
                 world.keys.enclave.forced = .keyUnusable
-                await world.ceremony.scanned(Self.payload)
+                await world.ceremony.scanned(Self.code)
             }),
         ]
         for (name, expected, run) in ends {
@@ -242,7 +244,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
         var seen: [PairingCeremony.Phase] = [world.ceremony.phase]
         world.gate.during = { seen.append(world.ceremony.phase) }
         world.writer.during = { seen.append(world.ceremony.phase) }
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         seen.append(world.ceremony.phase)
         world.clock.advance(PairingCeremony.window - 1)
         world.ceremony.tick()
@@ -266,7 +268,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
         world.gate.available = unavailable
         world.ceremony.refreshBiometry()
         #expect(world.ceremony.biometry == unavailable)
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         #expect(world.ceremony.phase == .scanning)
         #expect(world.ceremony.deadline == nil)
         #expect(world.gate.requests.isEmpty && world.writer.written.isEmpty)
@@ -274,7 +276,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
         world.ceremony.tick()
         #expect(world.ceremony.phase == .scanning, "no window, nothing to end")
         world.gate.available = .available(.faceID)
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         #expect(world.ceremony.biometry == .available(.faceID), "the scan re-reads it")
         #expect(world.gate.requests == [PairingCeremony.reason])
         try #require(world.writer.written.count == 1)
@@ -298,7 +300,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
     @Test func noKeyNoPairing() async {
         let world = World()
         world.keys.enclave.isAvailable = false
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         #expect(world.ceremony.phase == .failed(.noKey))
         #expect(world.gate.requests.isEmpty && world.writer.written.isEmpty)
     }
@@ -307,10 +309,10 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// takes one scan again. A paired one, or one under way, does not.
     @Test func scanAgainStartsANewCeremony() async {
         let world = World()
-        await world.ceremony.scanned(FixturePairing.strayCode)
+        await world.ceremony.scanned(ScannedCode(payload: FixturePairing.strayCode))
         world.ceremony.restart()
         #expect(world.ceremony.phase == .scanning && world.ceremony.deadline == nil)
-        await world.ceremony.scanned(Self.payload)
+        await world.ceremony.scanned(Self.code)
         #expect(world.writer.written.count == 1)
         world.ceremony.restart()
         #expect(world.ceremony.phase != .scanning, "waiting is not over")
@@ -423,7 +425,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// line: the CloudKit writer and `UnsentPairingWriter` (a build that
     /// cannot reach iCloud), whose body writes nothing, pinned whole. And a
     /// ceremony is built outside Fixtures/ at ONE site, the live pairing's
-    /// (`LivePairing.ceremony()`), on its pinned line.
+    /// (`LivePairing.makeCeremony()`), on its pinned line.
     static let liveWriterAdoption = ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1]
     static let liveWriterSites = ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1]
     static let unsentWriterFile = "\(appDir)/Model/PairingResponse.swift"
@@ -438,9 +440,9 @@ final class RecordingPairingWriter: PairingResponseWriter {
         var failures: [String] = []
         let file = CloudKitStructureTests.codeOnly(app.first { $0.path == ceremonyFile }?.text ?? "")
         let flat = SettingsReachabilityTests.flat(file)
-        let order = ["func scanned(_ payload: String) async { guard phase == .scanning else { return } refreshBiometry() "
+        let order = ["func scanned(_ code: ScannedCode) async { guard phase == .scanning else { return } refreshBiometry() "
                         + "guard case .available = biometry else { return } deadline = clock().addingTimeInterval(Self.window)",
-                     "guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {",
+                     "guard let nonce = ApprovalSigning.pairingNonce(fromPayload: code.payload) else {",
                      "guard let publicKey = keyring.makeProvisional(), let fingerprint = KeyFingerprint(publicKey: publicKey) else {",
                      "guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason) else {",
                      "guard let response = Self.response(nonce: nonce, publicKey: publicKey, keyring: keyring, match: match) else {",
@@ -475,7 +477,7 @@ final class RecordingPairingWriter: PairingResponseWriter {
         }
         let nonceUses = CloudKitStructureTests.siteTally(#"\bnonce\b"#, in: file)
         let allowedNonce: [String: Int] = [
-            "guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {": 1,
+            "guard let nonce = ApprovalSigning.pairingNonce(fromPayload: code.payload) else {": 1,
             "guard let response = Self.response(nonce: nonce, publicKey: publicKey, keyring: keyring, match: match) else {": 2,
             "static func response(nonce: [UInt8], publicKey: [UInt8], keyring: PhoneKeyring, match: any BiometricMatch) -> PairingResponse? {": 1,
             "guard let proofMessage = ApprovalSigning.pairingProofMessage(nonce: nonce, publicKey: publicKey),": 2,

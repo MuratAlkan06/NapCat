@@ -48,13 +48,29 @@ struct LiveCameraAccess: CameraAccess {
     }
 }
 
+/// A pairing code as the camera read it (F4 slice S-PAIR-C1.6, #172): the
+/// only thing a ceremony scans (`PairingCeremony.scanned`). Outside the
+/// fixtures it is built in ONE place, the live scanner's hand-on of the
+/// first QR code it reads (lint-locked), so a code reaches a live ceremony
+/// through the camera alone: the app takes none from a URL, a deep link,
+/// the pasteboard or a launch argument. What it holds is read strictly by
+/// the ceremony and never shown, logged or kept: it describes, prints and
+/// reflects as its type's name alone.
+struct ScannedCode: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    let payload: String
+
+    var description: String { "ScannedCode(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}
+
 /// The live viewfinder: VisionKit's data scanner, QR codes only, one item
 /// at a time, with Apple's own guidance and highlighting. It hands on the
 /// FIRST code it reads and stops: one scan per ceremony, checked again by
 /// the ceremony itself. What a code says is never shown; the ceremony reads
 /// it strictly or refuses it.
 struct QRScannerView: UIViewControllerRepresentable {
-    let scanned: @MainActor (String) -> Void
+    let scanned: @MainActor (ScannedCode) -> Void
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])], qualityLevel: .balanced,
@@ -79,11 +95,11 @@ struct QRScannerView: UIViewControllerRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-        let scanned: @MainActor (String) -> Void
+        let scanned: @MainActor (ScannedCode) -> Void
         /// Set once the first code is handed on; nothing after it is.
         private(set) var handedOn = false
 
-        init(scanned: @escaping @MainActor (String) -> Void) {
+        init(scanned: @escaping @MainActor (ScannedCode) -> Void) {
             self.scanned = scanned
         }
 
@@ -94,7 +110,7 @@ struct QRScannerView: UIViewControllerRepresentable {
                 guard case .barcode(let code) = item, let payload = code.payloadStringValue else { continue }
                 handedOn = true
                 dataScanner.stopScanning()
-                scanned(payload)
+                scanned(ScannedCode(payload: payload))
                 return
             }
         }

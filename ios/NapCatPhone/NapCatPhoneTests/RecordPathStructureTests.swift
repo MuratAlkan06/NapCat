@@ -440,13 +440,21 @@ import Testing
 
     /// A match taken from a confirmation anywhere new, or reflection (which
     /// reads a value's stored parts with no name in sight), app-wide.
+    /// AMENDED (S-PAIR-C1.6, #172): but for one redaction's own childless
+    /// mirror, the scanned pairing code's, on its exact line: it hides the
+    /// code from `dump` and every other `Mirror`-based reading, and reads
+    /// nothing itself.
+    static let redactionMirror = CloudKitStructureTests.appSites([
+        "Live/QRScanner.swift": ["var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }": 2],
+    ])
+
     static func confirmationFailures(_ app: [Source]) -> [String] {
         let code = app.map { ($0.path, Self.literalsEmptied(CloudKitStructureTests.codeOnly($0.text))) }
         var failures = CloudKitStructureTests.appSiteFailures(#"\bconfirmed\b"#, in: code, allowed: confirmedSites,
                                                               rule: "a confirmation is taken at its pinned sites only")
-        for (path, text) in code where CloudKitStructureTests.hits(#"\bMirror\b"#, in: text) {
-            failures.append("\(path) reflects a value (Mirror) — nothing reads a match's or a decision's parts unnamed")
-        }
+        failures += CloudKitStructureTests.appSiteFailures(#"\bMirror\b"#, in: code, allowed: redactionMirror,
+                                                           rule: "nothing reflects a value (Mirror) but the scanned code's childless redaction — "
+                                                            + "nothing reads a match's or a decision's parts unnamed")
         return failures
     }
 
@@ -468,6 +476,12 @@ import Testing
                 $0 + "\nfunc spare(m: any BiometricMatch) -> BiometricResult { .confirmed(m) }" }),
             ("a match read by reflection", Self.mutate(app, inbox) {
                 $0 + "\nfunc spare(m: any BiometricMatch) -> Int { Mirror(reflecting: m).children.count }" }),
+            // S-PAIR-C1.6 (#172): the one redaction mirror, held to its line.
+            ("the redaction's mirror given its code", Self.mutate(app, "\(Self.appDir)/Live/QRScanner.swift") {
+                $0.replacingOccurrences(of: "Mirror(self, children: [], displayStyle: .struct)",
+                                        with: "Mirror(self, children: [\"payload\": payload], displayStyle: .struct)") }),
+            ("a second mirror beside the redaction's", Self.mutate(app, "\(Self.appDir)/Live/QRScanner.swift") {
+                $0 + "\nfunc spare(c: ScannedCode) -> Int { Mirror(reflecting: c).children.count }" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

@@ -32,9 +32,11 @@ struct NapCatPhoneApp: App {
 /// S3), drawn in the same palette: a `-NapCatRequest` launch opens on its
 /// fixture prompt. Nothing else opens one in this slice.
 ///
-/// The pairing screen (F4, slice S-PAIR-B) opens the same way, for a
-/// `-NapCatPairing` launch only: its fixture ceremony scans the launch's
-/// code, if it has one, as the sheet opens.
+/// The pairing screen (F4, slice S-PAIR-B) opens the same way for a
+/// `-NapCatPairing` launch: its fixture ceremony scans the launch's code, if
+/// it has one, as the sheet opens. The live pairing (slice S-PAIR-C1.6)
+/// opens from Settings' Pair with Mac, on the owner's tap, and its code
+/// comes from the camera alone.
 struct ReceiverRoot: View {
     let feed: AlertFeed
     let inbox: RequestInbox
@@ -69,7 +71,7 @@ struct ReceiverRoot: View {
                 }
         }
         .sheet(isPresented: $showsSettings) {
-            SettingsScreen(palette: $palette, notifications: feed.notificationPermission)
+            SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing)
         }
         .sheet(item: $shownRequest) { request in
             PendingRequestSheet(inbox: inbox, id: request.id)

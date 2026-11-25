@@ -172,7 +172,7 @@ struct PairingScreen: View {
     let biometry: BiometricAvailability
     /// Whether the viewfinder is the real camera (fixtures draw its frame).
     let liveCamera: Bool
-    let scanned: @MainActor (String) -> Void
+    let scanned: @MainActor (ScannedCode) -> Void
     let askCamera: () -> Void
     let confirm: () -> Void
     let cancel: () -> Void
@@ -359,7 +359,7 @@ struct PairingSheet: View {
     var body: some View {
         NavigationStack {
             PairingScreen(phase: ceremony.phase, camera: cameraState, biometry: ceremony.biometry, liveCamera: camera.isLive,
-                          scanned: { payload in Task { await ceremony.scanned(payload) } },
+                          scanned: { code in Task { await ceremony.scanned(code) } },
                           askCamera: { Task { cameraState = await camera.request() } },
                           confirm: { ceremony.confirmCodesMatch() },
                           cancel: { ceremony.cancel() },

@@ -22,7 +22,10 @@ import UIKit
 
     static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)"
     static let gear = ".toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsGearButton { showsSettings = true } } }"
-    static let sheet = ".sheet(isPresented: $showsSettings) { SettingsScreen(palette: $palette, notifications: feed.notificationPermission) }"
+    /// AMENDED (S-PAIR-C1.6, #172): Settings is handed the live inbox's
+    /// pairing, for its Pair with Mac row.
+    static let sheet = ".sheet(isPresented: $showsSettings) { "
+        + "SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing) }"
     static let palette = ".environment(\\.theme, ThemeID.fallback.theme(palette: palette))"
 
     /// The main screen sits in a navigation stack whose toolbar's trailing
@@ -59,6 +62,7 @@ import UIKit
             code.replacingOccurrences(of: "SettingsGearButton { showsSettings = true }", with: "SettingsGearButton { }"),
             code.replacingOccurrences(of: ".sheet(isPresented:", with: ".fullScreenCover(isPresented:"),
             code.replacingOccurrences(of: "notifications: feed.notificationPermission", with: "notifications: .on"),
+            code.replacingOccurrences(of: "pairing: inbox.pairing", with: "pairing: nil"),
             code.replacingOccurrences(of: "NavigationStack {", with: "Group {"),
         ]
         for mutant in mutants {
@@ -69,8 +73,8 @@ import UIKit
         // themed, the main screen would not.
         let moved = code
             .replacingOccurrences(of: "        .environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n", with: "")
-            .replacingOccurrences(of: "notifications: feed.notificationPermission)\n",
-                                  with: "notifications: feed.notificationPermission)\n.environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n")
+            .replacingOccurrences(of: "pairing: inbox.pairing)\n",
+                                  with: "pairing: inbox.pairing)\n.environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n")
         #expect(moved != code)
         #expect(!Self.compositionFailures(moved).isEmpty)
         // The palette applied before (inside) the sheet modifier.

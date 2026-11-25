@@ -280,7 +280,7 @@ import UIKit
                         + "var spoken = AttributedString(text) spoken.accessibilitySpeechAnnouncementPriority = .high "
                         + "AccessibilityNotification.Announcement(spoken).post() }",
                       "PairingScreen(phase: ceremony.phase, camera: cameraState, biometry: ceremony.biometry,",
-                      "scanned: { payload in Task { await ceremony.scanned(payload) } }",
+                      "scanned: { code in Task { await ceremony.scanned(code) } }",
                       "confirm: { ceremony.confirmCodesMatch() }", "cancel: { ceremony.cancel() }", "again: { ceremony.restart() }",
                       "Button(PairingScreen.closeTitle) { ceremony.cancel() dismiss() }",
                       ".interactiveDismissDisabled(!ceremony.phase.isFinal) .onAppear { ceremony.refreshBiometry() } "
@@ -373,7 +373,7 @@ import UIKit
         }
         await PairingSheet.follow(ceremony, clock: sheetClock)
         #expect(waits.all.isEmpty, "no scan, no deadline, no wait")
-        await ceremony.scanned(PairingCeremonyTests.payload)
+        await ceremony.scanned(PairingCeremonyTests.code)
         let deadline = clock.now.addingTimeInterval(PairingCeremony.window)
         await PairingSheet.follow(ceremony, clock: sheetClock)
         #expect(waits.all == [PendingRequestSheet.justAfter(deadline)])

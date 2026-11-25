@@ -29,8 +29,10 @@ enum FixturePairingState: String, CaseIterable, Sendable {
 struct FixturePairing {
     let ceremony: PairingCeremony
     let camera: any CameraAccess
-    /// Fed to the ceremony once, as the launch's scan.
-    let scan: String?
+    /// Fed to the ceremony once, as the launch's scan: the fixture's own
+    /// code, built here (only the live scanner builds one outside the
+    /// fixtures).
+    let scan: ScannedCode?
 
     /// A fixed nonce: the fixture code is the same on every launch.
     nonisolated static let nonce = Array(0..<UInt8(ApprovalSigning.pairingNonceByteCount))
@@ -47,10 +49,10 @@ struct FixturePairing {
         let writer = FixturePairingResponseWriter(outcome: state == .taken ? .alreadyAnswered : .saved)
         let ceremony = PairingCeremony(keyring: keyring, biometrics: biometrics, writer: writer)
         let camera = FixtureCamera(answer: state == .camera ? .notAsked : state == .cameraOff ? .off : .ready)
-        let scan: String? = switch state {
+        let scan: ScannedCode? = switch state {
         case .scan, .camera, .cameraOff: nil
-        case .code, .taken: ApprovalSigning.pairingPayload(nonce: nonce)
-        case .stray: strayCode
+        case .code, .taken: ApprovalSigning.pairingPayload(nonce: nonce).map { ScannedCode(payload: $0) }
+        case .stray: ScannedCode(payload: strayCode)
         }
         return FixturePairing(ceremony: ceremony, camera: camera, scan: scan)
     }

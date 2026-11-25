@@ -355,7 +355,7 @@ import Testing
         let keys = PhoneKeyringTests.World()
         let ceremony = PairingCeremony(keyring: keys.keyring, biometrics: ScriptedBiometricGate(),
                                        writer: CloudKitPairingResponseWriter(database: database), clock: { clock.now })
-        await ceremony.scanned(try #require(ApprovalSigning.pairingPayload(nonce: Self.nonce)))
+        await ceremony.scanned(ScannedCode(payload: try #require(ApprovalSigning.pairingPayload(nonce: Self.nonce))))
         try #require(database.submitted.count == 1)
         let record = try #require(database.submitted.first?.recordsToSave?.first)
         #expect(record.recordID.recordName == Self.recordName, "named from the scanned code's nonce")

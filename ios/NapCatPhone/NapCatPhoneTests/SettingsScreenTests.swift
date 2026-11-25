@@ -32,6 +32,19 @@ import UIKit
         #expect(UIImage(systemName: LinkOutLabel.symbol) != nil)
     }
 
+    /// S-PAIR-C1.6 (#172): the Pairing row's words. The footer names the
+    /// Mac's own button and pane, word for word, read from the Mac's source.
+    @Test func thePairingRowSaysExactlyThis() throws {
+        #expect(SettingsScreen.pairingHeader == "Pairing")
+        #expect(SettingsScreen.pairTitle == "Pair with Mac")
+        #expect(SettingsScreen.pairTitle == PairingScreen.title, "the row names the screen it opens")
+        #expect(SettingsScreen.pairingFooter == "Choose Pair iPhone… in Settings › Claude on your Mac, then scan the code it shows.")
+        let mac = try CloudKitStructureTests.swiftFiles(under: "Sources/NapCat")
+        let settings = try #require(mac.first { $0.path == "Sources/NapCat/SettingsContent.swift" }).text
+        #expect(settings.contains("static let pairButtonTitle = \"Pair iPhone…\""), "the Mac's button is still Pair iPhone…")
+        #expect(settings.contains("case .claude: return \"Claude\""), "the Mac's pane is still Claude")
+    }
+
     // MARK: About
 
     @Test func theSiteLinkIsTheProjectSite() throws {

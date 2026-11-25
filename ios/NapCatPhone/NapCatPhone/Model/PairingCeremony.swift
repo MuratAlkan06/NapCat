@@ -114,13 +114,14 @@ final class PairingCeremony {
 
     /// The one scan. Anything after the first is ignored, and so is a scan
     /// while no match can happen: it is not taken, and the ceremony waits
-    /// at its start.
-    func scanned(_ payload: String) async {
+    /// at its start. The code comes from the camera alone (`ScannedCode`,
+    /// S-PAIR-C1.6), or from a fixture launch's own code.
+    func scanned(_ code: ScannedCode) async {
         guard phase == .scanning else { return }
         refreshBiometry()
         guard case .available = biometry else { return }
         deadline = clock().addingTimeInterval(Self.window)
-        guard let nonce = ApprovalSigning.pairingNonce(fromPayload: payload) else {
+        guard let nonce = ApprovalSigning.pairingNonce(fromPayload: code.payload) else {
             phase = .refused
             return
         }
