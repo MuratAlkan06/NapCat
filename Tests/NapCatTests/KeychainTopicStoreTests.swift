@@ -311,8 +311,10 @@ struct KeychainTopicStoreTests {
     /// `customMirror.descendant` — reaches them or its item's name; it
     /// prints, debug-prints and dumps as a fixed word. A control: a plain
     /// holder of the same calls is reached the same way. (`Mirror` routes
-    /// only: the runtime's own field reader ignores the redaction —
-    /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` stops it.)
+    /// only: the runtimes' own readers ignore the redaction —
+    /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` and
+    /// `nothingReachesTheObjCRuntime` stop them; raw-pointer reads remain
+    /// the accepted R-1 residual.)
     @Test func theStoreReflectsAndPrintsNothing() {
         let fake = RecordingKeychainCalls()
         let store = KeychainTopicStore(item: .pairedPhone, calls: fake.api)

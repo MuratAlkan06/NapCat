@@ -55,7 +55,14 @@ import Testing
 /// also bans, with no allowed site, every declaration that reaches the
 /// runtime by name — `_silgen_name`, `_extern` — and every
 /// `swift_reflectionMirror…` name (a). Runtime reflection ignores a type's
-/// redaction; these bans, not the redactions, stop it.
+/// redaction; these bans, not the redactions, stop the Swift runtime's
+/// field reader by name.
+///
+/// AMENDED (S-PAIR-C1.5, the delta re-check's round 2, F-D): the ObjC
+/// runtime's ivar reader ignores the redaction too, so lock 7 also bans
+/// the ObjC runtime's C API (`class_…`, `object_…`, `ivar_…` and their kin)
+/// and `NSClassFromString`, with no allowed site (a). Raw-pointer reads
+/// remain the accepted R-1 residual.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -900,8 +907,10 @@ struct PairingStructureTests {
     ///     or the real calls (the behaviour is
     ///     `PairingControllerTests.noReflectionReachesThePairedKeySlot` and
     ///     `KeychainTopicStoreTests.theStoreReflectsAndPrintsNothing`). The
-    ///     runtime's own field reader ignores the redaction: the word bans
-    ///     of (a) stop it (AMENDED again below);
+    ///     runtimes' own readers ignore the redaction: the bans of (a) stop
+    ///     the Swift runtime's field reader by name and the ObjC runtime's
+    ///     ivar reader; raw-pointer reads remain the accepted R-1 residual
+    ///     (AMENDED again below);
     /// (c) also pins the sheet view to its declaration and its one
     ///     presentation, and bans rendering a view, a window or the screen
     ///     to an image or a document off screen, in the four targets.
@@ -996,6 +1005,7 @@ struct PairingStructureTests {
                                         rule: "nothing renders a view, a window or the screen off screen")
         }
         failures += runtimeEntryFailures(sources)
+        failures += objcRuntimeFailures(sources)
         return ApprovalRecordPathStructureTests.unique(failures)
     }
 
@@ -1013,7 +1023,9 @@ struct PairingStructureTests {
     /// point by name) and any `swift_reflectionMirror…` name (the reader's
     /// entry points, however they would be reached). The redactions stop
     /// printing, describing and `Mirror`-based walks; these bans, not the
-    /// redactions, stop runtime reflection.
+    /// redactions, stop the Swift runtime's field reader by name, and the
+    /// ObjC runtime bans below stop its ivar reader. Raw-pointer reads
+    /// remain the accepted R-1 residual.
     static let runtimeEntryTokens = [#"\b_silgen_name\b"#, #"\b_extern\b"#, #"\bswift_reflectionMirror\w*"#]
 
     static func runtimeEntryFailures(_ sources: Sources) -> [String] {
@@ -1023,6 +1035,95 @@ struct PairingStructureTests {
                                         rule: "nothing declares a runtime entry point — the runtime's field reader ignores every redaction")
         }
         return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's round 2,
+    /// F-D): the ObjC runtime reads a pure Swift class's stored properties
+    /// too — `class_copyIvarList`, `ivar_getName` and `object_getIvar` list
+    /// and read every one, and ignore `CustomReflectable` (the re-check saw
+    /// the redacted controller's mirror show no child while its ivar list
+    /// showed all eighteen stored properties). Its N10b walked a live
+    /// database's own ivars to its private database from an extension in the
+    /// sender; its N10x walked pairing → source → live → database from
+    /// MenuStateModel, through the redacted controller. Neither named a
+    /// banned word; each passed every suite. So (a) also bans, in the four
+    /// targets, in every scan copy, with no allowed site (none today): the
+    /// ObjC runtime's C API by its families' prefixes (`class_`, `object_`,
+    /// `ivar_`, `method_`, `property_`, `protocol_`, `sel_`, `imp_`, `objc_`)
+    /// and `NSClassFromString`. These bans and the entry-point bans above
+    /// stop the Swift runtime's field reader by name and the ObjC runtime's
+    /// ivar reader; raw-pointer reads remain the accepted R-1 residual.
+    static let objcRuntimeTokens = [#"\b(?:class|object|ivar|method|property|protocol|sel|imp|objc)_[A-Za-z]\w*"#,
+                                    #"\bNSClassFromString\b"#]
+
+    static func objcRuntimeFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for token in objcRuntimeTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing reaches the ObjC runtime — its ivar reader ignores every redaction")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// The round-2 re-check's F-D, its canaries: N10b and N10x's model-side
+    /// chain, verbatim. Lock 7 catches each, and by the ObjC runtime ban
+    /// alone: its other rules miss both, the gap. Each family bites alone,
+    /// and N10b's four reader names match in every scan copy of its text.
+    @Test func nothingReachesTheObjCRuntime() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.objcRuntimeFailures(sources).isEmpty, "\(Self.objcRuntimeFailures(sources))")
+        let sender = "CloudKitMessageSender.swift"
+        let model = "MenuStateModel.swift"
+        #expect(!Self.text(sender, in: sources).isEmpty && !Self.text(model, in: sources).isEmpty, "vacuity: both files are in the scan")
+        // The re-check's texts (its gapplant.py), verbatim.
+        let n10b: String = "\nextension LivePairingRecordDatabase {\n    func zz(_ i: CKRecord.ID) {\n        var n: UInt32 = 0\n"
+            + "        guard let list = class_copyIvarList(object_getClass(self), &n) else { return }\n        defer { free(list) }\n"
+            + "        for k in 0..<Int(n) where ivar_getName(list[k]).map({ String(cString: $0) }) == \"data\" + \"base\" {\n"
+            + "            (object_getIvar(self, list[k]) as? CKDatabase)?.fetch(withRecordID: i) { _, _ in }\n        }\n    }\n}\n"
+        let n10xChain: [String] = [
+            "\nextension MenuStateModel {\n    func zzIvarChain(_ name: String) {\n        guard let pairing else { return }\n",
+            "        func get(_ o: AnyObject, _ label: String) -> AnyObject? {\n            var n: UInt32 = 0\n",
+            "            guard let list = class_copyIvarList(object_getClass(o), &n) else { return nil }\n            defer { free(list) }\n",
+            "            for k in 0..<Int(n) where ivar_getName(list[k]).map({ String(cString: $0) }) == label { return object_getIvar(o, list[k]) as AnyObject? }\n",
+            "            return nil\n        }\n",
+            "        zzUseDatabase(get(pairing, \"source\").flatMap { get($0, \"live\") }.flatMap { get($0, \"data\" + \"base\") }, name)\n    }\n}\n",
+        ]
+        let n10x: String = n10xChain.joined()
+        let lookup: String = "\nlet zz: AnyClass? = NSClassFromString(\"zz\")\n"
+        let mutants: [(String, Sources)] = [
+            ("N10b: a live database's own ivars walked to its private database", Self.mutate(sources, sender) { $0 + n10b }),
+            ("N10x: pairing, source, live, database walked from the model", Self.mutate(sources, model) { $0 + n10x }),
+            ("a class looked up by name, in the seam", Self.mutate(sources, ApprovalChannelStructureTests.seamFile) { $0 + lookup }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught = Self.objcRuntimeFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            // Within lock 7, the new ban alone: every other rule misses it.
+            #expect(Self.reflectionFailures(mutant) == caught, "canary '\(name)': another lock 7 rule fired")
+        }
+        // Each family bites, through the lock's own engine (and only its own
+        // pattern).
+        let families: [String] = ["class_copyIvarList(c, &n)", "object_getIvar(o, i)", "ivar_getName(i)", "method_getImplementation(m)",
+                                  "property_getName(p)", "protocol_copyPropertyList(p, &n)", "sel_registerName(s)",
+                                  "imp_implementationWithBlock(b)", "objc_getAssociatedObject(o, k)"]
+        for probe in families {
+            #expect(ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: probe), "'\(probe)' was NOT caught")
+            #expect(!ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[1], in: probe))
+        }
+        #expect(ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[1], in: "NSClassFromString(n)"))
+        #expect(!ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: "NSClassFromString(n)"))
+        // N10b's four reader names, in every scan copy of its exact text.
+        let copies: [String] = [n10b, n10b.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(n10b)]
+        let readers: [String] = ["class_copyIvarList", "object_getClass", "ivar_getName", "object_getIvar"]
+        for copy in copies {
+            #expect(ApprovalRecordPathStructureTests.matches(Self.objcRuntimeTokens[0], in: copy) == readers)
+        }
+        // Over-match controls: words that only contain the banned ones, the
+        // ObjC attributes, and Swift's own `class` and `protocol`.
+        let near: String = "\nlet zzclass_x = 1, isObject_y = 2, Ivar_z = 3, objcName = 4, selector = 5, method = 6"
+            + "\n@objc protocol ZZP {}\nfinal class ZZC: NSObject { @objc func zz() {} }\nlet zzNSClassFromStringCount = 7"
+        #expect(Self.reflectionFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
     }
 
     @Test func nothingReflectsAndTheCodeNeverPrints() throws {

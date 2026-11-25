@@ -306,9 +306,11 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
     /// more, so no print, description or `Mirror`-based walk — a `Mirror`, or
     /// `customMirror.descendant` from any wrapper, an array or an optional —
     /// reaches the slot through it. It does NOT stop runtime reflection: the
-    /// runtime's own field reader ignores `CustomReflectable` and reads the
-    /// stored fields as declared. Lock 7's word bans stop that, not this
-    /// redaction. The conformance is the class's own, on its declaration (an
+    /// Swift runtime's field reader and the ObjC runtime's ivar reader both
+    /// ignore `CustomReflectable` and read the stored fields as declared.
+    /// Lock 7's bans stop them — the Swift one by name, the ObjC one by its C
+    /// API — not this redaction; raw-pointer reads remain the accepted R-1
+    /// residual. The conformance is the class's own, on its declaration (an
     /// extension of the controller is banned, lock 6).
     nonisolated var description: String { "pairing (redacted)" }
     nonisolated var debugDescription: String { description }

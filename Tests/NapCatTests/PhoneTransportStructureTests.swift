@@ -32,6 +32,12 @@ import Testing
 /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-B): every line
 /// of the sender naming a `container` is pinned too, and key-value coding is
 /// named nowhere in the sender, both in every scan copy.
+///
+/// AMENDED (S-PAIR-C1.5, the delta re-check's round 2, F-C): a line pin
+/// holds its own line, not the next one, so the two live classes are pinned
+/// whole, an extension of either is banned in the sender, and key-value
+/// coding's evaluators and observers join its ban: any new line naming a
+/// container fails; the live classes are pinned whole.
 struct PhoneTransportStructureTests {
     static let cloudKitFile = "CloudKitMessageSender.swift"
     static let factoryHead = "static func makeLiveStore() -> (any CloudKitAlertStore)? {"
@@ -76,6 +82,21 @@ struct PhoneTransportStructureTests {
         let tail = code[start.upperBound...]
         guard let end = tail.range(of: "\n\(indent)}") else { return nil }
         return String(tail[..<end.lowerBound])
+    }
+
+    /// `body(after:in:)` at EVERY occurrence of `head`, in order — `nil` for
+    /// one with no closing brace (`body(after:in:)` reads the first alone).
+    static func bodies(after head: String, in code: String) -> [String?] {
+        var found: [String?] = []
+        var from = code.startIndex
+        while let start = code.range(of: head, range: from..<code.endIndex) {
+            let lineStart = code[..<start.lowerBound].lastIndex(of: "\n").map { code.index(after: $0) } ?? code.startIndex
+            let indent = String(code[lineStart..<start.lowerBound].prefix { $0 == " " })
+            let tail = code[start.upperBound...]
+            found.append(tail.range(of: "\n\(indent)}").map { String(tail[..<$0.lowerBound]) })
+            from = start.upperBound
+        }
+        return found
     }
 
     static func occurrences(of token: String, in text: String) -> Int {
@@ -437,6 +458,7 @@ struct PhoneTransportStructureTests {
             failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the alert's own add")
         }
         failures += containerNameFailures(file)
+        failures += liveClassFailures(file)
         return failures
     }
 
@@ -449,11 +471,15 @@ struct PhoneTransportStructureTests {
     /// - every line of the sender naming a `container` is pinned: the two
     ///   factories' constructions, the two holders, their inits and their
     ///   reads of the private database, the alert store's account check, and
-    ///   the two texts that say the word (any new use of a container fails,
-    ///   however it would reach a database);
+    ///   the two texts that say the word (any new line naming a container
+    ///   fails; the live classes are pinned whole, `liveClassFailures` — a
+    ///   line pin alone does not hold the line after it, round 2's F-C);
     /// - and key-value coding — a property read or written by its name as a
     ///   string, on any object — is named nowhere in the sender (no site
-    ///   today; the record's fields are set by subscript).
+    ///   today; the record's fields are set by subscript). AMENDED (round
+    ///   2, F-C): nor are its evaluators and observers — `NSExpression`,
+    ///   `NSPredicate`, `NSSortDescriptor`, any `forKeyPath`, `#keyPath`,
+    ///   `addObserver` (no site today).
     /// Belt and braces: each alone catches G2, on either live conformer.
     static let containerSites: [String: Int] = [
         "static let containerText = \"the NapCat iCloud container is not set up\"": 1,
@@ -470,8 +496,14 @@ struct PhoneTransportStructureTests {
     /// Key-value coding's doors: `value(forKey:)`, `value(forKeyPath:)` and
     /// `value(forUndefinedKey:)`; every `setValue…`/`setValuesForKeys`/
     /// `setNilValueForKey`; the collection proxies and the bulk read.
+    /// AMENDED (round 2, F-C — its N7 read the private database by
+    /// `NSExpression(forKeyPath:)`'s evaluator): what evaluates a key path
+    /// string — an expression, a predicate, a sort descriptor, any
+    /// `forKeyPath` argument, `#keyPath` — and key-value observing.
     static let keyValueCodingBans = [#"\bvalue\s*\(\s*for(?:Undefined)?Key"#, #"\bset(?:Nil)?Values?\w*"#,
-                                     #"\b(?:mutable(?:Ordered)?(?:Array|Set)Value|dictionaryWithValues)\b"#]
+                                     #"\b(?:mutable(?:Ordered)?(?:Array|Set)Value|dictionaryWithValues)\b"#,
+                                     #"\bNSExpression\b"#, #"\bNSPredicate\b"#, #"\bNSSortDescriptor\b"#, #"\bforKeyPath\b"#,
+                                     #"#keyPath\b"#, #"\baddObserver\b"#]
 
     /// `file`: the sender, whole-line comments removed.
     static func containerSiteFailures(_ file: String) -> [String] {
@@ -498,10 +530,188 @@ struct PhoneTransportStructureTests {
         ApprovalRecordPathStructureTests.unique(containerSiteFailures(file) + keyValueCodingFailures(file))
     }
 
+    // MARK: - The two live classes, sealed (the delta re-check's round 2, F-C)
+
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's round 2,
+    /// F-C): a line pin holds its own line, not the next one. A next line
+    /// opening with `.member` (or a binary operator) extends a pinned
+    /// expression and leaves the pinned line as it was: its N6 put `.zzAlso`
+    /// under `self.database = container.privateCloudDatabase` in the live
+    /// pairing database's init — a `CKDatabase` extension copying the
+    /// database into a global, read in an extension of the class — and its
+    /// N7 put `.zzKeep` under `self.container = container`, then read the
+    /// private database off the copy by an `NSExpression` key path. Each
+    /// passed every suite. So, in the sender:
+    /// - each live class is pinned whole: its head once, its body flattened,
+    ///   exactly as below (a new or longer line anywhere in it fails);
+    /// - both `init(container:)` bodies — EVERY occurrence, since
+    ///   `body(after:in:)` reads the first alone — are the holders' two
+    ///   assignments and nothing more;
+    /// - no extension of either live class is named, in every scan copy (no
+    ///   site today), so no member joins a pinned body from outside it;
+    /// - and the key-path evaluators join the key-value ban (above).
+    static let alertStoreHead = "private final class LiveCloudKitAlertStore: CloudKitAlertStore, @unchecked Sendable {"
+    static let pairingDatabaseHead = "private final class LivePairingRecordDatabase: PairingRecordDatabase, @unchecked Sendable {"
+    static let liveInitHead = "init(container: CKContainer) {"
+    static let liveInitBody = "self.container = container self.database = container.privateCloudDatabase"
+    /// What both live classes open with: their two holders and their init.
+    static let liveHolders: String = ["private let container: CKContainer", "private let database: CKDatabase",
+                                      liveInitHead, liveInitBody, "}"].joined(separator: " ")
+    /// The live alert store, whole: the holders, the account check, the one save.
+    static let alertStoreBody: String = [
+        liveHolders,
+        "func accountStatus(completion: @escaping @Sendable (CKAccountStatus, (any Error)?) -> Void) {",
+        "container.accountStatus { status, error in completion(status, error) } }",
+        "func save(_ payload: CloudKitAlertPayload, completion: @escaping @Sendable ((any Error)?) -> Void) {",
+        alertSave, "}",
+    ].joined(separator: " ")
+    /// The live pairing database, whole: the holders and the two checked submits.
+    static let pairingDatabaseBody: String = [
+        liveHolders,
+        "func submit(_ operation: CKFetchRecordsOperation) {", pairingSubmitBody, "}",
+        "func submit(_ operation: CKModifyRecordsOperation) {", pairingSubmitBody, "}",
+    ].joined(separator: " ")
+    static let liveClassExtension = #"\bextension\s+Live(?:PairingRecordDatabase|CloudKitAlertStore)\b"#
+
+    /// `file`: the sender, whole-line comments removed.
+    static func liveClassBodyFailures(_ file: String) -> [String] {
+        var failures: [String] = []
+        let flat: (String?) -> String = { body in body.map { MenuPanelStructureTests.flat($0) } ?? "<no closing brace>" }
+        let classes: [(head: String, body: String, rule: String)] = [
+            (alertStoreHead, alertStoreBody, "the live alert store is pinned whole: its holders, its account check and its one save"),
+            (pairingDatabaseHead, pairingDatabaseBody, "the live pairing database is pinned whole: its holders and its two checked submits"),
+        ]
+        for (head, pinned, rule) in classes {
+            let found: [String] = bodies(after: head, in: file).map(flat)
+            if found != [pinned] { failures.append("\(rule) — once, exactly as pinned (\(found.count) found)") }
+        }
+        let inits: [String] = bodies(after: liveInitHead, in: file).map(flat)
+        if inits != [liveInitBody, liveInitBody] {
+            failures.append("both live inits hold the container and read its private database, nothing more — "
+                            + "every occurrence, exactly as pinned (\(inits.count) found)")
+        }
+        return failures
+    }
+
+    static func liveClassExtensionFailures(_ file: String) -> [String] {
+        var failures: [String] = []
+        for copy in LidGuardStructureTests.constructorScanCopies(file)
+        where ApprovalRecordPathStructureTests.hits(liveClassExtension, in: copy) {
+            failures.append("'\(liveClassExtension)' in \(cloudKitFile) — no member joins a live class outside its pinned body")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    static func liveClassFailures(_ file: String) -> [String] {
+        ApprovalRecordPathStructureTests.unique(liveClassBodyFailures(file) + liveClassExtensionFailures(file))
+    }
+
+    /// F-C's canaries: N6 and N7, verbatim; N6 on the live alert store; and
+    /// N6's copy made by a line opening with a binary operator. Each is
+    /// caught by the body pin alone; without the read that follows it (an
+    /// extension, an evaluator), each continuation is caught by the body pin
+    /// and by nothing else in the alert lane's lock — the gap.
+    @Test func theLiveClassesArePinnedWhole() throws {
+        let sources = try LidGuardStructureTests.swiftSources(LidGuardStructureTests.wholeLineCommentsRemoved)
+        let file = Self.cloudKitFile
+        let sender = sources.first(where: { $0.name == file })?.text ?? ""
+        #expect(Self.liveClassFailures(sender).isEmpty, "\(Self.liveClassFailures(sender))")
+        #expect(Self.bodies(after: Self.liveInitHead, in: sender).count == 2, "vacuity: both live inits are read")
+        // The re-check's texts (its gapplant.py), verbatim.
+        let pairInit: String = "private final class LivePairingRecordDatabase: PairingRecordDatabase, @unchecked Sendable {\n"
+            + "    private let container: CKContainer\n    private let database: CKDatabase\n\n    init(container: CKContainer) {\n"
+            + "        self.container = container\n        self.database = container.privateCloudDatabase\n"
+        let stash: String = "\nenum ZZStash { nonisolated(unsafe) static var db: CKDatabase?; nonisolated(unsafe) static var c: CKContainer? }\n"
+            + "extension CKDatabase { var zzAlso: CKDatabase { ZZStash.db = self; return self } }\n"
+            + "extension CKContainer { var zzKeep: CKContainer { ZZStash.c = self; return self } }\n"
+        let n6Read: String = "extension LivePairingRecordDatabase {\n    func zz(_ i: CKRecord.ID) {\n"
+            + "        ZZStash.db?.fetch(withRecordID: i) { _, _ in }\n    }\n}\n"
+        let n7Old: String = "    init(container: CKContainer) {\n        self.container = container\n"
+            + "        self.database = container.privateCloudDatabase\n    }\n\n    func submit(_ operation: CKFetchRecordsOperation) {"
+        let n7New: String = "    init(container: CKContainer) {\n        self.container = container\n            .zzKeep\n"
+            + "        self.database = container.privateCloudDatabase\n    }\n\n    func submit(_ operation: CKFetchRecordsOperation) {"
+        let n7Read: String = "extension LivePairingRecordDatabase {\n    func zz(_ i: CKRecord.ID) {\n"
+            + "        (NSExpression(forKeyPath: \"private\" + \"CloudDatabase\").expressionValue(with: ZZStash.c, context: nil) "
+            + "as? CKDatabase)?.fetch(withRecordID: i) { _, _ in }\n    }\n}\n"
+        // N6 on the live alert store: its head, and its extension's type.
+        let alertInit: String = pairInit.replacingOccurrences(of: "LivePairingRecordDatabase: PairingRecordDatabase",
+                                                              with: "LiveCloudKitAlertStore: CloudKitAlertStore")
+        let n6AlertRead: String = n6Read.replacingOccurrences(of: "LivePairingRecordDatabase", with: "LiveCloudKitAlertStore")
+        // A leading binary operator continues the line as `.zzAlso` did.
+        let databaseLine: String = "        self.database = container.privateCloudDatabase\n    }\n\n    func submit(_ operation: CKFetchRecordsOperation) {"
+        let operatorLine: String = "        self.database = container.privateCloudDatabase\n            + ZZTag()\n    }\n\n"
+            + "    func submit(_ operation: CKFetchRecordsOperation) {"
+        let operatorStash: String = "\nstruct ZZTag {}\nenum ZZHeld { nonisolated(unsafe) static var db: CKDatabase? }\n"
+            + "func + (l: CKDatabase, r: ZZTag) -> CKDatabase { ZZHeld.db = l; return l }\n"
+        let operatorRead: String = "func zzHeldRead(_ i: CKRecord.ID) {\n    ZZHeld.db?.fetch(withRecordID: i) { _, _ in }\n}\n"
+        for anchor in [pairInit, alertInit, n7Old, databaseLine] {
+            #expect(Self.occurrences(of: anchor, in: sender) == 1, "vacuity: each continuation plants once")
+        }
+        let n6Extend: (String) -> String = { $0.replacingOccurrences(of: pairInit, with: pairInit + "            .zzAlso\n") + stash }
+        let n7Extend: (String) -> String = { $0.replacingOccurrences(of: n7Old, with: n7New) + stash }
+        let n6AlertExtend: (String) -> String = { $0.replacingOccurrences(of: alertInit, with: alertInit + "            .zzAlso\n") + stash }
+        let operatorExtend: (String) -> String = { $0.replacingOccurrences(of: databaseLine, with: operatorLine) + operatorStash }
+        let continuations: [(name: String, extend: (String) -> String, read: String)] = [
+            ("N6: the pairing database's database line continued by .zzAlso", n6Extend, n6Read),
+            ("N7: the pairing database's container line continued by .zzKeep", n7Extend, n7Read),
+            ("N6 on the live alert store", n6AlertExtend, n6AlertRead),
+            ("the database line continued by a leading binary operator", operatorExtend, operatorRead),
+        ]
+        for (name, extend, read) in continuations {
+            let planted: String = extend(sender) + read
+            #expect(planted != sender, "canary '\(name)' did not apply")
+            #expect(!Self.liveClassBodyFailures(planted).isEmpty, "canary '\(name)' was NOT caught by the body pin")
+            // The continuation alone: the body pin, and nothing else in the lane's lock.
+            let alone = Self.mutate(sources, file, extend)
+            let text = alone.first(where: { $0.name == file })?.text ?? ""
+            #expect(!Self.liveClassBodyFailures(text).isEmpty, "canary '\(name)' alone was NOT caught by the body pin")
+            #expect(Self.alertLaneWriteFailures(alone) == Self.liveClassBodyFailures(text), "canary '\(name)' alone: another rule fired")
+        }
+        // The extension ban, alone, however the extension is spelled.
+        let extensions: [String] = [n6Read, n6AlertRead, "extension `LivePairingRecordDatabase` { }",
+                                    "extension /* x */ LiveCloudKitAlertStore: Equatable { }",
+                                    "extension\n    LivePairingRecordDatabase { }"]
+        for planted in extensions {
+            let text: String = sender + "\n" + planted
+            #expect(Self.liveClassBodyFailures(text).isEmpty, "vacuity: '\(planted)' leaves both bodies as pinned")
+            #expect(!Self.liveClassExtensionFailures(text).isEmpty, "'\(planted)' was NOT caught by the extension ban")
+        }
+        // Each body: a member added or dropped, a decoy head before it, a
+        // third init — each fails.
+        let memberAdded: String = Self.alertStoreHead + "\n    var zz: Int { 0 }"
+        let secondSubmit: String = "    func submit(_ operation: CKModifyRecordsOperation) {\n        " + Self.pairingCheck
+            + "\n        database.add(operation)\n    }\n"
+        let decoy: String = "/*\n" + Self.pairingDatabaseHead + "\n}\n*/\n" + sender
+        let thirdInit: String = sender + "\nstruct ZZ {\n    init(container: CKContainer) {\n    }\n}"
+        let bodyDoors: [(String, String)] = [
+            ("a member added to the alert store", sender.replacingOccurrences(of: Self.alertStoreHead, with: memberAdded)),
+            ("the pairing database's second submit dropped", sender.replacingOccurrences(of: secondSubmit, with: "")),
+            ("a decoy head before the class", decoy),
+            ("a third init", thirdInit),
+        ]
+        for (name, planted) in bodyDoors {
+            #expect(planted != sender, "canary '\(name)' did not apply")
+            #expect(!Self.liveClassBodyFailures(planted).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: words that only contain the class names, and
+        // a whole-line comment inside a class body.
+        let near: String = "\nlet zzExtensionLiveCloudKitAlertStore = 1\nstruct LiveCloudKitAlertStoreFake {}\nextension LiveCloudKitAlertStoreFake {}"
+            + "\nextension LivePairingRecordDatabases {}"
+        #expect(Self.liveClassFailures(sender + near).isEmpty)
+        let commented = Self.mutate(sources, file) {
+            LidGuardStructureTests.wholeLineCommentsRemoved($0.replacingOccurrences(
+                of: Self.pairingDatabaseHead, with: Self.pairingDatabaseHead + "\n    // a comment inside the class"))
+        }
+        let commentedText: String = commented.first(where: { $0.name == file })?.text ?? ""
+        #expect(commentedText != sender, "vacuity: the removed comment leaves its blank line in the class")
+        #expect(Self.liveClassFailures(commentedText).isEmpty)
+    }
+
     /// F-B's canaries: G2, as planted, on the live pairing database and on
     /// the live alert store (each is caught by the pin alone and by the ban
-    /// alone, and by nothing else in the alert lane's lock — the gap), and
-    /// the doors around it.
+    /// alone, and by nothing else in the alert lane's lock — the gap — but
+    /// the extension ban round 2 added), the doors around it, and round 2's
+    /// N8.
     @Test func theSendersContainersAreNamedOnTheirLinesAlone() throws {
         let sources = try LidGuardStructureTests.swiftSources(LidGuardStructureTests.wholeLineCommentsRemoved)
         let file = Self.cloudKitFile
@@ -521,9 +731,25 @@ struct PhoneTransportStructureTests {
             #expect(text != sender, "canary '\(name)' did not apply")
             #expect(!Self.containerSiteFailures(text).isEmpty, "canary '\(name)' was NOT caught by the container pin")
             #expect(!Self.keyValueCodingFailures(text).isEmpty, "canary '\(name)' was NOT caught by the key-value ban")
-            // The alert lane's lock catches it by these two alone.
-            #expect(Self.alertLaneWriteFailures(mutant) == Self.containerNameFailures(text), "canary '\(name)': another rule fired")
+            // The alert lane's lock catches it by these two alone — and,
+            // since round 2's F-C, by the extension ban (G2 extends a live
+            // class); never by the body pin (no body changes).
+            #expect(Self.liveClassBodyFailures(text).isEmpty, "canary '\(name)': a live class's body changed")
+            #expect(Self.alertLaneWriteFailures(mutant) == Self.containerNameFailures(text) + Self.liveClassExtensionFailures(text),
+                    "canary '\(name)': another rule fired")
         }
+        // Round 2's N8 (the re-check's control): the private database by an
+        // `NSExpression` key path, the container named — caught by the
+        // container pin (as before) and by the evaluator ban alone too.
+        let n8: String = "\nextension LivePairingRecordDatabase {\n    func zz() -> Any? {\n"
+            + "        NSExpression(forKeyPath: \"private\" + \"CloudDatabase\").expressionValue(with: container, context: nil)\n    }\n}\n"
+        let n8Text: String = sender + n8
+        #expect(!Self.containerSiteFailures(n8Text).isEmpty, "N8 was NOT caught by the container pin")
+        #expect(!Self.keyValueCodingFailures(n8Text).isEmpty, "N8 was NOT caught by the key-value ban")
+        // N7's form of it: no container named — the pin cannot see it, the ban does.
+        let n8Unnamed: String = sender + n8.replacingOccurrences(of: "container", with: "zz")
+        #expect(Self.containerSiteFailures(n8Unnamed).isEmpty, "vacuity: N8 with no container named passes the pin")
+        #expect(!Self.keyValueCodingFailures(n8Unnamed).isEmpty, "N8 with no container named was NOT caught by the key-value ban")
         let handedOut: String = "\nextension LivePairingRecordDatabase { var zz: CKContainer { container } }"
         let byKeyPath: String = "\nextension LiveCloudKitAlertStore { func zz() -> Any { self[keyPath: \\.container] } }"
         let backticked: String = "\nextension LiveCloudKitAlertStore { func zz() -> Any? { container.`value`(forKey: \"zz\") } }"
@@ -539,7 +765,9 @@ struct PhoneTransportStructureTests {
             #expect(!Self.alertLaneWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
         // Each ban bites through the lock's own engine, in every scan copy.
-        let probes: [String] = ["c.value(forKey: k)", "c.setValue(v, forKeyPath: k)", "c.mutableArrayValue(forKey: k)"]
+        let probes: [String] = ["c.value(forKey: k)", "c.setValue(v, forKeyPath: k)", "c.mutableArrayValue(forKey: k)",
+                                "NSExpression(format: f)", "NSPredicate(format: f)", "NSSortDescriptor(key: k, ascending: true)",
+                                "c.removeObserver(o, forKeyPath: k)", "#keyPath(C.p)", "c.addObserver(o, forKeyPath: k, context: nil)"]
         #expect(probes.count == Self.keyValueCodingBans.count)
         for (pattern, probe) in zip(Self.keyValueCodingBans, probes) {
             #expect(ApprovalRecordPathStructureTests.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
@@ -553,6 +781,7 @@ struct PhoneTransportStructureTests {
         // Over-match controls: words that only contain the pinned or banned
         // ones.
         let near: String = "\nlet containerName = 1, containers = 2, isContainer = 3, valueForKeyCount = 4, settings = 5, zz = d.values"
+            + "\nlet zzNSExpressions = 6, predicateText = 7, forKeyPaths = 8, keyPathName = 9, addObservers = 10, sortDescriptor = 11"
         #expect(Self.containerNameFailures(sender + near).isEmpty)
     }
 

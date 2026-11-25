@@ -817,18 +817,25 @@ arms anything.
     controller, the slot and the keychain store redact themselves as types
     too, so no print, description or `Mirror`-based walk through any
     wrapper reaches the slot's item or the real keychain calls. The
-    redaction does not stop runtime reflection — the runtime's own field
-    reader ignores `CustomReflectable` — so word bans do: `descendant`,
-    every `_forEachField…` reader, any read of `customMirror`, and (the
-    delta re-check's F-A) any `_silgen_name` or `_extern` declaration and
-    any `swift_reflectionMirror…` name are banned in the four targets, and
-    so is rendering a view, a window or the screen off screen; the sheet
-    view is pinned to its one presentation. The two live factories are
-    pinned as words (an unapplied reference is a site, not only a call), and
-    so is every line naming the sender's `database` or (F-B) its
-    `container`, and key-value coding is banned in the sender; in the
-    keychain store each item call is named once, as a word, at its binding,
-    and every `kSec…` line is pinned.
+    redaction does not stop runtime reflection — the Swift runtime's field
+    reader and the ObjC runtime's ivar reader both ignore
+    `CustomReflectable` — so bans do: `descendant`, every `_forEachField…`
+    reader, any read of `customMirror`, (the delta re-check's F-A) any
+    `_silgen_name` or `_extern` declaration and any
+    `swift_reflectionMirror…` name, and (its round 2's F-D) the ObjC
+    runtime's C API (`class_…`, `object_…`, `ivar_…` and their kin) and
+    `NSClassFromString` are banned in the four targets. These bans stop the
+    Swift runtime's field reader by name and the ObjC runtime's ivar
+    reader; raw-pointer reads remain the accepted R-1 residual. Rendering a
+    view, a window or the screen off screen is banned too; the sheet view
+    is pinned to its one presentation. The two live factories are pinned
+    as words (an unapplied reference is a site, not only a call), and so is
+    every line naming the sender's `database` or (F-B) its `container`, and
+    key-value coding is banned in the sender (round 2's F-C: its key-path
+    evaluators and observers too). A line pin does not hold the line after
+    it, so (F-C) the two live classes are pinned whole and an extension of
+    either is banned. In the keychain store each item call is named once,
+    as a word, at its binding, and every `kSec…` line is pinned.
   - *Uninstall.* `scripts/uninstall.sh` deletes the paired-key item too,
     as the user and value-silent like the topic's (parity-locked to
     `KeychainItemName.pairedPhone`), and SECURITY.md describes the item.
