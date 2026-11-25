@@ -63,6 +63,17 @@ import Testing
 /// the ObjC runtime's C API (`class_…`, `object_…`, `ivar_…` and their kin)
 /// and `NSClassFromString`, with no allowed site (a). Raw-pointer reads
 /// remain the accepted R-1 residual.
+///
+/// AMENDED (S-PAIR-C1.5, the delta re-check's round 3, F-F): a class, a
+/// selector or a protocol looked up by name reaches what no pinned word
+/// names — its S5 built a real container from MenuStateModel, with no
+/// CloudKit import, by `Bundle.classNamed` and `NSSelectorFromString`. So
+/// lock 7 bans every dynamic lookup by name — `NSClassFromString`,
+/// `NSSelectorFromString`, `Selector`, `classNamed`, `NSProtocolFromString` —
+/// beside the runtime's C API, with no allowed site (a). What the ObjC bans
+/// stop: the runtime's C API (its ivar, method and property readers among
+/// it) and lookup by name. Raw-pointer reads remain the accepted R-1
+/// residual.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -1053,15 +1064,43 @@ struct PairingStructureTests {
     /// and `NSClassFromString`. These bans and the entry-point bans above
     /// stop the Swift runtime's field reader by name and the ObjC runtime's
     /// ivar reader; raw-pointer reads remain the accepted R-1 residual.
-    static let objcRuntimeTokens = [#"\b(?:class|object|ivar|method|property|protocol|sel|imp|objc)_[A-Za-z]\w*"#,
-                                    #"\bNSClassFromString\b"#]
+    ///
+    /// AMENDED (S-PAIR-C1.5, the delta re-check's round 3, F-F): its S5
+    /// looked up `CKContainer` by `Bundle(identifier:)?.classNamed(_:)` and
+    /// built a real container by `perform(NSSelectorFromString(…))` from
+    /// MenuStateModel — no CloudKit import, neither factory, no entitlement
+    /// probe — and its S4b sent a real request by a looked-up selector: c9
+    /// banned `NSClassFromString` alone, and each passed every lock. So (a)
+    /// also bans, the same way, every lookup by name — of a class
+    /// (`NSClassFromString`, `classNamed`), a selector (`NSSelectorFromString`,
+    /// `Selector`) or a protocol (`NSProtocolFromString`) — with no allowed
+    /// site (none today; `#selector` names a declared method, and is another
+    /// word). What these two bans stop, and no more: a call of the runtime's
+    /// C API (its ivar, method and property readers among it), and a class,
+    /// a selector or a protocol reached by a string. Raw-pointer reads remain
+    /// the accepted R-1 residual.
+    static let objcRuntimeTokens: [String] = [#"\b(?:class|object|ivar|method|property|protocol|sel|imp|objc)_[A-Za-z]\w*"#]
+    static let objcLookupTokens: [String] = [#"\bNSClassFromString\b"#, #"\bNSSelectorFromString\b"#, #"\bSelector\b"#,
+                                             #"\bclassNamed\b"#, #"\bNSProtocolFromString\b"#]
 
+    /// The lookup ban alone.
+    static func objcLookupFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for token in objcLookupTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing looks up a class, a selector or a protocol by name — a string reaches what no pinned word names")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// Both ObjC bans: the runtime's C API, then lookup by name.
     static func objcRuntimeFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         for token in objcRuntimeTokens {
             failures += appSiteFailures(token, in: sources, allowed: [:],
-                                        rule: "nothing reaches the ObjC runtime — its ivar reader ignores every redaction")
+                                        rule: "nothing calls the ObjC runtime's C API — its ivar reader ignores every redaction")
         }
+        failures += objcLookupFailures(sources)
         return ApprovalRecordPathStructureTests.unique(failures)
     }
 
@@ -1069,7 +1108,11 @@ struct PairingStructureTests {
     /// chain, verbatim. Lock 7 catches each, and by the ObjC runtime ban
     /// alone: its other rules miss both, the gap. Each family bites alone,
     /// and N10b's four reader names match in every scan copy of its text.
-    @Test func nothingReachesTheObjCRuntime() throws {
+    /// AMENDED (round 3, F-F; renamed from `nothingReachesTheObjCRuntime`,
+    /// which claimed more than the bans stop): S5 and S4b, verbatim, each
+    /// caught within lock 7 by the lookup ban alone; each lookup word bites
+    /// its own probe alone; S5's lookups match in every scan copy.
+    @Test func nothingCallsTheObjCRuntimeOrLooksUpByName() throws {
         let sources = try ApprovalChannelStructureTests.sources()
         #expect(Self.objcRuntimeFailures(sources).isEmpty, "\(Self.objcRuntimeFailures(sources))")
         let sender = "CloudKitMessageSender.swift"
@@ -1109,20 +1152,55 @@ struct PairingStructureTests {
                                   "imp_implementationWithBlock(b)", "objc_getAssociatedObject(o, k)"]
         for probe in families {
             #expect(ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: probe), "'\(probe)' was NOT caught")
-            #expect(!ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[1], in: probe))
+            #expect(Self.objcLookupTokens.allSatisfy { !ApprovalRecordPathStructureTests.hits($0, in: probe) })
         }
-        #expect(ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[1], in: "NSClassFromString(n)"))
-        #expect(!ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: "NSClassFromString(n)"))
         // N10b's four reader names, in every scan copy of its exact text.
         let copies: [String] = [n10b, n10b.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(n10b)]
         let readers: [String] = ["class_copyIvarList", "object_getClass", "ivar_getName", "object_getIvar"]
         for copy in copies {
             #expect(ApprovalRecordPathStructureTests.matches(Self.objcRuntimeTokens[0], in: copy) == readers)
         }
+        // Round 3's F-F: S5 (a container built from a looked-up class and
+        // selector, in the model, with no CloudKit import) and S4b (a request
+        // sent by a looked-up selector), verbatim. Within lock 7, the lookup
+        // ban alone: the C API ban and every other rule miss both, the gap.
+        let roundThree: [(String, Sources)] = [
+            ("S5: a container built and asked by looked-up names", Self.mutate(sources, model) { $0 + PhoneTransportStructureTests.s5Model }),
+            ("S4b: a request sent by a looked-up selector", Self.mutate(sources, model) { $0 + PhoneTransportStructureTests.s4bModel }),
+        ]
+        for (name, mutant) in roundThree {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught: [String] = Self.objcLookupFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            #expect(Self.reflectionFailures(mutant) == caught, "canary '\(name)': another lock 7 rule fired")
+        }
+        // Each lookup word bites its own probe alone, through the lock's own
+        // engine (and the C API ban none of them).
+        let lookups: [String] = ["NSClassFromString(n)", "NSSelectorFromString(s)", "Selector((\"zz\"))", "b.classNamed(n)",
+                                 "NSProtocolFromString(n)"]
+        #expect(lookups.count == Self.objcLookupTokens.count)
+        for (i, token) in Self.objcLookupTokens.enumerated() {
+            for (j, probe) in lookups.enumerated() {
+                #expect(ApprovalRecordPathStructureTests.hits(token, in: probe) == (i == j), "'\(token)' against '\(probe)'")
+            }
+        }
+        #expect(lookups.allSatisfy { !ApprovalRecordPathStructureTests.hits(Self.objcRuntimeTokens[0], in: $0) })
+        // S5's lookups, in every scan copy of its exact text.
+        let s5: String = PhoneTransportStructureTests.s5Model
+        let s5Copies: [String] = [s5, s5.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(s5)]
+        for copy in s5Copies {
+            #expect(ApprovalRecordPathStructureTests.matches(Self.objcLookupTokens[3], in: copy) == ["classNamed"])
+            #expect(ApprovalRecordPathStructureTests.matches(Self.objcLookupTokens[1], in: copy)
+                    == ["NSSelectorFromString", "NSSelectorFromString"])
+        }
         // Over-match controls: words that only contain the banned ones, the
-        // ObjC attributes, and Swift's own `class` and `protocol`.
+        // ObjC attributes, Swift's own `class` and `protocol`, a `#selector`
+        // and its argument label, and a whole-line comment naming the lookups.
         let near: String = "\nlet zzclass_x = 1, isObject_y = 2, Ivar_z = 3, objcName = 4, selector = 5, method = 6"
             + "\n@objc protocol ZZP {}\nfinal class ZZC: NSObject { @objc func zz() {} }\nlet zzNSClassFromStringCount = 7"
+            + "\nlet zzSelector = #selector(ZZC.zz), Selectors = 8, isClassNamed = 9, classNamedCount = 10, zzNSSelectorFromString = 11"
+            + "\nfunc zz(_ c: NotificationCenter, _ o: ZZC) { c.addObserver(o, selector: #selector(ZZC.zz), name: nil, object: nil) }"
+            + LidGuardStructureTests.codeOnly("\n/// never NSSelectorFromString(s), never Selector(\"zz\"), never classNamed(_:)")
         #expect(Self.reflectionFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
     }
 

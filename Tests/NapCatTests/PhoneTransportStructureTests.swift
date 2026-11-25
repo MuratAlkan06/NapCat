@@ -38,6 +38,20 @@ import Testing
 /// whole, an extension of either is banned in the sender, and key-value
 /// coding's evaluators and observers join its ban: any new line naming a
 /// container fails; the live classes are pinned whole.
+///
+/// AMENDED (S-PAIR-C1.5, the delta re-check's round 3, F-E): pinning the
+/// class bodies did not pin the factories' CONSTRUCTION. A factory line
+/// finds its live class's name by lookup, and a member of the sender of the
+/// same name declared in another file — a static func with a generic result,
+/// a static var, a nested type, a protocol extension's member — wins over
+/// the file-private class and is handed the real container. So each live
+/// class's name, as a word, in every scan copy, sits on its head and its one
+/// factory line and nowhere else in the four targets (an alias of either is
+/// a site too). And (R-C) key-value coding is banned in the four targets, not
+/// the sender alone, but for the ntfy request's header lines and the
+/// notification observers, each pinned: round 3's shadow read the container
+/// by name from MenuStateModel — a ban on the sender alone guarded the wrong
+/// door.
 struct PhoneTransportStructureTests {
     static let cloudKitFile = "CloudKitMessageSender.swift"
     static let factoryHead = "static func makeLiveStore() -> (any CloudKitAlertStore)? {"
@@ -62,6 +76,32 @@ struct PhoneTransportStructureTests {
 
     static func factoryWordFailures(_ sources: [(name: String, text: String)]) -> [String] {
         factoryWordSites.flatMap { PairingStructureTests.appSiteFailures($0.pattern, in: sources, allowed: $0.allowed, rule: $0.rule) }
+    }
+
+    /// The delta re-check's round 3, F-E: what each factory constructs, by
+    /// name. Its S1g, S2 and S4b declared `LivePairingRecordDatabase` or
+    /// `LiveCloudKitAlertStore` as a static func of `CloudKitMessageSender`
+    /// in MenuStateModel.swift (a generic result dodged the protocol's word
+    /// pin): the factory line selected it over the file-private class and
+    /// handed it the real container, and every lock passed. So each live
+    /// class's name, as a word, in every scan copy, sits on the class's head
+    /// and its factory's one construction, and nowhere else in the four
+    /// targets: a shadow of any kind, an alias and an extension through an
+    /// alias each name it.
+    static let alertStoreFactoryLine: String = "return LiveCloudKitAlertStore(container: CKContainer(identifier: AlertWire.containerIdentifier))"
+    static let pairingDatabaseFactoryLine: String =
+        "return LivePairingRecordDatabase(container: CKContainer(identifier: ApprovalWire.containerIdentifier))"
+    static let liveClassWordSites: [(pattern: String, allowed: [String: [String: Int]], rule: String)] = [
+        (#"\bLiveCloudKitAlertStore\b"#, [cloudKitFile: [alertStoreHead: 1, alertStoreFactoryLine: 1]],
+         "the live alert store is named by its head and its factory's one construction alone, in the four targets"),
+        (#"\bLivePairingRecordDatabase\b"#, [cloudKitFile: [pairingDatabaseHead: 1, pairingDatabaseFactoryLine: 1]],
+         "the live pairing database is named by its head and its factory's one construction alone, in the four targets"),
+    ]
+
+    static func liveClassWordFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        ApprovalRecordPathStructureTests.unique(liveClassWordSites.flatMap {
+            PairingStructureTests.appSiteFailures($0.pattern, in: sources, allowed: $0.allowed, rule: $0.rule)
+        })
     }
 
     static func sources() throws -> [(name: String, text: String)] {
@@ -168,12 +208,14 @@ struct PhoneTransportStructureTests {
     /// `containerConstructionFailures` over the sources as given, their
     /// cleaned copies, and the construction spelling of each (#153): a
     /// spaced `CKContainer (identifier:)`, a backticked one and one split by
-    /// a block comment are constructions too.
+    /// a block comment are constructions too. With the factories' and (round
+    /// 3's F-E) the live classes' word pins.
     static func containerFailuresInEveryCopy(_ sources: [(name: String, text: String)]) -> [String] {
         let copies = LidGuardStructureTests.constructorScanCopies(sources)
         let spelled = copies.map { $0.map { ($0.name, ApprovalChannelStructureTests.constructionSpelling($0.text)) } }
-        return ApprovalRecordPathStructureTests.unique((copies + spelled).flatMap(containerConstructionFailures)
-                                                       + factoryWordFailures(sources))
+        let constructions: [String] = (copies + spelled).flatMap(containerConstructionFailures)
+        let words: [String] = factoryWordFailures(sources) + liveClassWordFailures(sources)
+        return ApprovalRecordPathStructureTests.unique(constructions + words)
     }
 
     @Test func aContainerIsBuiltOnlyBehindTheEntitlementProbe() throws {
@@ -273,6 +315,117 @@ struct PhoneTransportStructureTests {
         #expect(Self.containerFailuresInEveryCopy(commented.map {
             ($0.name, LidGuardStructureTests.codeOnly($0.text))
         }).isEmpty)
+    }
+
+    // MARK: - The live classes, named by their heads and factories alone (round 3, F-E)
+
+    /// The re-check's round-3 plants (its shadow.py), verbatim. Each appends
+    /// to MenuStateModel.swift (S1g's helper to the sender); each passed the
+    /// full suite and a release build. S1g and S2 shadow a factory's live
+    /// class and read the container's private database by key-value coding;
+    /// S4b sends a real request through it by a looked-up selector; S5 (not
+    /// a shadow) builds a container from a looked-up class and selector, with
+    /// no CloudKit import (F-F, `PairingStructureTests` lock 7).
+    static let s1gModel: String = "\nextension CloudKitMessageSender {\n"
+        + "    static func LivePairingRecordDatabase<C: NSObject, R>(container: C) -> R? {\n"
+        + "        zzUseDatabase(container.value(forKey: \"private\" + \"CloudDatabase\") as AnyObject?, \"zz\")\n"
+        + "        return nil\n    }\n}\n"
+    static let s1gSender: String = "\nfunc zzUseDatabase(_ x: AnyObject?, _ id: Any) {\n"
+        + "    (x as? CKDatabase)?.fetch(withRecordID: CKRecord.ID(recordName: \"\\(id)\")) { _, _ in }\n}\n"
+    static let s2Model: String = "\nenum ZZHeld { nonisolated(unsafe) static var database: AnyObject? }\n"
+        + "extension CloudKitMessageSender {\n"
+        + "    static func LiveCloudKitAlertStore<C: NSObject>(container: C) -> (any CloudKitAlertStore)? {\n"
+        + "        ZZHeld.database = container.value(forKey: \"private\" + \"CloudDatabase\") as AnyObject?\n"
+        + "        return nil\n    }\n}\n"
+    static let s4bModel: String = "\nextension CloudKitMessageSender {\n"
+        + "    static func LiveCloudKitAlertStore<C: NSObject, R>(container: C) -> R? {\n"
+        + "        let db = container.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n"
+        + "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n"
+        + "        _ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n"
+        + "        return nil\n    }\n}\n"
+    static let s5Model: String = "\nenum ZZDyn {\n    static func zz() {\n"
+        + "        guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n"
+        + "        let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n"
+        + "        let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n"
+        + "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n"
+        + "        _ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n"
+        + "    }\n}\n"
+
+    /// The shadow's other spellings, each of which compiles appended to its
+    /// file; each shadow among them is the one its factory line selects (a
+    /// deprecation marker on it warns at that line). The alias is the
+    /// re-check's own spelling, and the alias extension the door it opens: an
+    /// extension of a live class that the extension ban, which reads the
+    /// class's name, cannot see.
+    static let nestedShadow: String = "\nextension CloudKitMessageSender {\n"
+        + "    final class LiveCloudKitAlertStore: CloudKitAlertStore, @unchecked Sendable {\n"
+        + "        init(container: NSObject) {}\n        func accountStatus<T>(completion: T) {}\n"
+        + "        func save<T>(_ payload: CloudKitAlertPayload, completion: T) {}\n    }\n}\n"
+    static let aliasAsGiven: String = "\ntypealias Z = LivePairingRecordDatabase\n"
+    static let aliasExtension: String = "\nprivate typealias Z = LivePairingRecordDatabase\nextension Z {\n    var zzAliased: Int { 0 }\n}\n"
+    static let staticVarShadow: String = "\nstruct ZZMake {\n    func callAsFunction<C: NSObject, R>(container: C) -> R? { nil }\n}\n"
+        + "extension CloudKitMessageSender {\n    static var LivePairingRecordDatabase: ZZMake { ZZMake() }\n}\n"
+    static let extensionShadow: String = "\nextension CloudKitMessageSender {\n"
+        + "    static func LiveCloudKitAlertStore<C: NSObject>(container: C) -> (any CloudKitAlertStore)? { nil }\n}\n"
+    static let backtickShadow: String = "\nextension CloudKitMessageSender {\n"
+        + "    static func `LivePairingRecordDatabase`<C: NSObject, R>(container: C) -> R? { nil }\n}\n"
+    static let protocolExtensionShadow: String = "\nextension MessageSender {\n"
+        + "    static func LivePairingRecordDatabase<C: NSObject, R>(container: C) -> R? { nil }\n}\n"
+    static let liveClassSpellings: [(name: String, file: String, text: String)] = [
+        ("a nested type of the sender", "MenuStateModel.swift", nestedShadow),
+        ("an alias, as the re-check spelled it", cloudKitFile, aliasAsGiven),
+        ("an extension of the class through a private alias", cloudKitFile, aliasExtension),
+        ("a static var of the sender, called as a function", "MenuStateModel.swift", staticVarShadow),
+        ("an extension of the sender in another file", "SettingsWindowController.swift", extensionShadow),
+        ("a backticked shadow", "MenuStateModel.swift", backtickShadow),
+        ("a member of a protocol extension the sender conforms to", "MenuStateModel.swift", protocolExtensionShadow),
+    ]
+
+    /// F-E's canaries: S1g, S2 and S4b, verbatim, and the spellings above.
+    /// The container lock, read over the four targets, catches each by the
+    /// live classes' word pin alone: its construction counts and the
+    /// factories' word pins miss every one — none is a call of a live class
+    /// or names a factory — the gap.
+    @Test func theLiveClassesAreNamedByTheirHeadsAndFactoriesAlone() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.liveClassWordFailures(sources).isEmpty, "\(Self.liveClassWordFailures(sources))")
+        #expect(Self.containerFailuresInEveryCopy(sources).isEmpty, "\(Self.containerFailuresInEveryCopy(sources))")
+        let model: String = "MenuStateModel.swift"
+        let verbatim: [(String, [(name: String, text: String)])] = [
+            ("S1g: the pairing database's class shadowed from the model, its container read by name",
+             Self.mutate(Self.mutate(sources, model) { $0 + Self.s1gModel }, Self.cloudKitFile) { $0 + Self.s1gSender }),
+            ("S2: the alert store's class shadowed, its private database stashed", Self.mutate(sources, model) { $0 + Self.s2Model }),
+            ("S4b: the alert store's class shadowed, a request sent by a looked-up selector",
+             Self.mutate(sources, model) { $0 + Self.s4bModel }),
+        ]
+        let spellings: [(String, [(name: String, text: String)])] = Self.liveClassSpellings.map { spelling in
+            (spelling.name, Self.mutate(sources, spelling.file) { $0 + spelling.text })
+        }
+        let canaries: [(String, [(name: String, text: String)])] = verbatim + spellings
+        for (name, mutant) in canaries {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught: [String] = Self.liveClassWordFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            // Within the container lock, the word pin alone.
+            #expect(Self.containerFailuresInEveryCopy(mutant) == caught, "canary '\(name)': another rule of the container lock fired")
+        }
+        // The backticked shadow is a site in every scan copy of its file —
+        // the copy with the backticks removed included.
+        let backticked: String = ApprovalChannelStructureTests.text(model, in: sources) + Self.backtickShadow
+        let copies: [String] = LidGuardStructureTests.constructorScanCopies(backticked)
+        #expect(copies.count == 3, "vacuity: the backtick gives the file three scan copies")
+        for copy in copies {
+            #expect(!ApprovalRecordPathStructureTests.siteFailures(Self.liveClassWordSites[1].pattern, in: copy, file: model,
+                                                                    allowed: [:], rule: "").isEmpty)
+        }
+        #expect(ApprovalRecordPathStructureTests.siteTally(Self.liveClassWordSites[1].pattern, in: copies[1])
+                == ["static func LivePairingRecordDatabase<C: NSObject, R>(container: C) -> R? { nil }": 1])
+        // Over-match controls: words that only contain a class's name, the
+        // two protocols, and a whole-line comment naming both classes.
+        let near: String = "\nlet zzLiveCloudKitAlertStore = 1, LivePairingRecordDatabases = 2, isLiveCloudKitAlertStore = 3"
+            + "\nstruct LivePairingRecordDatabaseFake {}\nlet zzStore: (any CloudKitAlertStore)? = nil, zzDatabase: [any PairingRecordDatabase] = []"
+            + LidGuardStructureTests.codeOnly("\n/// never LivePairingRecordDatabase(container:), never `LiveCloudKitAlertStore` here")
+        #expect(Self.containerFailuresInEveryCopy(Self.mutate(sources, model) { $0 + near }).isEmpty)
     }
 
     // MARK: - The alert lane writes its alert and nothing else (#153)
@@ -500,10 +653,63 @@ struct PhoneTransportStructureTests {
     /// `NSExpression(forKeyPath:)`'s evaluator): what evaluates a key path
     /// string — an expression, a predicate, a sort descriptor, any
     /// `forKeyPath` argument, `#keyPath` — and key-value observing.
-    static let keyValueCodingBans = [#"\bvalue\s*\(\s*for(?:Undefined)?Key"#, #"\bset(?:Nil)?Values?\w*"#,
-                                     #"\b(?:mutable(?:Ordered)?(?:Array|Set)Value|dictionaryWithValues)\b"#,
-                                     #"\bNSExpression\b"#, #"\bNSPredicate\b"#, #"\bNSSortDescriptor\b"#, #"\bforKeyPath\b"#,
-                                     #"#keyPath\b"#, #"\baddObserver\b"#]
+    /// AMENDED (round 3, R-C): the same bans hold in the four targets
+    /// (`appKeyValueCodingFailures`), each named nowhere but on its pinned
+    /// lines; this copy, over the sender alone, stays in the alert lane's lock.
+    static let setValuePattern: String = #"\bset(?:Nil)?Values?\w*"#
+    static let addObserverPattern: String = #"\baddObserver\b"#
+    static let keyValueCodingBans: [String] = [#"\bvalue\s*\(\s*for(?:Undefined)?Key"#, setValuePattern,
+                                               #"\b(?:mutable(?:Ordered)?(?:Array|Set)Value|dictionaryWithValues)\b"#,
+                                               #"\bNSExpression\b"#, #"\bNSPredicate\b"#, #"\bNSSortDescriptor\b"#, #"\bforKeyPath\b"#,
+                                               #"#keyPath\b"#, addObserverPattern]
+    /// A probe each ban matches, in order.
+    static let keyValueCodingProbes: [String] = ["c.value(forKey: k)", "c.setValue(v, forKeyPath: k)", "c.mutableArrayValue(forKey: k)",
+                                                 "NSExpression(format: f)", "NSPredicate(format: f)",
+                                                 "NSSortDescriptor(key: k, ascending: true)", "c.removeObserver(o, forKeyPath: k)",
+                                                 "#keyPath(C.p)", "c.addObserver(o, forKeyPath: k, context: nil)"]
+
+    /// The delta re-check's round 3, R-C (its recommendation, adopted): its
+    /// S1g read the container's private database by name —
+    /// `container.value(forKey: "private" + "CloudDatabase")` — from
+    /// MenuStateModel.swift, handed the real container by a shadow of a
+    /// factory's class (F-E); S5 read it the same way from the same file. The
+    /// ban over the sender alone guarded the wrong door. So every ban above
+    /// holds in the four targets, in every scan copy, with no site but these,
+    /// each pinned to its exact line (the suite's precedent for a word with
+    /// legitimate uses): the ntfy request's four header fields
+    /// (`setValue(_:forHTTPHeaderField:)`, a request's header, not key-value
+    /// coding) and the five notification observers (each by selector or by
+    /// block, none by key path).
+    static let ntfyHeaderLines: [String: Int] = [
+        "request.setValue(LidGuardTuning.ntfyTitleValue, forHTTPHeaderField: LidGuardTuning.ntfyTitleHeader)": 1,
+        "request.setValue(headers.priority, forHTTPHeaderField: LidGuardTuning.ntfyPriorityHeader)": 1,
+        "request.setValue(headers.tags, forHTTPHeaderField: LidGuardTuning.ntfyTagsHeader)": 1,
+        "request.setValue(LidGuardTuning.ntfyContentTypeValue, forHTTPHeaderField: LidGuardTuning.ntfyContentTypeHeader)": 1,
+    ]
+    static let notificationObserverSites: [String: [String: Int]] = [
+        "AnimationEngine.swift": ["center.addObserver(self, selector: #selector(screensDidSleepNotification(_:)),": 1,
+                                  "center.addObserver(self, selector: #selector(screensDidWakeNotification(_:)),": 1],
+        "ChargeLimiter.swift": ["center.addObserver(self, selector: #selector(systemWillSleep(_:)),": 1,
+                                "center.addObserver(self, selector: #selector(systemDidWake(_:)),": 1],
+        "SettingsWindowController.swift": [
+            "sheetObservers.append(center.addObserver(forName: name, object: sheet, queue: .main) { [weak self] _ in": 1,
+        ],
+    ]
+    static let keyValueCodingAppSites: [String: [String: [String: Int]]] = [
+        setValuePattern: ["NtfyMessageSender.swift": ntfyHeaderLines],
+        addObserverPattern: notificationObserverSites,
+    ]
+
+    /// `sources`: the four targets.
+    static func appKeyValueCodingFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for pattern in keyValueCodingBans {
+            failures += PairingStructureTests.appSiteFailures(
+                pattern, in: sources, allowed: keyValueCodingAppSites[pattern] ?? [:],
+                rule: "nothing in the four targets reads, writes or observes a property by its name as a string")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
 
     /// `file`: the sender, whole-line comments removed.
     static func containerSiteFailures(_ file: String) -> [String] {
@@ -765,9 +971,7 @@ struct PhoneTransportStructureTests {
             #expect(!Self.alertLaneWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
         // Each ban bites through the lock's own engine, in every scan copy.
-        let probes: [String] = ["c.value(forKey: k)", "c.setValue(v, forKeyPath: k)", "c.mutableArrayValue(forKey: k)",
-                                "NSExpression(format: f)", "NSPredicate(format: f)", "NSSortDescriptor(key: k, ascending: true)",
-                                "c.removeObserver(o, forKeyPath: k)", "#keyPath(C.p)", "c.addObserver(o, forKeyPath: k, context: nil)"]
+        let probes: [String] = Self.keyValueCodingProbes
         #expect(probes.count == Self.keyValueCodingBans.count)
         for (pattern, probe) in zip(Self.keyValueCodingBans, probes) {
             #expect(ApprovalRecordPathStructureTests.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
@@ -783,6 +987,68 @@ struct PhoneTransportStructureTests {
         let near: String = "\nlet containerName = 1, containers = 2, isContainer = 3, valueForKeyCount = 4, settings = 5, zz = d.values"
             + "\nlet zzNSExpressions = 6, predicateText = 7, forKeyPaths = 8, keyPathName = 9, addObservers = 10, sortDescriptor = 11"
         #expect(Self.containerNameFailures(sender + near).isEmpty)
+    }
+
+    /// R-C's own plant (on disk too): a property read by its name from a
+    /// file that is neither the sender nor the model.
+    static let keyValueReadFile: String = "AnimationEngine.swift"
+    static let keyValueRead: String = "\nfunc zzReadByName(_ o: NSObject) -> NSObject? {\n"
+        + "    o.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n}\n"
+
+    /// R-C's canaries: S1g's read and S5, verbatim (each in MenuStateModel,
+    /// which the sender's own ban never reads — the gap), a read by name from
+    /// a third file and from another target, N8's evaluator in the model, and
+    /// each pinned door widened — a fifth header line, a header line changed,
+    /// a property set by name beside the headers, an observer by key path, a
+    /// sixth observer. Each is caught; the sender's own ban misses every one.
+    @Test func keyValueCodingIsBannedInTheFourTargets() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.appKeyValueCodingFailures(sources).isEmpty, "\(Self.appKeyValueCodingFailures(sources))")
+        let pinned: Int = Self.ntfyHeaderLines.count + Self.notificationObserverSites.values.map(\.count).reduce(0, +)
+        #expect(pinned == 9, "vacuity: four header lines and five observers are pinned")
+        let model: String = "MenuStateModel.swift"
+        let ntfy: String = "NtfyMessageSender.swift"
+        let titleLine: String = "request.setValue(LidGuardTuning.ntfyTitleValue, forHTTPHeaderField: LidGuardTuning.ntfyTitleHeader)"
+        #expect(ApprovalChannelStructureTests.text(ntfy, in: sources).contains(titleLine), "vacuity: the header line is in the scan")
+        let fifthHeader: String = titleLine + "\n        request.setValue(\"zz\", forHTTPHeaderField: \"X-Zz\")"
+        let otherTarget: String = "\nfunc zz(_ o: AnyObject) -> Any? { o.value(forKey: \"zz\") }\n"
+        let evaluator: String = "\nfunc zz(_ c: Any) -> Any? { NSExpression(forKeyPath: \"zz\").expressionValue(with: c, context: nil) }\n"
+        let setByName: String = "\nfunc zz(_ o: NSObject) { o.setValue(nil, forKey: \"zz\") }\n"
+        let keyPathObserver: String = "\nfunc zz(_ o: NSObject, _ c: NSObject) { c.addObserver(o, forKeyPath: \"zz\", options: [], context: nil) }\n"
+        let sixthObserver: String = "\nlet zz = NotificationCenter.default.addObserver(forName: nil, object: nil, queue: nil) { _ in }\n"
+        let mutants: [(String, [(name: String, text: String)])] = [
+            ("S1g's read, in the model", Self.mutate(sources, model) { $0 + Self.s1gModel }),
+            ("S5: a container built and read by name, in the model", Self.mutate(sources, model) { $0 + Self.s5Model }),
+            ("a read by name from a third file", Self.mutate(sources, Self.keyValueReadFile) { $0 + Self.keyValueRead }),
+            ("a read by name in another target", Self.mutate(sources, "ChannelRelay.swift") { $0 + otherTarget }),
+            ("N8's evaluator, in the model", Self.mutate(sources, model) { $0 + evaluator }),
+            ("a fifth header line", Self.mutate(sources, ntfy) { $0.replacingOccurrences(of: titleLine, with: fifthHeader) }),
+            ("a header line changed", Self.mutate(sources, ntfy) {
+                $0.replacingOccurrences(of: "request.setValue(headers.tags,", with: "request.setValue(headers.priority,") }),
+            ("a property set by name beside the headers", Self.mutate(sources, ntfy) { $0 + setByName }),
+            ("an observer by key path", Self.mutate(sources, "ChargeLimiter.swift") { $0 + keyPathObserver }),
+            ("a sixth observer, in the model", Self.mutate(sources, model) { $0 + sixthObserver }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.appKeyValueCodingFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+            // The sender's own ban never reads another file: the gap.
+            #expect(Self.keyValueCodingFailures(ApprovalChannelStructureTests.text(Self.cloudKitFile, in: mutant)).isEmpty,
+                    "canary '\(name)' is not in the sender")
+        }
+        // Each ban bites, through the four-target engine, planted in the model.
+        for (pattern, probe) in zip(Self.keyValueCodingBans, Self.keyValueCodingProbes) {
+            let line: String = "\nlet zz = " + probe
+            let mutant: [(name: String, text: String)] = Self.mutate(sources, model) { $0 + line }
+            #expect(!PairingStructureTests.appSiteFailures(pattern, in: mutant, allowed: Self.keyValueCodingAppSites[pattern] ?? [:],
+                                                           rule: "").isEmpty, "'\(pattern)' did not bite '\(probe)'")
+        }
+        // Over-match controls: words that only contain the banned ones, and a
+        // whole-line comment naming them.
+        let near: String = "\nlet zzSettings = 1, values = 2, valueForKeyCount = 3, resetValue = 4, addObserverCount = 5, keyPathName = 6"
+            + "\nlet zzNSPredicates = 7, sortDescriptor = 8, forKeyPaths = 9, zzNSExpression = 10, isSetValue = 11"
+            + LidGuardStructureTests.codeOnly("\n/// never value(forKey:), never setValue(_:forKey:), never addObserver(_:forKeyPath:)")
+        #expect(Self.appKeyValueCodingFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
     }
 
     @Test func theAlertLaneWritesItsAlertAndNothingElse() throws {

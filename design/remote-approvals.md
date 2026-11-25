@@ -822,20 +822,34 @@ arms anything.
     `CustomReflectable` — so bans do: `descendant`, every `_forEachField…`
     reader, any read of `customMirror`, (the delta re-check's F-A) any
     `_silgen_name` or `_extern` declaration and any
-    `swift_reflectionMirror…` name, and (its round 2's F-D) the ObjC
-    runtime's C API (`class_…`, `object_…`, `ivar_…` and their kin) and
-    `NSClassFromString` are banned in the four targets. These bans stop the
-    Swift runtime's field reader by name and the ObjC runtime's ivar
-    reader; raw-pointer reads remain the accepted R-1 residual. Rendering a
+    `swift_reflectionMirror…` name, (its round 2's F-D) the ObjC runtime's
+    C API (`class_…`, `object_…`, `ivar_…` and their kin) and
+    `NSClassFromString`, and (round 3's F-F) every other lookup by name —
+    `NSSelectorFromString`, `Selector`, `classNamed`, `NSProtocolFromString`
+    — are banned in the four targets. These bans stop the Swift runtime's
+    field reader by name, any call of the ObjC runtime's C API (its ivar
+    reader among it), and a class, a selector or a protocol reached by a
+    string; raw-pointer reads remain the accepted R-1 residual. Rendering a
     view, a window or the screen off screen is banned too; the sheet view
     is pinned to its one presentation. The two live factories are pinned
     as words (an unapplied reference is a site, not only a call), and so is
-    every line naming the sender's `database` or (F-B) its `container`, and
-    key-value coding is banned in the sender (round 2's F-C: its key-path
-    evaluators and observers too). A line pin does not hold the line after
-    it, so (F-C) the two live classes are pinned whole and an extension of
-    either is banned. In the keychain store each item call is named once,
-    as a word, at its binding, and every `kSec…` line is pinned.
+    every line naming the sender's `database` or (F-B) its `container`. A
+    line pin does not hold the line after it, so (F-C) the two live classes
+    are pinned whole and an extension of either is banned. Pinning the
+    bodies did not pin what the factories construct: a factory line finds
+    its class by name, and a member of the sender of that name declared in
+    another file wins over the file-private class and is handed the real
+    container (round 3's F-E). So the factories' construction is pinned by
+    name, four-target-wide: each live class's name sits on its head and its
+    factory's one construction and nowhere else in the four targets (a
+    shadow of any kind, an alias and an extension through an alias each
+    name it). Key-value coding, its key-path evaluators and its observers
+    are banned in the four targets, not the sender alone (round 3: the
+    shadow read the container by name from another file); only the ntfy
+    request's header lines and the notification observers name `setValue`
+    or `addObserver`, each pinned to its line. In the keychain store each
+    item call is named once, as a word, at its binding, and every `kSec…`
+    line is pinned.
   - *Uninstall.* `scripts/uninstall.sh` deletes the paired-key item too,
     as the user and value-silent like the topic's (parity-locked to
     `KeychainItemName.pairedPhone`), and SECURITY.md describes the item.

@@ -313,8 +313,8 @@ struct KeychainTopicStoreTests {
     /// holder of the same calls is reached the same way. (`Mirror` routes
     /// only: the runtimes' own readers ignore the redaction —
     /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` and
-    /// `nothingReachesTheObjCRuntime` stop them; raw-pointer reads remain
-    /// the accepted R-1 residual.)
+    /// `nothingCallsTheObjCRuntimeOrLooksUpByName` stop them; raw-pointer
+    /// reads remain the accepted R-1 residual.)
     @Test func theStoreReflectsAndPrintsNothing() {
         let fake = RecordingKeychainCalls()
         let store = KeychainTopicStore(item: .pairedPhone, calls: fake.api)

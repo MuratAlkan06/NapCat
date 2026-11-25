@@ -340,8 +340,8 @@ struct PairingControllerTests {
     /// holder of the same item is reached by the same route. (`Mirror`
     /// routes only: the runtimes' own readers ignore the redaction —
     /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` and
-    /// `nothingReachesTheObjCRuntime` stop them; raw-pointer reads remain
-    /// the accepted R-1 residual.)
+    /// `nothingCallsTheObjCRuntimeOrLooksUpByName` stop them; raw-pointer
+    /// reads remain the accepted R-1 residual.)
     @Test func noReflectionReachesThePairedKeySlot() throws {
         let world = PairingWorld()
         let controller: PairingController = world.controller
