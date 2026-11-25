@@ -7,9 +7,10 @@
 # Idempotent — safe to run any number of times, including when setup.sh was
 # never run. Restores stock power behavior (sleep + charging), removes the
 # sudoers entries, /usr/local/napcat, the com.napcat.failsafe LaunchAgent, the
-# app's own settings (the com.muratalkan.napcat defaults domain) and the ntfy
+# app's own settings (the com.muratalkan.napcat defaults domain), the ntfy
 # topic — a bearer credential for the alert feed — from the login keychain
-# (older NapCat versions kept it in the defaults domain instead).
+# (older NapCat versions kept it in the defaults domain instead), and the
+# paired iPhone's public key from the login keychain (remote approvals).
 #
 # Structure (P2 security-review carryover): steps COLLECT errors instead of
 # aborting — the sudoers file, /usr/local/napcat, and the LaunchAgent are
@@ -34,6 +35,10 @@ DEFAULTS_DOMAIN="com.muratalkan.napcat"
 # in the app (parity-locked by KeychainTopicStoreTests).
 KEYCHAIN_SERVICE="com.muratalkan.napcat"
 KEYCHAIN_ACCOUNT="ntfy-topic"
+# The paired iPhone's keychain item — byte-identical to
+# KeychainItemName.pairedPhone in the app (parity-locked the same way).
+PAIRED_KEY_SERVICE="com.muratalkan.napcat"
+PAIRED_KEY_ACCOUNT="paired-iphone-key"
 FAILURES=()
 REVERTED=()
 
@@ -224,8 +229,30 @@ if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ] \
             FAILURES+=("could not remove the ntfy topic from the keychain (exit status $KEYCHAIN_STATUS) — as '$TARGET_USER', delete the \"NapCat ntfy topic\" item in Keychain Access")
             ;;
     esac
+
+    # 8. Remove the paired iPhone's public key from the user's login keychain
+    #    (remote approvals' pairing: the one slot, KeychainItemName.pairedPhone).
+    #    A public key, not a secret — but it is what the Mac would trust a
+    #    signed answer by, so it goes with NapCat. Same user context and the
+    #    same value-silence as step 7: the delete form only, all output to
+    #    /dev/null; exit 44 (errSecItemNotFound) means nothing to remove.
+    /bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \
+        /usr/bin/security delete-generic-password -s "$PAIRED_KEY_SERVICE" -a "$PAIRED_KEY_ACCOUNT" >/dev/null 2>&1
+    PAIRED_KEY_STATUS=$?
+    case "$PAIRED_KEY_STATUS" in
+        0)
+            echo "removed: the paired iPhone key from the login keychain"
+            REVERTED+=("paired iPhone key removed from the login keychain")
+            ;;
+        44)
+            echo "ok: no NapCat paired iPhone key in the keychain — nothing to remove"
+            ;;
+        *)
+            FAILURES+=("could not remove the paired iPhone key from the keychain (exit status $PAIRED_KEY_STATUS) — as '$TARGET_USER', delete the \"NapCat paired iPhone key\" item in Keychain Access")
+            ;;
+    esac
 else
-    FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist, run 'defaults delete $DEFAULTS_DOMAIN' manually, and delete the \"NapCat ntfy topic\" item in Keychain Access")
+    FAILURES+=("could not determine the invoking user — if present, remove ~/Library/LaunchAgents/$AGENT_LABEL.plist, run 'defaults delete $DEFAULTS_DOMAIN' manually, and delete the \"NapCat ntfy topic\" and \"NapCat paired iPhone key\" items in Keychain Access")
 fi
 
 echo ""

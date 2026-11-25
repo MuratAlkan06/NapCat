@@ -313,13 +313,18 @@ struct KeychainTopicStoreTests {
                    encoding: .utf8)
     }
 
-    /// The two item-name literals in uninstall.sh must be the app's own
-    /// (`KeychainItemName.ntfyTopic`) — the hookVersion-style parity lock.
+    /// The item-name literals in uninstall.sh must be the app's own
+    /// (`KeychainItemName.ntfyTopic`, and since S-PAIR-C1.5 `.pairedPhone`)
+    /// — the hookVersion-style parity lock.
+    static let parityVariables = [("KEYCHAIN_SERVICE", KeychainItemName.ntfyTopic.service),
+                                  ("KEYCHAIN_ACCOUNT", KeychainItemName.ntfyTopic.account),
+                                  ("PAIRED_KEY_SERVICE", KeychainItemName.pairedPhone.service),
+                                  ("PAIRED_KEY_ACCOUNT", KeychainItemName.pairedPhone.account)]
+
     static func keychainParityFailures(_ script: String) -> [String] {
         let lines = script.split(separator: "\n").map(String.init)
         var failures: [String] = []
-        for (variable, value) in [("KEYCHAIN_SERVICE", KeychainItemName.ntfyTopic.service),
-                                  ("KEYCHAIN_ACCOUNT", KeychainItemName.ntfyTopic.account)] {
+        for (variable, value) in parityVariables {
             let definitions = lines.filter { $0.hasPrefix(variable + "=") }
             if definitions != ["\(variable)=\"\(value)\""] {
                 failures.append("uninstall.sh must define \(variable)=\"\(value)\" exactly once, found \(definitions)")
@@ -328,47 +333,77 @@ struct KeychainTopicStoreTests {
         return failures
     }
 
-    /// The exact keychain step: run AS the invoking user in their session,
-    /// the delete form only, all output discarded.
+    /// One keychain step of uninstall.sh: its exact call (the delete form
+    /// only, all output discarded), the variable holding its exit status, and
+    /// its outcome's exact lines.
+    struct KeychainStep {
+        let item: String
+        let call: String
+        let status: String
+        let removed: String
+        let reverted: String
+        let nothing: String
+        let failure: String
+    }
+
     static let keychainDeleteCall = #"/usr/bin/security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT" >/dev/null 2>&1"#
     static let keychainDeleteUser = #"/bin/launchctl asuser "$TARGET_UID" /usr/bin/sudo -u "$TARGET_USER" \"#
+    static let topicStep = KeychainStep(
+        item: "the ntfy topic", call: keychainDeleteCall, status: "KEYCHAIN_STATUS",
+        removed: #"echo "removed: the ntfy topic from the login keychain""#,
+        reverted: #"REVERTED+=("ntfy topic removed from the login keychain")"#,
+        nothing: #"echo "ok: no NapCat ntfy topic in the keychain — nothing to remove""#,
+        failure: "FAILURES+=(\"could not remove the ntfy topic from the keychain")
+    /// S-PAIR-C1.5 (#170): the paired iPhone's public key, step 8.
+    static let pairedStep = KeychainStep(
+        item: "the paired iPhone key",
+        call: #"/usr/bin/security delete-generic-password -s "$PAIRED_KEY_SERVICE" -a "$PAIRED_KEY_ACCOUNT" >/dev/null 2>&1"#,
+        status: "PAIRED_KEY_STATUS",
+        removed: #"echo "removed: the paired iPhone key from the login keychain""#,
+        reverted: #"REVERTED+=("paired iPhone key removed from the login keychain")"#,
+        nothing: #"echo "ok: no NapCat paired iPhone key in the keychain — nothing to remove""#,
+        failure: "FAILURES+=(\"could not remove the paired iPhone key from the keychain")
 
-    /// Every value-silence / user-context violation of the keychain step in
-    /// an uninstall.sh text; empty == locked.
+    /// Every value-silence / user-context violation of the keychain steps in
+    /// an uninstall.sh text; empty == locked. AMENDED (S-PAIR-C1.5, #170):
+    /// two steps — the topic's, then the paired key's — each its own exact
+    /// call, as the user, value-silent, with its own outcome.
     static func keychainDeleteFailures(_ script: String) -> [String] {
         let code = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
         var failures: [String] = []
         let calls = code.indices.filter { code[$0].contains("security ") }
-        guard calls.count == 1, let call = calls.first else {
-            return ["uninstall.sh must invoke `security` exactly once (the item delete), found \(calls.count)"]
+        let steps = [topicStep, pairedStep]
+        guard calls.count == steps.count else {
+            return ["uninstall.sh must invoke `security` exactly \(steps.count) times (the two item deletes), found \(calls.count)"]
         }
-        if code[call] != keychainDeleteCall {
-            failures.append("the keychain step must be exactly '\(keychainDeleteCall)', got '\(code[call])'")
+        for (call, step) in zip(calls, steps) {
+            if code[call] != step.call {
+                failures.append("\(step.item)'s keychain step must be exactly '\(step.call)', got '\(code[call])'")
+            }
+            if call == 0 || code[call - 1] != keychainDeleteUser {
+                failures.append("\(step.item)'s keychain step must run as the user: '\(keychainDeleteUser)' on the line before")
+            }
+            for token in [" -g", " -w", "find-", "dump-keychain", "export"] where code[call].contains(token) {
+                failures.append("'\(token)' in \(step.item)'s keychain step could print the item")
+            }
+            // Outcome: 0 is reported, 44 (errSecItemNotFound) is nothing to
+            // do, anything else is a collected failure — and no line prints a
+            // value.
+            let tail = code[(call + 1)...].prefix(12)
+            let expected = ["\(step.status)=$?", "case \"$\(step.status)\" in", "0)", step.removed, step.reverted, ";;", "44)",
+                            step.nothing, ";;", "*)"]
+            if Array(tail.prefix(expected.count)) != expected {
+                failures.append("\(step.item)'s keychain step's outcome must be: 0 reported, 44 nothing to do, else a failure")
+            }
+            if !tail.contains(where: { $0.hasPrefix(step.failure) }) {
+                failures.append("any other exit of \(step.item)'s keychain step must be a collected failure")
+            }
         }
-        if call == 0 || code[call - 1] != keychainDeleteUser {
-            failures.append("the keychain step must run as the user: '\(keychainDeleteUser)' on the line before")
-        }
-        for token in [" -g", " -w", "find-", "dump-keychain", "export"] where code[call].contains(token) {
-            failures.append("'\(token)' in the keychain step could print the topic")
-        }
-        // Outcome: 0 is reported, 44 (errSecItemNotFound) is nothing to do,
-        // anything else is a collected failure — and no line prints a value.
-        let tail = code[(call + 1)...].prefix(12)
-        let expected = [#"KEYCHAIN_STATUS=$?"#, #"case "$KEYCHAIN_STATUS" in"#, "0)",
-                        #"echo "removed: the ntfy topic from the login keychain""#,
-                        #"REVERTED+=("ntfy topic removed from the login keychain")"#, ";;", "44)",
-                        #"echo "ok: no NapCat ntfy topic in the keychain — nothing to remove""#, ";;", "*)"]
-        if Array(tail.prefix(expected.count)) != expected {
-            failures.append("the keychain step's outcome must be: 0 reported, 44 nothing to do, else a failure")
-        }
-        if !tail.contains(where: { $0.hasPrefix("FAILURES+=(\"could not remove the ntfy topic from the keychain") }) {
-            failures.append("any other exit must be a collected failure")
-        }
-        // Inside the invoking-user block, after the defaults step.
+        // Inside the invoking-user block, after the defaults step, the topic's first.
         if let defaultsDelete = code.firstIndex(where: { $0.contains(#"/usr/bin/defaults delete "$DEFAULTS_DOMAIN""#) }),
-           defaultsDelete > call {
-            failures.append("the keychain step must follow the defaults step")
+           defaultsDelete > calls[0] {
+            failures.append("the keychain steps must follow the defaults step")
         }
         return failures
     }
@@ -380,7 +415,8 @@ struct KeychainTopicStoreTests {
     }
 
     /// Canary: a drifted name, a printing flag, a find- form, kept output, a
-    /// root-context run, or "not found" counted as a failure must each trip.
+    /// root-context run, or "not found" counted as a failure must each trip —
+    /// for either item (S-PAIR-C1.5: the paired key's step too, and its loss).
     @Test func theUninstallerKeychainLockCatchesMutants() throws {
         let script = try Self.uninstallScript()
         try #require(Self.keychainParityFailures(script).isEmpty && Self.keychainDeleteFailures(script).isEmpty,
@@ -388,6 +424,10 @@ struct KeychainTopicStoreTests {
         let parityMutants: [(String, String, String)] = [
             ("service drifted", #"KEYCHAIN_SERVICE="com.muratalkan.napcat""#, #"KEYCHAIN_SERVICE="com.muratalkan.NapCat""#),
             ("account drifted", #"KEYCHAIN_ACCOUNT="ntfy-topic""#, #"KEYCHAIN_ACCOUNT="ntfyTopic""#),
+            ("the paired key's service drifted", #"PAIRED_KEY_SERVICE="com.muratalkan.napcat""#, #"PAIRED_KEY_SERVICE="com.napcat""#),
+            ("the paired key's account drifted", #"PAIRED_KEY_ACCOUNT="paired-iphone-key""#, #"PAIRED_KEY_ACCOUNT="paired-phone-key""#),
+            ("the paired key's account defined twice", #"PAIRED_KEY_ACCOUNT="paired-iphone-key""#,
+             "PAIRED_KEY_ACCOUNT=\"paired-iphone-key\"\nPAIRED_KEY_ACCOUNT=\"ntfy-topic\""),
         ]
         for (name, target, replacement) in parityMutants {
             let mutant = script.replacingOccurrences(of: target, with: replacement)
@@ -395,6 +435,8 @@ struct KeychainTopicStoreTests {
             #expect(!Self.keychainParityFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
         let call = "delete-generic-password -s \"$KEYCHAIN_SERVICE\" -a \"$KEYCHAIN_ACCOUNT\" >/dev/null 2>&1"
+        let pairedCall = "delete-generic-password -s \"$PAIRED_KEY_SERVICE\" -a \"$PAIRED_KEY_ACCOUNT\" >/dev/null 2>&1"
+        let pairedOpen = "    /bin/launchctl asuser \"$TARGET_UID\" /usr/bin/sudo -u \"$TARGET_USER\" \\\n        /usr/bin/security " + pairedCall + "\n"
         let deleteMutants: [(String, String, String)] = [
             ("password printed (-g)", call, call.replacingOccurrences(of: " -a", with: " -g -a")),
             ("find- form", "delete-generic-password -s", "find-generic-password -w -s"),
@@ -404,6 +446,15 @@ struct KeychainTopicStoreTests {
             ("not found counted as a failure", "        44)\n", "        4)\n"),
             ("second security call", "    KEYCHAIN_STATUS=$?\n",
              "    KEYCHAIN_STATUS=$?\n    /usr/bin/security find-generic-password -s x\n"),
+            // S-PAIR-C1.5 (#170): the paired key's step alone.
+            ("the paired key's step dropped", pairedOpen, ""),
+            ("the paired key printed (-w)", pairedCall, pairedCall.replacingOccurrences(of: " -a", with: " -w -a")),
+            ("the paired key's output kept", " >/dev/null 2>&1\n    PAIRED_KEY_STATUS", "\n    PAIRED_KEY_STATUS"),
+            ("the paired key deleted as root", pairedOpen, "    /usr/bin/security " + pairedCall + "\n"),
+            ("the paired key's not-found a failure", "case \"$PAIRED_KEY_STATUS\" in\n        0)",
+             "case \"$PAIRED_KEY_STATUS\" in\n        44) FAILURES+=(\"x\") ;;\n        0)"),
+            ("the paired key's failure not collected", "FAILURES+=(\"could not remove the paired iPhone key from the keychain",
+             "echo \"could not remove the paired iPhone key from the keychain"),
         ]
         for (name, target, replacement) in deleteMutants {
             let mutant = script.replacingOccurrences(of: target, with: replacement)

@@ -56,3 +56,29 @@ you tick Show), and `scripts/uninstall.sh` deletes the keychain item and the
 user defaults without printing either. The full rationale and the honest
 trade-offs are in the README's [Security model](README.md#security-model)
 section.
+
+## The paired iPhone key
+
+Remote approvals (a preview, off by default) pair one iPhone with the Mac.
+The Mac keeps that phone's **public** key as one generic-password item in
+your login keychain: service `com.muratalkan.napcat`, account
+`paired-iphone-key`, shown in Keychain Access as **NapCat paired iPhone
+key**. The item holds the phone's P-256 public key, the short code both
+devices showed, and when it was paired, as text. It asks for no
+synchronization, so iCloud Keychain never carries it off this Mac.
+
+It is not a secret, but it is what the Mac would trust a signed answer by,
+so its integrity matters: it is written only when you confirm, on the Mac,
+that both devices show the same code, and a new pairing replaces it in one
+write. **Unpair…** in Settings › Claude deletes it and turns Remote
+approvals off. `scripts/uninstall.sh` deletes it too, as you and without
+printing it. Like the topic, it is guarded against other apps by the
+keychain's access prompt, which is not a wall against software already
+running as you.
+
+While a pairing is under way, the iPhone's reply travels as one record in
+your iCloud private database, every field but the format version
+encrypted, and the Mac deletes it when the pairing ends. The pairing code
+on the Mac's screen never leaves it: the record is named after a hash of
+that code, which is how the Mac finds it, and it carries only a proof that
+the phone saw the code. Pair in private while the code is up.
