@@ -341,7 +341,8 @@ import Testing
         "Model/RequestStatus.swift": ["let match = biometric?.name ?? \"the biometric match\"": 2,
                                       "return PhoneLine(text: \"Confirming — \\(Self.name(verdict)), waiting for \\(match)\", severity: .nominal)": 1],
         "Screen/PairingScreen.swift": [
-            "nonisolated static let compareHint = \"Your Mac shows a code too. If the two match, confirm on your Mac, then here. \"": 1,
+            "nonisolated static let compareHint = \"Your Mac is showing a code too. If all three groups match, confirm on your Mac first — \"": 1,
+            "+ \"then tap Codes Match here. If they don't match, tap Codes Don't Match here and on your Mac; nothing is paired.\"": 1,
             "return PhoneLine(text: \"Confirming — waiting for \\(biometry.kind?.name ?? \"the biometric match\")\", severity: .nominal)": 1],
     ])
 

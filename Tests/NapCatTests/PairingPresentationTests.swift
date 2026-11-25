@@ -80,9 +80,9 @@ struct PairingPresentationTests {
         let sheet = Self.content(state, at: 3)
         #expect(sheet.screen == .compare && sheet.title == "Compare the Codes" && sheet.qrPayload == nil)
         #expect(sheet.fingerprint == candidate.fingerprint)
-        #expect(sheet.status.text == "Compare — your iPhone shows a code too. If they match, confirm here first, then on your iPhone.")
+        #expect(sheet.status.text == "Your iPhone is showing a code too. If all three groups match, confirm here first, then on your iPhone.")
         #expect(sheet.actions == [.theyDontMatch, .codesMatch], "Codes Match last, and not the default: nothing answers Return")
-        #expect(sheet.actions.map(\.title) == ["They Don't Match", "Codes Match"])
+        #expect(sheet.actions.map(\.title) == ["Codes Don't Match", "Codes Match"])
         #expect(sheet.countdown == "Code expires in 4:57", "the window bounds the comparison too")
         var committing = state
         _ = committing.apply(.codesMatch(now: Self.start + 4))
@@ -292,6 +292,93 @@ struct PairingPresentationTests {
         #expect(PairingSheetContent.countdown(secondsLeft: 65) == "Code expires in 1:05")
         #expect(PairingSheetContent.countdown(secondsLeft: 9) == "Code expires in 0:09")
         #expect(PairingSheetContent.countdown(secondsLeft: -3) == "Code expires in 0:00")
+    }
+
+    /// The S1c variant ruling: VoiceOver's countdown is coarse — whole
+    /// minutes (rounded down, never promising time), then under a minute,
+    /// under 30 seconds and under 10 seconds — so it changes once a minute,
+    /// then at 30 s and 10 s, never every second.
+    @Test func theCountdownIsSpokenCoarsely() {
+        let expected: [(Int, String)] = [
+            (300, "Code expires in 5 minutes"), (299, "Code expires in 4 minutes"), (120, "Code expires in 2 minutes"),
+            (119, "Code expires in 1 minute"), (60, "Code expires in 1 minute"), (59, "Code expires in under a minute"),
+            (30, "Code expires in under a minute"), (29, "Code expires in under 30 seconds"),
+            (10, "Code expires in under 30 seconds"), (9, "Code expires in under 10 seconds"),
+            (0, "Code expires in under 10 seconds"), (-3, "Code expires in under 10 seconds"),
+        ]
+        for (seconds, text) in expected {
+            #expect(PairingSheetContent.spokenCountdown(secondsLeft: seconds) == text, "\(seconds) s")
+        }
+        let changes: [Int] = (0..<300).reversed().filter {
+            PairingSheetContent.spokenCountdown(secondsLeft: $0) != PairingSheetContent.spokenCountdown(secondsLeft: $0 + 1)
+        }
+        let marks: [Int] = [299, 239, 179, 119, 59, 29, 9]
+        #expect(changes == marks, "once a minute, then at 30 s and 10 s")
+    }
+
+    // MARK: - The code (the S1c variant ruling, Variant A)
+
+    static let code: PairingFingerprint = PairingFingerprint(lowercaseHex: "8a2c854aa45c")!
+
+    /// The code's text is the wire's `XXXX XXXX XXXX` (what a selection
+    /// copies and VoiceOver spells out); the sheet's wider gaps are
+    /// kerning on the two spaces alone, and the pane's code (no gap) is
+    /// plain.
+    @Test func theCodeIsTheWireStringWithItsGapsKerned() {
+        let gap: CGFloat = PairingSheetMetrics.codeGroupGap
+        let drawn: AttributedString = PairingCodeText.drawn(Self.code, groupGap: gap)
+        let text: String = String(drawn.characters)
+        #expect(text == "8A2C 854A A45C" && text == Self.code.grouped)
+        let texts: [String] = drawn.runs.map { String(drawn[$0.range].characters) }
+        let kerns: [CGFloat?] = drawn.runs.map { $0[AttributeScopes.SwiftUIAttributes.KerningAttribute.self] }
+        let expectedTexts: [String] = ["8A2C", " ", "854A", " ", "A45C"]
+        let expectedKerns: [CGFloat?] = [nil, gap, nil, gap, nil]
+        #expect(texts == expectedTexts && kerns == expectedKerns, "\(texts) \(kerns)")
+        let plain: AttributedString = PairingCodeText.drawn(Self.code, groupGap: 0)
+        let plainText: String = String(plain.characters)
+        #expect(plainText == Self.code.grouped && plain.runs.count == 1, "the pane's code is plain")
+    }
+
+    /// Variant A at the sheet's width: the large title's monospaced face,
+    /// each gap about one character wider (a gap reads two spaces wide),
+    /// and all twelve characters on one line inside the sheet's content
+    /// width — measured with the system's own font.
+    @Test func theCodeFitsOneLineWithGapsTwoSpacesWide() throws {
+        let gap: CGFloat = PairingSheetMetrics.codeGroupGap
+        let size: CGFloat = NSFont.preferredFont(forTextStyle: .largeTitle).pointSize
+        let face: NSFont = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let advance: CGFloat = NSAttributedString(string: " ", attributes: [.font: face]).size().width
+        #expect(abs(gap - advance) <= 1, "gap \(gap) vs one character \(advance)")
+        let line: NSMutableAttributedString = NSMutableAttributedString(string: Self.code.grouped, attributes: [.font: face])
+        let spaces: [Int] = [4, 9]
+        for offset in spaces { line.addAttribute(.kern, value: gap, range: NSRange(location: offset, length: 1)) }
+        let width: CGFloat = line.size().width
+        let plainWidth: CGFloat = NSAttributedString(string: Self.code.grouped, attributes: [.font: face]).size().width
+        let room: CGFloat = PairingSheetMetrics.width - 2 * (PanelMetrics.loose + PanelMetrics.regular)
+        #expect(width <= room, "the code (\(width) pt) fits the sheet's content width (\(room) pt) on one line, unscaled")
+        #expect(abs(width - plainWidth - 2 * gap) < 0.5, "the two gaps, and only they, are wider")
+    }
+
+    /// The sheet's composition, as written: the code at the large title,
+    /// with the gap; the pane's code unchanged; VoiceOver hears the wire
+    /// string spelled out under the label "Code", and the countdown's
+    /// coarse form, not its ticking text.
+    @Test func theSheetDrawsTheCodeLargeAndSpellsItOut() throws {
+        let sheet: String = MenuPanelStructureTests.flat(try MenuPanelStructureTests.code("PairingSheet.swift"))
+        let panes: String = MenuPanelStructureTests.flat(try MenuPanelStructureTests.code("SettingsPanes.swift"))
+        let large: String = "PairingCodeText(fingerprint: fingerprint, font: .largeTitle, groupGap: PairingSheetMetrics.codeGroupGap)"
+        let code: String = "Text(Self.drawn(fingerprint, groupGap: groupGap)) .font(font.monospaced()) .lineLimit(1) "
+            + ".minimumScaleFactor(0.8) .textSelection(.enabled) .accessibilityLabel(PairingSheetContent.codeLabel) "
+            + ".accessibilityValue(Text(fingerprint.grouped).speechSpellsOutCharacters())"
+        let countdown: String = "Text(countdown) .font(.caption) .monospacedDigit() .foregroundStyle(.secondary) "
+            + ".accessibilityElement(children: .ignore) .accessibilityLabel(PairingSheetContent.spokenCountdown(secondsLeft: secondsLeft))"
+        let seconds: String = "let secondsLeft: Int = pairing.state.secondsLeft(now: pairing.now.timeIntervalSince1970)"
+        let shapes: [String] = [large, code, countdown, seconds]
+        for shape in shapes {
+            #expect(sheet.contains(shape), "the sheet lost: \(shape)")
+        }
+        #expect(ApprovalChannelStructureTests.count("PairingCodeText(", in: sheet) == 1, "the sheet draws the code once")
+        #expect(panes.contains("PairingCodeText(fingerprint: fingerprint, font: .body)"), "the pane's code keeps its size and plain gaps")
     }
 
     // MARK: - Accessibility

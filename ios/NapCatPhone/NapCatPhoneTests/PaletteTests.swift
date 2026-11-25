@@ -80,9 +80,9 @@ import Testing
         let theme = ThemeID.fallback.theme(palette: palette)
         #expect(theme.id == base.id && theme.displayName == base.displayName)
         #expect([theme.titleFont, theme.sectionFont, theme.bodyFont, theme.metaFont, theme.detailFont,
-                 theme.timestampFont, theme.pillFont, theme.emptyFont]
+                 theme.timestampFont, theme.pillFont, theme.emptyFont, theme.codeFont]
             == [base.titleFont, base.sectionFont, base.bodyFont, base.metaFont, base.detailFont,
-                base.timestampFont, base.pillFont, base.emptyFont])
+                base.timestampFont, base.pillFont, base.emptyFont, base.codeFont])
         #expect([theme.margin, theme.rowPadding, theme.rowGap, theme.innerGap, theme.cornerRadius,
                  theme.pillCornerRadius, theme.borderWidth, theme.hardShadow, theme.minTouchTarget, theme.entranceOffset]
             == [base.margin, base.rowPadding, base.rowGap, base.innerGap, base.cornerRadius,

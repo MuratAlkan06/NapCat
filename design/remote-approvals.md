@@ -862,7 +862,7 @@ arms anything.
     a tampered record refused, a phone that cancels after the Mac, a
     rotation, Unpair's kill switch, and the sheet under Full Keyboard
     Access.
-- **S-PAIR-C1.6** (this slice, issue #172). The phone goes live and the
+- **S-PAIR-C1.6** (issue #172). The phone goes live and the
   zone exists. Nothing arms: the verifier is still unwired, the approval
   files' one armed literal is still `armed: { false }`, and the phone's
   decision writer is still built by no app source.
@@ -939,6 +939,32 @@ arms anything.
     PairingResponse record type to Production: the first live ceremony
     (which creates the zone), a pairing with the zone already there, and
     the N-25 line read during the device drills.
+- **S1c Variant A** (this slice, issue #176). The comparison step's
+  presentation, on both devices, as the S1c variant ruling chose (prior
+  art: every shipping compare screen shows its code plain, large and
+  grouped by whitespace, never in tiles, which read as entry). Nothing in
+  the ceremony changed: Codes Match is a click only, nothing answers
+  Return, Esc cancels, and the Mac confirms first.
+  - *The Mac's sheet.* The code is drawn at the large title, on one line
+    at the sheet's width, its three groups set apart by gaps about one
+    character wider (kerning on the two spaces, so the text stays the
+    wire's `XXXX XXXX XXXX`: what a selection copies, and what VoiceOver
+    spells out one character at a time). The body reads "Your iPhone is
+    showing a code too. If all three groups match, confirm here first,
+    then on your iPhone."; the deny button is "Codes Don't Match". The
+    countdown's spoken form is coarse: whole minutes, then under a
+    minute, under 30 seconds and under 10 seconds. The pane's code is
+    unchanged.
+  - *The phone's mirror.* The same plain string in the same face (the
+    system's monospaced, regular) with the same gap ratio, at the phone's
+    title size, on one line (at the largest text sizes it breaks between
+    groups only); VoiceOver spells it out the same way. The hint gains
+    the totality cue and the Mac's order: "Your Mac is showing a code
+    too. If all three groups match, confirm on your Mac first — then tap
+    Codes Match here. If they don't match, tap Codes Don't Match here and
+    on your Mac; nothing is paired." The deny is labelled Codes Don't
+    Match and still cancels: the phone can't tell a mismatch from a
+    cancel, and both end alike, with Scan Again.
 - **Next.** The owner-run Production schema deploy of the PairingResponse
   record type and the first live ceremony with its drills, then S-PAIR-C2
   (the verifier wired as the only road from a reading to the lifecycle, and
