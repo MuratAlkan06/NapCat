@@ -303,10 +303,13 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
 
     /// The shell holds the paired-key slot (PairingStructureTests lock 7): it
     /// prints, debug-prints, dumps and reflects as a fixed word and nothing
-    /// more, so no reflection — a `Mirror`, or `customMirror.descendant` from
-    /// any wrapper, an array or an optional — reaches the slot through it.
-    /// The conformance is the class's own, on its declaration (an extension
-    /// of the controller is banned, lock 6).
+    /// more, so no print, description or `Mirror`-based walk — a `Mirror`, or
+    /// `customMirror.descendant` from any wrapper, an array or an optional —
+    /// reaches the slot through it. It does NOT stop runtime reflection: the
+    /// runtime's own field reader ignores `CustomReflectable` and reads the
+    /// stored fields as declared. Lock 7's word bans stop that, not this
+    /// redaction. The conformance is the class's own, on its declaration (an
+    /// extension of the controller is banned, lock 6).
     nonisolated var description: String { "pairing (redacted)" }
     nonisolated var debugDescription: String { description }
     nonisolated var customMirror: Mirror { Mirror(self, children: [], displayStyle: .class) }

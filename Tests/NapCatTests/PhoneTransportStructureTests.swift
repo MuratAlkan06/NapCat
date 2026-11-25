@@ -28,6 +28,10 @@ import Testing
 /// unapplied reference is a site too, not only a call); every line of the
 /// sender naming its `database` is pinned; and the live pairing database's
 /// two submits and its own check (`PairingRecordGuard`) are pinned whole.
+///
+/// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-B): every line
+/// of the sender naming a `container` is pinned too, and key-value coding is
+/// named nowhere in the sender, both in every scan copy.
 struct PhoneTransportStructureTests {
     static let cloudKitFile = "CloudKitMessageSender.swift"
     static let factoryHead = "static func makeLiveStore() -> (any CloudKitAlertStore)? {"
@@ -432,7 +436,124 @@ struct PhoneTransportStructureTests {
         for pattern in alertLaneBans where Lock.hits(pattern, in: file) {
             failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the alert's own add")
         }
+        failures += containerNameFailures(file)
         return failures
+    }
+
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-B): its G2
+    /// reached the private database from an extension of the live pairing
+    /// database by key-value coding on the container —
+    /// `container.value(forKey: "private" + "CloudDatabase")`, the key split —
+    /// naming neither `database` nor `privateCloudDatabase`, the only words
+    /// R3 pinned; as planted it passed every lock. So, in every scan copy:
+    /// - every line of the sender naming a `container` is pinned: the two
+    ///   factories' constructions, the two holders, their inits and their
+    ///   reads of the private database, the alert store's account check, and
+    ///   the two texts that say the word (any new use of a container fails,
+    ///   however it would reach a database);
+    /// - and key-value coding — a property read or written by its name as a
+    ///   string, on any object — is named nowhere in the sender (no site
+    ///   today; the record's fields are set by subscript).
+    /// Belt and braces: each alone catches G2, on either live conformer.
+    static let containerSites: [String: Int] = [
+        "static let containerText = \"the NapCat iCloud container is not set up\"": 1,
+        "return LiveCloudKitAlertStore(container: CKContainer(identifier: AlertWire.containerIdentifier))": 1,
+        "return LivePairingRecordDatabase(container: CKContainer(identifier: ApprovalWire.containerIdentifier))": 1,
+        "private let container: CKContainer": 2,
+        "init(container: CKContainer) {": 2,
+        "self.container = container": 4,
+        "self.database = container.privateCloudDatabase": 2,
+        "container.accountStatus { status, error in completion(status, error) }": 1,
+        "static let containersEntitlement = \"com.apple.developer.icloud-container-identifiers\"": 1,
+    ]
+
+    /// Key-value coding's doors: `value(forKey:)`, `value(forKeyPath:)` and
+    /// `value(forUndefinedKey:)`; every `setValue…`/`setValuesForKeys`/
+    /// `setNilValueForKey`; the collection proxies and the bulk read.
+    static let keyValueCodingBans = [#"\bvalue\s*\(\s*for(?:Undefined)?Key"#, #"\bset(?:Nil)?Values?\w*"#,
+                                     #"\b(?:mutable(?:Ordered)?(?:Array|Set)Value|dictionaryWithValues)\b"#]
+
+    /// `file`: the sender, whole-line comments removed.
+    static func containerSiteFailures(_ file: String) -> [String] {
+        var failures: [String] = []
+        for copy in LidGuardStructureTests.constructorScanCopies(file) {
+            failures += ApprovalRecordPathStructureTests.siteFailures(
+                #"\bcontainer\b"#, in: copy, file: cloudKitFile, allowed: containerSites,
+                rule: "the containers are built, held and read for their database and account status on their pinned lines alone")
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    static func keyValueCodingFailures(_ file: String) -> [String] {
+        var failures: [String] = []
+        for copy in LidGuardStructureTests.constructorScanCopies(file) {
+            for pattern in keyValueCodingBans where ApprovalRecordPathStructureTests.hits(pattern, in: copy) {
+                failures.append("'\(pattern)' in \(cloudKitFile) — nothing reads or writes a property by its name as a string")
+            }
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    static func containerNameFailures(_ file: String) -> [String] {
+        ApprovalRecordPathStructureTests.unique(containerSiteFailures(file) + keyValueCodingFailures(file))
+    }
+
+    /// F-B's canaries: G2, as planted, on the live pairing database and on
+    /// the live alert store (each is caught by the pin alone and by the ban
+    /// alone, and by nothing else in the alert lane's lock — the gap), and
+    /// the doors around it.
+    @Test func theSendersContainersAreNamedOnTheirLinesAlone() throws {
+        let sources = try LidGuardStructureTests.swiftSources(LidGuardStructureTests.wholeLineCommentsRemoved)
+        let file = Self.cloudKitFile
+        let sender = sources.first(where: { $0.name == file })?.text ?? ""
+        #expect(sender.contains("private let container: CKContainer"), "vacuity: the sender is in the scan")
+        #expect(Self.containerNameFailures(sender).isEmpty, "\(Self.containerNameFailures(sender))")
+        let g2Read: String = "    func zz(_ i: CKRecord.ID) {\n"
+            + "        (container.value(forKey: \"private\" + \"CloudDatabase\") as? CKDatabase)?.fetch(withRecordID: i) { _, _ in }\n    }\n}\n"
+        let g2Pairing: String = "\nextension LivePairingRecordDatabase {\n" + g2Read
+        let g2Alert: String = "\nextension LiveCloudKitAlertStore {\n" + g2Read
+        let g2: [(String, [(name: String, text: String)])] = [
+            ("G2, as planted: the pairing database's container read by key-value coding", Self.mutate(sources, file) { $0 + g2Pairing }),
+            ("G2 on the live alert store", Self.mutate(sources, file) { $0 + g2Alert }),
+        ]
+        for (name, mutant) in g2 {
+            let text = mutant.first(where: { $0.name == file })?.text ?? ""
+            #expect(text != sender, "canary '\(name)' did not apply")
+            #expect(!Self.containerSiteFailures(text).isEmpty, "canary '\(name)' was NOT caught by the container pin")
+            #expect(!Self.keyValueCodingFailures(text).isEmpty, "canary '\(name)' was NOT caught by the key-value ban")
+            // The alert lane's lock catches it by these two alone.
+            #expect(Self.alertLaneWriteFailures(mutant) == Self.containerNameFailures(text), "canary '\(name)': another rule fired")
+        }
+        let handedOut: String = "\nextension LivePairingRecordDatabase { var zz: CKContainer { container } }"
+        let byKeyPath: String = "\nextension LiveCloudKitAlertStore { func zz() -> Any { self[keyPath: \\.container] } }"
+        let backticked: String = "\nextension LiveCloudKitAlertStore { func zz() -> Any? { container.`value`(forKey: \"zz\") } }"
+        let databaseByName: String = "\nextension LivePairingRecordDatabase { func zz() -> Any? { database.value(forKeyPath: \"zz\") } }"
+        let doors: [(String, [(name: String, text: String)])] = [
+            ("the container handed out", Self.mutate(sources, file) { $0 + handedOut }),
+            ("the container by key path", Self.mutate(sources, file) { $0 + byKeyPath }),
+            ("a backticked key-value read", Self.mutate(sources, file) { $0 + backticked }),
+            ("the database read by a key path string", Self.mutate(sources, file) { $0 + databaseByName }),
+        ]
+        for (name, mutant) in doors {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.alertLaneWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Each ban bites through the lock's own engine, in every scan copy.
+        let probes: [String] = ["c.value(forKey: k)", "c.setValue(v, forKeyPath: k)", "c.mutableArrayValue(forKey: k)"]
+        #expect(probes.count == Self.keyValueCodingBans.count)
+        for (pattern, probe) in zip(Self.keyValueCodingBans, probes) {
+            #expect(ApprovalRecordPathStructureTests.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+        let spellings: [String] = ["c.value(forKeyPath: k)", "c.value (forUndefinedKey: k)", "c.`value`(forKey: k)",
+                                   "c.value/* x */(forKey: k)", "c.setValuesForKeys(d)", "c.setNilValueForKey(k)",
+                                   "c.mutableOrderedSetValue(forKey: k)", "c.dictionaryWithValues(forKeys: k)"]
+        for spelling in spellings {
+            #expect(!Self.keyValueCodingFailures(spelling).isEmpty, "'\(spelling)' was NOT caught")
+        }
+        // Over-match controls: words that only contain the pinned or banned
+        // ones.
+        let near: String = "\nlet containerName = 1, containers = 2, isContainer = 3, valueForKeyCount = 4, settings = 5, zz = d.values"
+        #expect(Self.containerNameFailures(sender + near).isEmpty)
     }
 
     @Test func theAlertLaneWritesItsAlertAndNothingElse() throws {

@@ -815,15 +815,20 @@ arms anything.
     else is never added, and its own result block is told
     `invalidArguments`, so its caller reads its closed failure. The
     controller, the slot and the keychain store redact themselves as types
-    too, so no reflection through any wrapper reaches the slot's item or the
-    real keychain calls; `descendant`, every `_forEachField…` reader and any
-    read of `customMirror` are banned in the four targets, and so is
-    rendering a view, a window or the screen off screen; the sheet view is
-    pinned to its one presentation. The two live factories are pinned as
-    words (an unapplied reference is a site, not only a call), and so is
-    every line naming the sender's `database`; in the keychain store each
-    item call is named once, as a word, at its binding, and every `kSec…`
-    line is pinned.
+    too, so no print, description or `Mirror`-based walk through any
+    wrapper reaches the slot's item or the real keychain calls. The
+    redaction does not stop runtime reflection — the runtime's own field
+    reader ignores `CustomReflectable` — so word bans do: `descendant`,
+    every `_forEachField…` reader, any read of `customMirror`, and (the
+    delta re-check's F-A) any `_silgen_name` or `_extern` declaration and
+    any `swift_reflectionMirror…` name are banned in the four targets, and
+    so is rendering a view, a window or the screen off screen; the sheet
+    view is pinned to its one presentation. The two live factories are
+    pinned as words (an unapplied reference is a site, not only a call), and
+    so is every line naming the sender's `database` or (F-B) its
+    `container`, and key-value coding is banned in the sender; in the
+    keychain store each item call is named once, as a word, at its binding,
+    and every `kSec…` line is pinned.
   - *Uninstall.* `scripts/uninstall.sh` deletes the paired-key item too,
     as the user and value-silent like the topic's (parity-locked to
     `KeychainItemName.pairedPhone`), and SECURITY.md describes the item.

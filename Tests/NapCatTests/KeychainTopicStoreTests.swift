@@ -310,7 +310,9 @@ struct KeychainTopicStoreTests {
     /// keychain calls, and no reflection — its own mirror, or a wrapper's
     /// `customMirror.descendant` — reaches them or its item's name; it
     /// prints, debug-prints and dumps as a fixed word. A control: a plain
-    /// holder of the same calls is reached the same way.
+    /// holder of the same calls is reached the same way. (`Mirror` routes
+    /// only: the runtime's own field reader ignores the redaction —
+    /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` stops it.)
     @Test func theStoreReflectsAndPrintsNothing() {
         let fake = RecordingKeychainCalls()
         let store = KeychainTopicStore(item: .pairedPhone, calls: fake.api)

@@ -337,7 +337,9 @@ struct PairingControllerTests {
     /// optional's, the controller's own mirror, the slot's — reaches the slot
     /// or its item, so nothing is written by that route; the controller and
     /// the slot print and dump as fixed words. A control: an unredacted
-    /// holder of the same item is reached by the same route.
+    /// holder of the same item is reached by the same route. (`Mirror`
+    /// routes only: the runtime's own field reader ignores the redaction —
+    /// `PairingStructureTests.nothingDeclaresARuntimeEntryPoint` stops it.)
     @Test func noReflectionReachesThePairedKeySlot() throws {
         let world = PairingWorld()
         let controller: PairingController = world.controller

@@ -50,6 +50,12 @@ import Testing
 /// `customMirror` to the redactions (a), redacts the controller, the slot
 /// and the keychain store as types (b), and pins the sheet view and bans
 /// off-screen rendering (c); lock 1 pins every `kSec…` line of the store.
+///
+/// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-A): lock 7
+/// also bans, with no allowed site, every declaration that reaches the
+/// runtime by name — `_silgen_name`, `_extern` — and every
+/// `swift_reflectionMirror…` name (a). Runtime reflection ignores a type's
+/// redaction; these bans, not the redactions, stop it.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -889,10 +895,13 @@ struct PairingStructureTests {
     ///     mirror is read or walked);
     /// (b) also covers what leads to the paired-key slot — the controller
     ///     (on its declaration: an extension of it is banned, lock 6), the
-    ///     slot and the keychain store — so no reflection, through any
-    ///     wrapper, reaches the slot's item or the real calls (the behaviour
-    ///     is `PairingControllerTests.noReflectionReachesThePairedKeySlot`
-    ///     and `KeychainTopicStoreTests.theStoreReflectsAndPrintsNothing`);
+    ///     slot and the keychain store — so no print, description or
+    ///     `Mirror`-based walk, through any wrapper, reaches the slot's item
+    ///     or the real calls (the behaviour is
+    ///     `PairingControllerTests.noReflectionReachesThePairedKeySlot` and
+    ///     `KeychainTopicStoreTests.theStoreReflectsAndPrintsNothing`). The
+    ///     runtime's own field reader ignores the redaction: the word bans
+    ///     of (a) stop it (AMENDED again below);
     /// (c) also pins the sheet view to its declaration and its one
     ///     presentation, and bans rendering a view, a window or the screen
     ///     to an image or a document off screen, in the four targets.
@@ -985,6 +994,33 @@ struct PairingStructureTests {
         for token in offscreenCaptureTokens {
             failures += appSiteFailures(token, in: sources, allowed: [:],
                                         rule: "nothing renders a view, a window or the screen off screen")
+        }
+        failures += runtimeEntryFailures(sources)
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security delta re-check's F-A): its G1b
+    /// declared the runtime's own field reader by name —
+    /// `@_silgen_name("swift_reflectionMirror_count")` and `_subscript` —
+    /// and read the slot's item straight through the redacted controller (at
+    /// runtime it wrote an attacker's key into the fake slot). That reader
+    /// is the one `_forEachField` wraps: it ignores `CustomReflectable` and
+    /// reads the stored fields as declared, so no type redaction can stop it,
+    /// and it names no `Mirror`, `descendant`, `customMirror` or
+    /// `_forEachField` — as planted it passed every lock. So (a) also bans,
+    /// in the four targets, in every scan copy, with no allowed site: an
+    /// `@_silgen_name` and an `@_extern` (each declares a runtime or C entry
+    /// point by name) and any `swift_reflectionMirror…` name (the reader's
+    /// entry points, however they would be reached). The redactions stop
+    /// printing, describing and `Mirror`-based walks; these bans, not the
+    /// redactions, stop runtime reflection.
+    static let runtimeEntryTokens = [#"\b_silgen_name\b"#, #"\b_extern\b"#, #"\bswift_reflectionMirror\w*"#]
+
+    static func runtimeEntryFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        for token in runtimeEntryTokens {
+            failures += appSiteFailures(token, in: sources, allowed: [:],
+                                        rule: "nothing declares a runtime entry point — the runtime's field reader ignores every redaction")
         }
         return ApprovalRecordPathStructureTests.unique(failures)
     }
@@ -1124,5 +1160,85 @@ struct PairingStructureTests {
                     + "\n/// never [pairing].customMirror.descendant(0, \"keys\"), never _forEachFieldWithKeyPath"
                     + "\n/// never ImageRenderer(content: PairingSheetView(pairing: p)), never cacheDisplay(in:to:)")
         }).isEmpty)
+    }
+
+    /// The C1.5 security delta re-check's F-A, its canaries: G1b, verbatim
+    /// (the runtime's field reader declared by `@_silgen_name`, the fields
+    /// read by `T.self`), and the re-check's first spelling, by `type(of:)`
+    /// (caught before by lock 6's dynamic-type rule alone, an unrelated
+    /// one). Lock 7 catches each, and by the new ban alone: its other rules
+    /// miss both, the gap the re-check found. Each word bites alone, and
+    /// G1b's entry points match in every scan copy.
+    @Test func nothingDeclaresARuntimeEntryPoint() throws {
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.runtimeEntryFailures(sources).isEmpty, "\(Self.runtimeEntryFailures(sources))")
+        let model = "MenuStateModel.swift"
+        // The two declarations both spellings open with, as planted.
+        let entryPoints: [String] = [
+            "\ntypealias ZZFree = @convention(c) (UnsafePointer<CChar>?) -> Void\n",
+            "@_silgen_name(\"swift_reflectionMirror_count\") func zzN<T>(_: T, type: Any.Type) -> Int\n",
+            "@_silgen_name(\"swift_reflectionMirror_subscript\") func zzC<T>(of: T, type: Any.Type, index: Int, ",
+            "outName: UnsafeMutablePointer<UnsafePointer<CChar>?>, outFreeFunc: UnsafeMutablePointer<ZZFree?>) -> Any\n",
+        ]
+        let itemRead: String = "let item = zzField(keys, \"items\") as? any TopicStore else { return false }\n"
+        let g1bGuard: String = "        guard let pairing, let keys = zzField(pairing, \"keys\") as? PairedKeyStore, " + itemRead
+        let typeOfGuard: String = "        guard let pairing, let keys = zzField(pairing, \"keys\"), " + itemRead
+        let g1bReader: [String] = [
+            "func zzField<T>(_ v: T, _ label: String) -> Any? {\n    for i in 0..<zzN(v, type: T.self) {\n",
+            "        var n: UnsafePointer<CChar>?\n        var f: ZZFree?\n",
+            "        let c = zzC(of: v, type: T.self, index: i, outName: &n, outFreeFunc: &f)\n",
+            "        let name = n.map { String(cString: $0) }\n        f?(n)\n        if name == label { return c }\n    }\n    return nil\n}\n",
+            "extension MenuStateModel {\n    func zzSilgenWrite(_ p: PairedPhone) -> Bool {\n",
+            g1bGuard,
+            "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n",
+        ]
+        let typeOfReader: [String] = [
+            "func zzField(_ v: Any, _ label: String) -> Any? {\n    for i in 0..<zzN(v, type: type(of: v)) {\n",
+            "        var n: UnsafePointer<CChar>?\n        var f: ZZFree?\n",
+            "        let c = zzC(of: v, type: type(of: v), index: i, outName: &n, outFreeFunc: &f)\n",
+            "        let name = n.map { String(cString: $0) }\n        f?(n)\n        if name == label { return c }\n    }\n    return nil\n}\n",
+            "extension MenuStateModel {\n    func zzSilgenWrite(_ p: PairedPhone) -> Bool {\n",
+            typeOfGuard,
+            "        return item.write(PairedKeyStore.text(of: p))\n    }\n}\n",
+        ]
+        let head: String = entryPoints.joined()
+        let g1b: String = head + g1bReader.joined()
+        let typeOf: String = head + typeOfReader.joined()
+        let seamReader: String = "\n@_silgen_name(\"swift_reflectionMirror_count\") func zzN<T>(_: T, type: Any.Type) -> Int\n"
+        let wireExtern: String = "\n@_extern(c, \"zz_reader\") func zzReader() -> Int\n"
+        let mutants: [(String, Sources)] = [
+            ("G1b: the slot written through the runtime's field reader, by T.self", Self.mutate(sources, model) { $0 + g1b }),
+            ("G1b's first spelling, by type(of:)", Self.mutate(sources, model) { $0 + typeOf }),
+            ("the reader declared in another target", Self.mutate(sources, ApprovalChannelStructureTests.seamFile) { $0 + seamReader }),
+            ("an entry point by @_extern, in the wire", Self.mutate(sources, "AlertWire.swift") { $0 + wireExtern }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            let caught = Self.runtimeEntryFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            // Within lock 7, the new ban alone: every other rule misses it.
+            #expect(Self.reflectionFailures(mutant) == caught, "canary '\(name)': another lock 7 rule fired")
+        }
+        // Each word bites alone, through the lock's own engine (and only
+        // its own probe).
+        let probes: [String] = ["@_silgen_name(\"zz\") func zz()", "@_extern(c, \"zz\") func zz()",
+                                "let zz = \"swift_reflectionMirror_subscript\""]
+        #expect(probes.count == Self.runtimeEntryTokens.count)
+        for (i, token) in Self.runtimeEntryTokens.enumerated() {
+            for (j, probe) in probes.enumerated() {
+                #expect(ApprovalRecordPathStructureTests.hits(token, in: probe) == (i == j), "'\(token)' against '\(probe)'")
+            }
+        }
+        // G1b's two entry points, in every scan copy of its exact text.
+        let copies: [String] = [g1b, g1b.replacingOccurrences(of: "`", with: ""), LidGuardStructureTests.cleaned(g1b)]
+        let attributes: [String] = ["_silgen_name", "_silgen_name"]
+        let names: [String] = ["swift_reflectionMirror_count", "swift_reflectionMirror_subscript"]
+        for copy in copies {
+            #expect(ApprovalRecordPathStructureTests.matches(Self.runtimeEntryTokens[0], in: copy) == attributes)
+            #expect(ApprovalRecordPathStructureTests.matches(Self.runtimeEntryTokens[2], in: copy) == names)
+        }
+        // Over-match controls: words that only contain the banned ones.
+        let near: String = "\nlet zzSilgenName = 1, silgen_name = 2, _external = 3, extern = 4, swift_reflection = 5, reflectionMirror = 6"
+        #expect(Self.reflectionFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
     }
 }

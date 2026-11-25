@@ -146,8 +146,10 @@ struct PairedKeyStore: Sendable {
 
 /// The slot's item is the slot's alone (PairingStructureTests locks 1 and 7):
 /// the slot prints, debug-prints, dumps and reflects as a fixed word and
-/// nothing more, so no reflection, from any file and through any wrapper,
-/// reaches its private item to write it.
+/// nothing more, so no print, description or `Mirror`-based walk, from any
+/// file and through any wrapper, reaches its private item to write it. It
+/// does NOT stop runtime reflection (the runtime's own field reader ignores
+/// `CustomReflectable`): lock 7's word bans stop that, not this redaction.
 extension PairedKeyStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     var description: String { "paired key slot (redacted)" }
     var debugDescription: String { description }

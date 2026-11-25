@@ -176,8 +176,10 @@ struct KeychainTopicStore: TopicStore {
 
 /// The store holds the real keychain calls (PairingStructureTests lock 7): it
 /// prints, debug-prints, dumps and reflects as a fixed word and nothing
-/// more, so no reflection reaches its calls or its item's name to make a
-/// keychain call of its own.
+/// more, so no print, description or `Mirror`-based walk reaches its calls
+/// or its item's name to make a keychain call of its own. It does NOT stop
+/// runtime reflection (the runtime's own field reader ignores
+/// `CustomReflectable`): lock 7's word bans stop that, not this redaction.
 extension KeychainTopicStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     var description: String { "keychain item (redacted)" }
     var debugDescription: String { description }
