@@ -93,9 +93,9 @@ empty). `scan`, `camera` and `cameraOff` wait for a scan with the camera
 allowed, not yet asked, or off; `code` scans the fixture code at launch
 (the simulator's Face ID asks, then the screen shows this iPhone's code to
 compare); `stray` scans a code that is not NapCat's; `taken` scans the
-fixture code when a response for it is saved already. The pairing
-response's iCloud writer exists (slice S-PAIR-C1.5) but no live launch
-builds it yet, so this launch is still the pairing screen's only way in.
+fixture code when a response for it is saved already. Outside the
+fixtures, the pairing screen opens from Settings › Pairing › **Pair with
+Mac** (slice S-PAIR-C1.6), and its code comes from the camera alone.
 
 A live launch's first pill, **Checking…**, is not a launch value (no
 probe answers it). The SwiftUI preview "Checking" shows it. Nor is a failed
@@ -139,11 +139,17 @@ It is one standard grouped form in the current palette:
   **Checking…**), and a button to this app's page in the system's
   notification settings. It shares its words and that button with the main
   screen's permission row.
+- **Pairing** (slice S-PAIR-C1.6): **Pair with Mac** opens the pairing
+  screen over Settings, a new pairing each time, only when you tap it. Start
+  with **Pair iPhone…** in Settings › Claude on the Mac, then scan the code
+  it shows. A launch with a request fixture has no row.
 - **About**: the version and build, read from the app's Info.plist, and a
   link to the [project site](https://muratalkan06.github.io/NapCat/).
 
 Settings works only on what it is handed and on the Info.plist. It makes no
-iCloud or network calls, and a test scans its source to keep it that way.
+iCloud or network calls of its own, and a test scans its source to keep it
+that way; the pairing it opens writes its one record to iCloud through the
+live pairing it is handed.
 
 ## Live alerts (device builds)
 

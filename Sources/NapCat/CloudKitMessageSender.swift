@@ -27,11 +27,12 @@ import Security
 /// ENTITLEMENT GATE (spike-proven 2026-11-20): `CKContainer(identifier:)` does
 /// not return an error in a process that lacks the iCloud entitlement — it
 /// TRAPS (SIGTRAP, exit 133). Ad-hoc `make` builds are unentitled by design
-/// (AMFI kills ad-hoc + restricted entitlements), so the container is built
-/// in exactly ONE place, `makeLiveStore()`, behind
+/// (AMFI kills ad-hoc + restricted entitlements), so a container is built
+/// in exactly TWO places, both in this file and each behind
 /// `CloudKitEntitlementProbe.isEntitled`, which reads the running process's
-/// own entitlements and needs none itself. An unentitled process never
-/// constructs a container.
+/// own entitlements and needs none itself: `makeLiveStore()` for the alert
+/// lane and, since S-PAIR-C1.5 (#170), `makeLivePairingDatabase()` for the
+/// pairing record. An unentitled process never constructs a container.
 ///
 /// OUTCOMES (frozen F3 ADR), in the shared `MessageSendOutcome` vocabulary:
 /// - save committed → `accepted` (durably in iCloud; the push is async) — and
@@ -105,10 +106,11 @@ final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
         self.makeStore = makeStore
     }
 
-    /// THE ONE place a CKContainer is constructed — and only after the probe
+    /// One of the TWO places a CKContainer is constructed (the other is
+    /// `makeLivePairingDatabase()`, below) — and only after the probe
     /// confirmed this process is entitled (an unentitled construction traps).
-    /// `PhoneTransportStructureTests` locks both the single site and the
-    /// guard in front of it.
+    /// `PhoneTransportStructureTests` locks both sites and the guard in front
+    /// of each.
     static func makeLiveStore() -> (any CloudKitAlertStore)? {
         guard CloudKitEntitlementProbe.isEntitled else { return nil }
         return LiveCloudKitAlertStore(container: CKContainer(identifier: AlertWire.containerIdentifier))
