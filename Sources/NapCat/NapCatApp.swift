@@ -120,6 +120,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults: defaults
         )
         remoteApprovals = approvals
+        // F4 slice S-PAIR-C1 (pairing): beside the toggle it stops on
+        // Unpair. Construction does no I/O; the paired-key slot is read as
+        // Settings opens. A record name a ceremony left behind (NapCat quit
+        // or crashed mid-pairing) is deleted by that name now.
+        let pairing = PairingController.makeIfEnabled(
+            remoteApprovals: approvals,
+            keys: PairedKeyStore(items: KeychainTopicStore.pairedPhoneKeychain),
+            defaults: defaults
+        )
+        pairing?.deleteRememberedRecord()
 
         // Track C (finish alert + waiting buzz). Same wiring-predicate gate;
         // shares the lid guard's destination/priming and the ONE sender. The
@@ -169,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             phoneTransport: sender,
             updateCheck: updateCheck,
             remoteApprovals: approvals,
+            pairing: pairing,
             defaults: defaults
         )
         statusItemController = StatusItemController(menuContent: menuContent)

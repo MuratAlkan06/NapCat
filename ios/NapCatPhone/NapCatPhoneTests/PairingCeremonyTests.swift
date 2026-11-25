@@ -407,6 +407,11 @@ final class RecordingPairingWriter: PairingResponseWriter {
     /// read over any number of lines, through a refining protocol and
     /// through a typealias (B11-B13), in every scan copy. And no app source
     /// has an implicit `.init(` (B10 built a live ceremony with one).
+    ///
+    /// AMENDED (the S-PAIR-C1 security review's R2): a fixture adopts the
+    /// writer only in a type nothing inherits from
+    /// (`CloudKitStructureTests.fixtureConformerFailures`) — a live subclass
+    /// of a fixture class was a live writer with no seam in its clause.
     static func ceremonyFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         let file = CloudKitStructureTests.codeOnly(app.first { $0.path == ceremonyFile }?.text ?? "")
@@ -462,17 +467,24 @@ final class RecordingPairingWriter: PairingResponseWriter {
                       #"\bUserDefaults\b"#, #"\bAppStorage\b"#] where CloudKitStructureTests.hits(token, in: file) {
             failures.append("'\(token)' in the ceremony — nothing of a pairing is logged or kept")
         }
-        let conformance = CloudKitStructureTests.adoptionPattern("PairingResponseWriter")
+        // #168 (the PR #167 review's (c)): and every other name for the
+        // writer seam, declared in any file, Fixtures/ included.
+        let conformances = CloudKitStructureTests.seamNames("PairingResponseWriter", in: app).sorted()
+            .map(CloudKitStructureTests.adoptionPattern)
         for (path, text) in app {
             let code = CloudKitStructureTests.codeOnly(text)
             let fixture = path.hasPrefix("\(appDir)/Fixtures/")
-            if !fixture, CloudKitStructureTests.constructorScanCopies(code).contains(where: { CloudKitStructureTests.hits(conformance, in: $0) }) {
+            if !fixture, CloudKitStructureTests.constructorScanCopies(code).contains(where: { copy in
+                conformances.contains { CloudKitStructureTests.hits($0, in: copy) } }) {
                 failures.append("\(path) conforms to the pairing writer — only fixtures, until the record path exists")
             }
             if !fixture, CloudKitStructureTests.hits(#"\bPairingCeremony\s*(?:\.\s*init\s*)?\("#, in: code) {
                 failures.append("\(path) builds a ceremony — only the fixture launch, in this slice")
             }
         }
+        // The S-PAIR-C1 security review's R2: and no fixture conformer a live
+        // class could inherit the writer from.
+        failures += CloudKitStructureTests.fixtureConformerFailures("PairingResponseWriter", in: app)
         failures += CloudKitStructureTests.appSiteFailures(#"\b(?:makeProvisional|signProvisional|commitProvisional)\b"#,
                                                            in: app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) },
                                                            allowed: provisionalSites,
@@ -560,6 +572,32 @@ final class RecordingPairingWriter: PairingResponseWriter {
                                         with: "        case .saved: phase = .waiting(fingerprint, until: deadline ?? clock()); _ = keyring.commitProvisional") }),
             ("a code by implicit init", mutate(file) {
                 $0 + "\nextension PairingCeremony { static func spare(k: [UInt8]) -> KeyFingerprint? { .init(publicKey: k) } }" }),
+            // #168 (the PR #167 review's (c)), its G8 shape: a protocol
+            // refining the writer, declared in Fixtures/, with a live
+            // conformer; and an alias there, adopted live.
+            ("G8: a fixture protocol refining the writer, a live conformer", RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\nprotocol ReviewerPairingSeam: PairingResponseWriter {}" }, inbox) {
+                $0 + "\nstruct ReviewerLiveWriter: ReviewerPairingSeam {\n    func write(_ response: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }),
+            ("a fixture alias of the writer, adopted live", RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\ntypealias SpareWriter = PairingResponseWriter" }, inbox) { $0 + "\nactor LiveSpare: SpareWriter {}" }),
+            // The S-PAIR-C1 security review's R2: its P3, as planted — a
+            // fixture CLASS conforming to the writer, subclassed live — and
+            // the class route's neighbours: a fixture extension handing the
+            // writer to a class a live one subclasses, a plain class adopting
+            // a fixture alias of it, and a `final` in a block comment only.
+            ("P3: a fixture class conforming to the writer, subclassed live", RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\nclass ReviewerFixtureBaseWriter: PairingResponseWriter, @unchecked Sendable {\n"
+                    + "    func write(_ response: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }, inbox) {
+                $0 + "\nfinal class ReviewerLiveWriter: ReviewerFixtureBaseWriter, @unchecked Sendable {}" }),
+            ("the writer handed to a fixture class by an extension, subclassed live",
+             RecordPathStructureTests.mutate(RecordPathStructureTests.mutate(app, fixture) {
+                $0 + "\nclass SpareBase: @unchecked Sendable {}\nextension SpareBase: PairingResponseWriter {\n"
+                    + "    func write(_ response: PairingResponse) async -> PairingWriteOutcome { .saved }\n}" }, inbox) {
+                $0 + "\nfinal class SpareLive: SpareBase, @unchecked Sendable {}" }),
+            ("a plain fixture class adopting a fixture alias of the writer", mutate(fixture) {
+                $0 + "\ntypealias SpareSeam = PairingResponseWriter\nclass SpareBase:\n    SpareSeam, @unchecked Sendable {}" }),
+            ("a fixture class final in a block comment only", mutate(fixture) {
+                $0 + "\n/* final */ class SpareBase: PairingResponseWriter, @unchecked Sendable {}" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -571,6 +609,17 @@ final class RecordingPairingWriter: PairingResponseWriter {
         // shapes.
         #expect(Self.ceremonyFailures(mutate(fixture) {
             $0 + "\nactor SpareFixtureWriter:\n    PairingResponseWriter { func write(_ r: PairingResponse) async -> PairingWriteOutcome { .saved } }"
+        }).isEmpty)
+        // R2's over-match controls: a fixture writer in every shape nothing
+        // inherits from — a final class however its modifiers sit, a struct,
+        // an enum — and a plain fixture class that adopts no writer.
+        #expect(Self.ceremonyFailures(mutate(fixture) {
+            $0 + "\nfinal class SpareA: PairingResponseWriter, @unchecked Sendable {}"
+                + "\npublic final class SpareB:\n    PairingResponseWriter, @unchecked Sendable {}"
+                + "\nfinal public class SpareC: PairingResponseWriter, @unchecked Sendable {}"
+                + "\n@MainActor\nfinal class SpareD: PairingResponseWriter, @unchecked Sendable {}"
+                + "\nstruct SpareE: PairingResponseWriter {}\nenum SpareF: PairingResponseWriter {}"
+                + "\nclass SpareHelper: NSObject {}\nfinal class SpareG { class func make(w: any PairingResponseWriter) -> Int { 0 } }"
         }).isEmpty)
         #expect(Self.ceremonyFailures(mutate(inbox) {
             $0 + "\n/// never protocol P: PairingResponseWriter, never typealias W = PairingResponseWriter, never k.commitProvisional()"

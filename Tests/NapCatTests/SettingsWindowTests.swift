@@ -114,7 +114,10 @@ struct SettingsWindowTests {
     /// Every Settings source file. A new one must be added here (and is then
     /// covered by the scans below and by the LidGuard / ClaudeDetection file
     /// sets).
-    static let settingsFiles = ["SettingsContent.swift", "SettingsPanes.swift", "SettingsWindowController.swift"]
+    /// S-PAIR-C1 (#168): the pairing sheet hangs off the window — its file
+    /// is a Settings file under every Settings lock (motion included).
+    static let settingsFiles = ["SettingsContent.swift", "SettingsPanes.swift", "SettingsWindowController.swift",
+                                "PairingSheet.swift"]
     /// The Settings window's SwiftUI view file.
     static let settingsViewFile = "SettingsPanes.swift"
     /// Where the panes are composed (the only place a pane picks its lines).
@@ -1383,9 +1386,18 @@ struct SettingsWindowTests {
         #expect(flat.contains("Button(\"Check for Updates…\") { model.checkForUpdates() }"
                               + " .buttonStyle(SettingsPressButtonStyle(look: .bezel)) .disabled(checking)"),
                 "the update check presses on the bezel and rests while a check is out")
+        // S-PAIR-C1 (#168): the pairing buttons, on the bezel too.
+        #expect(flat.contains("case let .pairingButtons(paired): HStack(spacing: PanelMetrics.regular) {"
+                              + " Button(paired ? MenuStateModel.pairNewButtonTitle : MenuStateModel.pairButtonTitle)"
+                              + " { model.beginPairing() } if paired { Button(MenuStateModel.unpairButtonTitle) { model.unpair() } }"
+                              + " } .buttonStyle(SettingsPressButtonStyle(look: .bezel))"),
+                "Pair iPhone… / Pair a New iPhone… and Unpair… press on the bezel")
         #expect(Self.occurrences(of: "Button(\"", in: views) == 3 && Self.occurrences(of: "SendFeedbackButton(", in: views) == 1
-                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these four")
-        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 3, "every button under the one style")
+                && Self.occurrences(of: "Button(paired ? ", in: views) == 1
+                && Self.occurrences(of: "Button(MenuStateModel.unpairButtonTitle)", in: views) == 1
+                && Self.occurrences(of: "Button(", in: views) == 6
+                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these six")
+        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 4, "every button under the one style")
         for token in [".buttonStyle(.", "PanelPressFadeButtonStyle", "BorderedButtonStyle", "LinkButtonStyle",
                       "PlainButtonStyle", "onLongPressGesture", "DragGesture", ".gesture(", "NSTrackingArea"] {
             #expect(!views.contains(token), "'\(token)' — the press comes from configuration.isPressed alone")

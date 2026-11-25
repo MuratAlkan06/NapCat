@@ -229,6 +229,29 @@ struct SettingsRowView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        case let .pairingStatus(line, fingerprint, hint):
+            // S-PAIR-C1 (#168): the line, the paired code (selectable,
+            // monospaced, spoken one character at a time), and the hint.
+            VStack(alignment: .leading, spacing: PanelMetrics.tight) {
+                PanelCaptionLine(line: line, font: .body)
+                if let fingerprint {
+                    PairingCodeText(fingerprint: fingerprint, font: .body)
+                }
+                if let hint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        case let .pairingButtons(paired):
+            HStack(spacing: PanelMetrics.regular) {
+                Button(paired ? MenuStateModel.pairNewButtonTitle : MenuStateModel.pairButtonTitle) { model.beginPairing() }
+                if paired {
+                    Button(MenuStateModel.unpairButtonTitle) { model.unpair() }
+                }
+            }
+            .buttonStyle(SettingsPressButtonStyle(look: .bezel))
         case let .hookInstall(intro, command, note):
             VStack(alignment: .leading, spacing: PanelMetrics.tight) {
                 Text(intro)

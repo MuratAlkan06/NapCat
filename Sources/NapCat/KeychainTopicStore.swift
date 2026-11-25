@@ -2,16 +2,21 @@ import Foundation
 import os
 import Security
 
-/// The name of NapCat's ONE keychain item — service + account in a single
-/// constant, so the app and `scripts/uninstall.sh` address the same item
-/// (KeychainTopicStoreTests parity-lints the uninstaller's two literals
-/// against this value).
+/// The name of one of NapCat's keychain items — service + account in a
+/// single constant, so the app and `scripts/uninstall.sh` address the same
+/// item (KeychainTopicStoreTests parity-lints the uninstaller's two literals
+/// against the topic's value).
 struct KeychainItemName: Equatable, Sendable {
     let service: String
     let account: String
 
     /// The ntfy topic (issue #103, audit F-2).
     static let ntfyTopic = KeychainItemName(service: "com.muratalkan.napcat", account: "ntfy-topic")
+    /// F4 slice S-PAIR-C1 (#168): the paired iPhone's PUBLIC key, the one
+    /// slot (`PairedKeyStore`). Not a secret, but what it authenticates is
+    /// the point, so it lives beside the topic under the same rules: this
+    /// Mac only, never synchronized.
+    static let pairedPhone = KeychainItemName(service: "com.muratalkan.napcat", account: "paired-iphone-key")
 }
 
 /// What one read of the stored topic found. The value travels only inside
@@ -61,6 +66,8 @@ struct KeychainItemCalls: Sendable {
 }
 
 /// The topic as ONE generic-password item in the user's login keychain.
+/// (Since S-PAIR-C1 the same store, over `KeychainItemName.pairedPhone`,
+/// keeps the paired iPhone's public key as text: `PairedKeyStore`.)
 ///
 /// Item attributes (gate ruling, #103): class generic password;
 /// `kSecAttrAccessibleAfterFirstUnlock`; NO `kSecAttrSynchronizable`, so the
@@ -87,8 +94,17 @@ struct KeychainTopicStore: TopicStore {
     /// The app's store: the real keychain. Referenced by the app wiring only.
     static let loginKeychain = KeychainTopicStore(item: .ntfyTopic, calls: .securityFramework)
 
+    /// S-PAIR-C1 (#168): the paired key's slot in the real keychain.
+    /// Referenced by the app wiring only, handed to `PairedKeyStore`.
+    static let pairedPhoneKeychain = KeychainTopicStore(item: .pairedPhone, calls: .securityFramework)
+
     /// The label Keychain Access (and the Allow dialog) shows for the item.
     static let itemLabel = "NapCat ntfy topic"
+    /// ... and for the paired key's item.
+    static let pairedPhoneItemLabel = "NapCat paired iPhone key"
+
+    /// This store's item label.
+    var label: String { item == .pairedPhone ? Self.pairedPhoneItemLabel : Self.itemLabel }
 
     /// The item's identity — class, service, account. Every call starts here.
     var baseQuery: [String: Any] {
@@ -110,7 +126,7 @@ struct KeychainTopicStore: TopicStore {
     func addAttributes(_ data: Data) -> [String: Any] {
         baseQuery.merging([
             kSecValueData as String: data,
-            kSecAttrLabel as String: Self.itemLabel,
+            kSecAttrLabel as String: label,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]) { _, new in new }
     }

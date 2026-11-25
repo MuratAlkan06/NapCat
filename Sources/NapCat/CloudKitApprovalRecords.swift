@@ -30,6 +30,11 @@ import os
 //   gate's forward answer as it is handed (the tool and the gate's own copy
 //   of the preview), and every withdrawal retracts the record together with
 //   the decisions read for it.
+// - The PAIRING RESPONSE READER (S-PAIR-C1, #168) reads a PairingResponse
+//   record strictly, field by field, into its bytes or a closed fault. It
+//   holds no key and checks no MAC or proof (the ceremony does, with its
+//   nonce), and in this slice only tests hand it a record: no CloudKit
+//   operation for the pairing record exists yet.
 //
 // FAIL-DARK (lint-locked): in this slice nothing in the app builds the
 // writer or the record store, or reads a decision; only test fakes conform
@@ -425,6 +430,82 @@ enum DecisionRecordReader {
         }
         return .claim(DecisionClaim(recordName: record.recordID.recordName, promptID: promptID,
                                     claimedVerdict: verdict, decidedAt: decidedAt, signature: signature))
+    }
+}
+
+// MARK: - The pairing response reader (S-PAIR-C1, #168)
+
+/// A pairing response record as the Mac read it, field by field: what it
+/// carries, or why it is not even that. A reading is NOT a pairing: the
+/// ceremony checks the confirmation MAC and the proof against its own nonce
+/// (`PairingResponseCheck`), and the owner compares the codes, before any key
+/// is kept. Nothing here reads a decision or names the verdict API.
+enum PairingResponseReading: Equatable, Sendable {
+    case response(PairingResponseClaim)
+    case malformed(PairingResponseFault)
+}
+
+/// A well-formed pairing response: its bytes, and nothing more.
+struct PairingResponseClaim: Equatable, Sendable {
+    /// x9.63, 65 bytes, the first 0x04.
+    let publicKey: [UInt8]
+    /// 32 bytes.
+    let confirmation: [UInt8]
+    /// Raw ECDSA, 64 bytes.
+    let proof: [UInt8]
+}
+
+/// Why a pairing response record is not even a reading (closed vocabulary).
+enum PairingResponseFault: String, CaseIterable, Sendable {
+    case wrongRecordType
+    case wrongZone
+    /// Not the name the ceremony's nonce derives.
+    case wrongRecordName
+    /// A field outside `ApprovalWire.PairingResponseField`.
+    case unknownField
+    /// A field the wire encrypts, stored in the clear.
+    case unencryptedField
+    /// A field the wire keeps in the clear, stored encrypted.
+    case misplacedField
+    /// One of the four fields is absent.
+    case missingField
+    case wrongWireVersion
+    case malformedPublicKey
+    case malformedConfirmation
+    case malformedProof
+}
+
+enum PairingResponseReader {
+    /// The strict reading, as the phone's prompt reader reads its records:
+    /// the record type, the zone and the name the ceremony derived, then the
+    /// exact field set (each field encrypted exactly when the wire encrypts
+    /// it, all four present), then each value. Encrypted fields are read from
+    /// the encrypted values only. The first failure wins.
+    static func reading(of record: CKRecord, expectedName: String) -> PairingResponseReading {
+        guard record.recordType == ApprovalWire.RecordType.pairingResponse.rawValue else { return .malformed(.wrongRecordType) }
+        guard record.recordID.zoneID.zoneName == ApprovalWire.zoneName else { return .malformed(.wrongZone) }
+        guard record.recordID.recordName == expectedName else { return .malformed(.wrongRecordName) }
+        let encrypted = Set(record.encryptedValues.allKeys())
+        let plain = Set(record.allKeys()).subtracting(encrypted)
+        let known = Set(ApprovalWire.PairingResponseField.allCases.map(\.rawValue))
+        let secret = Set(ApprovalWire.encryptedPairingResponseFields.map(\.rawValue))
+        guard encrypted.union(plain).isSubset(of: known) else { return .malformed(.unknownField) }
+        guard plain.isDisjoint(with: secret) else { return .malformed(.unencryptedField) }
+        guard encrypted.isSubset(of: secret) else { return .malformed(.misplacedField) }
+        guard encrypted.union(plain) == known else { return .malformed(.missingField) }
+        typealias Field = ApprovalWire.PairingResponseField
+        guard record[Field.wireVersion.rawValue] as? Int == ApprovalWire.wireVersion else {
+            return .malformed(.wrongWireVersion)
+        }
+        guard let key = record.encryptedValues[Field.publicKey.rawValue] as? Data,
+              key.count == ApprovalSigning.publicKeyByteCount, key.first == 0x04 else {
+            return .malformed(.malformedPublicKey)
+        }
+        guard let confirmation = record.encryptedValues[Field.confirmation.rawValue] as? Data,
+              confirmation.count == ApprovalSigning.digestByteCount else { return .malformed(.malformedConfirmation) }
+        guard let proof = record.encryptedValues[Field.proof.rawValue] as? Data,
+              proof.count == ApprovalSigning.signatureByteCount else { return .malformed(.malformedProof) }
+        return .response(PairingResponseClaim(publicKey: Array(key), confirmation: Array(confirmation), proof: Array(proof)))
     }
 }
 

@@ -256,6 +256,9 @@ final class MenuStateModel: ObservableObject {
     // (debugBattery mode) ⇒ off, no row, no line.
     @Published private(set) var remoteApprovalsPhase: RemoteApprovalsPhase = .off
     @Published private(set) var remoteApprovalsFinding: ChannelPolicyFinding?
+    /// F4 slice S-PAIR-C1 mirror — what Settings › Claude shows for the
+    /// pairing. No controller (debugBattery mode) ⇒ nil, no rows.
+    @Published private(set) var pairingPane: PairingPaneState?
 
     /// Owner ruling (e): the Stay Awake turn-on feedback. In-memory UI state,
     /// held OUTSIDE the published mirrors on purpose (see
@@ -286,6 +289,9 @@ final class MenuStateModel: ObservableObject {
     /// Non-nil outside debugBattery mode — the remote-approvals toggle and
     /// kill switch (F4 slice S2).
     private let remoteApprovals: RemoteApprovalsController?
+    /// Non-nil beside the toggle — the pairing ceremony and the paired-key
+    /// slot (F4 slice S-PAIR-C1).
+    private let pairing: PairingController?
 
     /// Stay-awake needs NSAlert flows and menu dismissal — owned by
     /// MenuContentView, reached through this hook.
@@ -311,6 +317,9 @@ final class MenuStateModel: ObservableObject {
     /// Slice W: Settings › Alerts' run-floor popup. MenuContentView saves it
     /// through the ntfy editor's own save path (one clamp, only when changed).
     var requestSessionAlertsFloorChange: ((Int) -> Void)?
+    /// S-PAIR-C1: Unpair… always asks first (an AppKit alert), so it goes
+    /// through MenuContentView.
+    var requestUnpair: (() -> Void)?
 
     var debugControlsVisible: Bool { simulator != nil }
     var claudeDetectionVisible: Bool { detection != nil }
@@ -339,6 +348,7 @@ final class MenuStateModel: ObservableObject {
         phoneTransport: CompositeMessageSender? = nil,
         updateCheck: UpdateCheckController? = nil,
         remoteApprovals: RemoteApprovalsController? = nil,
+        pairing: PairingController? = nil,
         stayAwakeTurnOn: StayAwakeTurnOnFeedback = StayAwakeTurnOnFeedback()
     ) {
         self.power = power
@@ -353,6 +363,7 @@ final class MenuStateModel: ObservableObject {
         self.phoneTransport = phoneTransport
         self.updateCheck = updateCheck
         self.remoteApprovals = remoteApprovals
+        self.pairing = pairing
         self.stayAwakeTurnOn = stayAwakeTurnOn
         refresh()
     }
@@ -415,6 +426,9 @@ final class MenuStateModel: ObservableObject {
         // never probes.
         remoteApprovalsPhase = remoteApprovals?.phase ?? .off
         remoteApprovalsFinding = remoteApprovals?.finding
+        // S-PAIR-C1 mirror: the controller's last read of the slot (it is
+        // re-read as Settings opens, never here).
+        pairingPane = pairing?.paneState
     }
 
     // MARK: Actions (forwarded)
@@ -498,6 +512,13 @@ final class MenuStateModel: ObservableObject {
         remoteApprovals?.setEnabled(enabled)
         refresh()
     }
+
+    // MARK: F4 slice S-PAIR-C1 actions — the pairing sheet opens off the
+    // Settings window (MenuContentView presents it as the ceremony begins);
+    // Unpair… asks first.
+
+    func beginPairing() { pairing?.begin() }
+    func unpair() { requestUnpair?() }
 
     // MARK: Panel presentation — what the panel renders (thin wrappers over
     // the pure mappings; the views compose these and never classify).
@@ -640,8 +661,11 @@ final class MenuStateModel: ObservableObject {
             // so it raises no badge; counted so a later warning would). The
             // Remote approvals status is not counted — its home is the panel
             // row's caption, where it surfaces and is acted on.
+            // S-PAIR-C1: the pairing line (nominal in every state, so it
+            // raises no badge; counted so a later warning would).
             return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal,
-                    remoteApprovalsPolicyLine?.severity ?? .nominal]
+                    remoteApprovalsPolicyLine?.severity ?? .nominal,
+                    pairingPane.map { Self.pairingStatusLine($0).severity } ?? .nominal]
         }
     }
 

@@ -1,3 +1,4 @@
+import NapCatWire
 import ServiceManagement
 
 // MARK: - Settings window composition (Panel 2.0 slice W, issue #78)
@@ -90,6 +91,13 @@ enum SettingsRow: Equatable, Sendable {
     /// F4 slice S2: the remote-approvals switch (the panel row's twin; off is
     /// the kill switch), its status while on, and what it does.
     case remoteApprovals(isOn: Bool, caption: PanelLine?, hint: String)
+    /// F4 slice S-PAIR-C1 (#168): the pairing's state-word-first line, the
+    /// paired phone's code (selectable, monospaced, always shown while one is
+    /// paired: public by design, the audit anchor) and, never paired, what
+    /// pairing does.
+    case pairingStatus(line: PanelLine, fingerprint: PairingFingerprint?, hint: String?)
+    /// Never paired: Pair iPhone…. Paired: Pair a New iPhone… and Unpair….
+    case pairingButtons(paired: Bool)
 }
 
 /// One titled group of rows.
@@ -238,7 +246,8 @@ extension MenuStateModel {
                         paused: claudeDetectionPaused,
                         approvals: remoteApprovalsVisible
                             ? (isOn: remoteApprovalsEnabled, status: remoteApprovalsStatus,
-                               policy: remoteApprovalsPolicyLine) : nil)
+                               policy: remoteApprovalsPolicyLine) : nil,
+                        pairing: pairingPane)
     }
 
     /// Detection (the Claude status — the footer label's own words — the
@@ -247,14 +256,17 @@ extension MenuStateModel {
     /// pointer with the full command, and (F4 slice S2, while the toggle
     /// exists — not in debugBattery mode) Remote approvals: the switch with
     /// its status while on and its hint, then the channel-policy line while
-    /// a reading exists.
+    /// a reading exists — and (S-PAIR-C1, #168, while the pairing controller
+    /// exists, whatever the switch says) the pairing rows: its line, with
+    /// the paired code, then its buttons.
     nonisolated static func claudePane(
         status: PanelLine,
         hook: PanelLine,
         hookVersion: PanelLine?,
         awake: PanelLine?,
         paused: Bool,
-        approvals: (isOn: Bool, status: PanelLine, policy: PanelLine?)? = nil
+        approvals: (isOn: Bool, status: PanelLine, policy: PanelLine?)? = nil,
+        pairing: PairingPaneState? = nil
     ) -> SettingsPaneContent {
         var detection: [SettingsRow] = [.line(status), .line(hook)]
         if let hookVersion { detection.append(.line(hookVersion)) }
@@ -271,8 +283,52 @@ extension MenuStateModel {
             var rows: [SettingsRow] = [.remoteApprovals(isOn: approvals.isOn, caption: approvals.isOn ? approvals.status : nil,
                                                         hint: remoteApprovalsHint)]
             if let policy = approvals.policy { rows.append(.line(policy)) }
+            if let pairing { rows += pairingRows(pairing) }
             sections.append(SettingsSection(title: remoteApprovalsToggleTitle, rows: rows))
         }
         return SettingsPaneContent(sections: sections, footnote: nil)
+    }
+
+    // MARK: Pairing (S-PAIR-C1, #168)
+
+    nonisolated static let pairingNotPairedLine = "Not paired — remote answers need a paired iPhone"
+    nonisolated static let pairingNotPairedHint =
+        "Pairing stores the iPhone's public key on this Mac. Nothing is armed by pairing, and nothing leaves this Mac."
+    nonisolated static let pairingRunningLine = "Pairing — scan the code with your iPhone"
+    nonisolated static let pairingRotatingLine = "Rotating — the current pairing keeps working until you confirm the new code"
+    nonisolated static let pairButtonTitle = "Pair iPhone…"
+    nonisolated static let pairNewButtonTitle = "Pair a New iPhone…"
+    nonisolated static let unpairButtonTitle = "Unpair…"
+    nonisolated static let unpairAlertTitle = "Unpair iPhone?"
+    nonisolated static let unpairAlertText =
+        "NapCat deletes the stored key and stops remote approvals through the kill switch. Pairing again takes about two minutes."
+    nonisolated static let unpairAlertConfirm = "Unpair"
+    nonisolated static let unpairAlertCancel = "Cancel"
+
+    /// `Paired — iPhone, since Nov 24, 2026`.
+    nonisolated static func pairingPairedLine(since: Date) -> String {
+        "Paired — iPhone, since " + since.formatted(.dateTime.month(.abbreviated).day().year())
+    }
+
+    /// The pairing's status line: every state is nominal (never paired is
+    /// the default, not a problem), so it raises no gear badge. ("Changed"
+    /// is reserved: no honest signal for it exists, so it is not shown.)
+    nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {
+        switch pane {
+        case .notPaired: return PanelLine(text: pairingNotPairedLine, severity: .nominal)
+        case .pairing: return PanelLine(text: pairingRunningLine, severity: .nominal)
+        case .paired(_, let since): return PanelLine(text: pairingPairedLine(since: since), severity: .nominal)
+        case .rotating: return PanelLine(text: pairingRotatingLine, severity: .nominal)
+        }
+    }
+
+    nonisolated static func pairingRows(_ pane: PairingPaneState) -> [SettingsRow] {
+        switch pane {
+        case .notPaired, .pairing:
+            return [.pairingStatus(line: pairingStatusLine(pane), fingerprint: nil, hint: pairingNotPairedHint),
+                    .pairingButtons(paired: false)]
+        case .paired(let fingerprint, _), .rotating(let fingerprint, _):
+            return [.pairingStatus(line: pairingStatusLine(pane), fingerprint: fingerprint, hint: nil), .pairingButtons(paired: true)]
+        }
     }
 }

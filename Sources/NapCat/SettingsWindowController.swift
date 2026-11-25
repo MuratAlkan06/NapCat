@@ -25,6 +25,10 @@ struct SettingsWindowHooks {
     /// Runs as the window closes: hand focus back to the app the user came
     /// from, instead of leaving NapCat active with no window at all.
     var afterClose: () -> Void
+    /// S-PAIR-C1 (#168): attach the managed sheet to the window, and take
+    /// it off again.
+    var beginSheet: (_ window: NSWindow, _ sheet: NSWindow) -> Void = { $0.beginSheet($1) }
+    var endSheet: (_ window: NSWindow, _ sheet: NSWindow) -> Void = { $0.endSheet($1) }
 
     static var live: SettingsWindowHooks {
         SettingsWindowHooks(
@@ -54,6 +58,11 @@ struct SettingsWindowHooks {
 /// orders it out. Every time it becomes key, `onBecameKey` runs the owner's
 /// reconciliation (MenuContentView mirrors its menu-open refresh), so the
 /// panes always render freshly observed state.
+///
+/// The managed sheet (S-PAIR-C1, #168): at most ONE sheet, attached to this
+/// window (the pairing ceremony's). The window reports whether the sheet is
+/// key and unoccluded (`onSheetVisible`), and closing the window is the
+/// sheet's Cancel (`onWillClose`).
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private let model: MenuStateModel
@@ -62,7 +71,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
     let selection: SettingsSelection
     /// The owner's refresh, run every time the window becomes key.
     var onBecameKey: (() -> Void)?
+    /// The window is closing (S-PAIR-C1: a ceremony's sheet cancels).
+    var onWillClose: (() -> Void)?
+    /// The managed sheet became key and unoccluded (true), or stopped
+    /// being so (false).
+    var onSheetVisible: ((Bool) -> Void)?
     private(set) var window: NSWindow?
+    /// The managed sheet, while one is attached.
+    private(set) var sheet: NSWindow?
+    private var sheetObservers: [NSObjectProtocol] = []
 
     init(model: MenuStateModel, defaults: UserDefaults, hooks: SettingsWindowHooks = .live) {
         self.model = model
@@ -90,6 +107,40 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
         defaults.set(pane.rawValue, forKey: DefaultsKey.settingsSelectedPane)
         applyTitle()
         window?.toolbar?.selectedItemIdentifier = Self.toolbarIdentifier(pane)
+    }
+
+    /// Attaches `content` as the window's one sheet (opening the window
+    /// first if needed). A second request while one is attached is ignored.
+    func presentSheet(_ content: some View) {
+        guard sheet == nil else { return }
+        let window = self.window ?? makeWindow()
+        let sheet = NSWindow(contentViewController: NSHostingController(rootView: content))
+        sheet.styleMask = [.titled]
+        sheet.isReleasedWhenClosed = false
+        sheet.animationBehavior = .none
+        self.sheet = sheet
+        let center = NotificationCenter.default
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSWindow.didChangeOcclusionStateNotification] {
+            sheetObservers.append(center.addObserver(forName: name, object: sheet, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reportSheetVisibility() }
+            })
+        }
+        hooks.beginSheet(window, sheet)
+    }
+
+    /// Takes the sheet off, if one is attached.
+    func dismissSheet() {
+        guard let sheet else { return }
+        for observer in sheetObservers { NotificationCenter.default.removeObserver(observer) }
+        sheetObservers = []
+        self.sheet = nil
+        if let window { hooks.endSheet(window, sheet) }
+    }
+
+    private func reportSheetVisibility() {
+        guard let sheet else { return }
+        onSheetVisible?(sheet.isKeyWindow && sheet.occlusionState.contains(.visible))
     }
 
     static func toolbarIdentifier(_ pane: SettingsPane) -> NSToolbarItem.Identifier {
@@ -134,6 +185,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSToolbarDeleg
     }
 
     func windowWillClose(_ notification: Notification) {
+        onWillClose?()
         hooks.afterClose()
     }
 

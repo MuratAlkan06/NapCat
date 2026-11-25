@@ -151,11 +151,19 @@ struct NtfyTopicGeneratorTests {
     /// The system random source is used in ONE file; the button is the one
     /// caller of the generator; a generated topic lands only in the VISIBLE
     /// field; and the hints borrow the band only on a pass with no error.
+    ///
+    /// AMENDED (deliberate, S-PAIR-C1, #168): the pairing ceremony's nonce is
+    /// the random source's second user — once each, in the generator and in
+    /// the pairing controller's `secureNonce`, and nowhere else.
     @Test func theGenerateButtonIsWiredThroughTheGeneratorOnly() throws {
         let sources = try LidGuardStructureTests.swiftSources()
+        let randomSources = ["NtfyTopicGenerator.swift": 1, "PairingController.swift": 1]
         for (name, text) in sources where text.contains("SecRandomCopyBytes") {
-            #expect(name == "NtfyTopicGenerator.swift", "SecRandomCopyBytes in \(name)")
+            #expect(randomSources[name] == text.components(separatedBy: "SecRandomCopyBytes(").count - 1,
+                    "SecRandomCopyBytes in \(name)")
         }
+        #expect(Set(sources.filter { $0.text.contains("SecRandomCopyBytes") }.map(\.name)) == Set(randomSources.keys),
+                "vacuity: both users are where the lock looks")
         for (name, text) in sources where text.contains("NtfyTopicGenerator.") {
             #expect(name == "MenuContentView.swift", "\(name) generates topics — only the editor's button may")
         }

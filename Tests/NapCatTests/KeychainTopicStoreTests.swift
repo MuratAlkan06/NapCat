@@ -444,7 +444,8 @@ struct KeychainTopicStoreTests {
     /// What would let a test reach the real keychain: a Security item call,
     /// the binding to the real calls, or the app's real store. Raw text,
     /// comments included — a test file has no reason to name any of them.
-    static let bindingTokens = ["security" + "Framework", "login" + "Keychain"]
+    /// S-PAIR-C1 (#168): and the real paired-key item.
+    static let bindingTokens = ["security" + "Framework", "login" + "Keychain", "pairedPhone" + "Keychain"]
 
     static func testFileViolations(_ sources: [(name: String, text: String)]) -> [String] {
         sources.flatMap { file in
