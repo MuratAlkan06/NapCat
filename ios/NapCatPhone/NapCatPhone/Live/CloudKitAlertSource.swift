@@ -470,6 +470,75 @@ actor CloudKitAlertSource: AlertSource {
         return name.count == ApprovalSigning.recordNameHexDigits && name.allSatisfy(hex.contains)
     }
 
+    // MARK: - F4 approvals zone (slice S-PAIR-C1.6; run by the live approvals database)
+
+    /// The approvals zone's lookup, the first step of every pairing write
+    /// (S-PAIR-C1.6, #172): the zone fetched by its ID, as Apple directs for
+    /// a zone that may exist already (a zone object is never built for an
+    /// existing zone). `then` hears once whether the zone is MISSING
+    /// (`isZoneMissing`). A zone that exists, or a lookup that failed any
+    /// other way, is not missing: nothing is created, and the pairing's save
+    /// that follows decides on its own.
+    ///
+    /// The zone's OWN result decides first: CloudKit reports a zone that is
+    /// not there on the zone (`perRecordZoneResultBlock`), and hands the
+    /// lookup's result block a success for it (a partial failure never
+    /// reaches that block as one: proven on the simulator's CloudKit), so a
+    /// lookup that read its result block alone would never find the zone
+    /// missing, and never create it.
+    static func makeApprovalsZoneLookup(then: @escaping @Sendable (Bool) -> Void) -> CKFetchRecordZonesOperation {
+        let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID])
+        lookup.configuration = approvalsZoneConfiguration
+        let found = ZoneLookupResult()
+        lookup.perRecordZoneResultBlock = { _, result in found.note(result) }
+        lookup.fetchRecordZonesResultBlock = { batch in
+            guard let result = found.finish(batch: batch) else { return }
+            guard case .failure(let error) = result else { return then(false) }
+            let missing = isZoneMissing(error)
+            if !missing { logger.error("approvals zone lookup failed (code \(code(of: error)))") }
+            then(missing)
+        }
+        return lookup
+    }
+
+    /// THE approvals zone's creation, its one site (S-PAIR-C1.6, #172):
+    /// create only. One zone saved, none deleted, and only after the lookup
+    /// found it missing, so an existing zone is never saved over. `then`
+    /// runs once it ends, created or not: a zone still missing fails the
+    /// save after it (`zoneNotFound` reads as unsent, dark), and a failure
+    /// here, the zone's own or the operation's, is logged by its code.
+    static func makeApprovalsZoneCreation(then: @escaping @Sendable () -> Void) -> CKModifyRecordZonesOperation {
+        let creation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: approvalsZoneID)],
+                                                    recordZoneIDsToDelete: nil)
+        creation.configuration = approvalsZoneConfiguration
+        creation.perRecordZoneSaveBlock = { _, result in
+            if case .failure(let error) = result { logger.error("approvals zone not created (code \(code(of: error)))") }
+        }
+        creation.modifyRecordZonesResultBlock = { result in
+            if case .failure(let error) = result { logger.error("approvals zone not created (code \(code(of: error)))") }
+            then()
+        }
+        return creation
+    }
+
+    /// A lookup's error that says the zone is not there: `zoneNotFound`, or
+    /// `userDeletedZone` (the owner deleted the app's iCloud data, and now
+    /// pairs again), on its own or as a one-item partial failure.
+    static func isZoneMissing(_ error: any Error) -> Bool {
+        let nsError = recordLevelError(error as NSError)
+        return nsError.domain == CKErrorDomain
+            && (nsError.code == CKError.Code.zoneNotFound.rawValue || nsError.code == CKError.Code.userDeletedZone.rawValue)
+    }
+
+    /// The zone steps' ceilings: the pairing's save's own.
+    static var approvalsZoneConfiguration: CKOperation.Configuration {
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        return configuration
+    }
+
     /// Accounts other than `available` cannot receive anything.
     static func availability(_ status: CKAccountStatus) -> AccountAvailability {
         status == .available ? .available : .unavailable
@@ -560,6 +629,11 @@ protocol CloudKitApprovalDatabase: Sendable {
 /// and runs the pairing response's create-only save and nothing else.
 /// Anything else is never added: its own result block is told
 /// `invalidArguments`, so its writer reads a closed failure and never hangs.
+///
+/// Before the save, the approvals zone: looked up, and created only when
+/// missing, the app's one zone creation (zone-exists is success). Whatever
+/// that came to, the save runs next, and its own result decides: a zone
+/// that could not be made fails it (`zoneNotFound`), dark, never a crash.
 private struct LiveCloudKitApprovalDatabase: CloudKitApprovalDatabase {
     let container: CKContainer
 
@@ -568,7 +642,14 @@ private struct LiveCloudKitApprovalDatabase: CloudKitApprovalDatabase {
             operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
             return
         }
-        container.privateCloudDatabase.add(operation)
+        let database = container.privateCloudDatabase
+        database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in
+            if missing {
+                database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })
+            } else {
+                database.add(operation)
+            }
+        })
     }
 }
 
@@ -632,5 +713,29 @@ private final class CreatedRecordResult: @unchecked Sendable {
         guard !finished else { return nil }
         finished = true
         return CloudKitAlertSource.decisionOutcome(record: record, batch: batch)
+    }
+}
+
+/// Holds the approvals zone's own failure, if its lookup reported one,
+/// until the lookup's result arrives, then says once what the lookup came
+/// to (S-PAIR-C1.6, #172): the zone's failure first, else the lookup's
+/// result. A zone found is dropped unread: only whether it failed, and why.
+private final class ZoneLookupResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var zoneFailure: (any Error)?
+    private var finished = false
+
+    func note(_ result: Result<CKRecordZone, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if case .failure(let error) = result, zoneFailure == nil { zoneFailure = error }
+    }
+
+    func finish(batch: Result<Void, any Error>) -> Result<Void, any Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return nil }
+        finished = true
+        return zoneFailure.map { .failure($0) } ?? batch
     }
 }

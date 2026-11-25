@@ -67,8 +67,10 @@ import Testing
 /// site, with the live names pinned app-wide; lock 3's live tokens take in
 /// the two new factories; lock 6 admits the conformer's lines and pins its
 /// database `add`; the new lock 6c pins the conformer and its check whole;
-/// lock 8 guards the conformer and the live pairing. The decision writer is
-/// still built by no app source.
+/// the new lock 6d pins the approvals zone's lookup and its one creation
+/// (create only) whole, and lock 7 counts their constructions; lock 8
+/// guards the conformer and the live pairing. The decision writer is still
+/// built by no app source.
 ///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
@@ -688,7 +690,8 @@ import Testing
     static let liveOperationLines: [String: Int] = [
         liveSubmitHead: 1, "guard CloudKitAlertSource.isPairingResponseCreation(operation) else {": 1,
         "operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))": 1,
-        "container.privateCloudDatabase.add(operation)": 1,
+        "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })": 1,
+        "database.add(operation)": 1,
     ]
     static let factoryOperationLines: [String: Int] = [
         seamRequirement: 1, decisionOperation: 2, "operation.savePolicy = .ifServerRecordUnchanged": 2,
@@ -803,12 +806,15 @@ import Testing
             // admits on its pinned line only — a second add there, an add
             // past its check, and the decision's operation handed to it.
             ("a second add in the live approvals database", Self.mutate(app, ck) {
-                $0.replacingOccurrences(of: "        container.privateCloudDatabase.add(operation)\n",
-                                        with: "        container.privateCloudDatabase.add(operation)\n        container.privateCloudDatabase.add(spare)\n") }),
+                $0.replacingOccurrences(of: "                database.add(operation)\n",
+                                        with: "                database.add(operation)\n                database.add(spare)\n") }),
             ("an add before the check", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: "        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {\n",
                                         with: "        container.privateCloudDatabase.add(operation)\n"
                                             + "        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {\n") }),
+            ("the save added before the zone", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        let database = container.privateCloudDatabase\n",
+                                        with: "        let database = container.privateCloudDatabase\n        database.add(operation)\n") }),
             ("the decision's operation submitted to the live database", Self.mutate(app, ck) {
                 $0 + "\nfunc spare(_ d: PhoneDecision, _ db: any CloudKitApprovalDatabase) {\n"
                     + "    db.submit(CloudKitAlertSource.makeDecisionSaveOperation(CloudKitAlertSource.makeDecisionRecord(d)) { _ in })\n}" }),
@@ -980,7 +986,10 @@ import Testing
     static let liveDatabaseBody = "let container: CKContainer " + liveSubmitHead + " "
         + "guard CloudKitAlertSource.isPairingResponseCreation(operation) else { "
         + "operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments))) return } "
-        + "container.privateCloudDatabase.add(operation) }"
+        + "let database = container.privateCloudDatabase "
+        + "database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in if missing { "
+        + "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) }) "
+        + "} else { database.add(operation) } }) }"
     static let checkBody = "guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true, "
         + "let records = operation.recordsToSave, records.count == 1, let record = records.first, "
         + "record.recordType == ApprovalWire.RecordType.pairingResponse.rawValue, record.recordChangeTag == nil, "
@@ -1023,8 +1032,13 @@ import Testing
             ("a refusal left hanging", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: "            operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))\n", with: "") }),
             ("a statement continued under the add", Self.mutate(app, ck) {
-                $0.replacingOccurrences(of: "        container.privateCloudDatabase.add(operation)\n",
-                                        with: "        container.privateCloudDatabase.add(operation)\n        Spare.keep(container)\n") }),
+                $0.replacingOccurrences(of: "                database.add(operation)\n",
+                                        with: "                database.add(operation)\n                Spare.keep(container)\n") }),
+            ("the zone skipped", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            if missing {\n", with: "            if false {\n") }),
+            ("the save skipped once the zone exists", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            } else {\n                database.add(operation)\n            }\n",
+                                        with: "            }\n") }),
             ("a second stored property", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: Self.liveDatabaseAdoption + "\n    let container: CKContainer\n",
                                         with: Self.liveDatabaseAdoption + "\n    let container: CKContainer\n    let spare = Spare()\n") }),
@@ -1050,6 +1064,129 @@ import Testing
         // Over-match control: a whole-line comment naming the shapes.
         #expect(Self.liveDatabaseFailures(Self.mutate(app, ck) {
             $0 + "\n/// never isPairingResponseCreation(o) outside the live database, never container.privateCloudDatabase.add(o)\n"
+        }).isEmpty)
+    }
+
+    // MARK: 6d. The approvals zone: one lookup, one creation, create only (S-PAIR-C1.6, #172)
+
+    /// The zone's two steps, each pinned WHOLE: the lookup fetches the
+    /// approvals zone by its ID and hands on only whether it is missing;
+    /// the creation saves that one zone, deletes none, and always hands on
+    /// (a creation that never handed on would leave the pairing's save
+    /// unrun and its writer waiting). Each factory is declared once and
+    /// used once, by the live approvals database, whose body (lock 6c) runs
+    /// the creation only from the lookup's missing branch. A zone is missing
+    /// only on `zoneNotFound` or `userDeletedZone`, read from the zone's OWN
+    /// result first (CloudKit hands the lookup's result block a success for
+    /// a zone that is not there): the lookup's result holder is pinned
+    /// whole, declared once and built once, by the lookup.
+    static let lookupHead = "static func makeApprovalsZoneLookup(then: @escaping @Sendable (Bool) -> Void) -> CKFetchRecordZonesOperation {"
+    static let lookupBody = #"let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID]) "#
+        + #"lookup.configuration = approvalsZoneConfiguration let found = ZoneLookupResult() "#
+        + #"lookup.perRecordZoneResultBlock = { _, result in found.note(result) } "#
+        + #"lookup.fetchRecordZonesResultBlock = { batch in guard let result = found.finish(batch: batch) else { return } "#
+        + #"guard case .failure(let error) = result else { return then(false) } let missing = isZoneMissing(error) "#
+        + #"if !missing { logger.error("approvals zone lookup failed (code \(code(of: error)))") } then(missing) } return lookup"#
+    static let creationHead = "static func makeApprovalsZoneCreation(then: @escaping @Sendable () -> Void) -> CKModifyRecordZonesOperation {"
+    static let creationBody = #"let creation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: approvalsZoneID)], "#
+        + #"recordZoneIDsToDelete: nil) creation.configuration = approvalsZoneConfiguration "#
+        + #"creation.perRecordZoneSaveBlock = { _, result in if case .failure(let error) = result { "#
+        + #"logger.error("approvals zone not created (code \(code(of: error)))") } } "#
+        + #"creation.modifyRecordZonesResultBlock = { result in if case .failure(let error) = result { "#
+        + #"logger.error("approvals zone not created (code \(code(of: error)))") } then() } return creation"#
+    static let missingHead = "static func isZoneMissing(_ error: any Error) -> Bool {"
+    static let missingBody = "let nsError = recordLevelError(error as NSError) return nsError.domain == CKErrorDomain "
+        + "&& (nsError.code == CKError.Code.zoneNotFound.rawValue || nsError.code == CKError.Code.userDeletedZone.rawValue)"
+    static let holderHead = "private final class ZoneLookupResult: @unchecked Sendable {"
+    static let holderBody = "private let lock = NSLock() private var zoneFailure: (any Error)? private var finished = false "
+        + "func note(_ result: Result<CKRecordZone, any Error>) { lock.lock() defer { lock.unlock() } "
+        + "if case .failure(let error) = result, zoneFailure == nil { zoneFailure = error } } "
+        + "func finish(batch: Result<Void, any Error>) -> Result<Void, any Error>? { lock.lock() defer { lock.unlock() } "
+        + "guard !finished else { return nil } finished = true return zoneFailure.map { .failure($0) } ?? batch }"
+    static let zoneWordSites: [(word: String, sites: [String: Int])] = [
+        ("makeApprovalsZoneLookup", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            lookupHead: 1, "database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in": 1]])),
+        ("makeApprovalsZoneCreation", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            creationHead: 1, "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })": 1]])),
+        ("isZoneMissing", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            missingHead: 1, "let missing = isZoneMissing(error)": 1]])),
+        ("ZoneLookupResult", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            holderHead: 1, "let found = ZoneLookupResult()": 1]])),
+    ]
+
+    static func zoneFailures(_ app: [Source]) -> [String] {
+        let file = CloudKitStructureTests.codeOnly(app.first { $0.path == cloudKitFile }?.text ?? "")
+        var failures: [String] = []
+        for (head, pinned, what) in [(lookupHead, lookupBody, "the lookup"), (creationHead, creationBody, "the creation"),
+                                     (missingHead, missingBody, "the missing-zone reading"),
+                                     (holderHead, holderBody, "the lookup's result holder")] {
+            guard let body = CloudKitStructureTests.body(after: head, in: file) else {
+                failures.append("\(what) moved (the lock would be vacuous)")
+                continue
+            }
+            if SettingsReachabilityTests.flat(body) != pinned {
+                failures.append("\(what) of the approvals zone — exactly as pinned (one zone, create only, always handed on)")
+            }
+        }
+        let stripped = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
+        for (word, sites) in zoneWordSites {
+            failures += CloudKitStructureTests.appSiteFailures(#"\b"# + word + #"\b"#, in: stripped, allowed: sites,
+                                                               rule: "'\(word)' is declared once and used once, by the live approvals database")
+        }
+        return failures
+    }
+
+    @Test func theApprovalsZoneIsCreatedAtOneSiteCreateOnly() throws {
+        let app = try Self.app()
+        #expect(Self.zoneFailures(app).isEmpty, "\(Self.zoneFailures(app))")
+        let ck = Self.cloudKitFile
+        let mutants: [(String, [Source])] = [
+            ("the lookup asks for another zone", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID])",
+                                        with: "CKFetchRecordZonesOperation(recordZoneIDs: [.default])") }),
+            ("every lookup failure read as missing", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "let missing = isZoneMissing(error)", with: "let missing = true") }),
+            ("a found zone read as missing", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "else { return then(false) }", with: "else { return then(true) }") }),
+            ("the creation never hands on", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            then()\n", with: "") }),
+            ("a zone deleted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "recordZoneIDsToDelete: nil)", with: "recordZoneIDsToDelete: [approvalsZoneID])") }),
+            ("a second zone saved", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "[CKRecordZone(zoneID: approvalsZoneID)]",
+                                        with: "[CKRecordZone(zoneID: approvalsZoneID), CKRecordZone(zoneName: \"spare\")]") }),
+            ("unknownItem read as missing", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "nsError.code == CKError.Code.userDeletedZone.rawValue)",
+                                        with: "nsError.code == CKError.Code.userDeletedZone.rawValue || nsError.code == 11)") }),
+            ("the creation run twice", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            if missing {\n",
+                                        with: "            database.add(CloudKitAlertSource.makeApprovalsZoneCreation { })\n            if missing {\n") }),
+            ("the creation built elsewhere", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
+                $0 + "\nlet spare = CloudKitAlertSource.makeApprovalsZoneCreation { }" }),
+            ("the lookup unapplied elsewhere", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
+                $0 + "\nlet spare = CloudKitAlertSource.makeApprovalsZoneLookup" }),
+            // The zone's own result: not read (the C1.6 build's first shape,
+            // which never found a missing zone), read after the lookup's, or
+            // a later failure kept over the first; and the holder built twice.
+            ("the zone's own result never read", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        lookup.perRecordZoneResultBlock = { _, result in found.note(result) }\n", with: "") }),
+            ("the lookup's result read over the zone's", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "return zoneFailure.map { .failure($0) } ?? batch",
+                                        with: "if case .failure = batch { return batch }\n        return zoneFailure.map { .failure($0) } ?? batch") }),
+            ("a later zone failure kept over the first", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "result, zoneFailure == nil { zoneFailure = error }", with: "result { zoneFailure = error }") }),
+            ("the lookup ending twice", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        guard !finished else { return nil }\n        finished = true\n        return zoneFailure",
+                                        with: "        finished = true\n        return zoneFailure") }),
+            ("a second holder", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") { $0 + "\nlet spare = ZoneLookupResult()" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.zoneFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match control: a whole-line comment naming the shapes.
+        #expect(Self.zoneFailures(Self.mutate(app, ck) {
+            $0 + "\n/// never makeApprovalsZoneCreation outside the live database, never isZoneMissing(e) elsewhere\n"
         }).isEmpty)
     }
 
@@ -1103,11 +1240,16 @@ import Testing
     /// the pairing response's), their two save operations (one line each,
     /// the same text) and one subscription (the alert lane's push), each
     /// type with every line it is built on.
+    /// AMENDED (S-PAIR-C1.6, #172): and the approvals zone's lookup, its one
+    /// creation and the one zone that creation saves.
     static let constructions: [String: [String: Int]] = [
         "CKRecord": ["let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,": 1,
                      "let record = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue,": 1],
         "CKModifyRecordsOperation": [decisionOperation: 2],
         "CKQuerySubscription": ["let subscription = CKQuerySubscription(": 1],
+        "CKFetchRecordZonesOperation": ["let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID])": 1],
+        "CKModifyRecordZonesOperation": [CloudKitStructureTests.zoneCreationLine: 1],
+        "CKRecordZone": [CloudKitStructureTests.zoneCreationLine: 1],
     ]
 
     /// The security re-check's L6 (`CKRecord.init(` slipped past a count of

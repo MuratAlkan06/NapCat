@@ -227,6 +227,118 @@ import Testing
         #expect(database.refused == 1)
     }
 
+    // MARK: The approvals zone (S-PAIR-C1.6, #172)
+
+    struct ZoneRow: CustomTestStringConvertible, Sendable {
+        let name: String
+        /// The zone's own result (`perRecordZoneResultBlock`): nil when
+        /// CloudKit reports none, else the zone's error, or none for found.
+        let zone: NSError??
+        /// The lookup's result (`fetchRecordZonesResultBlock`).
+        let lookup: NSError?
+        let missing: Bool
+        var testDescription: String { name }
+    }
+
+    /// Only a zone that is not there reads as missing; a zone found, or a
+    /// lookup that failed any other way, creates nothing. The zone's own
+    /// result decides first: CloudKit reports a missing zone on the zone
+    /// and the lookup as a success (`aPartialFailureReachesTheLookupAsASuccess`).
+    static let zoneRows: [ZoneRow] = [
+        ZoneRow(name: "found", zone: .some(nil), lookup: nil, missing: false),
+        ZoneRow(name: "zoneNotFound on the zone", zone: ck(.zoneNotFound), lookup: nil, missing: true),
+        ZoneRow(name: "userDeletedZone on the zone", zone: ck(.userDeletedZone), lookup: nil, missing: true),
+        ZoneRow(name: "zoneNotFound for the whole lookup", zone: nil, lookup: ck(.zoneNotFound), missing: true),
+        ZoneRow(name: "userDeletedZone for the whole lookup", zone: nil, lookup: ck(.userDeletedZone), missing: true),
+        ZoneRow(name: "zoneNotFound on the zone, the lookup failing otherwise", zone: ck(.zoneNotFound), lookup: ck(.networkFailure),
+                missing: true),
+        ZoneRow(name: "the zone failing otherwise, the lookup saying zoneNotFound", zone: ck(.networkFailure),
+                lookup: ck(.zoneNotFound), missing: false),
+        ZoneRow(name: "unknownItem on the zone", zone: ck(.unknownItem), lookup: nil, missing: false),
+        ZoneRow(name: "networkUnavailable for the whole lookup", zone: nil, lookup: ck(.networkUnavailable), missing: false),
+        ZoneRow(name: "notAuthenticated for the whole lookup", zone: nil, lookup: ck(.notAuthenticated), missing: false),
+        ZoneRow(name: "a two-zone partial failure for the whole lookup", zone: nil,
+                lookup: ModifyOperationScript.partial([ck(.zoneNotFound), ck(.zoneNotFound)]), missing: false),
+        ZoneRow(name: "zoneNotFound's code from another domain on the zone",
+                zone: NSError(domain: "x", code: CKError.Code.zoneNotFound.rawValue), lookup: nil, missing: false),
+        ZoneRow(name: "nothing reported for the zone", zone: nil, lookup: nil, missing: false),
+    ]
+
+    /// The lookup asks for the approvals zone alone, at the save's ceilings,
+    /// and hands on once whether it is missing.
+    @Test(arguments: zoneRows)
+    func theLookupSaysMissingOnlyForAMissingZone(_ row: ZoneRow) throws {
+        let heard = Notes<Bool>()
+        let lookup = CloudKitAlertSource.makeApprovalsZoneLookup { heard.note($0) }
+        #expect(lookup.recordZoneIDs == [CloudKitAlertSource.approvalsZoneID])
+        #expect(lookup.configuration.qualityOfService == .userInitiated)
+        let zoneID = CloudKitAlertSource.approvalsZoneID
+        if case .some(let error) = row.zone {
+            let perZone = try #require(lookup.perRecordZoneResultBlock, "the lookup reads the zone's own result")
+            let zoneResult: Result<CKRecordZone, any Error> = error.map { .failure($0) } ?? .success(CKRecordZone(zoneID: zoneID))
+            perZone(zoneID, zoneResult)
+        }
+        let result: Result<Void, any Error> = row.lookup.map { .failure($0) } ?? .success(())
+        lookup.fetchRecordZonesResultBlock?(result)
+        #expect(heard.all == [row.missing])
+        // The lookup ends once: a second result changes nothing.
+        lookup.fetchRecordZonesResultBlock?(.success(()))
+        #expect(heard.all == [row.missing])
+    }
+
+    /// Why the zone's own result decides: a partial failure handed to the
+    /// lookup's result block reaches it as a SUCCESS (CloudKit's Swift
+    /// bridge reports each zone's error on the zone alone). Found on the
+    /// simulator's CloudKit during S-PAIR-C1.6; if a later SDK changes it,
+    /// this row says so, and the lookup above still reads the zone first.
+    @Test func aPartialFailureReachesTheLookupAsASuccess() {
+        let zoneID = CloudKitAlertSource.approvalsZoneID
+        let byZone: [AnyHashable: Any] = [zoneID: Self.ck(.zoneNotFound)]
+        let partial = NSError(domain: CKErrorDomain, code: CKError.Code.partialFailure.rawValue, userInfo: [CKPartialErrorsByItemIDKey: byZone])
+        let arrived = Notes<Bool>()
+        let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [zoneID])
+        lookup.fetchRecordZonesResultBlock = { result in
+            if case .success = result { arrived.note(true) } else { arrived.note(false) }
+        }
+        lookup.fetchRecordZonesResultBlock?(.failure(partial))
+        #expect(arrived.all == [true])
+        // So a lookup handed only that partial failure finds nothing missing,
+        // and its zone's own result is what says the zone is not there.
+        let heard = Notes<Bool>()
+        let real = CloudKitAlertSource.makeApprovalsZoneLookup { heard.note($0) }
+        real.fetchRecordZonesResultBlock?(.failure(partial))
+        #expect(heard.all == [false])
+    }
+
+    /// The creation saves the approvals zone alone and deletes nothing
+    /// (create only), and hands on once it ends, created or not: the
+    /// pairing's save runs next either way, and its own result decides.
+    @Test(arguments: [nil, ck(.networkUnavailable), ck(.serverRejectedRequest)] as [NSError?])
+    func theCreationSavesTheApprovalsZoneAloneAndHandsOn(_ error: NSError?) throws {
+        let handedOn = Notes<Bool>()
+        let creation = CloudKitAlertSource.makeApprovalsZoneCreation { handedOn.note(true) }
+        let zoneID = CloudKitAlertSource.approvalsZoneID
+        #expect(creation.recordZonesToSave?.map(\.zoneID) == [zoneID])
+        #expect(creation.recordZoneIDsToDelete?.isEmpty ?? true, "create only: no zone is ever deleted")
+        #expect(creation.configuration.qualityOfService == .userInitiated)
+        // The zone's own save result is only logged: it hands nothing on.
+        let perZone = try #require(creation.perRecordZoneSaveBlock, "the creation logs the zone's own failure")
+        let zoneResult: Result<CKRecordZone, any Error> = error.map { .failure($0) } ?? .success(CKRecordZone(zoneID: zoneID))
+        perZone(zoneID, zoneResult)
+        #expect(handedOn.all.isEmpty)
+        let result: Result<Void, any Error> = error.map { .failure($0) } ?? .success(())
+        creation.modifyRecordZonesResultBlock?(result)
+        #expect(handedOn.all == [true])
+    }
+
+    /// A save the zone could not be made for fails on its own, closed:
+    /// `zoneNotFound` reads as unsent (nothing saved), never a crash.
+    @Test func aSaveWithNoZoneReadsAsUnsent() async {
+        let database = ScriptedApprovalDatabase(ModifyOperationScript([.saveFailed(0, Self.ck(.zoneNotFound)),
+                                                                       .batchFailed(Self.ck(.partialFailure))]))
+        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .failed)
+    }
+
     // MARK: Through the ceremony
 
     /// The whole phone half over the real record and operation: the

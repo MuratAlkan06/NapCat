@@ -21,7 +21,9 @@ import Testing
 /// 3. (#153) The alert lane's one database write is the subscription save:
 ///    the file's CloudKit identifiers are an exact allow-list, `save` and
 ///    the private database are pinned to their lines, and no other
-///    database write is named.
+///    database write is named. AMENDED (S-PAIR-C1.6, #172): beside it, the
+///    live approvals database's read and `add` lines, and the approvals
+///    zone's one lookup and one creation (never a deletion), are pinned.
 @Suite struct CloudKitStructureTests {
     typealias Source = (path: String, text: String)
 
@@ -768,10 +770,17 @@ import Testing
     /// that save; and no other database write, other database or `add` is
     /// named at all (`add` as a word: an extension's implicit self names no
     /// dot).
+    ///
+    /// AMENDED (S-PAIR-C1.6, #172): the record path's seam gets its live
+    /// conformer here, so the private database gains one more read and `add`
+    /// its pinned lines (the zone's lookup, its creation, the pairing's
+    /// save); the approvals zone's lookup and its one creation join the
+    /// allow-list, each pinned to its lines, saving one zone and deleting
+    /// none.
     static let cloudKitIdentifiers: Set<String> = [
-        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKModifyRecordsOperation",
-        "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey", "CKQuery", "CKQueryNotification",
-        "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
+        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKFetchRecordZonesOperation",
+        "CKModifyRecordZonesOperation", "CKModifyRecordsOperation", "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey",
+        "CKQuery", "CKQueryNotification", "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
     ]
 
     static let configuredDatabase = "try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in"
@@ -779,9 +788,27 @@ import Testing
 
     /// S-PAIR-C1.6 (#172): the live approvals database (the record path's
     /// seam's one app conformer) reads the private database on this line
-    /// and runs what it admits on its `add` lines, nowhere else.
-    static let approvalsDatabaseRead = "container.privateCloudDatabase.add(operation)"
-    static let approvalsAddSites: [String: Int] = ["container.privateCloudDatabase.add(operation)": 1]
+    /// and runs what it admits on its `add` lines, nowhere else: the
+    /// approvals zone's lookup, its creation when missing, and the save.
+    static let approvalsDatabaseRead = "let database = container.privateCloudDatabase"
+    static let approvalsAddSites: [String: Int] = [
+        "database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in": 1,
+        "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })": 2,
+        "database.add(operation)": 1,
+    ]
+    /// The approvals zone's lookup and its one creation, each built on its
+    /// line; the creation saves the one zone and deletes none.
+    static let zoneCreationLine = "let creation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: approvalsZoneID)],"
+    static let zoneSites: [String: [String: Int]] = [
+        #"\bCKModifyRecordZonesOperation\b"#: [
+            "static func makeApprovalsZoneCreation(then: @escaping @Sendable () -> Void) -> CKModifyRecordZonesOperation {": 1,
+            zoneCreationLine: 1],
+        #"\bCKFetchRecordZonesOperation\b"#: [
+            "static func makeApprovalsZoneLookup(then: @escaping @Sendable (Bool) -> Void) -> CKFetchRecordZonesOperation {": 1,
+            "let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID])": 1],
+        #"\brecordZonesToSave\b"#: [zoneCreationLine: 1],
+        #"\brecordZoneIDsToDelete\b"#: ["recordZoneIDsToDelete: nil)": 1],
+    ]
 
     static let alertLaneSites: [(pattern: String, sites: [String: Int], rule: String)] = [
         (#"\bsave\b"#, [subscriptionSave: 1, "func save(_ subscription: CKSubscription) async throws": 1,
@@ -816,6 +843,10 @@ import Testing
         }
         for (pattern, sites, rule) in alertLaneSites {
             failures += siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites, rule: rule)
+        }
+        for (pattern, sites) in zoneSites.sorted(by: { $0.key < $1.key }) {
+            failures += siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites,
+                                     rule: "the approvals zone is looked up and created at its one site each, and never deleted")
         }
         for (path, text) in receiver where path != cloudKitFile && hits(#"\bmakeSubscription\b"#, in: wholeLineCommentsRemoved(text)) {
             failures.append("\(path) reaches the push subscription — only the CloudKit file saves it")
@@ -867,7 +898,18 @@ import Testing
                                         with: "        " + Self.approvalsDatabaseRead + "\n        container.privateCloudDatabase.add(spare)\n") }),
             ("an add in the alerts' live database", mutated {
                 $0 + "\nextension LiveCloudKitAlertDatabase { func spare(_ o: CKModifyRecordsOperation) { "
-                    + Self.approvalsDatabaseRead.replacingOccurrences(of: "(operation)", with: "(o)") + " } }" }),
+                    + "container.privateCloudDatabase.add(o) } }" }),
+            // … and the zone: a second creation, a creation that deletes a
+            // zone, a deletion set on the creation, and a second lookup.
+            ("a second zone creation", mutated {
+                $0 + "\nlet spare = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: z)], recordZoneIDsToDelete: nil)" }),
+            ("a creation that deletes a zone", mutated {
+                $0.replacingOccurrences(of: "recordZoneIDsToDelete: nil)", with: "recordZoneIDsToDelete: [approvalsZoneID])") }),
+            ("a deletion set on the creation", mutated {
+                $0.replacingOccurrences(of: "        creation.configuration = approvalsZoneConfiguration\n",
+                                        with: "        creation.configuration = approvalsZoneConfiguration\n"
+                                            + "        creation.recordZoneIDsToDelete = [approvalsZoneID]\n") }),
+            ("a second lookup", mutated { $0 + "\nlet spare = CKFetchRecordZonesOperation(recordZoneIDs: [z])" }),
             ("an allow-listed identifier dropped", mutated {
                 $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
         ]
