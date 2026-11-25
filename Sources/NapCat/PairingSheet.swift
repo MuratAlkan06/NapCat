@@ -40,7 +40,7 @@ struct PairingSheetContent: Equatable, Sendable {
         var title: String {
             switch self {
             case .cancel: return "Cancel"
-            case .theyDontMatch: return "They Don't Match"
+            case .theyDontMatch: return "Codes Don't Match"
             case .codesMatch: return "Codes Match"
             case .done: return "Done"
             case .startOver: return "Start Over"
@@ -88,7 +88,9 @@ struct PairingSheetContent: Equatable, Sendable {
     static let waiting = "Waiting — scan this code with the NapCat app on your iPhone"
     static let waitingOffline = "Waiting — iCloud is unreachable; still trying"
     static let hiddenLine = "Hidden — bring this window to the front to show the code"
-    static let compareLine = "Compare — your iPhone shows a code too. If they match, confirm here first, then on your iPhone."
+    /// S1c's body (the S1c variant ruling): the totality cue ("all three
+    /// groups") and the Mac-first order.
+    static let compareLine = "Your iPhone is showing a code too. If all three groups match, confirm here first, then on your iPhone."
     static let pairedLine = "Paired — finish on your iPhone: tap Codes Match there."
     static let pairedNote = "The iPhone completes its half after you."
     static let codeLabel = "Code"
@@ -123,6 +125,20 @@ struct PairingSheetContent: Equatable, Sendable {
     static func countdown(secondsLeft: Int) -> String {
         let seconds = max(0, secondsLeft)
         return "Code expires in \(seconds / 60):" + (seconds % 60 < 10 ? "0" : "") + "\(seconds % 60)"
+    }
+
+    /// What VoiceOver reads for the countdown: coarse, so it never ticks
+    /// every second — whole minutes, rounded down so it never promises
+    /// time, then under a minute, under 30 seconds and under 10 seconds.
+    static func spokenCountdown(secondsLeft: Int) -> String {
+        let seconds: Int = max(0, secondsLeft)
+        switch seconds {
+        case 120...: return "Code expires in \(seconds / 60) minutes"
+        case 60...: return "Code expires in 1 minute"
+        case 30...: return "Code expires in under a minute"
+        case 10...: return "Code expires in under 30 seconds"
+        default: return "Code expires in under 10 seconds"
+        }
     }
 
     // MARK: The mapping
@@ -196,6 +212,10 @@ enum PairingSheetMetrics {
     static let qrSide: CGFloat = 220
     /// The quiet zone around the code, in modules (the QR standard's four).
     static let quietModules = 4
+    /// The extra width of each gap between the code's groups (the S1c
+    /// variant ruling, Variant A): about one more character of the large
+    /// title's monospaced face, so a gap reads two spaces wide.
+    static let codeGroupGap: CGFloat = PanelMetrics.loose + PanelMetrics.tight
 }
 
 /// The sheet: the ceremony's current content, arranged.
@@ -205,6 +225,7 @@ struct PairingSheetView: View {
 
     var body: some View {
         let content = pairing.sheetContent
+        let secondsLeft: Int = pairing.state.secondsLeft(now: pairing.now.timeIntervalSince1970)
         VStack(alignment: .leading, spacing: PanelMetrics.loose) {
             VStack(alignment: .leading, spacing: PanelMetrics.tight) {
                 Text(content.title)
@@ -223,7 +244,7 @@ struct PairingSheetView: View {
                     .frame(maxWidth: .infinity)
             }
             if let fingerprint = content.fingerprint {
-                PairingCodeText(fingerprint: fingerprint, font: .title)
+                PairingCodeText(fingerprint: fingerprint, font: .largeTitle, groupGap: PairingSheetMetrics.codeGroupGap)
                     .frame(maxWidth: .infinity)
             }
             // The order instruction reads before the buttons.
@@ -239,6 +260,8 @@ struct PairingSheetView: View {
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(PairingSheetContent.spokenCountdown(secondsLeft: secondsLeft))
             }
             HStack(spacing: PanelMetrics.regular) {
                 Spacer(minLength: 0)
@@ -293,21 +316,37 @@ struct PairingSheetView: View {
     }
 }
 
-/// The code, monospaced, never wrapped inside a group: the groups are its
-/// only break points, and at a size where a group would not fit it scales
-/// down a step first. VoiceOver reads it one character at a time.
+/// The code, monospaced, on one line: it never wraps, and at a size where
+/// it would not fit it scales down a step first. `groupGap` widens the gaps
+/// between the groups as kerning on their spaces, so the text itself stays
+/// the wire's `XXXX XXXX XXXX` — what a selection copies and what VoiceOver
+/// spells out, one character at a time, pausing at the groups.
 struct PairingCodeText: View {
     let fingerprint: PairingFingerprint
     let font: Font
+    var groupGap: CGFloat = 0
 
     var body: some View {
-        Text(fingerprint.grouped)
+        Text(Self.drawn(fingerprint, groupGap: groupGap))
             .font(font.monospaced())
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .textSelection(.enabled)
             .accessibilityLabel(PairingSheetContent.codeLabel)
-            .accessibilityValue(fingerprint.spoken)
+            .accessibilityValue(Text(fingerprint.grouped).speechSpellsOutCharacters())
+    }
+
+    /// `fingerprint.grouped`, each space between the groups kerned
+    /// `groupGap` wider (none when it is 0).
+    static func drawn(_ fingerprint: PairingFingerprint, groupGap: CGFloat) -> AttributedString {
+        var gap: AttributedString = AttributedString(" ")
+        if groupGap > 0 { gap[AttributeScopes.SwiftUIAttributes.KerningAttribute.self] = groupGap }
+        var drawn: AttributedString = AttributedString()
+        for (index, group) in fingerprint.groups.enumerated() {
+            if index > 0 { drawn += gap }
+            drawn += AttributedString(group)
+        }
+        return drawn
     }
 }
 
