@@ -58,7 +58,9 @@ import Security
 /// database stay in this file, so the pairing record's live database lives
 /// here too (`makeLivePairingDatabase`, behind the same probe). It runs only
 /// the two operations the record path builds for the pairing record (a
-/// fetch by ID, a deletion of that record) and builds nothing itself.
+/// fetch by ID, a deletion of that record) and builds nothing itself — and,
+/// since the C1.5 security review's R2, it checks what it is handed
+/// (`PairingRecordGuard`) and refuses anything else.
 ///
 /// UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
 final class CloudKitMessageSender: MessageSender, @unchecked Sendable {
@@ -500,9 +502,10 @@ private final class LiveCloudKitAlertStore: CloudKitAlertStore, @unchecked Senda
 /// The pairing record's live database (S-PAIR-C1.5, #170): the owner's
 /// private database, running the operations the record path's pairing
 /// source hands it — the fetch of one record by its ID, and the deletion of
-/// that one record — exactly as handed (each already configured there). It
-/// builds no record and no operation of its own, and nothing but that
-/// source holds it (lint-locked).
+/// that one record — as handed (each already configured there), once its
+/// own check has passed them (`PairingRecordGuard`). It builds no record and
+/// no operation of its own, and nothing but that source holds it
+/// (lint-locked).
 private final class LivePairingRecordDatabase: PairingRecordDatabase, @unchecked Sendable {
     private let container: CKContainer
     private let database: CKDatabase
@@ -513,11 +516,50 @@ private final class LivePairingRecordDatabase: PairingRecordDatabase, @unchecked
     }
 
     func submit(_ operation: CKFetchRecordsOperation) {
+        guard PairingRecordGuard.admits(operation) else { return PairingRecordGuard.refuse(operation) }
         database.add(operation)
     }
 
     func submit(_ operation: CKModifyRecordsOperation) {
+        guard PairingRecordGuard.admits(operation) else { return PairingRecordGuard.refuse(operation) }
         database.add(operation)
+    }
+}
+
+/// The live pairing database's own check (S-PAIR-C1.5, the C1.5 security
+/// review's R2). Whatever hands it an operation, it runs only the pairing
+/// record's two: a fetch of exactly one record, and a deletion of exactly
+/// one record that saves nothing — each by a pairing record's ID, the
+/// approvals zone of this account and a pairing record name (64 lowercase
+/// hex digits). Anything else is refused: never added to the database, and
+/// its own result block is told `invalidArguments`, so its caller reads its
+/// closed failure (a fetch unreachable, a deletion not done). The pairing
+/// source hands it nothing else (ApprovalRecordPathStructureTests lock 10);
+/// this holds even if something else ever does. Pure — unit-tested over the
+/// real operations (CloudKitPairingRecordsTests) — and pinned whole, with
+/// the two `submit`s that call it (PhoneTransportStructureTests).
+enum PairingRecordGuard {
+    static func admits(_ operation: CKFetchRecordsOperation) -> Bool {
+        guard let ids = operation.recordIDs, ids.count == 1 else { return false }
+        return isPairingRecord(ids[0])
+    }
+
+    static func admits(_ operation: CKModifyRecordsOperation) -> Bool {
+        guard operation.recordsToSave?.isEmpty ?? true, let ids = operation.recordIDsToDelete, ids.count == 1 else { return false }
+        return isPairingRecord(ids[0])
+    }
+
+    static func isPairingRecord(_ id: CKRecord.ID) -> Bool {
+        id.zoneID.zoneName == ApprovalWire.zoneName && id.zoneID.ownerName == CKCurrentUserDefaultName
+            && PairingResponseCheck.isRecordName(id.recordName)
+    }
+
+    static func refuse(_ operation: CKFetchRecordsOperation) {
+        operation.fetchRecordsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    static func refuse(_ operation: CKModifyRecordsOperation) {
+        operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
     }
 }
 

@@ -141,3 +141,15 @@ struct PairedKeyStore: Sendable {
         }
     }
 }
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1.5 security review's R1)
+
+/// The slot's item is the slot's alone (PairingStructureTests locks 1 and 7):
+/// the slot prints, debug-prints, dumps and reflects as a fixed word and
+/// nothing more, so no reflection, from any file and through any wrapper,
+/// reaches its private item to write it.
+extension PairedKeyStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "paired key slot (redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}

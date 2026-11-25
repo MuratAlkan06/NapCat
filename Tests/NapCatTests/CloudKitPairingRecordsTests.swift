@@ -77,6 +77,62 @@ final class ScriptedPairingDatabase: PairingRecordDatabase, @unchecked Sendable 
     var deletions: [CKModifyRecordsOperation] { lock.lock(); defer { lock.unlock() }; return deleteOperations }
 }
 
+/// The live pairing database's own check (`PairingRecordGuard`, the C1.5
+/// security review's R2) in front of a scripted database, exactly as the
+/// live database puts it in front of the owner's private one (its two
+/// submits are pinned to this shape, PhoneTransportStructureTests).
+final class GuardedPairingDatabase: PairingRecordDatabase, @unchecked Sendable {
+    let behind: ScriptedPairingDatabase
+
+    init(_ behind: ScriptedPairingDatabase) {
+        self.behind = behind
+    }
+
+    func submit(_ operation: CKFetchRecordsOperation) {
+        guard PairingRecordGuard.admits(operation) else { return PairingRecordGuard.refuse(operation) }
+        behind.submit(operation)
+    }
+
+    func submit(_ operation: CKModifyRecordsOperation) {
+        guard PairingRecordGuard.admits(operation) else { return PairingRecordGuard.refuse(operation) }
+        behind.submit(operation)
+    }
+}
+
+/// What an operation's own result block was told.
+final class SeenResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [Result<Void, NSError>] = []
+
+    func note(_ result: Result<Void, any Error>) {
+        lock.lock()
+        seen.append(result.mapError { $0 as NSError })
+        lock.unlock()
+    }
+
+    var all: [Result<Void, NSError>] { lock.lock(); defer { lock.unlock() }; return seen }
+
+    /// Told once, and told invalidArguments.
+    var refusedOnce: Bool {
+        guard case .failure(let error)? = all.first, all.count == 1 else { return false }
+        return error.domain == CKErrorDomain && error.code == CKError.Code.invalidArguments.rawValue
+    }
+}
+
+/// What a completion was handed.
+final class SeenOutcomes<Outcome: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [Outcome] = []
+
+    func note(_ outcome: Outcome) {
+        lock.lock()
+        seen.append(outcome)
+        lock.unlock()
+    }
+
+    var all: [Outcome] { lock.lock(); defer { lock.unlock() }; return seen }
+}
+
 /// Counts how often the source asks for its database.
 final class DatabaseFactory: @unchecked Sendable {
     private let lock = NSLock()
@@ -319,11 +375,112 @@ struct CloudKitPairingRecordsTests {
         #expect(await source.delete(recordName: Self.name) == gone, "\(name)")
     }
 
+    // MARK: The live database's own check (the C1.5 security review's R2)
+
+    /// What the source hands its database — its one fetch and its one
+    /// deletion, by the pairing record's ID — passes the live database's
+    /// check unchanged: the check costs the transport nothing.
+    @Test func theSourcesOwnOperationsPassTheLiveDatabasesCheck() async throws {
+        let behind = ScriptedPairingDatabase(fetch: [.fetchFailed(Self.ck(.unknownItem)), .batchSucceeded],
+                                             delete: [.deleted(0), .batchSucceeded])
+        let source = CloudKitPairingRecords(database: { GuardedPairingDatabase(behind) })
+        #expect(await source.fetch(recordName: Self.name) == .nothing)
+        #expect(await source.delete(recordName: Self.name))
+        #expect(behind.fetches.count == 1 && behind.deletions.count == 1, "both reached the database behind the check")
+        let pairing = CloudKitPairingRecords.recordID(Self.name)
+        #expect(PairingRecordGuard.isPairingRecord(pairing))
+        #expect(PairingRecordGuard.admits(CloudKitPairingRecords.makeFetchOperation(recordName: Self.name) { _ in }))
+        #expect(PairingRecordGuard.admits(ApprovalRecordWriter.makeOperation(saving: [], deleting: [pairing]) { _ in }))
+        #expect(PairingRecordGuard.admits(CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [pairing])),
+                "saving nothing is no records to save, or none at all")
+    }
+
+    /// Every other operation is refused: never handed to the database behind
+    /// the check, and its own result block is told invalidArguments, once.
+    /// The rows: the reviewer's RP2 plant's two operations as planted (a
+    /// deletion in the default zone by any name; the current user's record),
+    /// another zone, another owner, a prompt's record, two records, none,
+    /// a name of any other shape, and a deletion that saves.
+    @Test func theLiveDatabaseRefusesEveryOtherOperation() throws {
+        let approvals = ApprovalRecordWriter.zoneID
+        func id(_ name: String, _ zone: CKRecordZone.ID = approvals) -> CKRecord.ID { CKRecord.ID(recordName: name, zoneID: zone) }
+        let pairing = id(Self.name)
+        let otherZone = CKRecordZone.ID(zoneName: ApprovalWire.zoneName + "-spare", ownerName: CKCurrentUserDefaultName)
+        let otherOwner = CKRecordZone.ID(zoneName: ApprovalWire.zoneName, ownerName: "_" + String(repeating: "5", count: 32))
+        let prompt = id(String(repeating: "a", count: ApprovalWire.promptIDHexDigits))
+        let second = id(String(Self.name.reversed()))
+        #expect(PairingResponseCheck.isRecordName(second.recordName), "vacuity: the second ID is pairing-shaped")
+        // CloudKit refuses an empty record name itself (an exception), so
+        // that row is the source's own (aNameOfAnyOtherShapeIsNeverSent).
+        let shapes = Self.malformedNames.filter { !$0.isEmpty }
+        #expect(shapes.count == Self.malformedNames.count - 1)
+        let record = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue, recordID: pairing)
+
+        let rp2Victim = CKRecord.ID(recordName: "zz", zoneID: .default)
+        var fetches: [(String, CKFetchRecordsOperation)] = [
+            ("RP2: the current user's record", CKFetchRecordsOperation.fetchCurrentUserRecordOperation()),
+            ("the default zone", CKFetchRecordsOperation(recordIDs: [id(Self.name, .default)])),
+            ("another zone", CKFetchRecordsOperation(recordIDs: [id(Self.name, otherZone)])),
+            ("another owner", CKFetchRecordsOperation(recordIDs: [id(Self.name, otherOwner)])),
+            ("a prompt's record", CKFetchRecordsOperation(recordIDs: [prompt])),
+            ("two records", CKFetchRecordsOperation(recordIDs: [pairing, second])),
+            ("no record", CKFetchRecordsOperation(recordIDs: [])),
+        ]
+        fetches += shapes.map { ("the name \($0.debugDescription)", CKFetchRecordsOperation(recordIDs: [id($0)])) }
+        var deletions: [(String, CKModifyRecordsOperation)] = [
+            ("RP2: a deletion in the default zone by any name", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [rp2Victim])),
+            ("the default zone", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [id(Self.name, .default)])),
+            ("another zone", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [id(Self.name, otherZone)])),
+            ("another owner", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [id(Self.name, otherOwner)])),
+            ("a prompt's record", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [prompt])),
+            ("two records", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [pairing, second])),
+            ("nothing at all", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: nil)),
+            ("no record", CKModifyRecordsOperation(recordsToSave: [], recordIDsToDelete: [])),
+            ("a save beside the deletion", CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: [pairing])),
+            ("a save alone", CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)),
+        ]
+        deletions += shapes.map { ("the name \($0.debugDescription)", CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [id($0)])) }
+
+        let behind = ScriptedPairingDatabase(fetch: [.batchSucceeded], delete: [.batchSucceeded])
+        let guarded = GuardedPairingDatabase(behind)
+        for (name, operation) in fetches {
+            let seen = SeenResults()
+            operation.fetchRecordsResultBlock = { seen.note($0) }
+            #expect(!PairingRecordGuard.admits(operation), "fetch, \(name): admitted")
+            guarded.submit(operation)
+            #expect(seen.refusedOnce, "fetch, \(name): not told invalidArguments once — \(seen.all)")
+        }
+        for (name, operation) in deletions {
+            let seen = SeenResults()
+            operation.modifyRecordsResultBlock = { seen.note($0) }
+            #expect(!PairingRecordGuard.admits(operation), "deletion, \(name): admitted")
+            guarded.submit(operation)
+            #expect(seen.refusedOnce, "deletion, \(name): not told invalidArguments once — \(seen.all)")
+        }
+        #expect(behind.fetches.isEmpty && behind.deletions.isEmpty, "nothing refused reached the database")
+        #expect(fetches.count == 16 && deletions.count == 19, "vacuity: every row ran")
+    }
+
+    /// A refusal is a closed failure to whoever built the operation, so no
+    /// caller is left waiting: the source's own fetch reads unreachable and
+    /// its own deletion is not done.
+    @Test func aRefusalIsAClosedFailureToTheCaller() {
+        let fetched = SeenOutcomes<PairingFetch>()
+        PairingRecordGuard.refuse(CloudKitPairingRecords.makeFetchOperation(recordName: Self.name) { fetched.note($0) })
+        #expect(fetched.all == [.unreachable])
+        let deleted = SeenOutcomes<ApprovalRecordOutcome>()
+        PairingRecordGuard.refuse(ApprovalRecordWriter.makeOperation(saving: [], deleting: [CloudKitPairingRecords.recordID(Self.name)]) {
+            deleted.note($0)
+        })
+        #expect(deleted.all.count == 1 && deleted.all.first != .confirmed, "\(deleted.all)")
+    }
+
     // MARK: Through the ceremony
 
-    /// The Mac's whole half over the real operations: the controller fetches
-    /// by name, freezes on the phone's response, and after Codes Match the
-    /// key is kept and that same record is deleted.
+    /// The Mac's whole half over the real operations, through the live
+    /// database's own check (the C1.5 security review's R2): the controller
+    /// fetches by name, freezes on the phone's response, and after Codes
+    /// Match the key is kept and that same record is deleted.
     @MainActor
     @Test func aCeremonyTravelsTheLiveTransport() async throws {
         let response = try PhoneHalf.response()
@@ -334,9 +491,8 @@ struct CloudKitPairingRecordsTests {
         let items = FakeTopicStore()
         var remembered: String?
         var clock = Date(timeIntervalSince1970: 1_800_000_000)
-        let factory = DatabaseFactory(database)
         let controller = PairingController(
-            source: CloudKitPairingRecords(database: { factory.make() }), keys: PairedKeyStore(items: items),
+            source: CloudKitPairingRecords(database: { GuardedPairingDatabase(database) }), keys: PairedKeyStore(items: items),
             readRemembered: { remembered }, writeRemembered: { remembered = $0 }, makeNonce: { PhoneHalf.nonce },
             clock: { clock }, killSwitch: {}, audit: { _ in }, makeTicker: { _ in ManualPairingTicker({}, cancelled: {}) })
         controller.begin()

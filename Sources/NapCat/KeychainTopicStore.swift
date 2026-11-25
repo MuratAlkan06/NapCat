@@ -171,3 +171,15 @@ struct KeychainTopicStore: TopicStore {
         return false
     }
 }
+
+// MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1.5 security review's R1)
+
+/// The store holds the real keychain calls (PairingStructureTests lock 7): it
+/// prints, debug-prints, dumps and reflects as a fixed word and nothing
+/// more, so no reflection reaches its calls or its item's name to make a
+/// keychain call of its own.
+extension KeychainTopicStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    var description: String { "keychain item (redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+}

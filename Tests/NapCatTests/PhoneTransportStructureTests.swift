@@ -22,6 +22,12 @@ import Testing
 /// factory (`makeLivePairingDatabase()`), whose first statement is the same
 /// probe guard; its live database is built only there, and the factory is
 /// called only by the pairing controller's wiring (`makeIfEnabled`).
+///
+/// AMENDED (S-PAIR-C1.5, the C1.5 security review's R2 and R3): each factory
+/// is named, as a WORD, at its declaration and its one wiring line alone (an
+/// unapplied reference is a site too, not only a call); every line of the
+/// sender naming its `database` is pinned; and the live pairing database's
+/// two submits and its own check (`PairingRecordGuard`) are pinned whole.
 struct PhoneTransportStructureTests {
     static let cloudKitFile = "CloudKitMessageSender.swift"
     static let factoryHead = "static func makeLiveStore() -> (any CloudKitAlertStore)? {"
@@ -29,6 +35,24 @@ struct PhoneTransportStructureTests {
     static let probeGuard = "guard CloudKitEntitlementProbe.isEntitled else { return nil }"
     /// The pairing factory's one caller: the controller's wiring.
     static let pairingWiring = "source: CloudKitPairingRecords(database: { CloudKitMessageSender.makeLivePairingDatabase() }), keys: keys,"
+    /// The alert store factory's one caller: the sender's default store.
+    static let storeDefault = "makeStore: @escaping @Sendable () -> (any CloudKitAlertStore)? = { CloudKitMessageSender.makeLiveStore() }"
+
+    /// The C1.5 security review's R2 (its F2: `let make =
+    /// CloudKitMessageSender.makeLivePairingDatabase` in any file, then
+    /// `make()?.submit(…)`, passed every lock): each factory's name, as a
+    /// word, in every scan copy, sits on its declaration and its one wiring
+    /// line and nowhere else in Sources/NapCat.
+    static let factoryWordSites: [(pattern: String, allowed: [String: [String: Int]], rule: String)] = [
+        (#"\bmakeLiveStore\b"#, [cloudKitFile: [factoryHead: 1, storeDefault: 1]],
+         "the alert store's factory is declared once and named once, by the sender's default store"),
+        (#"\bmakeLivePairingDatabase\b"#, [cloudKitFile: [pairingFactoryHead: 1], "PairingController.swift": [pairingWiring: 1]],
+         "the pairing database's factory is declared once and named once, by the pairing controller's wiring"),
+    ]
+
+    static func factoryWordFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        factoryWordSites.flatMap { PairingStructureTests.appSiteFailures($0.pattern, in: sources, allowed: $0.allowed, rule: $0.rule) }
+    }
 
     static func sources() throws -> [(name: String, text: String)] {
         try LidGuardStructureTests.swiftSources()
@@ -123,7 +147,8 @@ struct PhoneTransportStructureTests {
     static func containerFailuresInEveryCopy(_ sources: [(name: String, text: String)]) -> [String] {
         let copies = LidGuardStructureTests.constructorScanCopies(sources)
         let spelled = copies.map { $0.map { ($0.name, ApprovalChannelStructureTests.constructionSpelling($0.text)) } }
-        return ApprovalRecordPathStructureTests.unique((copies + spelled).flatMap(containerConstructionFailures))
+        return ApprovalRecordPathStructureTests.unique((copies + spelled).flatMap(containerConstructionFailures)
+                                                       + factoryWordFailures(sources))
     }
 
     @Test func aContainerIsBuiltOnlyBehindTheEntitlementProbe() throws {
@@ -173,10 +198,44 @@ struct PhoneTransportStructureTests {
             ("the wiring hands the source another database", Self.mutate(sources, "PairingController.swift") {
                 $0.replacingOccurrences(of: Self.pairingWiring, with: "source: CloudKitPairingRecords(database: { spare }), keys: keys,"
                                             + " _ = CloudKitMessageSender.makeLivePairingDatabase()") }),
+            // The C1.5 security review's R2: its RP2, as planted, and the
+            // unapplied references around it.
+            ("RP2: the live pairing database from any file, unapplied", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nextension MenuStateModel {\n    static func zzSecRevWipe(_ n: String) {\n"
+                    + "        let make = CloudKitMessageSender.makeLivePairingDatabase\n"
+                    + "        make()?.submit(.init(recordsToSave: nil, recordIDsToDelete: [.init(recordName: n, zoneID: .default)]))\n"
+                    + "        make()?.submit(.fetchCurrentUserRecordOperation())\n    }\n}" }),
+            ("the pairing factory unapplied", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet zzMake = CloudKitMessageSender.makeLivePairingDatabase" }),
+            ("the pairing factory unapplied in its own file", Self.mutate(sources, Self.cloudKitFile) {
+                $0 + "\nextension CloudKitMessageSender { static let zzMake = makeLivePairingDatabase }" }),
+            ("the pairing factory unapplied in the wiring's file", Self.mutate(sources, "PairingController.swift") {
+                $0 + "\nlet zzMake = CloudKitMessageSender.makeLivePairingDatabase" }),
+            ("the alert store's factory unapplied (pre-existing)", Self.mutate(sources, "NapCatApp.swift") {
+                $0 + "\nlet zzStore = CloudKitMessageSender.makeLiveStore" }),
+            ("the alert store's factory unapplied in its own file", Self.mutate(sources, Self.cloudKitFile) {
+                $0 + "\nextension CloudKitMessageSender { static let zzStore = makeLiveStore }" }),
+            ("a backticked unapplied factory", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zzMake = CloudKitMessageSender.`makeLivePairingDatabase`" }),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.containerFailuresInEveryCopy(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // R2: the word pins alone catch the unapplied references (the
+        // construction checks above count calls, which these are not).
+        for (file, planted) in [("NapCatApp.swift", "\nlet zzMake = CloudKitMessageSender.makeLivePairingDatabase"),
+                                ("NapCatApp.swift", "\nlet zzStore = CloudKitMessageSender.makeLiveStore"),
+                                (Self.cloudKitFile, "\nextension CloudKitMessageSender { static let zzMake = makeLivePairingDatabase }")] {
+            #expect(Self.containerConstructionFailures(Self.mutate(sources, file) { $0 + planted }).isEmpty,
+                    "vacuity: '\(planted)' is no call, so only the word pin can see it")
+            #expect(!Self.factoryWordFailures(Self.mutate(sources, file) { $0 + planted }).isEmpty, "'\(planted)' was NOT caught")
+        }
+        // R2 over-match controls: words that only contain a factory's name,
+        // and a whole-line comment naming both.
+        #expect(Self.factoryWordFailures(Self.mutate(sources, "MenuStateModel.swift") {
+            $0 + "\nlet makeLiveStoreCount = 1, zzmakeLivePairingDatabases = 2"
+                + LidGuardStructureTests.codeOnly("\n/// never CloudKitMessageSender.makeLivePairingDatabase, never makeLiveStore()")
+        }).isEmpty)
         // #153: a construction however spelled, read through the cleaned
         // copies and the construction spelling.
         for planted in ["let stray = CKContainer (identifier: \"x\")", "let stray = `CKContainer`(identifier: \"x\")",
@@ -222,13 +281,67 @@ struct PhoneTransportStructureTests {
     /// each named once here and called nowhere in this file); the private
     /// database gains its one read; and `operation` and the modify type gain
     /// those `submit` lines only.
+    ///
+    /// AMENDED (S-PAIR-C1.5, the C1.5 security review's R2 and R3 —
+    /// deliberate): the pairing database checks what it is handed
+    /// (`PairingRecordGuard`, pinned whole, named by the two submits alone),
+    /// so the allow-list widens by `CKCurrentUserDefaultName` (the approvals
+    /// zone's owner, a constant), and `operation` and the two operation types
+    /// gain the check's lines; each submit is pinned whole; and every line
+    /// naming the sender's `database` is pinned — its two holders, their two
+    /// reads of the private database, and the three adds (F5 read the record
+    /// by `database.record(for:)`, inside the pinned submit and beside it).
     static let alertLaneIdentifiers: Set<String> = [
-        "CKAccountStatus", "CKContainer", "CKDatabase", "CKError", "CKErrorDomain", "CKFetchRecordsOperation",
-        "CKModifyRecordsOperation", "CKOperation", "CKPartialErrorsByItemIDKey", "CKRecord", "CKRecordZone",
+        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKDatabase", "CKError", "CKErrorDomain",
+        "CKFetchRecordsOperation", "CKModifyRecordsOperation", "CKOperation", "CKPartialErrorsByItemIDKey", "CKRecord",
+        "CKRecordZone",
     ]
     static let pairingSubmits = ["func submit(_ operation: CKFetchRecordsOperation) {": 1,
                                  "func submit(_ operation: CKModifyRecordsOperation) {": 1]
     static let pairingAdd = "database.add(operation)"
+
+    /// The live pairing database's check, as each submit opens with it.
+    static let pairingCheck = "guard PairingRecordGuard.admits(operation) else { return PairingRecordGuard.refuse(operation) }"
+    /// Each submit, whole: the check, then the add.
+    static let pairingSubmitBody = pairingCheck + " " + pairingAdd
+    static let guardHead = "enum PairingRecordGuard {"
+    static let guardFetchHead = "static func admits(_ operation: CKFetchRecordsOperation) -> Bool {"
+    static let guardDeleteHead = "static func admits(_ operation: CKModifyRecordsOperation) -> Bool {"
+    static let guardFetchIDs = "guard let ids = operation.recordIDs, ids.count == 1 else { return false }"
+    static let guardDeleteIDs = "guard operation.recordsToSave?.isEmpty ?? true, let ids = operation.recordIDsToDelete, ids.count == 1"
+        + " else { return false }"
+    static let refuseFetchHead = "static func refuse(_ operation: CKFetchRecordsOperation) {"
+    static let refuseDeleteHead = "static func refuse(_ operation: CKModifyRecordsOperation) {"
+    static let refuseFetch = "operation.fetchRecordsResultBlock?(.failure(CKError(.invalidArguments)))"
+    static let refuseDelete = "operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))"
+    static let pairingRecordCheck: String = "static func isPairingRecord(_ id: CKRecord.ID) -> Bool {"
+        + " id.zoneID.zoneName == ApprovalWire.zoneName && id.zoneID.ownerName == CKCurrentUserDefaultName"
+        + " && PairingResponseCheck.isRecordName(id.recordName) }"
+    /// The check, whole: one record each way, by a pairing record's ID — the
+    /// approvals zone of this account, a pairing record name — and a
+    /// deletion saving nothing; a refusal tells the operation's own result
+    /// block `invalidArguments`. (Its members joined, so no one expression
+    /// is a long concatenation for the type-checker.)
+    static let guardBody: String = [
+        [guardFetchHead, guardFetchIDs, "return isPairingRecord(ids[0]) }"].joined(separator: " "),
+        [guardDeleteHead, guardDeleteIDs, "return isPairingRecord(ids[0]) }"].joined(separator: " "),
+        pairingRecordCheck,
+        [refuseFetchHead, refuseFetch, "}"].joined(separator: " "),
+        [refuseDeleteHead, refuseDelete, "}"].joined(separator: " "),
+    ].joined(separator: " ")
+    /// The check's operation lines (each submit's check holds two matches).
+    static let guardOperationSites: [String: Int] = [pairingCheck: 4, guardFetchHead: 1, guardFetchIDs: 1, guardDeleteHead: 1,
+                                                     guardDeleteIDs: 2, refuseFetchHead: 1, refuseFetch: 1, refuseDeleteHead: 1,
+                                                     refuseDelete: 1]
+    /// Every `operation` line of the pairing database and its check: the two
+    /// submits' heads, their checks and adds, and the check's own lines.
+    static let pairingOperationSites: [String: Int] = pairingSubmits.merging([pairingAdd: 2]) { $0 + $1 }
+        .merging(guardOperationSites) { $0 + $1 }
+
+    /// R3: every line naming the sender's `database`.
+    static let databaseSites = ["private let database: CKDatabase": 2, "self.database = container.privateCloudDatabase": 2,
+                                "database.add(CloudKitMessageSender.makeSaveOperation(payload, completion: completion))": 1,
+                                pairingAdd: 2]
 
     static let alertLaneConstructions = [
         "CKRecord": "let record = CKRecord(recordType: AlertWire.recordType, recordID: recordID)",
@@ -257,14 +370,19 @@ struct PhoneTransportStructureTests {
         (#"\boperation\b"#, [alertOperation: 1, "operation.savePolicy = .ifServerRecordUnchanged": 1, "operation.isAtomic = true": 1,
                              "operation.configuration = configuration": 1, "operation.perRecordSaveBlock = { _, result in": 1,
                              "operation.modifyRecordsResultBlock = { result in": 1, "return operation": 1]
-            .merging(pairingSubmits) { $0 + $1 }.merging([pairingAdd: 2]) { $0 + $1 },
-         "the factory builds, configures and returns its operation; the pairing database only adds what it is handed"),
+            .merging(pairingOperationSites) { $0 + $1 },
+         "the factory builds, configures and returns its operation; the pairing database checks and adds what it is handed"),
         (#"\bCKModifyRecordsOperation\b"#, [") -> CKModifyRecordsOperation {": 1, alertOperation: 1,
-                                            "func submit(_ operation: CKModifyRecordsOperation) {": 1],
-         "the operation type is named by the factory, its one construction and the pairing database's submit"),
-        (#"\bCKFetchRecordsOperation\b"#, ["func submit(_ operation: CKFetchRecordsOperation) {": 1],
-         "the fetch operation's type is named by the pairing database's submit alone: nothing here builds one"),
+                                            "func submit(_ operation: CKModifyRecordsOperation) {": 1,
+                                            guardDeleteHead: 1, refuseDeleteHead: 1],
+         "the operation type is named by the factory, its one construction, the pairing database's submit and its check"),
+        (#"\bCKFetchRecordsOperation\b"#, ["func submit(_ operation: CKFetchRecordsOperation) {": 1, guardFetchHead: 1, refuseFetchHead: 1],
+         "the fetch operation's type is named by the pairing database's submit and its check alone: nothing here builds one"),
         (#"\bsubmit\b"#, pairingSubmits, "the pairing database's two submits are declared here and called nowhere in this file"),
+        (#"\bdatabase\b"#, databaseSites,
+         "the sender's two databases are held, read from the container and added to — nothing else touches either"),
+        (#"\bPairingRecordGuard\b"#, [guardHead: 1, pairingCheck: 4],
+         "the pairing database's check is declared once and called by its two submits alone"),
     ]
 
     /// Named nowhere in the alert-lane file: every other database write, the
@@ -295,6 +413,21 @@ struct PhoneTransportStructureTests {
         for (name, text) in sources where name != cloudKitFile
             && (Lock.hits(#"\bmakeSaveOperation\b"#, in: text) || Lock.hits(#"\bmakeRecord\b"#, in: text)) {
             failures.append("\(name) reaches the alert's record or save operation — only the alert lane may")
+        }
+        // R2/R3: each submit opens with the check, then adds; the check, whole.
+        for (head, pinned, rule) in [("func submit(_ operation: CKFetchRecordsOperation) {", pairingSubmitBody,
+                                      "the pairing database checks, then adds, each fetch"),
+                                     ("func submit(_ operation: CKModifyRecordsOperation) {", pairingSubmitBody,
+                                      "the pairing database checks, then adds, each deletion"),
+                                     (guardHead, guardBody, "the pairing database's check admits one pairing record each way")] {
+            guard let found = Self.body(after: head, in: file) else {
+                failures.append("'\(head)' not found in \(cloudKitFile) — \(rule)")
+                continue
+            }
+            if MenuPanelStructureTests.flat(found) != pinned { failures.append("\(rule) — exactly as pinned") }
+        }
+        for (name, text) in sources where name != cloudKitFile && Lock.hits(#"\bPairingRecordGuard\b"#, in: text) {
+            failures.append("\(name) names the pairing database's check — its two submits alone call it")
         }
         for pattern in alertLaneBans where Lock.hits(pattern, in: file) {
             failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the alert's own add")
@@ -358,7 +491,52 @@ struct PhoneTransportStructureTests {
                 $0 + "\nextension LivePairingRecordDatabase { func again(_ operation: CKModifyRecordsOperation) {\n"
                     + "        database.add(operation)\n    } }" }),
         ]
-        for (name, mutant) in mutants {
+        // The C1.5 security review's R3 (its F5): RP3' (a read slipped inside
+        // the pinned fetch submit) and RP3b (a convenience read beside it),
+        // as planted, and the other convenience doors on either database.
+        let fetchSubmit = "    func submit(_ operation: CKFetchRecordsOperation) {\n        " + Self.pairingCheck
+            + "\n        database.add(operation)\n"
+        let senderText = sources.first(where: { $0.name == file })?.text ?? ""
+        #expect(senderText.contains(fetchSubmit), "vacuity: RP3' plants inside the fetch submit")
+        let r3: [(String, [(name: String, text: String)])] = [
+            ("RP3': a read inside the pinned submit", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: fetchSubmit, with: fetchSubmit
+                                        + "        database.fetch(withRecordID: CKRecord.ID(recordName: \"zz\")) { _, _ in }\n") }),
+            ("RP3b: a convenience read beside it", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase {\n"
+                    + "    func zzSecRevPeek(_ id: CKRecord.ID) async -> Bool {\n        (try? await database.record(for: id)) != nil\n    }\n}" }),
+            ("records(for:)", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { func zz(_ i: CKRecord.ID) async throws -> Int { "
+                    + "try await database.records(for: [i]).count } }" }),
+            ("allRecordZones()", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { func zz() async throws -> Int { try await database.allRecordZones().count } }" }),
+            ("the alert store's convenience read (pre-existing door)", Self.mutate(sources, file) {
+                $0 + "\nextension LiveCloudKitAlertStore { func zz(_ i: CKRecord.ID) async throws -> CKRecord { "
+                    + "try await database.record(for: i) } }" }),
+            ("the database handed out", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { var zz: CKDatabase { database } }" }),
+            ("the database by key path", Self.mutate(sources, file) {
+                $0 + "\nextension LivePairingRecordDatabase { func zz() -> Any { self[keyPath: \\.database] } }" }),
+            // R2: the check dropped, bypassed, widened or named elsewhere.
+            ("the check dropped from the fetch submit", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: fetchSubmit, with: "    func submit(_ operation: CKFetchRecordsOperation) {\n"
+                                        + "        database.add(operation)\n") }),
+            ("a refusal that adds anyway", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "else { return PairingRecordGuard.refuse(operation) }", with: "else { return database.add(operation) }") }),
+            ("any zone admitted", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "id.zoneID.zoneName == ApprovalWire.zoneName && ", with: "") }),
+            ("any name admitted", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "\n            && PairingResponseCheck.isRecordName(id.recordName)", with: "") }),
+            ("a deletion that saves admitted", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "guard operation.recordsToSave?.isEmpty ?? true, let ids", with: "guard let ids") }),
+            ("many records admitted", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "guard let ids = operation.recordIDs, ids.count == 1 else",
+                                        with: "guard let ids = operation.recordIDs, !ids.isEmpty else") }),
+            ("a refusal that tells nothing", Self.mutate(sources, file) {
+                $0.replacingOccurrences(of: "        operation.fetchRecordsResultBlock?(.failure(CKError(.invalidArguments)))\n", with: "") }),
+            ("the check named elsewhere", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet zz = PairingRecordGuard.refuse" }),
+        ]
+        for (name, mutant) in mutants + r3 {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.alertLaneWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
@@ -375,8 +553,10 @@ struct PhoneTransportStructureTests {
         #expect(Self.alertLaneWriteFailures(Self.mutate(sources, file) {
             $0 + "\nfunc f(s: String, d: Date) -> Bool { s.startIndex == s.endIndex && d.addingTimeInterval(1) > d }"
                 + "\nlet saveResult = 1, savePolicyName = \"x\", toDelete = 0, domain = \"maintained\""
+                + "\nlet databases = 2, databaseName = \"y\", zzPairingRecordGuards = 3"
                 + LidGuardStructureTests.wholeLineCommentsRemoved(
-                    "\n    /// never database.save(record), never modifyRecords, never a second add(operation)")
+                    "\n    /// never database.save(record), never modifyRecords, never a second add(operation)"
+                        + "\n    /// never database.record(for:), never PairingRecordGuard.refuse elsewhere")
         }).isEmpty)
     }
 

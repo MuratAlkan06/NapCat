@@ -808,6 +808,22 @@ arms anything.
     them; the QR view is named at its sites alone; the keychain store's
     calls and the one account it sets are pinned; and on the phone a
     fixture's `final` counts only as a modifier on its class's own line.
+  - *The security review's fixes (R1–R5).* The live pairing database checks
+    what it is handed (`PairingRecordGuard`): only a fetch of one record,
+    and a deletion of one record that saves nothing, each by a pairing
+    record's ID (the approvals zone, a 64-digit lowercase hex name); anything
+    else is never added, and its own result block is told
+    `invalidArguments`, so its caller reads its closed failure. The
+    controller, the slot and the keychain store redact themselves as types
+    too, so no reflection through any wrapper reaches the slot's item or the
+    real keychain calls; `descendant`, every `_forEachField…` reader and any
+    read of `customMirror` are banned in the four targets, and so is
+    rendering a view, a window or the screen off screen; the sheet view is
+    pinned to its one presentation. The two live factories are pinned as
+    words (an unapplied reference is a site, not only a call), and so is
+    every line naming the sender's `database`; in the keychain store each
+    item call is named once, as a word, at its binding, and every `kSec…`
+    line is pinned.
   - *Uninstall.* `scripts/uninstall.sh` deletes the paired-key item too,
     as the user and value-silent like the topic's (parity-locked to
     `KeychainItemName.pairedPhone`), and SECURITY.md describes the item.

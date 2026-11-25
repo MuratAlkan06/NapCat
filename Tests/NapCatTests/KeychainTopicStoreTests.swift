@@ -306,6 +306,33 @@ struct KeychainTopicStoreTests {
         }
     }
 
+    /// S-PAIR-C1.5, the C1.5 security review's R1: the store holds the real
+    /// keychain calls, and no reflection — its own mirror, or a wrapper's
+    /// `customMirror.descendant` — reaches them or its item's name; it
+    /// prints, debug-prints and dumps as a fixed word. A control: a plain
+    /// holder of the same calls is reached the same way.
+    @Test func theStoreReflectsAndPrintsNothing() {
+        let fake = RecordingKeychainCalls()
+        let store = KeychainTopicStore(item: .pairedPhone, calls: fake.api)
+        #expect(Mirror(reflecting: store).children.isEmpty)
+        let routes: [(String, Any?)] = [("its mirror", Mirror(reflecting: store).descendant("calls")),
+                                        ("an array's", [store].customMirror.descendant(0, "calls")),
+                                        ("an optional's", Optional(store).customMirror.descendant("some", "item"))]
+        for (name, reached) in routes {
+            #expect(reached == nil, "\(name) reached a part of the store")
+        }
+        var dumped = ""
+        dump(store, to: &dumped)
+        for text in [String(describing: store), String(reflecting: store), "\(store)", dumped] {
+            #expect(text.contains("keychain item (redacted)") && !text.contains(KeychainItemName.pairedPhone.account)
+                    && !text.contains("calls"), "\(text)")
+        }
+        struct Unredacted { let calls: KeychainItemCalls }
+        #expect(Mirror(reflecting: Unredacted(calls: fake.api)).descendant("calls") is KeychainItemCalls,
+                "vacuity: the route reaches an unredacted holder's calls")
+        #expect(fake.calls.isEmpty, "nothing reached the keychain")
+    }
+
     // MARK: - uninstall.sh deletes the item, value-silently
 
     private static func uninstallScript() throws -> String {
@@ -505,24 +532,102 @@ struct KeychainTopicStoreTests {
         }
     }
 
+    static let storeFile = "KeychainTopicStore.swift"
+
+    /// Each item call's one line in the store: the binding to the real
+    /// calls (spelled split, as above; one `let` each, so no literal mixes
+    /// concatenations for the type-checker).
+    static let itemCallBindings: [String: String] = {
+        let prefix: String = "Sec" + "Item"
+        let copyMatching: String = prefix + "CopyMatching"
+        let add: String = prefix + "Add"
+        let update: String = prefix + "Update"
+        let delete: String = prefix + "Delete"
+        let copyLine: String = "let status = " + copyMatching + "(query as CFDictionary, &result)"
+        let addLine: String = "add: { attributes in " + add + "(attributes as CFDictionary, nil) },"
+        let updateLine: String = "update: { query, changes in " + update + "(query as CFDictionary, changes as CFDictionary) },"
+        let deleteLine: String = "delete: { query in " + delete + "(query as CFDictionary) }"
+        return [copyMatching: copyLine, add: addLine, update: updateLine, delete: deleteLine]
+    }()
+
+    /// `sources`: the four targets, comment-stripped. No item call outside
+    /// the store; inside it, AMENDED (S-PAIR-C1.5, the C1.5 security
+    /// review's R4 — its RP4' bound the add call unapplied, `let put = …`,
+    /// and wrote a hand-built query with it, and a count of `<call>(` passed):
+    /// each of the four calls is named exactly once, as a WORD, on its line
+    /// in the binding, in every scan copy — so an unapplied reference, a
+    /// second call or a call moved off its line all fail.
+    static func itemCallFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        var failures: [String] = []
+        for (name, text) in sources where name != storeFile {
+            let found = itemCallNames(in: text)
+            if !found.isEmpty { failures.append("\(found) in \(name) — keychain access belongs in \(storeFile)") }
+        }
+        guard let store = sources.first(where: { $0.name == storeFile })?.text else {
+            return failures + ["\(storeFile) not found — the item-call lint would be vacuous"]
+        }
+        for copy in LidGuardStructureTests.constructorScanCopies(store) {
+            let named = itemCallNames(in: copy).sorted()
+            if named != itemCallTokens.sorted() {
+                failures.append("\(storeFile) names the item calls \(named) — each of the four exactly once, in the binding")
+            }
+            for (token, line) in itemCallBindings.sorted(by: { $0.key < $1.key }) {
+                failures += ApprovalRecordPathStructureTests.siteFailures(
+                    "(?<![A-Za-z0-9_])" + token + "(?![A-Za-z0-9_])", in: copy, file: storeFile, allowed: [line: 1],
+                    rule: "the item call is named once, on its line in the binding")
+            }
+        }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
     /// The only file that talks to the keychain is KeychainTopicStore.swift:
-    /// each Security item call appears there and nowhere else in Sources
-    /// (NapCatWire included).
+    /// each Security item call appears there and nowhere else in the four
+    /// targets (NapCatWire included) — and, since the C1.5 security review's
+    /// R4, there exactly once each, on its line in the binding.
     @Test func onlyKeychainTopicStoreNamesTheSecurityItemCalls() throws {
-        let sources = try LidGuardStructureTests.swiftSources()
-        for (name, text) in sources {
-            let found = Self.itemCallNames(in: text)
-            #expect(found.isEmpty || name == "KeychainTopicStore.swift",
-                    "\(found) in \(name) — keychain access belongs in KeychainTopicStore.swift")
-        }
-        let store = try #require(sources.first { $0.name == "KeychainTopicStore.swift" })
-        #expect(Set(Self.itemCallNames(in: store.text)) == Set(Self.itemCallTokens),
-                "KeychainTopicStore.swift makes exactly the four item calls — and the lint is not vacuous")
-        for token in Self.itemCallTokens {
-            #expect(store.text.components(separatedBy: token + "(").count - 1 == 1, "'\(token)' is called once, in the binding")
-        }
+        let sources = try ApprovalChannelStructureTests.sources()
+        #expect(Self.itemCallFailures(sources).isEmpty, "\(Self.itemCallFailures(sources))")
+        #expect(Set(Self.itemCallBindings.keys) == Set(Self.itemCallTokens), "vacuity: one binding line for each call")
         let wire = LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire/AlertWire.swift")
         #expect(Self.itemCallNames(in: try String(contentsOf: wire, encoding: .utf8)).isEmpty)
+        #expect(sources.contains { $0.name == "AlertWire.swift" }, "vacuity: the scan covers NapCatWire")
+
+        // R4: RP4', as planted, and its neighbours.
+        let prefix = "Sec" + "Item"
+        let store = Self.storeFile
+        func mutate(_ file: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
+            ApprovalChannelStructureTests.mutate(sources, file, transform)
+        }
+        let mutants: [(String, [(name: String, text: String)])] = [
+            ("RP4': the add call unapplied, a hand-built query, in the store's file", mutate(store) {
+                $0 + "\nfunc zzSecRevPlant(_ data: Data) -> OSStatus {\n    let put = " + prefix + "Add\n"
+                    + "    return put([kSecClass as String: kSecClassGenericPassword, \"svce\": \"com.muratalkan.napcat\",\n"
+                    + "                \"acct\": \"paired-\" + \"iphone-key\", \"v_Data\": data] as CFDictionary, nil)\n}\n" }),
+            ("an unapplied call alone", mutate(store) { $0 + "\nlet zzPut = " + prefix + "Delete" }),
+            ("a backticked unapplied call", mutate(store) { $0 + "\nlet zzPut = `" + prefix + "Update`" }),
+            ("a second call in the store", mutate(store) {
+                $0 + "\nfunc zz(_ q: CFDictionary) -> OSStatus { " + prefix + "Delete(q) }" }),
+            ("a call moved off its binding line", mutate(store) {
+                $0.replacingOccurrences(of: "add: { attributes in " + prefix + "Add(attributes as CFDictionary, nil) },",
+                                        with: "add: { attributes in\n            " + prefix + "Add(attributes as CFDictionary, nil)\n        },") }),
+            ("a relative of the calls", mutate(store) { $0 + "\nlet zz = " + prefix + "Export" }),
+            ("a call in another target", mutate(ApprovalChannelStructureTests.seamFile) {
+                $0 + "\nlet zz = " + prefix + "CopyMatching" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.itemCallFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // The pre-R4 count of `<call>(` passed RP4' (vacuity of the plant).
+        let rp4 = try #require(mutants.first?.1.first(where: { $0.name == store })?.text)
+        #expect(Self.itemCallTokens.allSatisfy { rp4.components(separatedBy: $0 + "(").count - 1 == 1 },
+                "RP4' is the shape the old call count passed")
+        // Over-match controls: the status constants a store answers with,
+        // and a whole-line comment naming a call.
+        #expect(Self.itemCallFailures(mutate(store) {
+            $0 + "\nlet zz = errSecItemNotFound, zzItemAdd = 1"
+                + LidGuardStructureTests.codeOnly("\n/// never " + prefix + "Add outside the binding")
+        }).isEmpty)
 
         // The binding to the real calls is used only where it is defined, and
         // nothing anywhere asks for a synchronizable or data-protection item.

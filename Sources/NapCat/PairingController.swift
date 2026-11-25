@@ -61,7 +61,7 @@ enum PairingPaneState: Equatable, Sendable {
 }
 
 @MainActor
-final class PairingController: ObservableObject {
+final class PairingController: ObservableObject, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     typealias TickerFactory = (@escaping @MainActor () -> Void) -> any PairingTicker
 
     @Published private(set) var state = PairingCeremonyState()
@@ -298,6 +298,18 @@ final class PairingController: ObservableObject {
         }
         return nil
     }
+
+    // MARK: - Never printed, dumped or reflected (S-PAIR-C1.5, the C1.5 security review's R1)
+
+    /// The shell holds the paired-key slot (PairingStructureTests lock 7): it
+    /// prints, debug-prints, dumps and reflects as a fixed word and nothing
+    /// more, so no reflection — a `Mirror`, or `customMirror.descendant` from
+    /// any wrapper, an array or an optional — reaches the slot through it.
+    /// The conformance is the class's own, on its declaration (an extension
+    /// of the controller is banned, lock 6).
+    nonisolated var description: String { "pairing (redacted)" }
+    nonisolated var debugDescription: String { description }
+    nonisolated var customMirror: Mirror { Mirror(self, children: [], displayStyle: .class) }
 }
 
 /// The `pairing` log category: closed codes only (`PairingAudit.code`).
