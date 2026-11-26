@@ -3,7 +3,8 @@
 Status: regenerated in slice S1 (issue #125) from the test rows, which are
 normative, and revised in slice S-GATE (issue #145), for Read's arguments
 (issue #149) and for the path alphabet (issue #159), each of which only made
-the gate stricter.
+the gate stricter, and for seam frame version 2 (issue #150), which made the
+seam stricter.
 `Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
 gate entry below and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
 `ApprovalSeamTests`, `ApprovalIntakeTests`) pin the seam and server entries;
@@ -239,9 +240,17 @@ What is refused before the gate ever sees a prompt, or after:
   before; a prompt too large for one frame; more than 32 waiting at once.
   None is relayed.
 - **Seam frames:** not exactly the members of its kind, another frame
-  version (including `"1"`, `1.0` and `10e-1`), a verdict other than exactly
+  version (including `1`, the version before #150, and `"2"`, `2.0` and
+  `20e-1`), a prompt frame's server version other than an integer or its
+  client or client version other than a string, a verdict other than exactly
   `allow` or `deny`, the other side's kind, more than 256 KiB, invalid UTF-8.
   Each is refused and closes the connection.
+- **Another server or client (#150):** a prompt frame from a server of
+  another version than NapCat's own, or naming a client that is not exactly
+  a confirmed Claude Code build (byte for byte, as the server checks it), is
+  refused by NapCat's intake before the gate, logged
+  `seam.serverVersionRefused` or `seam.clientRefused`, and closes the
+  connection; no prompt ID is drawn and nothing is saved.
 - **Verdicts:** for a request the server never relayed, already answered, or
   open on a link that has since closed, a verdict is dropped. On NapCat's
   side only a valid, signed decision inside the TTL for a forwarded prompt
