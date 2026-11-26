@@ -24,7 +24,11 @@ import Testing
 ///    shows a tooltip.
 /// 3. Nothing arms and the verifier stays unwired: no pairing file names the
 ///    verdict API or the verifier, and no approval file or the verifier
-///    names the slot (S-PAIR-C2 wires it, under its own locks).
+///    names the slot (S-PAIR-C2 wires it, under its own locks). AMENDED for
+///    S-PAIR-C2 (#181), deliberately: the slot reaches the decision path as
+///    itself, at the verifier's one entry, handed on by the intake — no
+///    approval file or the verifier names a pairing type anywhere else,
+///    `PairedPhoneRead` included (a C1 security review probe's shape).
 /// 4. The C1 tests touch nothing live.
 /// 5. The sheet's keys: Esc ends it in every state; nothing answers Return.
 /// 6. The nonce is fresh — the system's random source fills all of it — and
@@ -546,13 +550,31 @@ struct PairingStructureTests {
         }).isEmpty)
     }
 
-    // MARK: - 3. Nothing arms; the verifier stays unwired
+    // MARK: - 3. Nothing arms; the slot is wired to the verifier alone
 
-    static let pairingTypes = ["PairedKeyStore", "PairedPhone", "PairingController", "PairingCeremonyState", "PairingCandidate"]
-    /// The approval files and the verifier: none reaches the slot in C1.
+    /// AMENDED for S-PAIR-C2 (#181), deliberately: `PairedPhoneRead` joined
+    /// the list — `\bPairedPhone\b` does not match it, so a verifier handed a
+    /// slot's reading (a C1 security review probe's shape) named no pinned
+    /// type.
+    static let pairingTypes = ["PairedKeyStore", "PairedPhone", "PairedPhoneRead", "PairingController", "PairingCeremonyState",
+                               "PairingCandidate"]
+    /// The approval files and the verifier.
     static let unwiredFiles = ApprovalRecordPathStructureTests.approvalFiles + [ApprovalRecordPathStructureTests.verifierFile]
     static let armingTokens = ApprovalRecordPathStructureTests.verdictAPITokens
         + ApprovalRecordPathStructureTests.verifierTypes + ["ApprovalDecision", "signatureVerified"]
+
+    /// AMENDED for S-PAIR-C2 (#181), deliberately: the slot reaches the
+    /// decision path, as the slot itself and no reading of it — the
+    /// verifier's one entry takes it (and reads it there,
+    /// `ApprovalRecordPathStructureTests` lock 9f), and the intake hands it
+    /// on. No approval file or the verifier names a pairing type anywhere
+    /// else: none keeps a slot, a paired phone or a reading of one.
+    static let wiredSlotSites: [String: [String: Int]] = [
+        ApprovalRecordPathStructureTests.verifierFile: [
+            "static func verify(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,": 1],
+        ApprovalChannelStructureTests.intakeFile: [
+            "func receiveDecision(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,": 1],
+    ]
 
     static func unwiredFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
@@ -561,11 +583,10 @@ struct PairingStructureTests {
                 failures.append("'\(token)' in \(name) — pairing names nothing of the verdict API (the toggle only for its kill switch)")
             }
         }
-        for (name, text) in sources where unwiredFiles.contains(name) {
-            for type in pairingTypes where ApprovalRecordPathStructureTests.hits(#"\b"# + type + #"\b"#, in: text) {
-                failures.append("'\(type)' in \(name) — the slot is wired to no decision path in C1 (S-PAIR-C2)")
-            }
-        }
+        let typePattern = #"\b(?:"# + pairingTypes.joined(separator: "|") + #")\b"#
+        failures += appSiteFailures(typePattern, in: sources.filter { unwiredFiles.contains($0.name) }, allowed: wiredSlotSites,
+                                    rule: "the slot reaches the decision path as itself, at the verifier's one entry, handed on by "
+                                        + "the intake (S-PAIR-C2)")
         let controller = text(controllerFile, in: sources)
         if ApprovalChannelStructureTests.count("RemoteApprovalsController", in: controller) != 1
             || !controller.contains("killSwitch: { [weak remoteApprovals] in remoteApprovals?.setEnabled(false) })") {
@@ -574,14 +595,31 @@ struct PairingStructureTests {
         return failures
     }
 
-    @Test func nothingArmsAndTheVerifierStaysUnwired() throws {
+    @Test func nothingArmsAndTheSlotIsWiredToTheVerifierAlone() throws {
         let sources = try ApprovalChannelStructureTests.sources()
         #expect(Self.unwiredFailures(sources).isEmpty, "\(Self.unwiredFailures(sources))")
+        let verifier: String = ApprovalRecordPathStructureTests.verifierFile
+        let head: String = "enum DecisionVerifier {\n"
+        #expect(Self.text(verifier, in: sources).contains(head), "vacuity: the verifier's body is where the in-body canary plants")
         let mutants: [(String, Sources)] = [
-            ("the verifier handed the slot", Self.mutate(sources, ApprovalRecordPathStructureTests.verifierFile) {
-                $0 + "\nenum ZZ { static var keys: PairedKeyStore? }" }),
+            ("the verifier keeps a slot", Self.mutate(sources, verifier) { $0 + "\nenum ZZ { static var keys: PairedKeyStore? }" }),
             ("the intake reads the slot", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
                 $0 + "\nlet zz: PairedPhone? = nil" }),
+            // A C1 security review probe, as planted, and in the verifier's body.
+            ("the verifier reads the slot through PairedPhoneRead, as the probe planted it", Self.mutate(sources, verifier) {
+                $0 + "\nextension DecisionVerifier { static func zz(_ r: PairedPhoneRead) -> [UInt8]? { "
+                    + "if case .paired(let p) = r { return p.publicKey }; return nil } }" }),
+            ("the same read in the verifier's body", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: head, with: head + "    static func zz(_ r: PairedPhoneRead) -> [UInt8]? { "
+                    + "if case .paired(let p) = r { return p.publicKey }; return nil }\n") }),
+            ("the intake keeps a reading", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nextension ApprovalIntake { static let zzRead = PairedPhoneRead.notPaired }" }),
+            ("the host keeps the slot", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nlet zzKeys: PairedKeyStore? = nil" }),
+            ("the toggle keeps a paired phone", Self.mutate(sources, ApprovalChannelStructureTests.toggleFile) {
+                $0 + "\nlet zzPhone: `PairedPhone`? = nil" }),
+            ("the slot's entry moved", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "copy: ForwardedCopy?, keys: PairedKeyStore,", with: "copy: ForwardedCopy?, keys: PairedKeyStore?,") }),
             ("the pairing arms", Self.mutate(sources, Self.controllerFile) { $0 + "\nlet zzArmed = { true }\nlet armed = zzArmed" }),
             ("the pairing builds a verifier input", Self.mutate(sources, Self.ceremonyFile) {
                 $0 + "\nlet zz: DecisionEvidence? = nil" }),
@@ -592,6 +630,12 @@ struct PairingStructureTests {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.unwiredFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // Over-match controls: names that only start like the pairing types,
+        // and a whole-line comment naming them, in the approval files.
+        #expect(Self.unwiredFailures(Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+            $0 + "\nlet pairedKeyStoreCount = 0, PairedPhoneReadings = 1"
+                + LidGuardStructureTests.codeOnly("\n/// never a PairedKeyStore kept, never a PairedPhoneRead handed in")
+        }).isEmpty)
     }
 
     // MARK: - 4. The C1 tests touch nothing live

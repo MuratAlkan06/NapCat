@@ -54,6 +54,24 @@ struct DecisionVerifierTests {
         return nil
     }
 
+    static func decision(_ result: DecisionVerification) -> ApprovalDecision? {
+        if case .verified(let decision) = result { return decision }
+        return nil
+    }
+
+    /// S-PAIR-C2: the paired-phone slot over an in-memory item (never the
+    /// keychain), holding `key`'s public half when one is given.
+    static func slot(_ items: FakeTopicStore = FakeTopicStore(), paired key: P256.Signing.PrivateKey? = phone) throws
+        -> PairedKeyStore {
+        let keys = PairedKeyStore(items: items)
+        if let key {
+            let paired: PairedPhone = try #require(PairedPhone(publicKey: Array(key.publicKey.x963Representation),
+                                                               pairedAt: Date(timeIntervalSince1970: 1_800_000_000)))
+            #expect(keys.commit(paired))
+        }
+        return keys
+    }
+
     // MARK: - What verifies
 
     @Test(arguments: ApprovalWire.Verdict.allCases)
@@ -323,11 +341,13 @@ struct DecisionVerifierTests {
         let secret = ForwardedCopy(promptID: Self.promptID, toolName: "Bash", inputPreview: "{\"command\":\"SECRET-PREVIEW\"}",
                                    projectLabel: "SECRET-LABEL")
         var lines: [String] = []
+        let keys = try Self.slot()
         let refused = try Self.signed(shown: Self.copy)
-        #expect(DecisionVerifier.verify(refused, copy: secret, pairedKey: Self.phone.publicKey) { lines.append($0.code) } == nil)
+        #expect(DecisionVerifier.verify(refused, copy: secret, keys: keys) { lines.append($0.code) } == .unverified(.signatureInvalid))
         #expect(lines == ["prompt=0123456789abcdef0123456789abcdef decision.unverified.signatureInvalid"])
-        #expect(DecisionVerifier.verify(Self.evidence(refused, promptID: "NOT-AN-ID"), copy: secret,
-                                        pairedKey: Self.phone.publicKey) { lines.append($0.code) } == nil)
+        #expect(DecisionVerifier.verify(Self.evidence(refused, promptID: "NOT-AN-ID"), copy: secret, keys: keys) {
+            lines.append($0.code)
+        } == .unverified(.malformedPromptID))
         #expect(lines.last == "decision.unverified.malformedPromptID")
         let signature = refused.signature.map { String(format: "%02x", $0) }.joined()
         for line in lines {
@@ -336,11 +356,53 @@ struct DecisionVerifierTests {
             }
         }
         lines.removeAll()
-        let decision = DecisionVerifier.verify(try Self.signed(shown: secret), copy: secret, pairedKey: Self.phone.publicKey) {
+        let decision = Self.decision(DecisionVerifier.verify(try Self.signed(shown: secret), copy: secret, keys: keys) {
             lines.append($0.code)
-        }
+        })
         #expect(decision?.promptID == Self.promptID && decision?.verdict == .allow && decision?.signatureVerified == true)
         #expect(lines.isEmpty)
+    }
+
+    // MARK: - The paired key is read at each verification (S-PAIR-C2)
+
+    /// The verifier reads the slot once per verification and keeps nothing:
+    /// an Unpair between two verifications makes the second refuse, and a
+    /// new pairing's key is the only one the next verification trusts.
+    @Test func anUnpairBetweenTwoVerificationsMakesTheSecondRefuse() throws {
+        let items = FakeTopicStore()
+        let keys = try Self.slot(items)
+        let evidence = try Self.signed()
+        var lines: [String] = []
+        let reads = items.readCount
+        #expect(Self.decision(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { lines.append($0.code) }) != nil)
+        #expect(items.readCount == reads + 1, "the slot is read at the verification")
+        #expect(keys.unpair())
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { lines.append($0.code) } == .unverified(.noPairedKey))
+        #expect(items.readCount == reads + 2, "and read again at the next one")
+        #expect(lines == ["prompt=\(Self.promptID.hex) decision.unverified.noPairedKey"])
+        // A new pairing: the old key's signature no longer verifies, the new one's does.
+        let newPhone = P256.Signing.PrivateKey()
+        let repaired = try Self.slot(items, paired: newPhone)
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: repaired) { _ in } == .unverified(.signatureInvalid))
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in } == .unverified(.signatureInvalid),
+                "every handle on the slot reads the slot")
+        #expect(Self.decision(DecisionVerifier.verify(try Self.signed(by: newPhone), copy: Self.copy, keys: keys) { _ in }) != nil)
+    }
+
+    /// No pairing, a keychain that refuses, or a stored text this build does
+    /// not read: no key, so nothing verifies, and the code says so first.
+    @Test func aSlotWithNoReadablePairingVerifiesNothing() throws {
+        let evidence = try Self.signed()
+        let unread = FakeTopicStore()
+        unread.setReadAnswer(.failed(status: -25308))
+        let slots: [(String, PairedKeyStore)] = [
+            ("never paired", try Self.slot(paired: nil)),
+            ("the keychain refused", PairedKeyStore(items: unread)),
+            ("a stored text not this build's", PairedKeyStore(items: FakeTopicStore("napcat-paired-v1\nkey:04\n"))),
+        ]
+        for (name, keys) in slots {
+            #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in } == .unverified(.noPairedKey), "\(name)")
+        }
     }
 
     // MARK: - The lifecycle keeps its own checks
@@ -349,7 +411,7 @@ struct DecisionVerifierTests {
     /// prompt's lifecycle, which still discards a duplicate and judges the
     /// TTL on the Mac's clock, as it always did.
     @Test func duplicatesAndTheTTLStayTheLifecycles() throws {
-        let decision = try #require(DecisionVerifier.verify(try Self.signed(), copy: Self.copy, pairedKey: Self.phone.publicKey) { _ in })
+        let decision = try #require(Self.decision(DecisionVerifier.verify(try Self.signed(), copy: Self.copy, keys: try Self.slot()) { _ in }))
         var (lifecycle, _) = ApprovalLifecycle.open(id: Self.promptID, classification: .forward(.bash), armed: true, now: 0)
         _ = lifecycle.apply(.saveAccepted, now: 1)
         #expect(lifecycle.apply(.remoteDecision(decision), now: 2).effects.contains(.deliverVerdict(.allow)))

@@ -209,8 +209,8 @@ final class ApprovalIntake {
         perform(opened.transition, for: id, classified: (classification, copy))
     }
 
-    /// One event for one prompt (CloudKit's answers and the phone's decisions
-    /// arrive this way in the later slices).
+    /// One event for one prompt (CloudKit's answers arrive this way in a
+    /// later slice; the phone's decisions only through `decide`).
     func apply(_ event: ApprovalEvent, to id: PromptID) {
         guard var item = prompts[id] else { return audit(.unknownPrompt) }
         let transition = item.lifecycle.apply(event, now: now())
@@ -218,8 +218,21 @@ final class ApprovalIntake {
         perform(transition, for: id)
     }
 
-    /// A decision record as the Mac read it (signature already checked).
-    func decide(_ decision: ApprovalDecision) {
+    /// S-PAIR-C2 (#181): a decision record as the record store read it — its
+    /// fields as decoded, and the Mac's own copy of its prompt. The verifier
+    /// judges it against the paired key `keys` holds at this very moment
+    /// (read there, never kept), and only its result reaches `decide`: the
+    /// one road from a reading to a lifecycle (lint-locked). A refusal is
+    /// audited by its code (`refusals`) and counts for nothing.
+    func receiveDecision(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,
+                         refusals: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) {
+        decide(DecisionVerifier.verify(evidence, copy: copy, keys: keys, audit: refusals))
+    }
+
+    /// The verifier's result, and nothing else: only a verified decision
+    /// reaches its prompt's lifecycle.
+    func decide(_ verification: DecisionVerification) {
+        guard case .verified(let decision) = verification else { return }
         apply(.remoteDecision(decision), to: decision.promptID)
     }
 

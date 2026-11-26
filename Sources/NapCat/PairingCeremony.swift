@@ -28,8 +28,9 @@ import NapCatWire
 //    comparison included. Every end — accept, cancel, mismatch, refusal,
 //    expiry, a failed save — burns the nonce and deletes the record.
 //
-// Nothing here arms anything or names a decision: pairing installs a key,
-// and no reader of decisions uses it in this slice (S-PAIR-C2).
+// Nothing here arms anything or names a decision: pairing installs a key.
+// Since S-PAIR-C2 (#181) the decision verifier reads that key from the slot
+// at each verification; nothing in the app hands it a decision yet.
 
 // MARK: - The record seam
 

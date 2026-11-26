@@ -7,8 +7,8 @@ the pure core described at the end, slice S1 (issue #125) adds the server
 side, slice S2 (issue #134) the Mac's control surface, slice S3 (issue
 #146) the CloudKit record path and the phone's request screen, and the
 S-PAIR slices (issue #161) pairing and signed decisions (CL-1); S-PAIR-C1
-(issue #168) is the Mac's half of pairing, and S-PAIR-C1.5 (issue #170) its
-live transport.
+(issue #168) is the Mac's half of pairing, S-PAIR-C1.5 (issue #170) its
+live transport, and S-PAIR-C2 (issue #181) the Mac's decision path.
 
 ## Problem
 
@@ -413,7 +413,9 @@ this section points at them.
   (`GateApprovedPrompt`: it never classifies) and retracts it together with
   the decisions read for it. The reader parses PromptDecision records
   strictly and logs them in the `approvals` category. Every reading is a
-  claim, unsigned or unverifiable, never a verdict. Each record's own
+  claim, never a verdict: in S3 none carried a signature, and since
+  S-PAIR-C2 one counts only when the verifier finds the paired key's
+  signature over exactly that decision (below). Each record's own
   result decides an operation's outcome (issue #139). The file may name
   CloudKit's record vocabulary only (a deliberate lint amendment); it holds
   no container or database, and only test fakes conform to its database
@@ -939,7 +941,7 @@ arms anything.
     PairingResponse record type to Production: the first live ceremony
     (which creates the zone), a pairing with the zone already there, and
     the N-25 line read during the device drills.
-- **S1c Variant A** (this slice, issue #176). The comparison step's
+- **S1c Variant A** (issue #176). The comparison step's
   presentation, on both devices, as the S1c variant ruling chose (prior
   art: every shipping compare screen shows its code plain, large and
   grouped by whitespace, never in tiles, which read as entry). Nothing in
@@ -965,10 +967,106 @@ arms anything.
     on your Mac; nothing is paired." The deny is labelled Codes Don't
     Match and still cancels: the phone can't tell a mismatch from a
     cancel, and both end alike, with Scan Again.
-- **Next.** The owner-run Production schema deploy of the PairingResponse
-  record type and the first live ceremony with its drills, then S-PAIR-C2
-  (the verifier wired as the only road from a reading to the lifecycle, and
-  "paired" as a precondition for arming).
-  Owed live drill: a forwarded prompt with an NFD file name and non-ASCII
-  text verifies end to end on real CloudKit, which also proves the
-  whole-second time's round trip.
+- **S-PAIR-C2** (issue #181). The Mac counts verified decisions. Nothing
+  arms: the approval files' one armed literal is still `armed: { false }`,
+  the app's host still saves no prompt record, and nothing in the app reads
+  a decision record yet, so no decision reaches a real session.
+  - *The one road.* The record store reads a decision record strictly
+    (`CloudKitApprovalRecords.read`), notes it for its prompt's retraction,
+    and hands on its evidence (the fields as read, the signature's bytes
+    unchecked) with the store's own copy of that prompt: the three fields
+    exactly as it wrote them, and none once the prompt is withdrawn or for a
+    prompt it never wrote. The intake hands both, with the paired-key slot,
+    to the verifier (`DecisionVerifier.verify`), and its `decide` takes the
+    verifier's result alone (`DecisionVerification`): only a verified
+    decision reaches the prompt's lifecycle, which keeps its own checks
+    (the prompt, the version, the phase, the TTL, the first decision
+    winning). The intake names the S0 decision type no more.
+  - *Refusals.* A record that is not even a claim is logged
+    `decision.malformed.<fault>` and goes nowhere. A claim the verifier
+    refuses (unsigned, another key, a changed field, a prompt the Mac holds
+    no copy of, no phone paired) is logged `decision.unverified.<reason>`,
+    the table above, and counts for nothing: no answer, no lifecycle event,
+    and the prompt stays open. A signed claim's reading is logged
+    `decision.signed` (it was `decision.unverifiable` while no key existed).
+  - *The key, read at each verification.* The verifier reads the paired key
+    from the slot (`PairedKeyStore.read()`) at each verification, on one
+    line, and keeps nothing: a verification after Unpair finds no key and
+    refuses (`noPairedKey`), and after a new pairing only the new key's
+    signatures verify. Lint-locked: the slot is read at that one site, the
+    checks that take a key are reached from that entry alone, no approval
+    file or the verifier names a pairing type anywhere else, and a P-256
+    public key is named only at today's sites.
+  - *The sinks, pinned (#163).* A decision value could be forged from raw
+    bytes with no name the earlier locks pin: bytes copied into a generic
+    slot through `memcpy` or `copyMemory`. So the places a forged value
+    must reach are pinned instead: `decide`, named at its one wired call and
+    its declaration; the remote-decision event, built in `decide` alone; the
+    verifier's `.verified` result, built once after its signature check and
+    read once in `decide`; the S0 type's file, to its one initializer and
+    current conformances; the package manifest, to today's target list,
+    and the repository root, to that one manifest (no version-specific
+    one); and the doors around the sink: `withIntake` at its one use and
+    its body whole (it binds the intake plainly, so no extension member
+    stands in for a call there), the intake's type named at today's sites
+    alone, no extension of `Optional` in the four targets (by its name,
+    its `?` or an alias declared there), the host's and the intake's own
+    `intake`/`apply`/`perform` lines, the intake's frame writer at its
+    sites, the host's connection writes at today's site, the connection
+    type named at today's sites alone, and the host's words for its
+    connections and its peer reader, the seam file's send, write and
+    descriptor and the relay's writer to Claude Code (`emit`) at today's
+    lines, so a new line of those files that names one of them fails (a
+    line reaching the socket by another name is not read); and the four
+    targets call a C write (`write`, `send` and their kin), and declare a
+    function so named, at today's sites alone, and the channel server
+    names `write` on its one standard-output line alone. Every `extension`
+    header and every operator implementation in the four targets is
+    today's, and each of today's extensions declares today's members, so
+    no extension member or operator overload added elsewhere or inside one
+    takes over a pinned line; no function or value there is declared with
+    a capital name by `func`, `let` or `var`, in the tuple pattern of a
+    `let` or `var` or in a `case let` pattern (a parameter, a closure's or
+    a loop's binding is not read), so none takes over the call of a type
+    it is named like; nothing stands at a file's top level but imports,
+    types (structs, enums, classes, protocols, today's extensions) and
+    today's one top-level alias, and no attribute there starts with an
+    underscore or is `@c`, so no module-level function or value and no
+    exported C symbol takes over a call; and no type is declared with a
+    name a pinned line spells, or an imported module's, except at today's
+    declarations, so no new type takes over a pinned line by its name. A
+    visible edit to a decision-path file's unpinned lines stays code
+    review's to read.
+  - *The road, whole.* The decision's road is pinned as it is, flattened
+    by scalars on the compiler's whitespace alone, in every scan copy: the
+    verifier (`enum DecisionVerifier`: every check, the message, the
+    diagnostic), the intake's `apply` and `perform`, and the slot's
+    `read()`. A line added on it fails unless the stripper reads it as
+    whitespace or a `//` comment, also beside a pinned copy kept in a
+    literal or an inactive block. A raw-text lock over the four targets
+    and the phone app keeps out the scalars a text reading drops or
+    matches to another: control and format characters, zero-width and
+    other invisible scalars, a scalar joined to the whitespace before it,
+    and one that compares equal to another. Each pin has canaries (the
+    byte-copy forge in each shape found so far among them) and over-match
+    controls. The pins cover the sites and bodies they name: a forge
+    reaching none of them stays the accepted residual (#163), and
+    raw-memory writes into a live object stay the pairing locks' accepted
+    residual.
+  - *The pairing guard's refusal (#180).* The live pairing database's own
+    check refuses with `invalidArguments`, which the record path's batch
+    reading calls unconfirmed. No Mac consumer tells the two apart: a
+    refused fetch reads unreachable like every other fetch error, a refused
+    deletion is not done like an unconfirmed one (the remembered name stays
+    for the next launch's cleanup), the prompt writer's outcomes are only
+    audited, and the decision path issues no CloudKit operation. The live
+    path that hands the writer's outcome to the lifecycle decides it.
+  - *Verification split.* CI plays the phone's part with software keys and
+    CloudKit's with records built in memory, over the real store, verifier
+    and intake, and an in-memory slot: no test touches the keychain, the
+    defaults or iCloud.
+- **Next.** The live read path for decision records, "paired" as a
+  precondition for arming, and the arming gates above. Owed live drill: a
+  forwarded prompt with an NFD file name and non-ASCII text verifies end
+  to end on real CloudKit, which also proves the whole-second time's round
+  trip.

@@ -66,9 +66,11 @@ final class IntakeHarness {
         return id
     }
 
+    /// A decision as the verifier hands it to the intake (S-PAIR-C2), so the
+    /// lifecycle's own checks can be driven directly.
     static func decision(_ id: PromptID, _ verdict: ApprovalWire.Verdict = .allow, signed: Bool = true,
-                         wireVersion: Int = ApprovalWire.wireVersion) -> ApprovalDecision {
-        ApprovalDecision(promptID: id, verdict: verdict, wireVersion: wireVersion, signatureVerified: signed)
+                         wireVersion: Int = ApprovalWire.wireVersion) -> DecisionVerification {
+        .verified(ApprovalDecision(promptID: id, verdict: verdict, wireVersion: wireVersion, signatureVerified: signed))
     }
 
     var codes: [String] { audits.map(\.code) }

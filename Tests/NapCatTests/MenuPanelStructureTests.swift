@@ -65,10 +65,21 @@ struct MenuPanelStructureTests {
         text.components(separatedBy: token).count - 1
     }
 
+    /// What the compiler reads as whitespace between tokens: space, tab, LF,
+    /// CR, and the three the grammar also allows (NUL, vertical tab, form
+    /// feed). A no-break space, which the lexer skips with a warning, is not
+    /// among them, so it reads as a change.
+    static let compilerWhitespace: Set<Unicode.Scalar> = [" ", "\t", "\n", "\r", "\u{0}", "\u{B}", "\u{C}"]
+
     /// Whitespace-flattened source: comment lines (blanked by `codeOnly`) and
-    /// indentation drop out, so a lock reads the code's shape only.
+    /// indentation drop out, so a lock reads the code's shape only. Split by
+    /// scalars on `compilerWhitespace` alone, so every other scalar stays in:
+    /// split by characters, a space and a zero-width or combining scalar
+    /// after it are one whitespace character and the scalar vanished, while
+    /// the compiler read it as part of the next name.
     static func flat(_ text: some StringProtocol) -> String {
-        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let words: [Substring.UnicodeScalarView] = String(text).unicodeScalars.split(whereSeparator: { compilerWhitespace.contains($0) })
+        return words.map { String($0) }.joined(separator: " ")
     }
 
     /// Every card in `text`, in order: each `PanelCard {` or `PanelGroup(`

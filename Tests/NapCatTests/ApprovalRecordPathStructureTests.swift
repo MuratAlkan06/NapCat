@@ -49,7 +49,8 @@ import Testing
 ///    means what it says: nothing re-declares or extends what its check is
 ///    spelled in, every unsafe-memory site and every line naming the S0 type
 ///    is pinned, the signature check is one adjacent block, the verifier's
-///    top level is exactly its types, and no Mac source signs;
+///    top level is exactly its types, and no Mac source signs; (S-PAIR-C2)
+///    and the paired key is read from the slot at each verification;
 /// 10. (#170, S-PAIR-C1.5, the live pairing transport) the pairing record is
 ///    reached by its ID alone, through its one source and its one live
 ///    database, and a fetch is found only from a record actually read.
@@ -57,6 +58,13 @@ import Testing
 ///    widens by `CKFetchRecordsOperation` alone, and the seam-flow pins gain
 ///    the pairing source's fetch and its deletion (the record path's own
 ///    factory, saving nothing).
+///
+/// AMENDED for S-PAIR-C2 (#181), deliberately: the verifier is wired. Lock 3
+/// now pins every line naming a verifier type outside its file (the record
+/// store builds its two inputs, the intake makes its one call), lock 9b's
+/// S0-type sites shrink to the verifier's (the intake takes the verifier's
+/// result alone), and lock 9f is new: the paired key is read from the slot
+/// at each verification, and kept nowhere.
 ///
 /// Since #153 the constructor bans (locks 3, 7 and 8) read the cleaned
 /// copies too (`LidGuardStructureTests.constructorScanCopies`: backticks
@@ -289,7 +297,8 @@ struct ApprovalRecordPathStructureTests {
     /// intake or lifecycle is handed one in this slice (S-PAIR-C2 wires it).
     /// Only the S0 type's own file is exempt from the scan now: every other
     /// NapCatWire file, the canonical-bytes file included, is read like any
-    /// other source.
+    /// other source. (S-PAIR-C2 wired it: the verifier's types are named at
+    /// pinned sites, `wiredVerifierSites`.)
     static let verifierFile = "DecisionVerifier.swift"
 
     /// The S0 type's own file, the one source the scan skips.
@@ -337,10 +346,43 @@ struct ApprovalRecordPathStructureTests {
     static let verifierBannedTokens = verdictAPITokens.filter { $0 != "ApprovalDecision" && $0 != "signatureVerified" }
         + ["SecureEnclave", "LocalAuthentication", "LAContext", "SecAccessControl", "Sec" + "Item", "SecKey", "kSec", "CloudKit"]
 
-    /// The verifier's own types, matched as whole words: nothing outside its
-    /// file names them in this slice.
+    /// The verifier's own types, matched as whole words.
     static let verifierTypes = ["DecisionVerifier", "DecisionEvidence", "ForwardedCopy", "DecisionVerification",
                                 "DecisionUnverifiedReason", "DecisionVerifierAudit", "DecisionVerifierLog"]
+
+    /// AMENDED for S-PAIR-C2 (#181), deliberately: the verifier is wired, so
+    /// "nothing outside its file names its types" became an exact list of
+    /// where they are named — every line, file by file. The record store
+    /// builds the verifier's two inputs (a claim's evidence, its own copy of
+    /// the prompt), once each, and hands them on; the intake takes them and
+    /// the slot, makes the one call to the verifier and takes its result.
+    /// Nothing else names a verifier type: no other file builds an input,
+    /// verifies, or holds a result.
+    static let wiredVerifierSites: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.intakeFile: [
+            "func receiveDecision(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,": 2,
+            "refusals: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) {": 2,
+            wiredCall: 1,
+            "func decide(_ verification: DecisionVerification) {": 1,
+        ],
+        recordPathFile: [
+            "private var copies: [PromptID: ForwardedCopy] = [:]": 1,
+            "copies[id] = ForwardedCopy(promptID: id, toolName: prompt.toolName, inputPreview: prompt.inputPreview,": 1,
+            "-> (evidence: DecisionEvidence, copy: ForwardedCopy?)? {": 2,
+            "var evidence: DecisionEvidence {": 1,
+            "DecisionEvidence(wireVersion: ApprovalWire.wireVersion, promptID: promptID.hex, verdict: claimedVerdict.rawValue,": 1,
+        ],
+    ]
+
+    /// The one wired call (S-PAIR-C2): the intake's `decide`, handed the
+    /// verifier's result for the slot as it is now.
+    static let wiredCall: String = "decide(DecisionVerifier.verify(evidence, copy: copy, keys: keys, audit: refusals))"
+
+    /// Inside the verifier: its own copy rebuilt in another normalization
+    /// form (the diagnostic) is its one construction of an input.
+    static let verifierInputSites: [String: Int] = [
+        "let other = ForwardedCopy(promptID: copy.promptID, toolName: form(copy.toolName), inputPreview: form(copy.inputPreview),": 1,
+    ]
 
     /// `sources`: `uncutSources()`.
     static func verifierFailures(_ sources: Sources) -> [String] {
@@ -372,13 +414,20 @@ struct ApprovalRecordPathStructureTests {
         if hits(#"\bCK[A-Z]\w*"#, in: code) {
             failures.append("a CloudKit identifier in \(verifierFile) — the verifier reads no record")
         }
+        let typePattern = #"\b(?:"# + verifierTypes.joined(separator: "|") + #")\b"#
         for (name, text) in sources where name != verifierFile {
-            let other = LidGuardStructureTests.codeOnly(text)
-            for type in verifierTypes where hits(#"\b"# + type + #"\b"#, in: other) {
-                failures.append("'\(type)' in \(name) — nothing hands the verifier a claim in this slice (S-PAIR-C2 wires it)")
+            for copy in LidGuardStructureTests.constructorScanCopies(LidGuardStructureTests.codeOnly(text)) {
+                failures += siteFailures(typePattern, in: copy, file: name, allowed: wiredVerifierSites[name] ?? [:],
+                                         rule: "the verifier's types are named only where the store builds its inputs and the "
+                                             + "intake calls it (S-PAIR-C2)")
             }
         }
-        return failures
+        for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
+            failures += siteFailures(constructionPattern("ForwardedCopy") + "|" + constructionPattern("DecisionEvidence"),
+                                     in: copy, file: verifierFile, allowed: verifierInputSites,
+                                     rule: "the verifier builds no input but its own copy in another normalization form")
+        }
+        return unique(failures)
     }
 
     @Test func noMacSourceBuildsAVerdict() throws {
@@ -423,8 +472,8 @@ struct ApprovalRecordPathStructureTests {
     /// without naming it or the flag.
     @Test func noMacSourceReachesTheVerdictConstructorUnnamed() throws {
         let sources = try Self.uncutSources()
-        #expect(Self.text(ApprovalChannelStructureTests.intakeFile, in: sources).contains("func decide(_ decision: ApprovalDecision)"),
-                "vacuity: the one place outside the wire that names the type, as a parameter")
+        #expect(Self.text(Self.verifierFile, in: sources).contains("case verified(ApprovalDecision)"),
+                "vacuity: outside the wire the type is named as the verifier's payload (S-PAIR-C2: the intake takes its result)")
         let mutants: [(String, Sources)] = [
             ("an unapplied init (G4)", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + "\nfunc f(i: ApprovalIntake, p: PromptID) {\n    let make = ApprovalDecision.init\n"
@@ -570,11 +619,25 @@ struct ApprovalRecordPathStructureTests {
             ("a backticked extension in the verifier", Self.mutate(sources, verifier) {
                 $0 + "\nextension `ApprovalDecision` {\n    static let claimed = Self.init\n}" }),
             ("an alias in the verifier", Self.mutate(sources, verifier) { $0 + "\ntypealias Verified = /* x */ ApprovalDecision" }),
-            // Wired ahead of its slice.
-            ("the intake verifies", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
-                $0 + "\nfunc f(e: DecisionEvidence) { _ = DecisionVerifier.verify(e, copy: nil, pairedKey: nil) }" }),
-            ("the record store keeps a copy", Self.mutate(sources, Self.recordPathFile) { $0 + "\nlet c: ForwardedCopy? = nil" }),
+            // Named off its pinned sites (S-PAIR-C2: wired, at those sites alone).
+            ("the intake verifies a second time", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc f(e: DecisionEvidence, k: PairedKeyStore) { _ = DecisionVerifier.verify(e, copy: nil, keys: k) }" }),
+            ("the record store keeps a second copy", Self.mutate(sources, Self.recordPathFile) { $0 + "\nlet c: ForwardedCopy? = nil" }),
             ("the app holds a verification", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nvar last: DecisionVerification?" }),
+            ("the host verifies", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nfunc zz(e: DecisionEvidence, k: PairedKeyStore) -> Any { DecisionVerifier.verify(e, copy: nil, keys: k) }" }),
+            ("the record store builds a second evidence", Self.mutate(sources, Self.recordPathFile) {
+                $0.replacingOccurrences(of: "        return (claim.evidence, copies[claim.promptID])",
+                                        with: "        return (DecisionEvidence(wireVersion: 1, promptID: claim.promptID.hex, verdict: \"allow\", "
+                                            + "decidedAt: claim.decidedAt, signature: claim.signature), copies[claim.promptID])") }),
+            ("the wired call moved", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0.replacingOccurrences(of: Self.wiredCall, with: "decide(DecisionVerifier.verify(evidence, copy: copy, keys: keys))") }),
+            ("the verifier builds an evidence", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "    static let latestDecidedAt: TimeInterval = 9_007_199_254_740_992\n",
+                                        with: "    static let latestDecidedAt: TimeInterval = 9_007_199_254_740_992\n    static let zz = "
+                                            + "DecisionEvidence.init(wireVersion: 1, promptID: \"\", verdict: \"\", decidedAt: .now, signature: Data())\n") }),
+            ("a backticked result held elsewhere", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nvar zz: `DecisionVerification`? = nil" }),
             // The verifier gone: the lock must not pass vacuously.
             ("the verifier renamed away", Self.mutate(sources, verifier) {
                 $0.replacingOccurrences(of: "enum DecisionVerifier {", with: "enum Verifier {") }),
@@ -850,13 +913,13 @@ struct ApprovalRecordPathStructureTests {
     ]
 
     /// Every line naming the S0 type outside its declaring file, exactly:
-    /// the intake's parameter, and the verifier's payload, return type and
-    /// one construction. A forge that names the type (P1, L1a–c) adds a line.
+    /// the verifier's payload and its one construction. A forge that names
+    /// the type (P1, L1a–c) adds a line. AMENDED for S-PAIR-C2 (#181),
+    /// deliberately: the intake's parameter and the verifier's optional
+    /// return left the list — the intake takes the verifier's result alone,
+    /// and `verify` returns that result.
     static let decisionTokenSites: [String: [String: Int]] = [
-        ApprovalChannelStructureTests.intakeFile: ["func decide(_ decision: ApprovalDecision) {": 1],
-        verifierFile: ["case verified(ApprovalDecision)": 1,
-                       "audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> ApprovalDecision? {": 1,
-                       verifiedConstruction: 1],
+        verifierFile: ["case verified(ApprovalDecision)": 1, verifiedConstruction: 1],
     ]
 
     /// `sources`: `uncutSources()`.
@@ -1194,6 +1257,139 @@ struct ApprovalRecordPathStructureTests {
             $0 + "\nlet signature = try? P256.Signing.ECDSASignature(rawRepresentation: s)\nlet k: P256.Signing.PublicKey? = nil"
                 + "\nfunc signatures(for d: Int) {}\nlet privateKeyCount = 0\nlet ok = k?.isValidSignature(signature!, for: d)"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never a PrivateKey, never signature(for:)")
+        }).isEmpty)
+    }
+
+    // MARK: 9f. The paired key is read at each verification, and kept nowhere (S-PAIR-C2)
+
+    /// S-PAIR-C2 (#181): the verifier obtains the paired key through the
+    /// slot's `read()` alone, at the moment of each verification, so no key
+    /// outlives an Unpair (`DecisionVerifierTests` shows it by example). The
+    /// behaviour cannot show that nothing else feeds the checks, so, in every
+    /// scan copy of `uncutSources()`:
+    /// - in the verifier, the slot is named at its entry and read once, on
+    ///   the line that turns the paired phone's bytes into the key; those
+    ///   bytes are read on the next line alone; and the key is named where
+    ///   it is read, handed to the checks and checked — no reading handed in
+    ///   (a C1 security review probe's shape), no key kept;
+    /// - the checks (`verification(of:copy:pairedKey:)`, which take a key)
+    ///   are reached from that entry alone: outside the verifier nothing
+    ///   names `pairedKey` or reaches the checks by name;
+    /// - the intake hands the slot on untouched, at its one call;
+    /// - a P-256 public key is named at today's sites only, in the four
+    ///   targets: the slot's validation, the ceremony's proof check and the
+    ///   verifier's own — so no file can make or hold another.
+    static let slotRead: String = "let pairedKey: P256.Signing.PublicKey? = switch keys.read() {"
+    static let keyFromSlot: String = "case .paired(let phone): try? P256.Signing.PublicKey(x963Representation: phone.publicKey)"
+    static let verifierEntry: String = "static func verify(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,"
+    static let checksCall: String = "let verification = verification(of: evidence, copy: copy, pairedKey: pairedKey)"
+    static let verifierKeySites: [(pattern: String, allowed: [String: Int], rule: String)] = [
+        (#"\bkeys\b"#, [verifierEntry: 1, slotRead: 1], "the verifier's entry takes the slot and reads it, once"),
+        (#"\bread\b"#, [slotRead: 1], "the verifier reads the slot at one site, at each verification"),
+        (#"\bpublicKey\b"#, [keyFromSlot: 1], "the key is the paired phone's bytes as the slot holds them now"),
+        (#"\bpairedKey\b"#, [slotRead: 1, checksCall: 2, "pairedKey: P256.Signing.PublicKey?) -> DecisionVerification {": 1,
+                              "guard let pairedKey else { return .unverified(.noPairedKey) }": 1,
+                              "guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {": 1,
+                              "return .unverified(signedAnotherForm(claimed, of: copy, signature, pairedKey) ? .shownDigestMismatch : .signatureInvalid)": 1,
+                              "_ pairedKey: P256.Signing.PublicKey) -> Bool {": 1,
+                              "if pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) { return true }": 1],
+         "the key read now is handed to the checks and checked, and named nowhere else"),
+        (#"\bverification\b"#, ["static func verification(of evidence: DecisionEvidence, copy: ForwardedCopy?,": 1, checksCall: 2,
+                                 "if case .unverified(let reason) = verification {": 1, "return verification": 1],
+         "the checks are reached from the verifier's entry alone"),
+    ]
+    /// The intake's `keys`: taken at its decision entry, handed to the verifier.
+    static let intakeKeySites: [String: Int] = ["func receiveDecision(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,": 1,
+                                 wiredCall: 2]
+    /// Every line naming a public key type in the four targets.
+    static let publicKeySites: [String: [String: Int]] = [
+        verifierFile: [slotRead: 1, keyFromSlot: 1, "pairedKey: P256.Signing.PublicKey?) -> DecisionVerification {": 1,
+                       "_ pairedKey: P256.Signing.PublicKey) -> Bool {": 1],
+        PairingStructureTests.slotFile: ["(try? P256.Signing.PublicKey(x963Representation: publicKey)) != nil,": 1],
+        PairingStructureTests.ceremonyFile: ["let key = try? P256.Signing.PublicKey(x963Representation: response.publicKey),": 1],
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func keyReadFailures(_ sources: Sources) -> [String] {
+        guard text(verifierFile, in: sources).contains(slotRead) else {
+            return ["'\(slotRead)' not found in \(verifierFile) — the key-read lock would be vacuous"]
+        }
+        var failures: [String] = []
+        for (name, uncut) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
+                if name == verifierFile {
+                    for (pattern, allowed, rule) in verifierKeySites {
+                        failures += siteFailures(pattern, in: copy, file: name, allowed: allowed, rule: rule)
+                    }
+                } else {
+                    failures += siteFailures(#"\bpairedKey\b|\.\s*verification\b|\bverification\s*\("#, in: copy, file: name,
+                                             allowed: [:], rule: "nothing outside the verifier hands its checks a key")
+                }
+                if name == ApprovalChannelStructureTests.intakeFile {
+                    failures += siteFailures(#"\bkeys\b"#, in: copy, file: name, allowed: intakeKeySites,
+                                             rule: "the intake hands the slot to the verifier untouched, at its one call")
+                }
+                failures += siteFailures(#"\bPublicKey\b"#, in: copy, file: name, allowed: publicKeySites[name] ?? [:],
+                                         rule: "a public key is named at today's sites only — none is made or kept elsewhere")
+            }
+        }
+        return unique(failures)
+    }
+
+    @Test func thePairedKeyIsReadAtEachVerificationAndKeptNowhere() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.keyReadFailures(sources).isEmpty, "\(Self.keyReadFailures(sources))")
+        let verifier = Self.verifierFile
+        let head: String = "enum DecisionVerifier {\n"
+        let read: String = "        " + Self.slotRead + "\n"
+        #expect(Self.text(verifier, in: sources).contains(head) && Self.text(verifier, in: sources).contains(read),
+                "vacuity: the verifier's body and its one read are where the canaries plant")
+        let mutants: [(String, Sources)] = [
+            // A C1 security review probe, as planted, and in the verifier's body.
+            ("the verifier reads the slot through PairedPhoneRead, as the probe planted it", Self.mutate(sources, verifier) {
+                $0 + "\nextension DecisionVerifier { static func zz(_ r: PairedPhoneRead) -> [UInt8]? { "
+                    + "if case .paired(let p) = r { return p.publicKey }; return nil } }" }),
+            ("the same read in the verifier's body", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: head, with: head + "    static func zz(_ r: PairedPhoneRead) -> [UInt8]? { "
+                    + "if case .paired(let p) = r { return p.publicKey }; return nil }\n") }),
+            // A reading handed in, not taken at the verification.
+            ("the entry handed a reading", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "switch keys.read() {", with: "switch reading {") }),
+            ("the slot read twice", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: read, with: "        _ = keys.read()\n" + read) }),
+            // A key kept, or another key handed to the checks.
+            ("a key kept across verifications", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: head, with: head + "    nonisolated(unsafe) static var zzLast: P256.Signing.PublicKey?\n") }),
+            ("the checks handed a kept key", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: Self.checksCall, with: "let verification = verification(of: evidence, copy: copy, "
+                                        + "pairedKey: pairedKey ?? zzLast)") }),
+            ("the checks reached from the intake", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0 + "\nfunc zz(e: DecisionEvidence, k: P256.Signing.PublicKey) -> Any { "
+                    + "DecisionVerifier.verification(of: e, copy: nil, pairedKey: k) }" }),
+            ("the checks reached unapplied", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz = DecisionVerifier . verification" }),
+            ("a key made from the pairing's bytes elsewhere", Self.mutate(sources, "PairingController.swift") {
+                $0 + "\nfunc zz(_ b: [UInt8]) -> Any? { try? P256.Signing.PublicKey(x963Representation: b) }" }),
+            ("a key held by the host", Self.mutate(sources, ApprovalChannelStructureTests.hostFile) {
+                $0 + "\nlet zz: P256.Signing.PublicKey? = nil" }),
+            ("the intake keeps the slot", Self.mutate(sources, ApprovalChannelStructureTests.intakeFile) {
+                $0.replacingOccurrences(of: "        " + Self.wiredCall, with: "        Self.zzKeys = keys\n        " + Self.wiredCall) }),
+            ("a backticked key in a wire file", Self.mutate(sources, "ApprovalWire.swift") {
+                $0 + "\nlet zz: P256.Signing.`PublicKey`? = nil" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.keyReadFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned words
+        // (`readCount`, `keysSorted`, `publicKeyByteCount`, `verificationTimeout`,
+        // `.verificationFailed`), a key type's longer-named neighbour, and a
+        // whole-line comment naming them.
+        #expect(Self.keyReadFailures(Self.mutate(Self.mutate(sources, verifier) {
+            $0.replacingOccurrences(of: head, with: head + "    static let readCount = 0, keysSorted = 1, publicKeyByteCount = 2\n")
+        }, "MenuStateModel.swift") {
+            $0 + "\nlet verificationTimeout = 1\nlet f = Outcome.verificationFailed\nstruct PublicKeyRow {}"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never pairedKey: k, never DecisionVerifier.verification(of:)")
         }).isEmpty)
     }
 
