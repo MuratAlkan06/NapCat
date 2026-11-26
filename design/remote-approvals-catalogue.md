@@ -1,8 +1,9 @@
 # F4: the refusal catalogue
 
 Status: regenerated in slice S1 (issue #125) from the test rows, which are
-normative, and revised in slice S-GATE (issue #145) and for Read's arguments
-(issue #149), each of which only made the gate stricter.
+normative, and revised in slice S-GATE (issue #145), for Read's arguments
+(issue #149) and for the path alphabet (issue #159), each of which only made
+the gate stricter.
 `Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
 gate entry below and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
 `ApprovalSeamTests`, `ApprovalIntakeTests`) pin the seam and server entries;
@@ -120,6 +121,56 @@ forwarded Read is a canonical path and plain numbers, nothing else.
 | Types | `pages` as a number, an array or null; `offset` or `limit` as a string, a boolean or null (`unclassifiable.argumentKind`) |
 | Keys | `allow_large`, either value, like every other key not listed (`unclassifiable.unknownArgument`) |
 
+### The path alphabet
+
+Since issue #159, a path forwards only when every character is printable
+ASCII from `!` to `~` other than the double quote `"` and the backslash `\`.
+That leaves 92 characters: letters, digits and
+`` ! # $ % & ' ( ) * + , - . / : ; < = > ? @ [ ] ^ _ ` { | } ~ ``. Every
+other character is refused, as one of three codes:
+
+- `unclassifiable.pathNotCanonical`: the space, the double quote, the
+  backslash, a tab, a newline, a carriage return, and any non-ASCII
+  character the "Hidden text" bullet below does not name (an accented
+  letter, a look-alike letter, a middle dot).
+- `unclassifiable.hiddenText`: every other control character but NUL (the
+  rest of C0, DEL and C1), and every other character that bullet names. It
+  is checked in every string in the preview, before any path rule.
+- `unclassifiable.previewNotStrictJSON`: NUL, because a NUL escape is not
+  strict JSON (see "The preview" below).
+
+Each code is for the character as JSON escapes it. Written raw, a C0 control
+is not strict JSON at all, so it is `previewNotStrictJSON` too.
+
+The space and the double quote are checked after the forbidden families, so
+a forbidden path holding either one is still logged as its family
+(`ApprovalGate.pathBytesRefusedAfterFamilies`).
+
+Why the double quote:
+
+- The phone shows the gate's copy of a Read verbatim, as JSON, in a
+  monospaced face: `{"file_path":"…","offset":…}`.
+- Every boundary between its members holds a double quote.
+- The copy writes a quote inside a path as `\"`. So the path
+  `/tmp/a","limit":1` would be drawn `{"file_path":"/tmp/a\",\"limit\":1"}`,
+  which can read as a second member.
+
+Without the double quote, and with the backslash already refused, a path
+puts no quote into the copy at all. The only quotes left are the copy's own,
+two per key and two per string value. So braces, brackets, commas, colons
+and the rest of the punctuation can only read as part of the one quoted
+path. They stay allowed, because real paths hold them: `app/[slug]/page.tsx`,
+`app/(marketing)/page.tsx`, `{{cookiecutter.project_slug}}`, `a,b.csv`,
+`12:30.log`.
+
+The single quote and the backquote stay allowed too. In the monospaced
+drawing each one is a single mark in a cell of its own, and two of them take
+two cells; a double quote is one glyph in one cell.
+
+None of this widens what an Allow authorizes. An Allow still covers only the
+named tool on that exact path, so this rule protects what the phone
+displays, not what can run.
+
 ## Every other tool and shape (fail closed)
 
 - **Tool names:** only `Bash`, `Write`, `Edit`, `NotebookEdit` and `Read`,
@@ -152,9 +203,11 @@ forwarded Read is a canonical path and plain numbers, nothing else.
   that is not allowed (above) is `argumentValue`.
 - **Paths** must be absolute and canonical: relative, `~`, `..`, `.`, `//`, a
   trailing slash, `/` alone, a backslash or a Windows path, non-ASCII, a
-  look-alike letter, a tab, a space, a middle dot or more than 1 KiB are
-  `unclassifiable.pathNotCanonical` (a forbidden path with a space is still
-  logged as its family).
+  look-alike letter, a tab, a space, a double quote (written plainly or as
+  `\u0022`), a middle dot or more than 1 KiB are
+  `unclassifiable.pathNotCanonical`. A forbidden path with a space or a
+  double quote is still logged as its family. The full alphabet is in "The
+  path alphabet" above.
 - **Hidden text:** a character that renders invisibly or reorders text,
   anywhere in the preview (C0 and C1 controls other than tab, newline and
   carriage return, the soft hyphen, zero-width and joiner characters, bidi
