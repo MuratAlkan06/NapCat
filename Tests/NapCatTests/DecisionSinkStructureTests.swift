@@ -55,11 +55,13 @@ import Testing
 ///    connections and its peer reader at today's lines, the seam file its
 ///    send, its write, its read and its descriptor, and the relay its writer
 ///    to Claude Code (`emit`), so a new line of those files that names one
-///    of them fails; and the seam connection's writer (`send`) and reader
-///    (`drain`) are pinned whole (#197), so no line is added to either. A
-///    line elsewhere in the seam file that reaches the socket by another
-///    name (its read source) is not read itself: to write there it needs a
-///    name k. or n. reads, or a file API through a path;
+///    of them fails; the seam connection's writer (`send`) and reader
+///    (`drain`) are pinned whole (#197), and so are the channel server's
+///    stream type (`StandardStreams`) and the relay's two `receive`s, the
+///    last writes before Claude Code (#199), so nothing is added to any of
+///    them. A line elsewhere in the seam file that reaches the socket by
+///    another name (its read source) is not read itself: to write there it
+///    needs a name k. or n. reads, or a file API through a path;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -92,7 +94,8 @@ import Testing
 ///    seam file does on its one write, f.), so no new line writes to a
 ///    descriptor by number through one of those names, and no member, local
 ///    or parameter added to either file takes one of today's two writes
-///    over (l. keeps out a module-level one);
+///    over (l. keeps out a module-level one; the stream type is also pinned
+///    whole, f.);
 /// l. nothing stands at the top level of a file in the four targets but an
 ///    import, a `struct`, `enum`, `class` or `protocol` with its body, an
 ///    extension (each of today's, i.) or today's one top-level alias, each
@@ -1859,6 +1862,156 @@ struct DecisionSinkStructureTests {
         #expect(Self.connectionWordFailures(readControls).isEmpty, "over-match: \(Self.connectionWordFailures(readControls))")
     }
 
+    // MARK: - f, continued. The channel server's last writes, whole (#199)
+
+    /// The channel server's stream type, whole (from the brace before it, so
+    /// no attribute or modifier joins it): one line and its newline to
+    /// standard output through its one C write, a failed write ending the
+    /// server. No member is added to it.
+    static let streamsWhole: String = [
+        "} enum StandardStreams {", "static func writeLine(_ line: String) {", "let bytes = Array(line.utf8) + [0x0A]", "var offset = 0",
+        "while offset < bytes.count {", "let written = bytes[offset...].withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress, $0.count) }",
+        "if written < 0 {", "if errno == EINTR { continue }", "exit(0)", "}", "offset += written", "}", "}", "}",
+    ].joined(separator: " ")
+    /// The relay's receive from Claude Code, whole: the handshake (its
+    /// client confirmed, or the session's prompts kept local for good), the
+    /// ping, the refusals, and the permission request handed to the relay.
+    static let relayStdinWhole: String = [
+        "} func receive(stdinLine line: [UInt8]) {", "switch ApprovalChannel.message(line) {", "case .initialize(let id, let version, let client):",
+        "clientConfirmed = (clientConfirmed ?? true) && ApprovalChannel.confirms(client)", "self.client = client",
+        "emit(ApprovalChannel.initializeResult(id: id, requestedVersion: version))", "case .ping(let id):", "emit(ApprovalChannel.pingResult(id: id))",
+        "case .refused(let id, let code):", "emit(ApprovalChannel.errorResponse(id: id, code: code))", "case .permissionRequest(let request):",
+        "relay(request)", "case .ignored, .malformed:", "break", "}", "}",
+    ].joined(separator: " ")
+    /// The relay's receive from NapCat, whole: the strict read (a refused
+    /// frame closes the link), the open check, and the one verdict
+    /// notification.
+    static let relaySeamWhole: String = [
+        "} func receive(seamLine line: [UInt8]) {", "guard case .verdict(let requestID, let verdict)? = ApprovalChannel.frame(line) else {",
+        "note(.frameRefused)", "link?.close()", "return", "}", "guard open.remove(requestID) != nil else {", "note(.verdictIgnored)", "return", "}",
+        "emit(ApprovalChannel.verdictNotification(requestID: requestID, verdict: verdict))", "note(.verdictRelayed)", "}",
+    ].joined(separator: " ")
+    static let channelPins: [WholePin] = [
+        (ApprovalChannelStructureTests.serverFile, #"\benum\s+StandardStreams\b"#, streamsWhole),
+        (ApprovalChannelStructureTests.relayFile, #"\bfunc\s+receive\s*\(\s*stdinLine\b"#, relayStdinWhole),
+        (ApprovalChannelStructureTests.relayFile, #"\bfunc\s+receive\s*\(\s*seamLine\b"#, relaySeamWhole),
+    ]
+
+    /// The channel server's stream type and the relay's two receives, the
+    /// last writes before Claude Code, are pinned whole (#199). The second
+    /// re-check's members-in-a-body shapes, as inert text: a member of the
+    /// stream type taking its standard-output write over (as a function, as
+    /// a closure-typed constant) is caught by this pin and the C-write pin,
+    /// and a capital bound through a tuple pattern there by this pin and the
+    /// capital-name pin; the relay's client confirmation set aside, by this
+    /// pin alone. Every other pin of this suite reads each as the tree.
+    @Test func theChannelServersLastWritesArePinnedWhole() throws {
+        let sources: Sources = try Self.uncutSources()
+        let pins: [WholePin] = Self.channelPins
+        #expect(Self.wholeFailures(sources, pins).isEmpty, "\(Self.wholeFailures(sources, pins))")
+        let server: String = ApprovalChannelStructureTests.serverFile
+        let relay: String = ApprovalChannelStructureTests.relayFile
+        let confirming: String = "            clientConfirmed = (clientConfirmed ?? true) && ApprovalChannel.confirms(client)\n"
+        let pinged: String = "            emit(ApprovalChannel.pingResult(id: id))\n"
+        let refusedClose: String = "            note(.frameRefused)\n            link?.close()\n"
+        let openCheck: String = "        guard open.remove(requestID) != nil else {\n"
+        let relayed: String = "        note(.verdictRelayed)\n"
+        let seamHead: String = "    func receive(seamLine line: [UInt8]) {\n"
+        let failed: String = "                exit(0)\n"
+        let constant: String = "    private static let logger = Logger(subsystem: \"com.muratalkan.napcat\", category: \"channel\")\n"
+        let serverAnchors: [String] = [Self.streamsHead, failed, constant, "write(STDOUT_FILENO,"]
+        let relayAnchors: [String] = [confirming, pinged, refusedClose, openCheck, relayed, seamHead]
+        for anchor in serverAnchors {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(server, in: sources)) == 1, "vacuity: '\(anchor.prefix(50))' is in the server once")
+        }
+        for anchor in relayAnchors {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(relay, in: sources)) == 1, "vacuity: '\(anchor.prefix(50))' is in the relay once")
+        }
+        let streams: (String) -> Sources = { member in
+            Self.mutate(sources, server) { $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead + member) }
+        }
+        let baseline: [String: [String]] = Self.pinBaseline(sources)
+        let reviewed: [(name: String, planted: Sources, also: [String])] = [
+            ("the stream type's write taken over by a member", streams(Self.streamsWrite), ["C writes"]),
+            ("the stream type's write taken over by a closure-typed constant", streams(Self.streamsWriteValue), ["C writes"]),
+            ("a capital bound through a tuple pattern in the stream type", streams(Self.streamsTuple), ["capital names"]),
+            ("the relay's client confirmation set aside", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: confirming, with: "            clientConfirmed = true\n") }, []),
+        ]
+        for (name, planted, also) in reviewed {
+            #expect(planted.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(planted, pins).isEmpty, "canary '\(name)' was NOT caught by this pin")
+            let others: [String] = Self.othersCatching(planted, besides: "whole bodies", baseline: baseline)
+            #expect(others == also, "canary '\(name)' is this pin's to catch, and \(also)'s: \(others) caught it")
+        }
+        // More canaries: a member added to the stream type, a modifier on
+        // it, an attribute on the line above it, its write sent to another
+        // descriptor, a failed write ignored; a ping answered twice, a
+        // refused frame keeping the link, the open check skipped, a verdict
+        // emitted twice, a statement after the verdict's note, a second
+        // receive from NapCat declared, and the pinned stream type kept in a
+        // literal beside a changed one.
+        let decoy: String = constant + "    static let zz = \"" + Self.streamsWhole + "\"\n"
+        let mutants: [(String, Sources)] = [
+            ("a member added to the stream type", streams("    static let zz = 0\n")),
+            ("a modifier on the stream type", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: Self.streamsHead, with: "private " + Self.streamsHead) }),
+            ("an attribute on the line above the stream type", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: Self.streamsHead, with: "@frozen\n" + Self.streamsHead) }),
+            ("its write sent to another descriptor", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: "write(STDOUT_FILENO,", with: "write(STDERR_FILENO,") }),
+            ("a failed write ignored", Self.mutate(sources, server) { $0.replacingOccurrences(of: failed, with: "                break\n") }),
+            ("a ping answered twice", Self.mutate(sources, relay) { $0.replacingOccurrences(of: pinged, with: pinged + pinged) }),
+            ("a refused frame keeping the link", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: refusedClose, with: "            note(.frameRefused)\n") }),
+            ("the open check skipped", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: openCheck, with: "        guard open.remove(requestID) != nil || true else {\n") }),
+            ("a verdict emitted twice", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: relayed, with: "        emit(ApprovalChannel.verdictNotification(requestID: requestID, verdict: verdict))\n" + relayed) }),
+            ("a statement after the verdict's note", Self.mutate(sources, relay) { $0.replacingOccurrences(of: relayed, with: relayed + "        zzTap()\n") }),
+            ("a second receive from NapCat declared", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: seamHead, with: "    func receive(seamLine line: ArraySlice<UInt8>) {}\n\n" + seamHead) }),
+            ("the pinned stream type kept in a literal, the real one changed", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: failed, with: "                break\n").replacingOccurrences(of: constant, with: decoy) }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, pins).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: whitespace and comments inside the bodies, and
+        // body-only changes outside them (the input reader's, whose closing
+        // brace stands before the stream type; the relay's initializer, whose
+        // brace stands before the first receive; and the relay's own relay
+        // and link-closed bodies): free for these pins, and every other
+        // whole pin reads each as the tree.
+        let readIn: String = "        let count = read(STDIN_FILENO, &buffer, buffer.count)\n"
+        let initialized: String = "        self.note = note\n    }\n"
+        let inserted: String = "        open.insert(request.requestID)\n"
+        let cleared: String = "        open.removeAll()\n"
+        for (file, anchor) in [(server, readIn), (relay, initialized), (relay, inserted), (relay, cleared)] {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(file, in: sources)) == 1, "vacuity: '\(anchor.prefix(50))' is in \(file) once")
+        }
+        let reflowed: Sources = Self.mutate(Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: failed, with: "\n\t\t\t\texit(0)\n\n")
+        }, relay) { $0.replacingOccurrences(of: relayed, with: "\n\t\tnote(.verdictRelayed)  \n\n") }
+        let commented: Sources = Self.mutate(Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: failed, with: "                // Claude Code is gone\n                exit(0) // the server ends\n")
+        }, relay) { $0.replacingOccurrences(of: pinged, with: "            // a keep-alive\n" + pinged) }
+        let outside: Sources = Self.mutate(Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: readIn, with: "        let count: Int = read(STDIN_FILENO, &buffer, buffer.count)\n")
+        }, relay) {
+            $0.replacingOccurrences(of: initialized, with: "        self.note = note\n        zzReady()\n    }\n")
+                .replacingOccurrences(of: inserted, with: "        _ = open.insert(request.requestID)\n")
+                .replacingOccurrences(of: cleared, with: "        open = []\n")
+        }
+        let tree: [String] = Self.wholeFailures(sources, Self.allWholePins)
+        for (name, control) in [("whitespace only", reflowed), ("comments only", commented), ("bodies outside the pins", outside)] {
+            #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
+            #expect(Self.wholeFailures(control, pins).isEmpty && Self.wholeFailures(control, Self.allWholePins) == tree,
+                    "control '\(name)': \(Self.wholeFailures(control, Self.allWholePins))")
+        }
+    }
+
     /// D2's anchors (the slot's read, commit and unpair) and its plant,
     /// verbatim: a reading kept per handle, forgotten on the handle's own
     /// commit or unpair alone.
@@ -2052,6 +2205,7 @@ struct DecisionSinkStructureTests {
         pins.append(slotReadPin)
         pins.append(contentsOf: seamPins)
         pins.append(receivePin)
+        pins.append(contentsOf: channelPins)
         return pins
     }()
     /// Every pin of this suite that reads the four targets' sources, by
@@ -2499,7 +2653,8 @@ struct DecisionSinkStructureTests {
     /// capital bound through a tuple pattern inside the channel server's
     /// stream type, are each caught by this pin; the probe, which declares
     /// a function and a value at a new file's top level, by the top-level
-    /// pin too; every other pin of this suite reads each as the tree.
+    /// pin too, and the tuple pattern by the stream type's whole pin too
+    /// (#199); every other pin of this suite reads each as the tree.
     @Test func noFunctionOrValueIsNamedWithACapital() throws {
         let sources = try Self.uncutSources()
         #expect(Self.capitalNameFailures(sources).isEmpty, "\(Self.capitalNameFailures(sources))")
@@ -2513,7 +2668,7 @@ struct DecisionSinkStructureTests {
         let baseline: [String: [String]] = Self.pinBaseline(sources)
         let reviewed: [(name: String, planted: Sources, also: [String])] = [
             ("the probe", probed, ["top level"]),
-            ("a capital bound through a tuple pattern in the stream type", tupled, []),
+            ("a capital bound through a tuple pattern in the stream type", tupled, ["whole bodies"]),
         ]
         for (name, planted, also) in reviewed {
             #expect(!Self.capitalNameFailures(planted).isEmpty, "\(name) was NOT caught by the capital-name pin")
@@ -2659,8 +2814,8 @@ struct DecisionSinkStructureTests {
     /// write. The probe is caught by this pin and by the top-level pin (it
     /// declares a function at a new file's top level); a member that takes
     /// the channel server's standard-output write over, as a function and
-    /// as a closure-typed constant, by this pin alone; every other pin of
-    /// this suite reads each as the tree.
+    /// as a closure-typed constant, by this pin and the stream type's whole
+    /// pin (#199); every other pin of this suite reads each as the tree.
     @Test func aCWriteIsCalledAtTodaysSites() throws {
         let sources = try Self.uncutSources()
         #expect(Self.cWriteFailures(sources).isEmpty, "\(Self.cWriteFailures(sources))")
@@ -2674,8 +2829,8 @@ struct DecisionSinkStructureTests {
         let baseline: [String: [String]] = Self.pinBaseline(sources)
         let reviewed: [(name: String, planted: Sources, also: [String])] = [
             ("the probe", probed, ["top level"]),
-            ("the stream type's write taken over by a member", shadowed, []),
-            ("the stream type's write taken over by a closure-typed constant", valued, []),
+            ("the stream type's write taken over by a member", shadowed, ["whole bodies"]),
+            ("the stream type's write taken over by a closure-typed constant", valued, ["whole bodies"]),
         ]
         for (name, planted, also) in reviewed {
             #expect(!Self.cWriteFailures(planted).isEmpty, "\(name) was NOT caught by the C-write pin")
@@ -3080,9 +3235,9 @@ struct DecisionSinkStructureTests {
     }
 
     /// Today's declarations of a name `pinnedNames` or the modules hold, by
-    /// file: each the type's own declaration (seventy-one: the intake's entry
-    /// since `receive` is pinned whole, #198), none borrowing an imported
-    /// name.
+    /// file: each the type's own declaration (seventy-two: the intake's
+    /// entry since `receive` is pinned whole, #198, and the channel server's
+    /// stream type since it is, #199), none borrowing an imported name.
     static let homeDeclarations: [String: [String: Int]] = [
         ApprovalChannelStructureTests.intakeFile: [
             "class ApprovalIntake": 1, "protocol ApprovalRecordSink": 1, "struct Entry": 1, "typealias ConnectionKey": 1],
@@ -3109,6 +3264,7 @@ struct DecisionSinkStructureTests {
         ApprovalChannelStructureTests.seamFile: [
             "class SeamConnection": 1, "class SeamListener": 1, "enum SeamPeerPolicy": 1, "enum SeamSocket": 1, "struct SeamPeer": 1],
         ApprovalChannelStructureTests.relayFile: ["enum ChannelNote": 1, "protocol ChannelLink": 1, "typealias Connector": 1],
+        ApprovalChannelStructureTests.serverFile: ["enum StandardStreams": 1],
         "ApprovalChannel.swift": [
             "enum ApprovalChannel": 1, "enum ChannelErrorCode": 1, "enum ChannelMessage": 1, "enum ChannelMessageID": 1, "enum SeamFrame": 1,
             "struct ChannelClient": 1, "struct ChannelPermissionRequest": 1, "struct ChannelRequestID": 1],
@@ -3169,10 +3325,10 @@ struct DecisionSinkStructureTests {
         for name in ["Darwin", "Dispatch", "Foundation", "CryptoKit", "NapCat", "NapCatWire", "NapCatSeam", "NapCatChannel", "Swift"] {
             #expect(modules.contains(name), "vacuity: '\(name)' is an imported module")
         }
-        // Every home is a type's own: seventy-one, none named like a module or
+        // Every home is a type's own: seventy-two, none named like a module or
         // like the imported types the pinned lines call.
         let homes: [String] = Self.homeDeclarations.values.flatMap { $0.keys }
-        #expect(homes.count == 71 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
+        #expect(homes.count == 72 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
         let imported: Set<String> = modules.union(["DispatchSource", "DispatchQueue", "P256", "SHA256", "Int32", "Sendable", "Equatable"])
         #expect(homes.allSatisfy { !imported.contains(Self.asciiWords($0).last ?? "") }, "a home borrows an imported name: \(homes.sorted())")
         let intake: String = ApprovalChannelStructureTests.intakeFile
