@@ -11,15 +11,20 @@ enum ApprovalsSwitch {
     /// `@AppStorage`).
     static let storageKey = "remoteApprovalsEnabled"
 
-    /// Whether the switch takes effect: only a stored `true` on a phone
-    /// with a committed key (paired, or paired under biometrics that have
-    /// changed since). An unpaired phone receives nothing, whatever is
-    /// stored.
-    static func effective(stored: Bool, keyHealth: PhoneKeyring.Health) -> Bool {
-        guard stored else { return false }
+    /// Whether the phone holds a committed key: paired, or paired under
+    /// biometrics that have changed since. Only then can the switch be set
+    /// (Settings disables it on any other phone) or take effect.
+    static func isCommitted(_ keyHealth: PhoneKeyring.Health) -> Bool {
         switch keyHealth {
         case .paired, .enrollmentChanged: return true
         case .unpaired: return false
         }
+    }
+
+    /// Whether the switch takes effect: only a stored `true` on a phone
+    /// with a committed key. An unpaired phone receives nothing, whatever is
+    /// stored, and Settings shows its switch off.
+    static func effective(stored: Bool, keyHealth: PhoneKeyring.Health) -> Bool {
+        stored && isCommitted(keyHealth)
     }
 }

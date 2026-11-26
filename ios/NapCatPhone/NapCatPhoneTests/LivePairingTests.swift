@@ -74,6 +74,26 @@ import VisionKit
         #expect(gate.requests.isEmpty, "reading it asks for nothing")
     }
 
+    /// #194: the live pairing reads where this phone's pairing stands from
+    /// the keyring its ceremonies commit to, as it stands at each read and
+    /// asking for nothing: Settings' switch follows it, so a pairing made
+    /// from Settings shows as its sheet closes. (Gated: it builds the live
+    /// pairing.)
+    @Test(.enabled(if: !LiveCapability.isAvailable))
+    func theLivePairingReadsThePhonesPairing() throws {
+        let keys: PhoneKeyringTests.World = PhoneKeyringTests.World()
+        let gate: ScriptedBiometricGate = ScriptedBiometricGate()
+        let pairing: LivePairing = LivePairing.make(keyring: keys.keyring, biometrics: gate, database: CloudKitAlertSource.makeLiveApprovalDatabase())
+        #expect(pairing.health() == .unpaired(.neverPaired))
+        _ = try keys.pair()
+        #expect(pairing.health() == .paired)
+        keys.enrolled = PhoneKeyringTests.after
+        #expect(pairing.health() == .enrollmentChanged)
+        _ = keys.store.delete(.committed)
+        #expect(pairing.health() == .unpaired(.neverPaired))
+        #expect(gate.requests.isEmpty && keys.enclave.signed.isEmpty, "reading it asks for nothing and signs nothing")
+    }
+
     /// #175: VisionKit stopping the scanner mid-scan goes through the seam a
     /// start it refused goes through (the view's `failed`, routed as the
     /// sheet routes it), on the next turn: a ceremony still scanning ends at

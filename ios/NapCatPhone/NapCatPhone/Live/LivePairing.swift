@@ -46,4 +46,12 @@ struct LivePairing {
     func biometric() -> BiometryKind? {
         biometrics.availability().kind
     }
+
+    /// Where this phone's pairing stands, read from the keyring its
+    /// ceremonies commit to (asking for nothing), so Settings' remote-
+    /// approvals switch follows it (#194): read as Settings draws, it is
+    /// current again as a pairing's sheet closes.
+    func health() -> PhoneKeyring.Health {
+        keyring.health()
+    }
 }

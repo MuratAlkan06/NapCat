@@ -99,17 +99,29 @@ import UIKit
     // MARK: Remote approvals (F4, #194)
 
     /// The switch's row: its group named as the Mac names its own, a label
-    /// that says where the prompts go, and a footer that says what it does
-    /// today and what it does not do yet. Lock-safe words: none of the
-    /// words the answer path's locks count.
+    /// that says where the prompts go, and a footer that says, on a paired
+    /// phone, what it does today and what it does not do yet, and on an
+    /// unpaired one, to pair first (#194 design review). Lock-safe words:
+    /// none of the words the answer path's locks count.
     @Test func theApprovalsRowSaysExactlyThis() {
         #expect(SettingsScreen.approvalsHeader == "Remote approvals")
-        #expect(SettingsScreen.approvalsLabel == "Prompts on this iPhone")
-        #expect(SettingsScreen.approvalsFooter == "Lists the permission prompts your paired Mac forwards, with a push "
-            + "when one is waiting. Answers from this iPhone don't reach your Mac yet; answer there.")
-        for word in ["match", "sign", "signed", "confirm", "confirmed"] {
-            #expect(!SettingsScreen.approvalsFooter.split(whereSeparator: { !$0.isLetter }).contains { $0.lowercased() == word },
-                    "'\(word)' in the footer")
+        #expect(SettingsScreen.approvalsLabel == "Prompts on This iPhone")
+        let paired: String = "Shows permission prompts from your paired Mac and notifies you when one is waiting. "
+            + "You can't answer from iPhone yet — answer on your Mac."
+        let unpaired: String = "Pair this iPhone with your Mac above to see its permission prompts here."
+        #expect(SettingsScreen.approvalsPairedFooter == paired)
+        #expect(SettingsScreen.approvalsUnpairedFooter == unpaired)
+        let healths: [PhoneKeyring.Health] = [.paired, .enrollmentChanged, .unpaired(.neverPaired), .unpaired(.enrollmentChanged),
+                                              .unpaired(.unreadable)]
+        for health in healths {
+            let committed: Bool = health == .paired || health == .enrollmentChanged
+            #expect(SettingsScreen.approvalsFooter(for: health) == (committed ? paired : unpaired), "\(health)")
+        }
+        let footers: [String] = [paired, unpaired]
+        for footer in footers {
+            for word in ["match", "sign", "signed", "confirm", "confirmed"] {
+                #expect(!footer.split(whereSeparator: { !$0.isLetter }).contains { $0.lowercased() == word }, "'\(word)' in '\(footer)'")
+            }
         }
     }
 
@@ -121,7 +133,34 @@ import UIKit
         for health in healths {
             #expect(!ApprovalsSwitch.effective(stored: false, keyHealth: health), "off, \(health)")
             let committed: Bool = health == .paired || health == .enrollmentChanged
+            #expect(ApprovalsSwitch.isCommitted(health) == committed, "\(health)")
             #expect(ApprovalsSwitch.effective(stored: true, keyHealth: health) == committed, "on, \(health)")
+        }
+    }
+
+    /// The stored choice, as a test holds it.
+    final class StoredSwitch: @unchecked Sendable {
+        var on: Bool
+        init(_ on: Bool) { self.on = on }
+        var binding: Binding<Bool> { Binding(get: { self.on }, set: { self.on = $0 }) }
+    }
+
+    /// #194 design review: the row follows the pairing. Paired (or changed
+    /// since), it shows the stored choice and sets it; unpaired, it shows
+    /// off, a stored on included, and nothing set there is kept.
+    @MainActor
+    @Test func theSwitchFollowsThePairing() {
+        let healths: [PhoneKeyring.Health] = [.paired, .enrollmentChanged, .unpaired(.neverPaired), .unpaired(.enrollmentChanged),
+                                              .unpaired(.unreadable)]
+        for health in healths {
+            let committed: Bool = ApprovalsSwitch.isCommitted(health)
+            for stored in [false, true] {
+                let kept: StoredSwitch = StoredSwitch(stored)
+                let shown: Binding<Bool> = SettingsScreen.shownSwitch(kept.binding, keyHealth: health)
+                #expect(shown.wrappedValue == (committed && stored), "\(health), stored \(stored)")
+                shown.wrappedValue = !stored
+                #expect(kept.on == (committed ? !stored : stored), "\(health): set from \(stored)")
+            }
         }
     }
 
@@ -144,9 +183,17 @@ import UIKit
     /// it, under Pairing and shown with it; and the root keeps the one
     /// stored choice (`@AppStorage`), handed to Settings bound and to the
     /// inbox at its pinned triggers (`PushWiringTests`).
-    static let toggleShape: String = "Toggle(isOn: $approvals) { Text(Self.approvalsLabel) .foregroundStyle(theme.ink) }"
+    /// AMENDED (#194 design review): the toggle follows the phone's pairing,
+    /// read through the live pairing: shown through `shownSwitch`, disabled
+    /// without a committed key, its footer chosen by the same reading.
+    static let toggleShape: String = "Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth)) { "
+        + "Text(Self.approvalsLabel) .foregroundStyle(theme.ink) } .disabled(!ApprovalsSwitch.isCommitted(keyHealth))"
+    static let footerSwitchShape: String = "} footer: { footer(Self.approvalsFooter(for: keyHealth)) }"
+    static let switchShapes: [String] = [toggleShape, footerSwitchShape,
+                                         "private func approvalsSection(_ keyHealth: PhoneKeyring.Health) -> some View {",
+                                         "approvalsSection(pairing.health())"]
     static let approvalsSites: [String: Int] = CloudKitStructureTests.appSites([
-        "Settings/SettingsScreen.swift": ["@Binding var approvals: Bool": 1, "Toggle(isOn: $approvals) {": 1,
+        "Settings/SettingsScreen.swift": ["@Binding var approvals: Bool": 1, "Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth)) {": 1,
                                           "SettingsScreen(palette: $palette, notifications: .on, approvals: .constant(false))": 1,
                                           "SettingsScreen(palette: $palette, notifications: .off, approvals: .constant(false))": 1],
         "NapCatPhoneApp.swift": ["@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1, "approvals: $approvals)": 2,
@@ -157,8 +204,11 @@ import UIKit
     static func approvalsFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
         let screen: String = SettingsReachabilityTests.flat(app.first { $0.path.hasSuffix("/Settings/SettingsScreen.swift") }?.text ?? "")
-        if !screen.contains(toggleShape) { failures.append("Settings lost '\(toggleShape)'") }
+        for shape in switchShapes where !screen.contains(shape) { failures.append("Settings lost '\(shape)'") }
         if CloudKitStructureTests.occurrences(of: "Toggle(", in: screen) != 1 { failures.append("Settings holds one toggle, the switch") }
+        if CloudKitStructureTests.occurrences(of: "approvalsSection(", in: screen) != 2 {
+            failures.append("the switch's row is declared once and drawn once, with the pairing as it stands")
+        }
         let stripped: [Source] = app.map { ($0.path, RecordPathStructureTests.literalsEmptied(CloudKitStructureTests.codeOnly($0.text))) }
         failures += CloudKitStructureTests.appSiteFailures(#"\bapprovals\b"#, in: stripped, allowed: approvalsSites,
                                                            rule: "the switch is kept by the root, set by Settings and read by the inbox alone")
@@ -179,7 +229,20 @@ import UIKit
         }
         let mutants: [(String, [Source])] = [
             ("the toggle bound to a constant", mutate(settings) {
-                $0.replacingOccurrences(of: "Toggle(isOn: $approvals)", with: "Toggle(isOn: .constant(true))") }),
+                $0.replacingOccurrences(of: "Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth))",
+                                        with: "Toggle(isOn: .constant(true))") }),
+            // #194 design review: the switch on an unpaired phone.
+            ("the toggle bound straight to the stored choice", mutate(settings) {
+                $0.replacingOccurrences(of: "Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth))",
+                                        with: "Toggle(isOn: $approvals)") }),
+            ("the toggle settable unpaired", mutate(settings) {
+                $0.replacingOccurrences(of: "            .disabled(!ApprovalsSwitch.isCommitted(keyHealth))\n", with: "") }),
+            ("the footer fixed", mutate(settings) {
+                $0.replacingOccurrences(of: "footer(Self.approvalsFooter(for: keyHealth))", with: "footer(Self.approvalsPairedFooter)") }),
+            ("the row told it is paired", mutate(settings) {
+                $0.replacingOccurrences(of: "approvalsSection(pairing.health())", with: "approvalsSection(.paired)") }),
+            ("a second row", mutate(settings) {
+                $0.replacingOccurrences(of: "                about\n", with: "                about\n                approvalsSection(.paired)\n") }),
             ("Settings switches it on as it appears", mutate(settings) {
                 $0.replacingOccurrences(of: "        .tint(theme.accent)\n        .sheet(item: $ceremony)",
                                         with: "        .tint(theme.accent)\n        .onAppear { approvals = true }\n        .sheet(item: $ceremony)") }),

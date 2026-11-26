@@ -11,9 +11,12 @@ import SwiftUI
 ///   the owner's tap. Shown only when the launch has a live pairing (a
 ///   request fixture launch, and previews, have none).
 /// - Remote approvals (F4, #194), under Pairing and shown with it: the
-///   phone's own switch (`ApprovalsSwitch`), off by default. It sets the
-///   stored choice it is handed and nothing else; the root hands it to the
-///   inbox, and nothing tells the Mac.
+///   phone's own switch (`ApprovalsSwitch`), off by default. It follows the
+///   phone's pairing, read through the live pairing as the screen draws: on
+///   a paired phone it shows and sets the stored choice it is handed and
+///   nothing else (the root hands it to the inbox, and nothing tells the
+///   Mac); on an unpaired one it shows off, a stored on included, cannot be
+///   set, and its footer says to pair first.
 /// - About shows the running build, read from the bundle, and the project
 ///   site.
 ///
@@ -41,11 +44,27 @@ struct SettingsScreen: View {
             + "then scan the code it shows and confirm with \(name)."
     }
     nonisolated static let approvalsHeader = "Remote approvals"
-    nonisolated static let approvalsLabel = "Prompts on this iPhone"
-    /// What the switch does today: the prompts are listed and announced
-    /// here; answering from here is not on yet; pairing comes first.
-    nonisolated static let approvalsFooter = "Lists the permission prompts your paired Mac forwards, with a push "
-        + "when one is waiting. Answers from this iPhone don't reach your Mac yet; answer there."
+    nonisolated static let approvalsLabel = "Prompts on This iPhone"
+    /// What the switch does today, on a paired phone: the prompts are listed
+    /// and announced here; answering from here is not on yet.
+    nonisolated static let approvalsPairedFooter = "Shows permission prompts from your paired Mac and notifies you "
+        + "when one is waiting. You can't answer from iPhone yet — answer on your Mac."
+    /// On an unpaired phone, whose switch is off and cannot be set: pairing
+    /// comes first, in the row above.
+    nonisolated static let approvalsUnpairedFooter = "Pair this iPhone with your Mac above to see its permission prompts here."
+
+    /// The footer for the phone's pairing as it stands.
+    nonisolated static func approvalsFooter(for keyHealth: PhoneKeyring.Health) -> String {
+        ApprovalsSwitch.isCommitted(keyHealth) ? approvalsPairedFooter : approvalsUnpairedFooter
+    }
+
+    /// The switch as the row shows and sets it: the stored choice on a
+    /// phone with a committed key; off on any other, whatever is stored,
+    /// and nothing set there is kept (the row is disabled there too).
+    static func shownSwitch(_ stored: Binding<Bool>, keyHealth: PhoneKeyring.Health) -> Binding<Bool> {
+        Binding(get: { ApprovalsSwitch.effective(stored: stored.wrappedValue, keyHealth: keyHealth) },
+                set: { if ApprovalsSwitch.isCommitted(keyHealth) { stored.wrappedValue = $0 } })
+    }
     nonisolated static let aboutHeader = "About"
     nonisolated static let versionLabel = "Version"
     nonisolated static let siteLabel = "Website"
@@ -73,7 +92,7 @@ struct SettingsScreen: View {
                 notificationsSection
                 if let pairing {
                     pairingSection(pairing)
-                    approvalsSection
+                    approvalsSection(pairing.health())
                 }
                 about
             }
@@ -160,17 +179,19 @@ struct SettingsScreen: View {
         .listRowBackground(theme.surface)
     }
 
-    /// One switch: the phone's own (#194), under Pairing.
-    private var approvalsSection: some View {
+    /// One switch: the phone's own (#194), under Pairing, following the
+    /// phone's pairing as it stands (`keyHealth`).
+    private func approvalsSection(_ keyHealth: PhoneKeyring.Health) -> some View {
         Section {
-            Toggle(isOn: $approvals) {
+            Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth)) {
                 Text(Self.approvalsLabel)
                     .foregroundStyle(theme.ink)
             }
+            .disabled(!ApprovalsSwitch.isCommitted(keyHealth))
         } header: {
             header(Self.approvalsHeader)
         } footer: {
-            footer(Self.approvalsFooter)
+            footer(Self.approvalsFooter(for: keyHealth))
         }
         .listRowBackground(theme.surface)
     }

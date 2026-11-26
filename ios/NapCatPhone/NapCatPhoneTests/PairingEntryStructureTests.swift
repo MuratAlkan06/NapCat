@@ -26,7 +26,8 @@ import Testing
 /// AMENDED (#194): the live pairing's factory is handed the live approvals
 /// database (built once by the live inbox's factory and shared with the
 /// live prompt source), on its pinned lines; and Settings' Remote approvals
-/// switch sits under the Pairing row, shown with it.
+/// switch sits under the Pairing row, shown with it, handed the phone's
+/// pairing as the live pairing reads it.
 ///
 /// Each lock is a pure function over comment-stripped sources and catches
 /// planted canaries, so none can pass vacuously.
@@ -94,7 +95,7 @@ import Testing
     /// with a live pairing; its action makes the ceremony, which raises the
     /// sheet; the sheet runs that ceremony on the live camera and lets it go
     /// when it closes.
-    static let rowShape: String = "if let pairing { pairingSection(pairing) approvalsSection }"
+    static let rowShape: String = "if let pairing { pairingSection(pairing) approvalsSection(pairing.health()) }"
     static let actionShape: String = "Button(Self.pairTitle) { " + pairAction + " }"
     static let sheetShape: String = itemSheet + " " + settingsSheet + " }"
     static let settingsShapes: [String] = [rowShape, actionShape, sheetShape]
@@ -155,8 +156,11 @@ import Testing
                                         with: "                pairingSection(pairing!)\n                if let pairing {\n") }),
             // #194: the switch shown with no live pairing.
             ("the approvals switch shown with no live pairing", Self.mutate(app, settings) {
-                $0.replacingOccurrences(of: "                    pairingSection(pairing)\n                    approvalsSection\n                }\n",
-                                        with: "                    pairingSection(pairing)\n                }\n                approvalsSection\n") }),
+                $0.replacingOccurrences(of: "                    pairingSection(pairing)\n                    approvalsSection(pairing.health())\n                }\n",
+                                        with: "                    pairingSection(pairing)\n                }\n                approvalsSection(.paired)\n") }),
+            // #194 design review: the switch told the phone is paired.
+            ("the approvals switch told the phone is paired", Self.mutate(app, settings) {
+                $0.replacingOccurrences(of: "approvalsSection(pairing.health())", with: "approvalsSection(.paired)") }),
             ("the sheet over a fixture camera", Self.mutate(app, settings) {
                 $0.replacingOccurrences(of: "PairingSheet(ceremony: ceremony, camera: pairing.camera)",
                                         with: "PairingSheet(ceremony: ceremony, camera: FixtureCamera(answer: .ready))") }),
