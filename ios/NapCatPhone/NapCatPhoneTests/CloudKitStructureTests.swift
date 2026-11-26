@@ -122,6 +122,11 @@ import Testing
     /// What every constructor ban reads (#153): the text as given, the same
     /// text with its backticks removed and nothing else (no lexer involved),
     /// and `cleaned` — in addition to the raw text, never instead of it.
+    /// "In every scan copy" holds for what the copies show: the text given
+    /// is most often `codeOnly`'s, and `cleaned` reads through `lexemes`, so
+    /// a lock holds it for the lines the stripper reads as the compiler
+    /// does; the Mac's `noSourceHoldsASlashTheStripperCouldReadApart` keeps
+    /// the lines it could read apart out of the app's sources.
     static func constructorScanCopies(_ text: String) -> [String] {
         guard mayClean(text) else { return [text] }          // its own cleaned copy
         return [text, text.replacingOccurrences(of: "`", with: ""), cleaned(text)]
@@ -343,8 +348,13 @@ import Testing
     /// line, or from a misread `"""` to the next one), so a token behind a
     /// URL, a `//`-led interpolation line or a block-comment-split name can
     /// vanish from every form a lock reads (security spot-check H9, a bare
-    /// regex after `switch`). So every opener shape is pinned by the
-    /// stripper tables and by a canary in a lock that reads it.
+    /// regex after `switch`). The opener shapes modelled here are pinned by
+    /// the stripper tables and by canaries in the locks that read them; but
+    /// this models a context-sensitive lexer and is not the compiler's own,
+    /// so a line it does not model can still be read apart from the
+    /// compiler. What keeps such a line out of what the locks read is the
+    /// Mac's `noSourceHoldsASlashTheStripperCouldReadApart`, over the raw
+    /// text of the four targets and the phone app, with no lexer.
     static func lexemes(_ scalars: [Unicode.Scalar]) -> [Lexeme] {
         enum Mode {
             case code(parens: Int)                       // parens > 0: inside an interpolation
