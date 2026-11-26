@@ -14,6 +14,9 @@ struct PendingRequestScreen: View {
     nonisolated static let inputHeader = "Input"
     nonisolated static let closeTitle = "Close"
     nonisolated static let footnote = "The dialog on your Mac stays open, and you can answer it there instead."
+    /// The footnote once iCloud left an answer unconfirmed (#154): that
+    /// answer may have reached the Mac, whose dialog then closed.
+    nonisolated static let unconfirmedFootnote = "If the dialog on your Mac is still open, you can answer it there instead."
     /// Under the input when it is taller than its box.
     nonisolated static let longInput = PhoneLine(text: "Long — the input scrolls inside its box", severity: .nominal)
     /// Beside the Sent line: the answer went out, nothing more.
@@ -126,10 +129,15 @@ struct PendingRequestScreen: View {
     }
 
     /// What VoiceOver announces as the state changes: the Sent line, once,
-    /// as an answer goes out; nothing otherwise.
+    /// as an answer goes out; the unconfirmed note, once, as it first
+    /// appears, so the owner learns only one answer is left to send (#154;
+    /// back from a resend under way it is not announced again); nothing
+    /// otherwise.
     nonisolated static func announcement(from old: RequestStatus, to new: RequestStatus, at now: Date) -> String? {
-        guard case .sent = new, old != new else { return nil }
-        return new.line(at: now).spoken
+        guard old != new else { return nil }
+        if case .sent = new { return new.line(at: now).spoken }
+        guard case .pending(_, .unconfirmed?) = new, !old.afterUnconfirmed else { return nil }
+        return new.note?.spoken
     }
 
     /// Which answers the screen offers: both, or after iCloud left an
@@ -182,6 +190,13 @@ struct PendingRequestScreen: View {
         }
     }
 
+    /// The footnote's words: once iCloud left an answer unconfirmed, and
+    /// through any resend under way, it no longer says the dialog stays
+    /// open (#154).
+    nonisolated static func footnoteText(_ status: RequestStatus) -> String {
+        status.afterUnconfirmed ? unconfirmedFootnote : footnote
+    }
+
     /// What VoiceOver reads for the prompt card.
     nonisolated static func spoken(_ request: PendingRequest) -> String {
         "\(request.toolName) permission prompt, project \(request.projectLabel). \(inputHeader): \(request.inputPreview)"
@@ -212,7 +227,7 @@ struct PendingRequestScreen: View {
                 stateLine
                 answers
                 if Self.showsFootnote(status) {
-                    Text(Self.footnote)
+                    Text(Self.footnoteText(status))
                         .font(theme.detailFont)
                         .foregroundStyle(theme.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)

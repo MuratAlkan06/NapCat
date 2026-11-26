@@ -23,6 +23,13 @@ import UIKit
         .withdrawn,
     ]
 
+    /// A resend under way after iCloud left an answer unconfirmed (#154):
+    /// each reads as its twin in `everyStatus` but for the footnote.
+    static let everyResend: [RequestStatus] = [
+        .confirming(.allow, afterUnconfirmed: true), .confirming(.deny, afterUnconfirmed: true),
+        .sending(.allow, afterUnconfirmed: true), .sending(.deny, afterUnconfirmed: true),
+    ]
+
     // MARK: The words
 
     /// Every line the screen can show is in the caption register: one state
@@ -283,6 +290,87 @@ import UIKit
         }
     }
 
+    /// After iCloud left an answer unconfirmed it may have reached the Mac,
+    /// whose dialog then closed: from the note on, and through a resend
+    /// under way, the footnote says "if it is still open" (#154). Every
+    /// other state that has a footnote keeps the usual words.
+    @Test func afterAnUnconfirmedAnswerTheFootnoteNoLongerSaysTheDialogStaysOpen() {
+        #expect(PendingRequestScreen.footnote == "The dialog on your Mac stays open, and you can answer it there instead.")
+        #expect(PendingRequestScreen.unconfirmedFootnote
+                == "If the dialog on your Mac is still open, you can answer it there instead.")
+        let states: [RequestStatus] = Self.everyStatus + Self.everyResend
+        var unconfirmed: Int = 0
+        for status in states where PendingRequestScreen.showsFootnote(status) {
+            let expected: String
+            switch status {
+            case .pending(_, .unconfirmed?), .confirming(_, afterUnconfirmed: true), .sending(_, afterUnconfirmed: true):
+                expected = PendingRequestScreen.unconfirmedFootnote
+                unconfirmed += 1
+            case .pending, .confirming, .sending, .sent, .answered, .expired, .withdrawn:
+                expected = PendingRequestScreen.footnote
+            }
+            #expect(PendingRequestScreen.footnoteText(status) == expected, "\(status)")
+        }
+        #expect(unconfirmed == 6, "both unconfirmed notes and the four resends under way")
+    }
+
+    /// A resend under way reads as any answer under way (the same line, no
+    /// note, nothing on offer, the card live); only the footnote differs.
+    @Test func aResendUnderWayReadsAsItsTwinButForTheFootnote() {
+        let twins: [RequestStatus] = [.confirming(.allow), .confirming(.deny), .sending(.allow), .sending(.deny)]
+        for (resend, twin) in zip(Self.everyResend, twins) {
+            #expect(resend != twin && resend.afterUnconfirmed && !twin.afterUnconfirmed, "\(resend)")
+            #expect(resend.line(at: Self.now, biometric: .faceID) == twin.line(at: Self.now, biometric: .faceID))
+            #expect(resend.note == nil && resend.answers.isEmpty && resend.resend == nil, "\(resend)")
+            #expect(PendingRequestScreen.offer(for: resend, biometry: .available(.faceID), key: .paired) == .none)
+            #expect(!PendingRequestScreen.mutesCard(resend) && PendingRequestScreen.showsFootnote(resend), "\(resend)")
+            #expect(PendingRequestScreen.footnoteText(twin) == PendingRequestScreen.footnote, "\(twin)")
+        }
+    }
+
+    /// Over the inbox's own states: the first answer under way keeps the
+    /// usual footnote; once iCloud left it unconfirmed, the footnote says
+    /// "if it is still open" and keeps saying so while the answer is sent
+    /// again (its match asked for, its save under way) and after that
+    /// resend comes back unconfirmed too. VoiceOver hears the note once,
+    /// as it first appears, and nothing else on the way (#154).
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func aResendUnderWayKeepsTheUnconfirmedFootnote(_ verdict: ApprovalWire.Verdict) async {
+        let clock: TestClock = TestClock()
+        let gate: ScriptedBiometricGate = ScriptedBiometricGate()
+        let writer: PeekingDecisionWriter = PeekingDecisionWriter(.unconfirmed)
+        let inbox: RequestInbox = RequestInbox(writer: writer, biometrics: gate, keyring: RequestFixtures.pairedKeyring(),
+                                               clock: { clock.now })
+        let request: PendingRequest = RequestFixtures.request(1, createdAt: clock.now)
+        inbox.receive([request])
+        var seen: [RequestStatus] = []
+        let look: () -> Void = { if let status = inbox.status(of: request.id) { seen.append(status) } }
+        gate.during = look
+        writer.during = look
+        look()
+        for _ in 0..<2 {
+            switch verdict {
+            case .allow: await inbox.allow(request.id)
+            case .deny: await inbox.deny(request.id)
+            }
+            look()
+        }
+        let until: Date = request.expiresAt
+        let unconfirmed: RequestStatus = .pending(until: until, note: .unconfirmed(verdict))
+        let expected: [RequestStatus] = [
+            .pending(until: until, note: nil), .confirming(verdict), .sending(verdict), unconfirmed,
+            .confirming(verdict, afterUnconfirmed: true), .sending(verdict, afterUnconfirmed: true), unconfirmed,
+        ]
+        #expect(seen == expected)
+        let usual: String = PendingRequestScreen.footnote
+        let ifOpen: String = PendingRequestScreen.unconfirmedFootnote
+        let footnotes: [String] = seen.map(PendingRequestScreen.footnoteText)
+        #expect(footnotes == [usual, usual, usual, ifOpen, ifOpen, ifOpen, ifOpen])
+        let spoken: [String?] = zip(seen, seen.dropFirst()).map { PendingRequestScreen.announcement(from: $0, to: $1, at: clock.now) }
+        let note: String? = unconfirmed.note?.spoken
+        #expect(spoken == [nil, nil, note, nil, nil, nil])
+    }
+
     /// The glyphs exist in the system's set.
     @Test func theGlyphsAreSystemSymbols() {
         let tools = ApprovalTool.allCases.map { PendingRequestScreen.toolSymbol($0.rawValue) }
@@ -337,17 +425,26 @@ import UIKit
 
     /// VoiceOver hears "Sent" once, as an answer goes out, Allow or Deny,
     /// in the Sent line's own words; no other change is announced, and no
-    /// announcement claims the Mac acted.
+    /// announcement claims the Mac acted. AMENDED (the #154 design review):
+    /// but for the unconfirmed note as it first appears, in its own words
+    /// (`theUnconfirmedNoteIsAnnouncedOnce`); a resend under way is a state
+    /// like any other here.
     @Test func theSentStateIsAnnouncedOnce() {
         #expect(PendingRequestScreen.announcement(from: .sending(.allow), to: .sent(.allow), at: Self.now)
                 == "Sent — Allow is saved; your Mac hasn't confirmed it")
         #expect(PendingRequestScreen.announcement(from: .sending(.deny), to: .sent(.deny), at: Self.now)
                 == "Sent — Deny is saved; your Mac hasn't confirmed it")
-        for old in Self.everyStatus {
-            for new in Self.everyStatus {
+        let states: [RequestStatus] = Self.everyStatus + Self.everyResend
+        for old in states {
+            for new in states {
                 let spoken = PendingRequestScreen.announcement(from: old, to: new, at: Self.now)
                 if case .sent = new, old != new {
                     #expect(spoken?.hasPrefix("Sent — ") == true, "\(old) → \(new)")
+                    for claim in ["Allowed", "Approved", "Denied", "Done"] {
+                        #expect(spoken?.contains(claim) == false, "\(old) → \(new) claims the Mac acted")
+                    }
+                } else if case .pending(_, .unconfirmed?) = new, old != new, !old.afterUnconfirmed {
+                    #expect(spoken != nil && spoken == new.note?.spoken, "\(old) → \(new)")
                     for claim in ["Allowed", "Approved", "Denied", "Done"] {
                         #expect(spoken?.contains(claim) == false, "\(old) → \(new) claims the Mac acted")
                     }
@@ -355,6 +452,34 @@ import UIKit
                     #expect(spoken == nil, "\(old) → \(new) is announced")
                 }
             }
+        }
+    }
+
+    /// VoiceOver hears the unconfirmed note once, as it first appears (the
+    /// screen posts it at high priority, as it does Sent), so the owner
+    /// learns only one answer is left to send. Back from a resend under way
+    /// (its match not given, or its save unconfirmed again) it is not
+    /// announced again, nor is anything that keeps the note (#154).
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func theUnconfirmedNoteIsAnnouncedOnce(_ verdict: ApprovalWire.Verdict) {
+        let until: Date = Self.now.addingTimeInterval(540)
+        let unconfirmed: RequestStatus = .pending(until: until, note: .unconfirmed(verdict))
+        let name: String = RequestStatus.name(verdict)
+        let words: String = "Warning: Unconfirmed — \(name) may already have reached your Mac; only \(name) can be sent again"
+        let firsts: [RequestStatus] = [.sending(verdict), .confirming(verdict), .pending(until: until, note: nil),
+                                       .pending(until: until, note: .unsent)]
+        for first in firsts {
+            #expect(PendingRequestScreen.announcement(from: first, to: unconfirmed, at: Self.now) == words, "\(first)")
+        }
+        let backs: [RequestStatus] = [.sending(verdict, afterUnconfirmed: true), .confirming(verdict, afterUnconfirmed: true),
+                                      unconfirmed]
+        for back in backs {
+            #expect(PendingRequestScreen.announcement(from: back, to: unconfirmed, at: Self.now) == nil, "\(back)")
+        }
+        let nexts: [RequestStatus] = [.confirming(verdict, afterUnconfirmed: true), .sending(verdict, afterUnconfirmed: true),
+                                      .answered, .expired, .withdrawn]
+        for next in nexts {
+            #expect(PendingRequestScreen.announcement(from: unconfirmed, to: next, at: Self.now) == nil, "\(next)")
         }
     }
 
@@ -727,6 +852,9 @@ import UIKit
 
     static let buttonStyleFile = "\(appDir)/Screen/RequestButtonStyle.swift"
 
+    /// The footnote in the words its state calls for (#154).
+    static let footnoteShape: String = "if Self.showsFootnote(status) { Text(Self.footnoteText(status))"
+
     /// What the review asked of the screen, as its source says it:
     ///
     /// - the input is drawn once, marked (`VisibleWhitespace`) and in
@@ -748,7 +876,10 @@ import UIKit
     ///   the match), and the unavailable line names this phone's biometric;
     ///   AMENDED (#154): each is titled through `title(_:_:in:)`, so the
     ///   one answer offered again after an unconfirmed save says so;
-    /// - the answers' height comes from the theme's touch target.
+    /// - the answers' height comes from the theme's touch target;
+    /// - AMENDED (the #154 design review): the footnote's words come from
+    ///   `footnoteText(_:)`, so after an unconfirmed save it no longer says
+    ///   the dialog on the Mac stays open.
     static let compositionShapes = [
         "VStack(alignment: .leading, spacing: theme.rowGap) { promptCard if let note = status.note { CaptionLine(line: note) } "
             + "stateLine answers if Self.showsFootnote(status) {",
@@ -780,6 +911,7 @@ import UIKit
         "Label(Self.title(.allow, kind, in: offer), systemImage: kind.symbol)",
         "Label(Self.title(.deny, kind, in: offer), systemImage: kind.symbol) } .buttonStyle(RequestButtonStyle(emphasis: .ink))",
         "guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }",
+        footnoteShape,
     ]
 
     static func compositionFailures(screen: String, buttonStyle: String) -> [String] {
@@ -853,6 +985,9 @@ import UIKit
             ("a resend titled as a fresh answer", screen.replacingOccurrences(
                 of: "Label(Self.title(.allow, kind, in: offer), systemImage: kind.symbol)",
                 with: "Label(Self.allowTitle(kind), systemImage: kind.symbol)"), style),
+            // #154 design review: the footnote's words follow the state.
+            ("the footnote says the dialog stays open in every state", screen.replacingOccurrences(
+                of: "Text(Self.footnoteText(status))", with: "Text(Self.footnote)"), style),
             ("a hard-coded touch target", screen, style.replacingOccurrences(
                 of: "minHeight: theme.minTouchTarget", with: "minHeight: 44")),
         ]
@@ -872,6 +1007,25 @@ import UIKit
         let palette = try #require(root.range(of: SettingsReachabilityTests.palette))
         #expect(sheetRange.upperBound < palette.lowerBound)
         #expect(root.contains("_shownRequest = State(initialValue: opensSettings ? nil : inbox.requests.first)"))
+    }
+}
+
+/// A decision writer that answers every write with `outcome` and runs
+/// `during` as each write begins (on the main actor, where the inbox
+/// lives), so a test can read the request while its save is under way.
+/// Nothing is written anywhere.
+@MainActor
+final class PeekingDecisionWriter: DecisionWriter {
+    private let outcome: DecisionWriteOutcome
+    var during: (() -> Void)?
+
+    init(_ outcome: DecisionWriteOutcome) {
+        self.outcome = outcome
+    }
+
+    func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome {
+        during?()
+        return outcome
     }
 }
 

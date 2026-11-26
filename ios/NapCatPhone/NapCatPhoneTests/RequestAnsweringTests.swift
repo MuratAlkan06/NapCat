@@ -547,7 +547,9 @@ final class WatchingDecisionWriter: DecisionWriter {
     /// The fold, row by row: a saved answer, one under way and a finished
     /// request outrank the unconfirmed answer; while pending it outranks
     /// what a later try came to. Without one, each try reads as itself, and
-    /// an unconfirmed answer alone still offers only itself.
+    /// an unconfirmed answer alone still offers only itself. AMENDED (the
+    /// #154 design review): one under way carries the unconfirmed answer
+    /// (`afterUnconfirmed`), so the screen's footnote holds through it.
     @Test func theUnconfirmedAnswerFoldsIntoThePendingState() {
         let until: Date = Date(timeIntervalSince1970: 1_800_000_600)
         let pending: RequestPhase = .pending(until: until)
@@ -556,8 +558,10 @@ final class WatchingDecisionWriter: DecisionWriter {
         for answer in laterTries {
             #expect(RequestStatus(phase: pending, answer: answer, mayHaveLanded: .allow) == restricted, "\(answer)")
         }
-        #expect(RequestStatus(phase: pending, answer: .confirming(.allow), mayHaveLanded: .allow) == .confirming(.allow))
-        #expect(RequestStatus(phase: pending, answer: .sending(.allow), mayHaveLanded: .allow) == .sending(.allow))
+        #expect(RequestStatus(phase: pending, answer: .confirming(.allow), mayHaveLanded: .allow)
+                == .confirming(.allow, afterUnconfirmed: true))
+        #expect(RequestStatus(phase: pending, answer: .sending(.allow), mayHaveLanded: .allow)
+                == .sending(.allow, afterUnconfirmed: true))
         #expect(RequestStatus(phase: pending, answer: .sent(.allow), mayHaveLanded: .allow) == .sent(.allow))
         #expect(RequestStatus(phase: pending, answer: .answeredElsewhere, mayHaveLanded: .allow) == .answered)
         #expect(RequestStatus(phase: .expired, answer: .unconfirmed(.allow), mayHaveLanded: .allow) == .expired)

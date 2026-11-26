@@ -377,6 +377,10 @@ import Testing
     /// after the write, and never cleared; the signed decision is named only
     /// where the signer hands it over and where it is written, so no
     /// signature outlives its write (a resend is signed afresh).
+    /// AMENDED (the #154 security spot-check): and so is the signer's
+    /// outcome that holds it (`signing`): bound, unwrapped, and read for
+    /// the unsigned note, nothing else, so neither can be kept across the
+    /// unconfirmed state without a new site.
     static func allowPathFailures(_ inbox: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(inbox)
         var failures: [String] = []
@@ -445,6 +449,9 @@ import Testing
     /// the answerable check, set once after an unconfirmed write, never
     /// cleared) and `decision` (bound from the signer, written, nothing
     /// else: no decision is kept for a resend).
+    /// AMENDED (the #154 security spot-check): and `signing`, the signer's
+    /// outcome holding that decision (bound once, unwrapped once, read once
+    /// for the unsigned note): kept anywhere, it names no `decision`.
     static let inboxNameSites: [(String, [String: Int])] = [
         ("send", ["await send(verdict, for: id, match: match)": 1,
                   "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {": 1]),
@@ -455,6 +462,9 @@ import Testing
                            "mayHaveLanded: entry.mayHaveLanded)": 2,
                            "if outcome == .unconfirmed { entries[id]?.mayHaveLanded = verdict }": 1]),
         ("decision", ["guard case .signed(let decision) = signing else {": 1, "let outcome = await writer.write(decision)": 1]),
+        ("signing", ["let signing = DecisionSigner.sign(verdict, for: request, at: clock(), with: keyring, match: match)": 1,
+                     "guard case .signed(let decision) = signing else {": 1,
+                     "entries[id]?.answer = signing == .notSigned ? .unsigned : .none": 1]),
     ]
 
     /// Every `confirmed` in the app (#168, (b)): the result's case, the
@@ -583,6 +593,17 @@ import Testing
             #expect(mutant != inbox, "canary '\(name)' did not apply")
             #expect(!Self.allowPathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // The #154 security spot-check: the signer's outcome kept in the
+        // entry names no `decision`, so the `signing` pin alone sees it.
+        let kept: String = inbox.replacingOccurrences(
+            of: "        entries[id]?.answer = .sending(verdict)\n",
+            with: "        entries[id]?.answer = .sending(verdict)\n        entries[id]?.kept = signing\n")
+        let caught: [String] = Self.allowPathFailures(kept)
+        #expect(kept != inbox, "canary 'the signed outcome kept in the entry' did not apply")
+        #expect(caught.count == 1 && caught.allSatisfy { $0.hasPrefix(#"'\bsigning\b' in "#) },
+                "canary 'the signed outcome kept in the entry' must be caught by the signing pin alone: \(caught)")
+        // Over-match control: words that only contain it, and its copy.
+        #expect(Self.allowPathFailures(inbox + "\nlet signings = 1, cosigning = 2, copy = \"signing\"").isEmpty)
     }
 
     // MARK: 5. The decision record is written only through the wire

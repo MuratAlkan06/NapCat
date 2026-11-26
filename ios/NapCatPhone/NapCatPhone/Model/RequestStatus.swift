@@ -24,9 +24,12 @@ enum RequestNote: Equatable, Sendable {
 enum RequestStatus: Equatable, Sendable {
     case pending(until: Date, note: RequestNote?)
     /// The answer named is waiting for the biometric match: the line says
-    /// which one the match will sign.
-    case confirming(ApprovalWire.Verdict)
-    case sending(ApprovalWire.Verdict)
+    /// which one the match will sign. `afterUnconfirmed`: iCloud left an
+    /// answer to this request unconfirmed before (#154), so that answer may
+    /// stand on the Mac already; a resend under way keeps saying so.
+    case confirming(ApprovalWire.Verdict, afterUnconfirmed: Bool = false)
+    /// The answer named is being saved; `afterUnconfirmed` as above.
+    case sending(ApprovalWire.Verdict, afterUnconfirmed: Bool = false)
     case sent(ApprovalWire.Verdict)
     case answered
     case expired
@@ -37,15 +40,16 @@ enum RequestStatus: Equatable, Sendable {
     /// finished, and a pending one what this phone last did. Once iCloud
     /// left an answer unconfirmed (`mayHaveLanded`, #154), a pending request
     /// says so whatever a later try came to: that answer may stand on the
-    /// Mac already, and it is the only one offered again.
+    /// Mac already, and it is the only one offered again. A resend under
+    /// way carries the same fact (`afterUnconfirmed`).
     init(phase: RequestPhase, answer: RequestAnswer, mayHaveLanded: ApprovalWire.Verdict?) {
         switch (answer, phase, mayHaveLanded) {
         case (.sent(let verdict), _, _): self = .sent(verdict)
         case (.answeredElsewhere, _, _): self = .answered
-        case (.sending(let verdict), _, _): self = .sending(verdict)
+        case (.sending(let verdict), _, let landed): self = .sending(verdict, afterUnconfirmed: landed != nil)
         case (_, .withdrawn, _): self = .withdrawn
         case (_, .expired, _): self = .expired
-        case (.confirming(let verdict), .pending, _): self = .confirming(verdict)
+        case (.confirming(let verdict), .pending, let landed): self = .confirming(verdict, afterUnconfirmed: landed != nil)
         case (_, .pending(let until), let landed?): self = .pending(until: until, note: .unconfirmed(landed))
         case (.none, .pending(let until), nil): self = .pending(until: until, note: nil)
         case (.notConfirmed, .pending(let until), nil): self = .pending(until: until, note: .notConfirmed)
@@ -80,6 +84,17 @@ enum RequestStatus: Equatable, Sendable {
         return verdict
     }
 
+    /// Whether iCloud left an answer to this request unconfirmed (#154), so
+    /// it may stand on the Mac already: from the unconfirmed note on, and
+    /// through a resend under way; false once the request is finished.
+    var afterUnconfirmed: Bool {
+        switch self {
+        case .pending(_, .unconfirmed?): return true
+        case .confirming(_, let after), .sending(_, let after): return after
+        case .pending, .sent, .answered, .expired, .withdrawn: return false
+        }
+    }
+
     /// The state line, in the caption register: one state word, an em dash,
     /// the cause, no closing period. The last minute of a pending request
     /// is a warning (glyph, tint and "Warning:" for VoiceOver); nothing
@@ -91,10 +106,10 @@ enum RequestStatus: Equatable, Sendable {
         case .pending(let until, _):
             let severity: PhoneSeverity = Self.minutesLeft(until: until, now: now) >= 1 ? .nominal : .warning
             return PhoneLine(text: "Pending — " + Self.expiry(until: until, now: now), severity: severity)
-        case .confirming(let verdict):
+        case .confirming(let verdict, _):
             let match = biometric?.name ?? "the biometric match"
             return PhoneLine(text: "Confirming — \(Self.name(verdict)), waiting for \(match)", severity: .nominal)
-        case .sending(let verdict):
+        case .sending(let verdict, _):
             return PhoneLine(text: "Sending — saving \(Self.name(verdict)) to iCloud", severity: .nominal)
         case .sent(let verdict):
             return PhoneLine(text: "Sent — \(Self.name(verdict)) is saved; your Mac hasn't confirmed it", severity: .nominal)
