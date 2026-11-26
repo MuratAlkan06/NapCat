@@ -368,11 +368,12 @@ final class WatchingDecisionWriter: DecisionWriter {
         OutcomeRow(outcome: .saved) { _ in .sent(.deny) },
         OutcomeRow(outcome: .alreadyAnswered) { _ in .answered },
         OutcomeRow(outcome: .failed) { .pending(until: $0, note: .unsent) },
-        OutcomeRow(outcome: .unconfirmed) { .pending(until: $0, note: .unconfirmed) },
+        OutcomeRow(outcome: .unconfirmed) { .pending(until: $0, note: .unconfirmed(.deny)) },
     ]
 
     /// Saved is sent; a decision already saved for the prompt ends it; a
-    /// failed or unconfirmed write leaves it answerable, saying why.
+    /// failed or unconfirmed write leaves it answerable, saying why (an
+    /// unconfirmed one names the answer, the only one offered again).
     @Test(arguments: outcomes)
     func theWritesOutcomeDecidesTheStatus(_ row: OutcomeRow) async {
         let world = World(outcome: row.outcome)
@@ -389,6 +390,181 @@ final class WatchingDecisionWriter: DecisionWriter {
         await world.inbox.allow(world.request.id)
         #expect(await world.writer.written.map(\.verdict) == [.deny, .allow])
         #expect(world.inbox.status(of: world.request.id) == .sent(.allow))
+    }
+
+    // MARK: After an unconfirmed answer, only that answer again (#154)
+
+    nonisolated static func other(_ verdict: ApprovalWire.Verdict) -> ApprovalWire.Verdict {
+        verdict == .allow ? .deny : .allow
+    }
+
+    /// iCloud left the answer unconfirmed: it may have reached the Mac,
+    /// which counts the first answer saved. So the request says so and
+    /// offers that answer alone; the other asks for no match and writes
+    /// nothing.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func anUnconfirmedAnswerIsTheOnlyOneOfferedAgain(_ verdict: ApprovalWire.Verdict) async {
+        let world: World = World(outcome: .unconfirmed)
+        await world.answer(verdict)
+        let status: RequestStatus? = world.inbox.status(of: world.request.id)
+        #expect(status == .pending(until: world.request.expiresAt, note: .unconfirmed(verdict)))
+        #expect(status?.answers == [verdict])
+        #expect(status?.resend == verdict)
+        #expect(status?.isAnswerable == true)
+        await world.answer(Self.other(verdict))
+        #expect(world.gate.requests == [RequestInbox.reason(for: verdict)], "the other answer asked for no match")
+        #expect(await world.writer.written.map(\.verdict) == [verdict])
+        #expect(world.inbox.status(of: world.request.id) == status)
+    }
+
+    /// A definite failure saved nothing, so both answers stay on offer, and
+    /// the other one goes out.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func aFailedAnswerKeepsBothOnOffer(_ verdict: ApprovalWire.Verdict) async {
+        let world: World = World(outcome: .failed)
+        await world.answer(verdict)
+        let status: RequestStatus? = world.inbox.status(of: world.request.id)
+        #expect(status == .pending(until: world.request.expiresAt, note: .unsent))
+        #expect(status?.answers == ApprovalWire.Verdict.allCases)
+        #expect(status?.resend == nil)
+        await world.writer.answer(with: .saved)
+        await world.answer(Self.other(verdict))
+        #expect(await world.writer.written.map(\.verdict) == [verdict, Self.other(verdict)])
+        #expect(world.inbox.status(of: world.request.id) == .sent(Self.other(verdict)))
+    }
+
+    /// Nothing goes out again on its own. Sent again, the answer asks for a
+    /// match of its own and is signed afresh, at its own time: of the first
+    /// try only the verdict is kept, never its match, message or signature.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func aResendAsksForANewMatchAndIsSignedAfresh(_ verdict: ApprovalWire.Verdict) async throws {
+        let world: World = World(outcome: .unconfirmed)
+        await world.answer(verdict)
+        world.clock.advance(30)
+        world.inbox.tick()
+        world.inbox.receive([world.request])
+        #expect(await world.writer.written.count == 1, "nothing goes out again on its own")
+        await world.writer.answer(with: .saved)
+        await world.answer(verdict)
+        let reason: String = RequestInbox.reason(for: verdict)
+        #expect(world.gate.requests == [reason, reason])
+        #expect(Set(world.gate.matches.map(ObjectIdentifier.init)).count == 2, "a new match, never the first")
+        #expect(world.gate.matches.allSatisfy { !$0.isValid })
+        #expect(world.keys.enclave.signed.count == 2, "one signature per match")
+        let written: [PhoneDecision] = await world.writer.written
+        try #require(written.count == 2)
+        #expect(written.allSatisfy { $0.verdict == verdict })
+        #expect(written[1].decidedAt == DecisionSigner.wholeSecond(world.clock.now))
+        #expect(written[1].decidedAt > written[0].decidedAt)
+        #expect(world.keys.enclave.signed[1] != world.keys.enclave.signed[0], "a new message, at the resend's time")
+        #expect(written[1].signature != written[0].signature)
+        #expect(MacCheck.verifies(written[1], copy: world.request, publicKey: world.publicKey))
+        #expect(world.inbox.status(of: world.request.id) == .sent(verdict))
+    }
+
+    /// A resend re-checks the window like any answer: one closed before it
+    /// asks for no match, and one that closes during its match writes
+    /// nothing, the match spent unused.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func aResendReChecksTheWindow(_ verdict: ApprovalWire.Verdict) async {
+        let closedBefore: World = World(outcome: .unconfirmed)
+        await closedBefore.answer(verdict)
+        closedBefore.clock.advance(PendingRequest.timeToLive)
+        await closedBefore.answer(verdict)
+        #expect(closedBefore.gate.requests.count == 1, "an expired window asks for no match")
+        #expect(await closedBefore.writer.written.count == 1)
+        #expect(closedBefore.inbox.status(of: closedBefore.request.id) == .expired)
+        let closedDuring: World = World(outcome: .unconfirmed)
+        await closedDuring.answer(verdict)
+        closedDuring.gate.during = { closedDuring.clock.advance(PendingRequest.timeToLive) }
+        await closedDuring.answer(verdict)
+        #expect(closedDuring.gate.requests.count == 2)
+        #expect(closedDuring.gate.matches.count == 2 && closedDuring.gate.matches.allSatisfy { !$0.isValid })
+        #expect(await closedDuring.writer.written.count == 1)
+        #expect(closedDuring.inbox.status(of: closedDuring.request.id) == .expired)
+    }
+
+    /// A resend that finds a decision saved for the prompt already (the
+    /// first try landed, as it may have) reads Answered and offers nothing.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func aResendThatFindsAnAnswerSavedReadsAnswered(_ verdict: ApprovalWire.Verdict) async {
+        let world: World = World(outcome: .unconfirmed)
+        await world.answer(verdict)
+        await world.writer.answer(with: .alreadyAnswered)
+        await world.answer(verdict)
+        let status: RequestStatus? = world.inbox.status(of: world.request.id)
+        #expect(status == .answered)
+        #expect(status?.answers == [])
+        #expect(status?.line(at: world.clock.now).text == "Answered — an answer to this prompt was already saved")
+        await world.answer(Self.other(verdict))
+        #expect(world.gate.requests.count == 2, "nothing more is asked for")
+    }
+
+    /// What a later try came to.
+    enum LaterTry: String, CaseIterable, Sendable {
+        case notConfirmed, unsigned, failed, unconfirmed
+    }
+
+    /// No later try lifts it: the first answer may still stand on the Mac.
+    /// A resend whose match was not given, whose key did not sign, or whose
+    /// save failed outright leaves that answer the only one on offer, and
+    /// the request still says why.
+    @Test(arguments: LaterTry.allCases)
+    func aLaterTryNeverLiftsTheRestriction(_ later: LaterTry) async {
+        let world: World = World(outcome: .unconfirmed)
+        await world.inbox.allow(world.request.id)
+        switch later {
+        case .notConfirmed: world.gate.confirms = false
+        case .unsigned: world.keys.enclave.forced = .notAuthorized
+        case .failed: await world.writer.answer(with: .failed)
+        case .unconfirmed: break
+        }
+        await world.inbox.allow(world.request.id)
+        #expect(world.gate.requests.count == 2)
+        let status: RequestStatus? = world.inbox.status(of: world.request.id)
+        #expect(status == .pending(until: world.request.expiresAt, note: .unconfirmed(.allow)))
+        #expect(status?.answers == [.allow])
+        await world.inbox.deny(world.request.id)
+        #expect(world.gate.requests.count == 2, "Deny asked for no match")
+        #expect(await world.writer.written.allSatisfy { $0.verdict == .allow })
+        #expect(world.inbox.keyHealth == .paired)
+    }
+
+    /// The restriction is the request's own: another request still offers
+    /// both answers.
+    @Test func anUnconfirmedAnswerRestrictsOnlyItsOwnRequest() async {
+        let world: World = World(outcome: .unconfirmed)
+        let other: PendingRequest = F.request(2, createdAt: world.clock.now)
+        world.inbox.receive([world.request, other])
+        await world.inbox.allow(world.request.id)
+        #expect(world.inbox.status(of: other.id)?.answers == ApprovalWire.Verdict.allCases)
+        await world.writer.answer(with: .saved)
+        await world.inbox.deny(other.id)
+        #expect(world.inbox.status(of: other.id) == .sent(.deny))
+        #expect(world.inbox.status(of: world.request.id)?.answers == [.allow])
+    }
+
+    /// The fold, row by row: a saved answer, one under way and a finished
+    /// request outrank the unconfirmed answer; while pending it outranks
+    /// what a later try came to. Without one, each try reads as itself, and
+    /// an unconfirmed answer alone still offers only itself.
+    @Test func theUnconfirmedAnswerFoldsIntoThePendingState() {
+        let until: Date = Date(timeIntervalSince1970: 1_800_000_600)
+        let pending: RequestPhase = .pending(until: until)
+        let restricted: RequestStatus = .pending(until: until, note: .unconfirmed(.allow))
+        let laterTries: [RequestAnswer] = [.none, .notConfirmed, .unsigned, .unsent(.allow), .unconfirmed(.allow)]
+        for answer in laterTries {
+            #expect(RequestStatus(phase: pending, answer: answer, mayHaveLanded: .allow) == restricted, "\(answer)")
+        }
+        #expect(RequestStatus(phase: pending, answer: .confirming(.allow), mayHaveLanded: .allow) == .confirming(.allow))
+        #expect(RequestStatus(phase: pending, answer: .sending(.allow), mayHaveLanded: .allow) == .sending(.allow))
+        #expect(RequestStatus(phase: pending, answer: .sent(.allow), mayHaveLanded: .allow) == .sent(.allow))
+        #expect(RequestStatus(phase: pending, answer: .answeredElsewhere, mayHaveLanded: .allow) == .answered)
+        #expect(RequestStatus(phase: .expired, answer: .unconfirmed(.allow), mayHaveLanded: .allow) == .expired)
+        #expect(RequestStatus(phase: .withdrawn, answer: .unsent(.allow), mayHaveLanded: .allow) == .withdrawn)
+        #expect(RequestStatus(phase: pending, answer: .unsent(.deny), mayHaveLanded: nil) == .pending(until: until, note: .unsent))
+        let alone: [ApprovalWire.Verdict] = RequestStatus(phase: pending, answer: .unconfirmed(.deny), mayHaveLanded: nil).answers
+        #expect(alone == [.deny])
     }
 
     // MARK: The biometry the screen offers

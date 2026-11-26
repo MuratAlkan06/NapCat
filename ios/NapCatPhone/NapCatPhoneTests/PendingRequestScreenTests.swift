@@ -16,7 +16,8 @@ import UIKit
         .pending(until: now.addingTimeInterval(540), note: nil),
         .pending(until: now.addingTimeInterval(540), note: .notConfirmed),
         .pending(until: now.addingTimeInterval(540), note: .unsent),
-        .pending(until: now.addingTimeInterval(540), note: .unconfirmed),
+        .pending(until: now.addingTimeInterval(540), note: .unconfirmed(.allow)),
+        .pending(until: now.addingTimeInterval(540), note: .unconfirmed(.deny)),
         .pending(until: now.addingTimeInterval(540), note: .unsigned),
         .confirming(.allow), .confirming(.deny), .sending(.allow), .sending(.deny), .sent(.allow), .sent(.deny), .answered, .expired,
         .withdrawn,
@@ -74,6 +75,10 @@ import UIKit
                 == "Unverified — your answer wasn't confirmed, so nothing was sent")
         #expect(RequestStatus.pending(until: Self.now, note: .unsigned).note?.text
                 == "Unsigned — this iPhone couldn't sign your answer, so nothing was sent; try again")
+        #expect(RequestStatus.pending(until: Self.now, note: .unconfirmed(.allow)).note?.text
+                == "Unconfirmed — Allow may already have reached your Mac; only Allow can be sent again")
+        #expect(RequestStatus.pending(until: Self.now, note: .unconfirmed(.deny)).note?.text
+                == "Unconfirmed — Deny may already have reached your Mac; only Deny can be sent again")
         #expect(PendingRequestScreen.unpaired(.neverPaired, .faceID).text
                 == "Unpaired — pair this iPhone with your Mac to answer here; answer on your Mac")
         #expect(PendingRequestScreen.unpaired(.enrollmentChanged, .faceID).text
@@ -155,6 +160,7 @@ import UIKit
     @Test func severitiesMatchWhatHappened() {
         #expect(RequestStatus.pending(until: Self.now, note: .unsent).note?.severity == .warning)
         #expect(RequestStatus.pending(until: Self.now, note: .notConfirmed).note?.severity == .warning)
+        #expect(RequestStatus.pending(until: Self.now, note: .unconfirmed(.allow)).note?.severity == .warning)
         #expect(RequestStatus.expired.line(at: Self.now).severity == .info)
         #expect(RequestStatus.withdrawn.line(at: Self.now).severity == .info)
         #expect(RequestStatus.sent(.allow).line(at: Self.now).severity == .nominal)

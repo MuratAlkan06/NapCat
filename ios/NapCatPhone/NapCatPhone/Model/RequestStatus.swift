@@ -1,16 +1,19 @@
 import Foundation
 import NapCatWire
 
-/// Why a pending request carries a note: the last answer did not go out.
-enum RequestNote: Equatable, CaseIterable, Sendable {
+/// Why a pending request carries a note: the last answer did not go out,
+/// or may have.
+enum RequestNote: Equatable, Sendable {
     /// The answer was not confirmed by the biometric match.
     case notConfirmed
     /// The paired key did not sign the answer.
     case unsigned
     /// Nothing was saved.
     case unsent
-    /// iCloud did not confirm the answer.
-    case unconfirmed
+    /// iCloud did not confirm the answer named: it may have been saved, and
+    /// the Mac counts the first answer saved, so it is the only answer
+    /// offered again (#154).
+    case unconfirmed(ApprovalWire.Verdict)
 }
 
 /// What the request screen shows: the request's phase and this phone's
@@ -31,27 +34,50 @@ enum RequestStatus: Equatable, Sendable {
 
     /// A saved answer outranks everything, and one under way stays in sight
     /// until it is done; otherwise a finished request says why it is
-    /// finished, and a pending one what this phone last did.
-    init(phase: RequestPhase, answer: RequestAnswer) {
-        switch (answer, phase) {
-        case (.sent(let verdict), _): self = .sent(verdict)
-        case (.answeredElsewhere, _): self = .answered
-        case (.sending(let verdict), _): self = .sending(verdict)
-        case (_, .withdrawn): self = .withdrawn
-        case (_, .expired): self = .expired
-        case (.confirming(let verdict), .pending): self = .confirming(verdict)
-        case (.none, .pending(let until)): self = .pending(until: until, note: nil)
-        case (.notConfirmed, .pending(let until)): self = .pending(until: until, note: .notConfirmed)
-        case (.unsigned, .pending(let until)): self = .pending(until: until, note: .unsigned)
-        case (.unsent, .pending(let until)): self = .pending(until: until, note: .unsent)
-        case (.unconfirmed, .pending(let until)): self = .pending(until: until, note: .unconfirmed)
+    /// finished, and a pending one what this phone last did. Once iCloud
+    /// left an answer unconfirmed (`mayHaveLanded`, #154), a pending request
+    /// says so whatever a later try came to: that answer may stand on the
+    /// Mac already, and it is the only one offered again.
+    init(phase: RequestPhase, answer: RequestAnswer, mayHaveLanded: ApprovalWire.Verdict?) {
+        switch (answer, phase, mayHaveLanded) {
+        case (.sent(let verdict), _, _): self = .sent(verdict)
+        case (.answeredElsewhere, _, _): self = .answered
+        case (.sending(let verdict), _, _): self = .sending(verdict)
+        case (_, .withdrawn, _): self = .withdrawn
+        case (_, .expired, _): self = .expired
+        case (.confirming(let verdict), .pending, _): self = .confirming(verdict)
+        case (_, .pending(let until), let landed?): self = .pending(until: until, note: .unconfirmed(landed))
+        case (.none, .pending(let until), nil): self = .pending(until: until, note: nil)
+        case (.notConfirmed, .pending(let until), nil): self = .pending(until: until, note: .notConfirmed)
+        case (.unsigned, .pending(let until), nil): self = .pending(until: until, note: .unsigned)
+        case (.unsent, .pending(let until), nil): self = .pending(until: until, note: .unsent)
+        case (.unconfirmed(let verdict), .pending(let until), nil): self = .pending(until: until, note: .unconfirmed(verdict))
         }
     }
 
-    /// Whether Allow and Deny can be on offer.
+    /// The answers that can be on offer: Allow and Deny while pending, but
+    /// once iCloud left an answer unconfirmed, that answer alone, to send
+    /// again (it may have reached the Mac, which counts the first answer
+    /// saved: offering the other would mislead); none while an answer is
+    /// under way, nor once the request is finished.
+    var answers: [ApprovalWire.Verdict] {
+        switch self {
+        case .pending(_, .unconfirmed(let verdict)?): return [verdict]
+        case .pending: return ApprovalWire.Verdict.allCases
+        case .confirming, .sending, .sent, .answered, .expired, .withdrawn: return []
+        }
+    }
+
+    /// Whether any answer can be on offer.
     var isAnswerable: Bool {
-        if case .pending = self { return true }
-        return false
+        !answers.isEmpty
+    }
+
+    /// The one answer on offer, to send again, after iCloud left it
+    /// unconfirmed; nil when both are on offer, or neither.
+    var resend: ApprovalWire.Verdict? {
+        guard case .pending(_, .unconfirmed(let verdict)?) = self else { return nil }
+        return verdict
     }
 
     /// The state line, in the caption register: one state word, an em dash,
@@ -81,8 +107,8 @@ enum RequestStatus: Equatable, Sendable {
         }
     }
 
-    /// Why the last answer did not go out, over the state line; nil when
-    /// there is nothing to say.
+    /// Why the last answer did not go out, or that one may have, over the
+    /// state line; nil when there is nothing to say.
     var note: PhoneLine? {
         guard case .pending(_, let note?) = self else { return nil }
         switch note {
@@ -93,8 +119,10 @@ enum RequestStatus: Equatable, Sendable {
                              severity: .warning)
         case .unsent:
             return PhoneLine(text: "Unsent — couldn't save your answer to iCloud; try again", severity: .warning)
-        case .unconfirmed:
-            return PhoneLine(text: "Unconfirmed — iCloud didn't confirm your answer; try again", severity: .warning)
+        case .unconfirmed(let verdict):
+            let name: String = Self.name(verdict)
+            return PhoneLine(text: "Unconfirmed — \(name) may already have reached your Mac; only \(name) can be sent again",
+                             severity: .warning)
         }
     }
 
