@@ -54,6 +54,17 @@ public struct PromptID: Hashable, Sendable, CustomStringConvertible {
     }
 }
 
+extension ApprovalWire {
+    /// The name of a prompt's decision record: the prompt's record name
+    /// (`PromptID.hex`) followed by `-decision`. One decision record per
+    /// prompt, so a retry names the same record. The wire's one spelling of
+    /// it, beside the prompt ID it derives from (the constants file holds no
+    /// functions).
+    public static func decisionRecordName(for promptID: PromptID) -> String {
+        promptID.hex + "-decision"
+    }
+}
+
 /// A decision record as the Mac read it, after the caller checked its
 /// signature against the paired phone's Secure Enclave key (CL-1).
 public struct ApprovalDecision: Equatable, Sendable {

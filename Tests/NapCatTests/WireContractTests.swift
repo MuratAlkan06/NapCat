@@ -43,6 +43,55 @@ struct WireContractTests {
         #expect(ApprovalWire.promptIDHexDigits == 2 * ApprovalWire.promptIDByteCount)
     }
 
+    /// A prompt's window lies between 5 minutes and 1 hour, and the default
+    /// lies inside those bounds, so clamping never moves it.
+    @Test func theWindowBoundsArePinned() {
+        let minimum: Int = ApprovalWire.minPromptTimeToLiveSeconds
+        let maximum: Int = ApprovalWire.maxPromptTimeToLiveSeconds
+        let standard: Int = ApprovalWire.promptTimeToLiveSeconds
+        #expect(minimum == 300, "5 minutes")
+        #expect(maximum == 3_600, "1 hour")
+        #expect(minimum < standard && standard < maximum, "the default window is strictly inside the bounds")
+    }
+
+    /// One prompt ID and the name of its decision record.
+    struct DecisionNameRow: Sendable, CustomTestStringConvertible {
+        let high: UInt64
+        let low: UInt64
+        let name: String
+        var testDescription: String { name }
+    }
+
+    /// A decision record is named after its prompt: the prompt's record name
+    /// and `-decision`, as the phone's decision writer and the Mac's routing
+    /// tests already spell it.
+    static let decisionNameRows: [DecisionNameRow] = [
+        DecisionNameRow(high: 0x0123_4567_89AB_CDEF, low: 0xFEDC_BA98_7654_3210,
+                        name: "0123456789abcdeffedcba9876543210-decision"),
+        DecisionNameRow(high: 1, low: 2, name: "00000000000000010000000000000002-decision"),
+        DecisionNameRow(high: 0, low: 1, name: "00000000000000000000000000000001-decision"),
+        DecisionNameRow(high: .max, low: .max, name: "ffffffffffffffffffffffffffffffff-decision"),
+    ]
+
+    @Test(arguments: decisionNameRows)
+    func theDecisionRecordIsNamedAfterItsPrompt(_ row: DecisionNameRow) throws {
+        let id: PromptID = try #require(PromptID(high: row.high, low: row.low))
+        let name: String = ApprovalWire.decisionRecordName(for: id)
+        let spelledToday: String = id.hex + "-decision"
+        #expect(name == row.name)
+        #expect(name == spelledToday, "the spelling the phone's writer and the routing tests use")
+        #expect(PromptID(hex: name) == nil, "a decision name is never a prompt record name")
+        #expect(ApprovalWire.decisionRecordName(for: id) == name, "one name per prompt, every time")
+    }
+
+    /// Two prompts never share a decision record.
+    @Test func distinctPromptsHaveDistinctDecisionNames() {
+        let ids: [PromptID] = Self.decisionNameRows.compactMap { PromptID(high: $0.high, low: $0.low) }
+        let names: Set<String> = Set(ids.map { ApprovalWire.decisionRecordName(for: $0) })
+        #expect(ids.count == Self.decisionNameRows.count, "vacuity: every row is a prompt ID")
+        #expect(names.count == ids.count && names.count == 4)
+    }
+
     /// S-PAIR-C1 (#168) added the pairing response, deliberately.
     @Test func theApprovalRecordTypesAreExactlyPromptDecisionAndPairingResponse() {
         #expect(ApprovalWire.RecordType.allCases.map(\.rawValue) == ["PromptRequest", "PromptDecision", "PairingResponse"])

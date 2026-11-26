@@ -32,8 +32,17 @@ public enum ApprovalWire {
 
     /// How long a forwarded prompt may be answered from the phone (10 minutes).
     /// It only bounds the remote side: when it ends the record is retracted
-    /// and the local dialog stays open, never answered automatically.
+    /// and the local dialog stays open, never answered automatically. It is
+    /// the window a prompt gets when none is given, inside the bounds below.
     public static let promptTimeToLiveSeconds = 600
+
+    /// The shortest window a prompt may be given (5 minutes): a shorter one
+    /// is raised to this.
+    public static let minPromptTimeToLiveSeconds: Int = 300
+
+    /// The longest window a prompt may be given (1 hour): a longer one is
+    /// lowered to this. No record is answerable for longer.
+    public static let maxPromptTimeToLiveSeconds: Int = 3_600
 
     /// A prompt ID is 128 random bits.
     public static let promptIDByteCount = 16
