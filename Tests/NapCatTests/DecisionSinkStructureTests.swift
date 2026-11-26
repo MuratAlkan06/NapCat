@@ -47,8 +47,10 @@ import Testing
 ///    the intake every `apply` and `perform` is pinned at its sites, both
 ///    bodies are pinned whole, and the frame writer (`sendFrame`) is named
 ///    at today's sites; and the host's connection writes are pinned at
-///    today's site, and the connection type is named at today's sites
-///    alone in the four targets, so nothing new extends it or wraps its
+///    today's site, the connection type is named at today's sites alone in
+///    the four targets, the host names its connections and its peer reader
+///    at today's lines, and the seam file its send, its write and its
+///    descriptor, so no new line of either file reaches a connection's
 ///    writer;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
@@ -61,7 +63,11 @@ import Testing
 ///    keeps out of the sources the scalars a text reading drops or matches
 ///    to another;
 /// h. the repository root holds one manifest, `Package.swift`, so no
-///    version-specific manifest declares a target that e. never reads.
+///    version-specific manifest declares a target that e. never reads;
+/// i. every `extension` header and every operator implementation in the
+///    four targets is today's, so no extension member and no operator
+///    overload added elsewhere takes over a pinned line (a constrained
+///    extension's subscript, a concrete `??`).
 ///
 /// These pin the sites and bodies they name, nothing more: a value forged
 /// from raw bytes that reaches none of them stays #163's accepted residual,
@@ -878,7 +884,7 @@ struct DecisionSinkStructureTests {
     static func intakeTypeFailures(_ sources: Sources) -> [String] {
         absent(intakeTypeSites.keys, in: sources)
             + PairingStructureTests.appSiteFailures(#"\bApprovalIntake\b"#, in: sources, allowed: intakeTypeSites,
-                                                    rule: "the intake's type is named at today's sites alone — nothing new extends, wraps or takes it")
+                                                    rule: "the intake's type is named at today's sites alone — nothing new extends, wraps or takes it by name")
     }
 
     /// `sources`: `uncutSources()`.
@@ -942,7 +948,8 @@ struct DecisionSinkStructureTests {
         let host: String = ApprovalChannelStructureTests.hostFile
         #expect(Self.text(host, in: sources).contains(Self.doorBinding), "vacuity: the door is where its canaries plant")
         // D1, verbatim, caught by the type pin alone and by the Optional ban
-        // alone (and by no pin before them).
+        // alone (and by no pin before them; the extension pin, added since,
+        // catches it too).
         let d1: Sources = Self.adding(Self.adding(sources, "ZZPour.swift", Self.pour), "ZZDoor.swift", Self.doorPlant)
         #expect(!Self.intakeTypeFailures(d1).isEmpty, "D1 was NOT caught by the intake's type pin alone")
         #expect(!Self.optionalFailures(d1).isEmpty, "D1 was NOT caught by the Optional ban alone")
@@ -953,7 +960,7 @@ struct DecisionSinkStructureTests {
         let mapped: Sources = Self.mutate(sources, host) {
             $0.replacingOccurrences(of: Self.doorBinding, with: "        return queue.sync { intake.map(body) }\n") }
         #expect(!Self.wholeFailures(mapped, door).isEmpty && !Self.sinkFailures(mapped).isEmpty, "the old door line was NOT caught")
-        // Each pin's own canaries, caught by that pin alone.
+        // Each pin's own canaries, caught by that pin alone of the three here.
         let tapped: Sources = Self.mutate(sources, host) {
             $0.replacingOccurrences(of: "            return body(intake)\n", with: "            zzTap()\n            return body(intake)\n") }
         let byPin: [(String, Sources, (Sources) -> [String])] = [
@@ -1084,16 +1091,16 @@ struct DecisionSinkStructureTests {
         #expect(Self.hostWriteFailures(sources).isEmpty, "\(Self.hostWriteFailures(sources))")
         let host: String = ApprovalChannelStructureTests.hostFile
         #expect(Self.text(host, in: sources).contains(Self.lineHandlerAnchor), "vacuity: the canary's anchor is in the host")
-        // The hand-built frame, caught by this pin alone: every other pin
-        // reads it exactly as it reads the tree.
+        // The hand-built frame, caught by this pin, and by the host's
+        // connection words (it names a connection); every other pin reads it
+        // exactly as it reads the tree.
         let written: Sources = Self.mutate(sources, host) {
             $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: Self.hostFrame + Self.lineHandlerAnchor) }
         #expect(written.map { $0.text } != sources.map { $0.text }, "the hand-built frame did not apply")
-        #expect(!Self.hostWriteFailures(written).isEmpty, "the hand-built frame was NOT caught by the host's write pin alone")
-        let wholePins: [WholePin] = Self.roadPins + [Self.doorPin, Self.slotReadPin]
-        let otherPins: [(Sources) -> [String]] = [Self.sinkFailures, Self.frameWriterFailures, Self.intakeTypeFailures,
-                                                  Self.optionalFailures, Self.connectionTypeFailures, { Self.wholeFailures($0, wholePins) }]
-        #expect(otherPins.allSatisfy { $0(written) == $0(sources) }, "the hand-built frame is the host's write pin to catch")
+        #expect(!Self.hostWriteFailures(written).isEmpty, "the hand-built frame was NOT caught by the host's write pin")
+        let others: [String] = Self.othersCatching(written, besides: "host writes", baseline: Self.pinBaseline(sources))
+        let expected: [String] = ["connection words"]
+        #expect(others == expected, "the hand-built frame is the host's write pin's and the connection words': \(others)")
         let planted: (String) -> Sources = { line in
             Self.mutate(sources, host) { $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: line + Self.lineHandlerAnchor) }
         }
@@ -1143,7 +1150,7 @@ struct DecisionSinkStructureTests {
     static func connectionTypeFailures(_ sources: Sources) -> [String] {
         absent(connectionTypeSites.keys, in: sources)
             + PairingStructureTests.appSiteFailures(#"\bSeamConnection\b"#, in: sources, allowed: connectionTypeSites,
-                                                    rule: "the connection type is named at today's sites alone — nothing new extends it or wraps its writer")
+                                                    rule: "the connection type is named at today's sites alone — nothing new extends it or wraps its writer by name")
     }
 
     /// The host's write pin, one hop out: a member of the connection's type,
@@ -1172,16 +1179,17 @@ struct DecisionSinkStructureTests {
         #expect(Self.connectionTypeFailures(sources).isEmpty, "\(Self.connectionTypeFailures(sources))")
         let host: String = ApprovalChannelStructureTests.hostFile
         #expect(Self.text(host, in: sources).contains(Self.lineHandlerAnchor), "vacuity: the wrapper's call has its anchor in the host")
-        // The wrapper, caught by this pin alone: every other pin, the host's
-        // write pin among them, reads it exactly as it reads the tree.
+        // The wrapper, caught by this pin, by the host's connection words (its
+        // call names a connection) and by the extension pin (it is one); every
+        // other pin, the host's write pin among them, reads it exactly as it
+        // reads the tree.
         let wrapped: Sources = Self.mutate(Self.adding(sources, "ZZLink.swift", Self.connectionWrapper), host) {
             $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: Self.wrapperCall + Self.lineHandlerAnchor) }
         #expect(Self.text(host, in: wrapped) != Self.text(host, in: sources), "the wrapper's call did not apply")
-        #expect(!Self.connectionTypeFailures(wrapped).isEmpty, "the wrapper was NOT caught by the connection type's pin alone")
-        let wholePins: [WholePin] = Self.roadPins + [Self.doorPin, Self.slotReadPin]
-        let otherPins: [(Sources) -> [String]] = [Self.sinkFailures, Self.frameWriterFailures, Self.intakeTypeFailures,
-                                                  Self.optionalFailures, Self.hostWriteFailures, { Self.wholeFailures($0, wholePins) }]
-        #expect(otherPins.allSatisfy { $0(wrapped) == $0(sources) }, "the wrapper is the connection type's pin to catch")
+        #expect(!Self.connectionTypeFailures(wrapped).isEmpty, "the wrapper was NOT caught by the connection type's pin")
+        let others: [String] = Self.othersCatching(wrapped, besides: "connection type", baseline: Self.pinBaseline(sources))
+        let expected: [String] = ["connection words", "extensions"]
+        #expect(others == expected, "the wrapper is these three pins' to catch: \(others)")
         let app: String = "NapCatApp.swift"
         let mutants: [(String, Sources)] = [
             ("the connection's send taken unapplied in another file", Self.mutate(sources, app) {
@@ -1206,6 +1214,223 @@ struct DecisionSinkStructureTests {
         }, host) { $0.appending("\nlet isSeamConnectionOpen = false") }
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
         #expect(Self.connectionTypeFailures(controls).isEmpty, "over-match: \(Self.connectionTypeFailures(controls))")
+    }
+
+    /// The host's words for its connections, at today's lines.
+    static let hostConnectionSites: [String: Int] = [
+        "closeConnection: { [weak self] key in self?.connections[key]?.close() },": 1,
+        "connection.close()": 2,
+        "connection.start(onLine: { [weak self] in": 1,
+        "connections.removeAll()": 1,
+        "connections[key] = connection": 2,
+        "for connection in open { connection.close() }": 2,
+        "guard connections.count < limits.maxConnections else {": 1,
+        "guard connections[key] != nil else { return }": 1,
+        "guard let connection = connections[key] else { return }": 2,
+        "let open = Array(connections.values)": 1,
+        "private func accept(_ connection: SeamConnection) {": 1,
+        "private var connections: [ApprovalIntake.ConnectionKey: SeamConnection] = [:]": 1,
+        "self?.connections[key] = nil": 1,
+        "sendFrame: { [weak self] key, line in self?.connections[key]?.send(line) },": 1,
+    ]
+    /// The host's peer reader: taken at its initializer, handed to its listener.
+    static let hostPeerReaderSites: [String: Int] = [
+        "listener = SeamListener(socketPath: socketPath, queue: queue, peerReader: peerReader,": 2,
+        "peerReader: @escaping (Int32) -> SeamPeer? = SeamSocket.peer(of:), limits: Limits = .standard) {": 1,
+    ]
+    /// The seam file's one `send` (the connection's write) and one `write`.
+    static let seamSendSites: [String: Int] = ["public func send(_ line: String) -> Bool {": 1]
+    static let seamWriteSites: [String: Int] = [
+        "let written = bytes[offset...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }": 1,
+    ]
+    /// Every line of the seam file naming a descriptor.
+    static let seamDescriptorSites: [String: Int] = [
+        "&& flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0": 1,
+        "&& setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0": 1,
+        "Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0": 1,
+        "Darwin.close(descriptor)": 5,
+        "Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0": 1,
+        "Darwin.listen(descriptor, SeamSocket.listenBacklog) == 0 else {": 1,
+        "SeamSocket.bind(descriptor, to: address), chmod(path, 0o600) == 0,": 1,
+        "guard SeamSocket.configureConnected(descriptor), SeamPeerPolicy.accepts(peer, ownUID: ownUID), let peer else {": 1,
+        "guard descriptor >= 0 else { return nil }": 1,
+        "guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {": 1,
+        "guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0,": 1,
+        "guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERCRED, &credentials, &credentialsLength) == 0,": 1,
+        "guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &tokenLength) == 0,": 1,
+        "init(descriptor: Int32, peer: SeamPeer, queue: DispatchQueue, stallTimeout: Double = SeamSocket.stallTimeoutSeconds,": 1,
+        "let client = Darwin.accept(descriptor, nil, nil)": 1,
+        "let count = read(descriptor, &buffer, buffer.count)": 1,
+        "let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)": 1,
+        "let descriptor = SeamSocket.makeSocket() else { return false }": 1,
+        "let descriptor = SeamSocket.makeSocket() else { return nil }": 1,
+        "let descriptor = self.descriptor": 2,
+        "let flags = fcntl(descriptor, F_GETFL)": 2,
+        "let peer = SeamSocket.connect(descriptor, to: address) ? peerReader(descriptor) : nil": 2,
+        "let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)": 2,
+        "let written = bytes[offset...].withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }": 1,
+        "onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue, stallTimeout: stallTimeout))": 1,
+        "private let descriptor: Int32": 1,
+        "public static func peer(of descriptor: Int32) -> SeamPeer? {": 1,
+        "return SeamConnection(descriptor: descriptor, peer: peer, queue: queue)": 2,
+        "return descriptor": 1,
+        "return fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0": 1,
+        "self.descriptor = descriptor": 2,
+        "source.setCancelHandler { Darwin.close(descriptor) }": 2,
+        "static func bind(_ descriptor: Int32, to address: sockaddr_un) -> Bool {": 1,
+        "static func configureConnected(_ descriptor: Int32) -> Bool {": 1,
+        "static func connect(_ descriptor: Int32, to address: sockaddr_un) -> Bool {": 1,
+        "var room = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)": 1,
+    ]
+    /// Each word pin: its file, its pattern, today's lines.
+    static let connectionWordPins: [(file: String, pattern: String, allowed: [String: Int])] = [
+        (ApprovalChannelStructureTests.hostFile, #"\bconnections?\b"#, hostConnectionSites),
+        (ApprovalChannelStructureTests.hostFile, #"\bpeerReader\b"#, hostPeerReaderSites),
+        (ApprovalChannelStructureTests.seamFile, #"\bsend\b"#, seamSendSites),
+        (ApprovalChannelStructureTests.seamFile, #"\bwrite\b"#, seamWriteSites),
+        (ApprovalChannelStructureTests.seamFile, #"\bdescriptor\b"#, seamDescriptorSites),
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func connectionWordFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = absent([ApprovalChannelStructureTests.hostFile, ApprovalChannelStructureTests.seamFile], in: sources)
+        for pin in connectionWordPins {
+            failures += PairingStructureTests.appSiteFailures(pin.pattern, in: sources.filter { $0.name == pin.file },
+                                                              allowed: [pin.file: pin.allowed],
+                                                              rule: "a connection, its peer reader and its writes are named at today's lines alone")
+        }
+        return unique(failures)
+    }
+
+    /// The re-check's three residual plants, verbatim. RES1's member, inside
+    /// the connection type's own body, before its `close()`.
+    static let seamCloseAnchor: String = "    /// Closes the connection (idempotent).\n    public func close() {\n"
+    static let seamMember: String = #"""
+            public func zzAllow(_ request: String) {
+                send("{\"frame\":\"verdict\",\"v\":1,\"request\":\"" + request + "\",\"verdict\":\"allow\"}")
+            }
+
+
+        """#
+    /// RES2's file, verbatim.
+    static let rawDescriptorWrite: String = #"""
+        import Foundation
+
+        // Security delta re-check replant (never committed): the engineer's "raw
+        // descriptor road". The accepted client's descriptor is seen by the host's
+        // peer reader; a hand-built verdict frame is written to it with write(2).
+        final class ZZSeen: @unchecked Sendable {
+            var last: Int32 = -1
+        }
+
+        let zzSeenBox = ZZSeen()
+
+        func zzSeen(_ descriptor: Int32) { zzSeenBox.last = descriptor }
+
+        func zzRaw(_ line: [UInt8]) {
+            guard String(decoding: line, as: UTF8.self).contains("\"request\":\"zzzzz\"") else { return }
+            let frame = "{\"frame\":\"verdict\",\"v\":1,\"request\":\"zzzzz\",\"verdict\":\"allow\"}\n"
+            _ = write(zzSeenBox.last, frame, frame.utf8.count)
+        }
+
+        """#
+    static let listenerLine: String = "        listener = SeamListener(socketPath: socketPath, queue: queue, peerReader: peerReader,\n"
+    /// RES3's file, verbatim.
+    static let inferredWrite: String = #"""
+        import Foundation
+        import NapCatSeam
+
+        // Security delta re-check replant (never committed): the engineer's
+        // "inferred-type use". The connection's type is never spelled: it is
+        // inferred from the client's return value, and the host hands its own
+        // connection in as a generic value. No line of the host spells the writer.
+        func zzCast<C>(_ like: C?, _ value: Any) -> C? { value as? C }
+
+        func zzNote<C>(_ connection: C?, _ line: [UInt8]) {
+            guard String(decoding: line, as: UTF8.self).contains("\"request\":\"zzzzz\"") else { return }
+            let like = line.isEmpty ? SeamClient.connect(socketPath: "", queue: .main) : nil
+            _ = zzCast(like, connection as Any)?.send("{\"frame\":\"verdict\",\"v\":1,\"request\":\"zzzzz\",\"verdict\":\"allow\"}")
+        }
+
+        """#
+    /// The host's line handler, where RES2 and RES3 call their files.
+    static let handlerIndent: String = String(repeating: " ", count: 29)
+
+    /// A connection's writer is reached from no new line of the host or the
+    /// seam file: the host names its connections and its peer reader at
+    /// today's lines, and the seam file its send, its write and its
+    /// descriptor. The re-check's residual plants, verbatim, as the disk
+    /// would hold them: a writer reached through the connection type's own
+    /// body (RES1), through a descriptor (RES2) and through an inferred type
+    /// (RES3). Each is caught by these pins alone: every other pin of this
+    /// suite reads it as the tree.
+    @Test func aConnectionsWriterIsNamedAtTodaysSites() throws {
+        let raw: Sources = try ApprovalChannelStructureTests.sources { $0 }
+        let sources: Sources = Self.uncut(raw)
+        #expect(Self.connectionWordFailures(sources).isEmpty, "\(Self.connectionWordFailures(sources))")
+        let host: String = ApprovalChannelStructureTests.hostFile
+        let seam: String = ApprovalChannelStructureTests.seamFile
+        let handlerCall: (String) -> PlantedLine = { call in
+            (host, Self.lineHandlerAnchor, Self.handlerIndent + call + "\n" + Self.lineHandlerAnchor)
+        }
+        let member: String = Self.seamMember + Self.seamCloseAnchor
+        let call: String = Self.wrapperCall + Self.lineHandlerAnchor
+        let res1: [PlantedLine] = [(seam, Self.seamCloseAnchor, member), (host, Self.lineHandlerAnchor, call)]
+        let res2: [PlantedLine] = [(host, Self.listenerLine, Self.listenerLine.replacingOccurrences(
+                                        of: "peerReader: peerReader,", with: "peerReader: { zzSeen($0); return peerReader($0) },")),
+                                   handlerCall("zzRaw($0)")]
+        let res3: [PlantedLine] = [handlerCall("zzNote(self?.connections[key], $0)")]
+        var anchors: [PlantedLine] = res1
+        anchors.append(contentsOf: res2)
+        for line in anchors {
+            #expect(ApprovalChannelStructureTests.count(line.anchor, in: Self.text(line.file, in: raw)) == 1,
+                    "vacuity: '\(line.anchor.prefix(60))' is in \(line.file) once")
+        }
+        var withRaw: Sources = Self.planting(raw, res2)
+        withRaw.append(("ZZRaw.swift", Self.rawDescriptorWrite))
+        var withInferred: Sources = Self.planting(raw, res3)
+        withInferred.append(("ZZInferred.swift", Self.inferredWrite))
+        let reviewed: [(name: String, planted: Sources)] = [
+            ("RES1: a member writing a hand-built frame, inside the connection type's body", Self.uncut(Self.planting(raw, res1))),
+            ("RES2: the descriptor kept from the host's peer reader, written from a new file", Self.uncut(withRaw)),
+            ("RES3: the host's connection handed to a new file as a generic value", Self.uncut(withInferred)),
+        ]
+        let baseline: [String: [String]] = Self.pinBaseline(sources)
+        for (name, planted) in reviewed {
+            #expect(planted.map { $0.text } != sources.map { $0.text }, "\(name) did not apply")
+            #expect(!Self.connectionWordFailures(planted).isEmpty, "\(name) was NOT caught by the connection words' pins")
+            let others: [String] = Self.othersCatching(planted, besides: "connection words", baseline: baseline)
+            #expect(others.isEmpty, "\(name) is the connection words' to catch, but \(others) caught it too")
+        }
+        // More canaries, one per pin.
+        let mutants: [(String, Sources)] = [
+            ("the host's connection handed on as it is accepted", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: "        connections[key] = connection\n", with: "        connections[key] = connection\n        zzKeep(connection)\n") }),
+            ("the host's connections read behind a block comment", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: "                             zzKeep(self?./* x */connections)\n" + Self.lineHandlerAnchor) }),
+            ("the host's peer reader handed to a new call", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: "        self.audit = audit\n", with: "        self.audit = audit\n        zzKeep(peerReader)\n") }),
+            ("a second send in the seam file", Self.mutate(sources, seam) { $0.appending("\nfunc zz(_ c: SeamConnection) { _ = c.send(\"{}\") }") }),
+            ("a write by number in the seam file", Self.mutate(sources, seam) {
+                $0.replacingOccurrences(of: "    private let descriptor: Int32\n", with: "    private let descriptor: Int32\n    func zz() { _ = Darwin.write(3, \"{}\", 2) }\n") }),
+            ("the descriptor handed out", Self.mutate(sources, seam) {
+                $0.replacingOccurrences(of: "    private let descriptor: Int32\n", with: "    private let descriptor: Int32\n    public var zzHandle: Int32 { `descriptor` }\n") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.connectionWordFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned words, and
+        // whole-line comments naming them.
+        let controls: Sources = Self.mutate(Self.mutate(sources, host) {
+            $0.appending("\nlet connectionCount = 0, reconnection = 1, peerReaderCount = 2, isConnectionOpen = false"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never zzNote(self?.connections[key]), never peerReader: { $0 }"))
+        }, seam) {
+            $0.appending("\nlet sendCount = 0, rewrite = 1, writes = 2, descriptors = 3, fileDescriptor = 4"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never write(descriptor, frame), never send(frame)"))
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.connectionWordFailures(controls).isEmpty, "over-match: \(Self.connectionWordFailures(controls))")
     }
 
     /// D2's anchors (the slot's read, commit and unpair) and its plant,
@@ -1344,5 +1569,216 @@ struct DecisionSinkStructureTests {
         var withControls: [String] = names.filter { !controls.contains($0) }
         withControls.append(contentsOf: controls)
         #expect(Self.rootManifestFailures(withControls).isEmpty, "\(Self.rootManifestFailures(withControls))")
+    }
+
+    // MARK: - i. No new extension, no new operator implementation
+
+    /// Every line of the four targets holding the word `extension`: today's
+    /// twelve headers.
+    static let extensionSites: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.intakeFile: ["extension ApprovalClassification {": 1],
+        "FinishAlertController.swift": ["extension LidGuardController: FinishAlertConfigSource {": 1],
+        "KeychainTopicStore.swift": [
+            "extension KeychainTopicStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1],
+        PairingStructureTests.slotFile: [
+            "extension PairedKeyStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1],
+        PairingStructureTests.ceremonyFile: [
+            "extension PairingCeremonyState: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1,
+            "extension PairingEvent: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1],
+        PairingStructureTests.sheetFile: [
+            "extension PairingSheetContent: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1,
+            "extension QRCodeView: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1],
+        ApprovalChannelStructureTests.toggleFile: ["extension WaitingPromptCounts {": 1],
+        "SettingsContent.swift": ["extension MenuStateModel {": 1],
+        ApprovalChannelStructureTests.serverFile: ["extension SeamConnection: ChannelLink {}": 1],
+        "ApprovalChannel.swift": ["extension ApprovalChannel {": 1],
+    ]
+    /// A `func` named by anything but an ASCII identifier: an operator's
+    /// implementation (custom operators are banned outright, by
+    /// `LidGuardStructureTests.noSourceDeclaresAnOperator`). A comment or a
+    /// line break between the word and the name is a site too.
+    static let operatorImplementationPattern: String = #"\bfunc\s*[^\sA-Za-z0-9_`(]"#
+    /// Today's two: each type's own `<`, for its own values.
+    static let operatorImplementationSites: [String: [String: Int]] = [
+        "MenuStateModel.swift": ["static func < (lhs: PanelSeverity, rhs: PanelSeverity) -> Bool { lhs.rawValue < rhs.rawValue }": 1],
+        "UpdateVersion.swift": ["static func < (lhs: ReleaseVersion, rhs: ReleaseVersion) -> Bool {": 1],
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func extensionFailures(_ sources: Sources) -> [String] {
+        absent(extensionSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(#"\bextension\b"#, in: sources, allowed: extensionSites,
+                                                    rule: "every extension in the four targets is today's — a new one could add a member a pinned line resolves to")
+    }
+
+    /// `sources`: `uncutSources()`.
+    static func operatorImplementationFailures(_ sources: Sources) -> [String] {
+        absent(operatorImplementationSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(operatorImplementationPattern, in: sources, allowed: operatorImplementationSites,
+                                                    rule: "every operator implementation is today's — a new overload could take a pinned line's operator")
+    }
+
+    /// Every whole-body pin.
+    static let allWholePins: [WholePin] = {
+        var pins: [WholePin] = roadPins
+        pins.append(doorPin)
+        pins.append(slotReadPin)
+        return pins
+    }()
+    /// Every pin of this suite that reads the four targets' sources, by
+    /// name (the raw-text scalar lock among them: it reads any text).
+    static var sourcePins: [(name: String, failures: (Sources) -> [String])] {
+        [
+            ("sinks", { Self.sinkFailures($0) }), ("whole bodies", { Self.wholeFailures($0, Self.allWholePins) }),
+            ("intake type", { Self.intakeTypeFailures($0) }), ("Optional", { Self.optionalFailures($0) }),
+            ("frame writer", { Self.frameWriterFailures($0) }), ("host writes", { Self.hostWriteFailures($0) }),
+            ("connection type", { Self.connectionTypeFailures($0) }), ("connection words", { Self.connectionWordFailures($0) }),
+            ("extensions", { Self.extensionFailures($0) }), ("operator implementations", { Self.operatorImplementationFailures($0) }),
+            ("hidden scalars", { LidGuardStructureTests.hiddenScalarFailures($0) }),
+        ]
+    }
+    /// Each pin's failures on `sources`, by name: what the "alone" checks
+    /// compare a plant's reading to.
+    static func pinBaseline(_ sources: Sources) -> [String: [String]] {
+        var baseline: [String: [String]] = [:]
+        for pin in sourcePins { baseline[pin.name] = pin.failures(sources) }
+        return baseline
+    }
+
+    /// The pins, other than `own`, that read `planted` otherwise than their
+    /// `baseline`, by name.
+    static func othersCatching(_ planted: Sources, besides own: String, baseline: [String: [String]]) -> [String] {
+        sourcePins.filter { $0.name != own && $0.failures(planted) != baseline[$0.name] }.map(\.name)
+    }
+
+    /// DICT1, verbatim: a subscript in a constrained extension of Dictionary,
+    /// in a new file, that the intake's `prompts[id]` resolves to.
+    static let dictionarySubscript: String = #"""
+        import NapCatWire
+
+        // Security delta re-check replant (never committed): a subscript in a
+        // constrained extension of Dictionary, in a new file. The intake's pinned
+        // `prompts[id]` lines are untouched and resolve here (a more constrained
+        // member outranks the unconstrained one, as the door's Optional.map did).
+        final class ZZSwap: @unchecked Sendable {
+            var from: PromptID?
+            var to: PromptID?
+            var reads = 0
+        }
+
+        let zzSwap = ZZSwap()
+
+        extension Dictionary where Key == PromptID {
+            subscript(key: PromptID) -> Value? {
+                get {
+                    var wanted = key
+                    if key == zzSwap.from, let other = zzSwap.to, "\(Value.self)" == "Entry" {
+                        zzSwap.reads += 1
+                        if zzSwap.reads == 2 { wanted = other }
+                    }
+                    return index(forKey: wanted).map { self[$0].value }
+                }
+                set {
+                    if let newValue {
+                        updateValue(newValue, forKey: key)
+                    } else {
+                        removeValue(forKey: key)
+                    }
+                }
+            }
+        }
+
+        """#
+    /// OP1b, verbatim: a concrete overload of the nil-coalescing operator,
+    /// in a new file, that the slot's `read()` line resolves to.
+    static let coalescingOverload: String = #"""
+        import Foundation
+
+        // Security delta re-check replant (never committed): a concrete overload of
+        // the standard library's nil-coalescing in a new file. The slot's pinned line
+        // (`... .map(PairedPhoneRead.paired) ?? .unreadable`) is untouched and
+        // resolves here, since a concrete overload outranks the generic one.
+        final class ZZReadSwap: @unchecked Sendable {
+            /// When the slot holds `whenPaired`, its reading is `phone` instead.
+            var whenPaired: PairedPhone?
+            var phone: PairedPhone?
+        }
+
+        let zzReadSwap = ZZReadSwap()
+
+        func ?? (reading: PairedPhoneRead?, fallback: @autoclosure () -> PairedPhoneRead) -> PairedPhoneRead {
+            guard let reading else { return fallback() }
+            if case .paired(let stored) = reading, let other = zzReadSwap.phone, zzReadSwap.whenPaired == stored { return .paired(other) }
+            return reading
+        }
+
+        """#
+
+    /// No new file or line adds an extension of any type, or an
+    /// implementation of an operator: a member the compiler prefers at a
+    /// pinned line (a constrained extension's subscript, a concrete
+    /// overload) would take that line over with the line untouched. The
+    /// re-check's plants, verbatim: DICT1 (the intake's `prompts[id]`) and
+    /// OP1b (the slot's `??`), each caught by its own pin alone: every other
+    /// pin of this suite reads it as the tree.
+    @Test func everyExtensionAndOperatorImplementationIsTodays() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.extensionFailures(sources).isEmpty, "\(Self.extensionFailures(sources))")
+        #expect(Self.operatorImplementationFailures(sources).isEmpty, "\(Self.operatorImplementationFailures(sources))")
+        let reviewed: [(name: String, pin: String, planted: Sources)] = [
+            ("DICT1: a constrained Dictionary subscript taking the intake's prompts[id]", "extensions",
+             Self.adding(sources, "ZZSwapEntries.swift", Self.dictionarySubscript)),
+            ("OP1b: a concrete ?? taking the slot's read() line", "operator implementations",
+             Self.adding(sources, "ZZCoalesce.swift", Self.coalescingOverload)),
+        ]
+        let baseline: [String: [String]] = Self.pinBaseline(sources)
+        for (name, pin, planted) in reviewed {
+            let own: [(name: String, failures: (Sources) -> [String])] = Self.sourcePins.filter { $0.name == pin }
+            #expect(own.count == 1 && own.allSatisfy { !$0.failures(planted).isEmpty }, "\(name) was NOT caught by its pin")
+            let others: [String] = Self.othersCatching(planted, besides: pin, baseline: baseline)
+            #expect(others.isEmpty, "\(name) is its own pin's to catch, but \(others) caught it too")
+        }
+        // More canaries: an extension in each target and spelled apart, and
+        // an operator implemented in a type, at the top level, behind a
+        // comment or a line break.
+        let appended: (String, String) -> Sources = { file, text in Self.mutate(sources, file) { $0.appending(text) } }
+        let extensions: [(String, Sources)] = [
+            ("an extension in the seam", appended(ApprovalChannelStructureTests.seamFile, "\nextension SeamListener {}")),
+            ("an extension in the wire", appended("ApprovalWire.swift", "\nextension PromptID {\n    var zz: Int { 0 }\n}")),
+            ("an extension in the channel", appended(ApprovalChannelStructureTests.serverFile, "\nextension Array where Element == UInt8 {}")),
+            ("a protocol extension in the app", appended("NapCatApp.swift", "\nextension Collection where Element == PromptID {}")),
+            ("a header split over lines", appended("NapCatApp.swift", "\nextension\n    Dictionary where Key == PromptID {}")),
+            ("a header behind a block comment", appended("NapCatApp.swift", "\nextension/* x */Dictionary {}")),
+        ]
+        let operators: [(String, Sources)] = [
+            ("an equality in a new type", appended("NapCatApp.swift", "\nstruct ZZ { static func == (l: ZZ, r: ZZ) -> Bool { true } }")),
+            ("a pattern match at the top level", appended("NapCatApp.swift", "\nfunc ~= (p: PromptID, v: PromptID) -> Bool { true }")),
+            ("a prefix operator", appended("ApprovalWire.swift", "\nprefix func ! (b: Bool) -> Bool { b }")),
+            ("behind a block comment", appended("NapCatApp.swift", "\nfunc/* x */?? (a: Int?, b: Int) -> Int { b }")),
+            ("its name on the next line", appended("NapCatApp.swift", "\nfunc\n?? (a: Int?, b: Int) -> Int { b }")),
+        ]
+        for (name, mutant) in extensions {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.extensionFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        for (name, mutant) in operators {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.operatorImplementationFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: words that only contain the pinned ones, plain
+        // functions, operators used and not implemented, and whole-line
+        // comments naming them.
+        let controls: Sources = appended("NapCatApp.swift", [
+            "\nlet extensionCount = 0, extensions = 1, isExtension = false, funcs = 2, myfunc = 3",
+            "\nfunc reduce(_ x: Int) -> Int { x }\nfunc `default`() {}\nfunc _zz() {}\nfunc zz(_ a: Int?) -> Bool { (a ?? 0) == 1 && !true }",
+            LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never extension Dictionary {}, never func ?? (a, b)"),
+        ].joined())
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.extensionFailures(controls).isEmpty, "over-match: \(Self.extensionFailures(controls))")
+        #expect(Self.operatorImplementationFailures(controls).isEmpty, "over-match: \(Self.operatorImplementationFailures(controls))")
+        // The operator pattern bites through the lock's own engine.
+        for probe in ["static func ==(l: A, r: A)", "func\t<", "func /* c */ ??"] {
+            #expect(Self.hits(Self.operatorImplementationPattern, in: probe), "the pattern does not match '\(probe)'")
+        }
     }
 }
