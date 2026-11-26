@@ -231,4 +231,59 @@ struct ChannelInstallStructureTests {
         }
         #expect(!Self.identifierFailures(files, expected: drifted).isEmpty, "the app's bundle identifier moved alone")
     }
+
+    // MARK: - Info.plist names the server's version
+
+    static let versionKey = "NapCatChannelVersion"
+
+    /// Every way Info.plist's channel version can disagree with the server:
+    /// one key, an `<integer>` holding exactly `expected` on the next line,
+    /// and a plist that still parses to that integer.
+    static func channelVersionFailures(_ plist: String, expected: Int) -> [String] {
+        let all = lines(plist)
+        let keys = all.indices.filter { all[$0].contains("<key>\(versionKey)</key>") }
+        guard keys.count == 1, let at = keys.first else {
+            return ["exactly one \(versionKey) key in Info.plist, found \(keys.count)"]
+        }
+        var failures: [String] = []
+        let valueLine = at + 1 < all.count ? all[at + 1] : ""
+        if valueLine != "\t<integer>\(expected)</integer>" {
+            failures.append("the \(versionKey) value line reads '\(valueLine)', expected <integer>\(expected)</integer>")
+        }
+        let parsed = try? PropertyListSerialization.propertyList(from: Data(plist.utf8), format: nil) as? [String: Any]
+        let number = parsed?[versionKey] as? NSNumber
+        let isInteger = number.map { CFGetTypeID($0 as CFTypeRef) == CFNumberGetTypeID() && $0.intValue == expected } ?? false
+        if !isInteger {
+            failures.append("Info.plist does not parse to the integer \(expected) under \(versionKey)")
+        }
+        return failures
+    }
+
+    @Test func theInfoPlistNamesTheServersVersion() throws {
+        let plist = try Self.read(Self.infoPlistPath)
+        let failures = Self.channelVersionFailures(plist, expected: ApprovalChannel.serverVersion)
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    /// Canaries: a bump on either side, another value type, a dropped or a
+    /// duplicated key.
+    @Test func theVersionParityCatchesADriftOnEitherSide() throws {
+        let plist = try Self.read(Self.infoPlistPath)
+        let expected = ApprovalChannel.serverVersion
+        let value = "\t<integer>\(expected)</integer>"
+        let entry = "\t<key>\(Self.versionKey)</key>\n" + value + "\n"
+        try #require(Self.channelVersionFailures(plist, expected: expected).isEmpty, "canary baseline must be clean")
+        #expect(!Self.channelVersionFailures(plist, expected: expected + 1).isEmpty, "Swift bumped, Info.plist not")
+        let mutants: [(String, String)] = [
+            ("Info.plist bumped", plist.replacingOccurrences(of: value, with: "\t<integer>\(expected + 1)</integer>")),
+            ("a string", plist.replacingOccurrences(of: value, with: "\t<string>\(expected)</string>")),
+            ("a boolean", plist.replacingOccurrences(of: value, with: "\t<true/>")),
+            ("key dropped", plist.replacingOccurrences(of: entry, with: "")),
+            ("key duplicated", plist.replacingOccurrences(of: "</dict>", with: entry + "</dict>")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != plist, "canary setup '\(name)': target text must exist")
+            #expect(!Self.channelVersionFailures(mutant, expected: expected).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
 }
