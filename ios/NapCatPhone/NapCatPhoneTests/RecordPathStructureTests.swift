@@ -72,6 +72,20 @@ import Testing
 /// guards the conformer and the live pairing. The decision writer is still
 /// built by no app source.
 ///
+/// AMENDED (#194, the phone receives prompts, still unsent): the live
+/// approvals database is built once, by the live inbox's factory, and
+/// shared by the live pairing and the new live prompt source (lock 2 pins
+/// both names, and the prompt source joins lock 8's guarded types); its
+/// admit list grows to a decision's create-only save, the prompts' one
+/// snapshot read and the prompt subscription's lookup, save and removal by
+/// its one ID, each behind its own check, the conformer and every check
+/// pinned whole (locks 6 and 6c); the new lock 6e pins the prompt path's
+/// operations, their result holder and the prompt source whole, each
+/// factory used once; lock 7 counts their constructions. The decision
+/// writer is still built by no app source, and the live inbox writes
+/// through the unsent writer (`SigningKeyStructureTests` lock 6): nothing
+/// arms.
+///
 /// Each lock is a pure function over comment-stripped sources, and each
 /// catches planted canaries, so none can pass vacuously. Lock 6 strips
 /// whole-line comments only (trailing comments stay in, so it can only
@@ -160,10 +174,16 @@ import Testing
         ("CloudKitPairingResponseWriter", CloudKitStructureTests.appSites([
             "Live/CloudKitAlertSource.swift": ["struct CloudKitPairingResponseWriter: PairingResponseWriter {": 1],
             "Live/LivePairing.swift": [pairingWriterConstruction: 1]])),
+        // AMENDED (#194): built once, by the live inbox's factory, which
+        // shares it with the live pairing and the live prompt source.
         ("makeLiveApprovalDatabase", CloudKitStructureTests.appSites([
             "Live/CloudKitAlertSource.swift": ["static func makeLiveApprovalDatabase() -> (any CloudKitApprovalDatabase)? {": 1],
-            "Live/LivePairing.swift": ["if let database = CloudKitAlertSource.makeLiveApprovalDatabase() {": 1]])),
+            "Model/RequestInbox.swift": ["let database = CloudKitAlertSource.makeLiveApprovalDatabase()": 1]])),
+        ("LivePromptSource", CloudKitStructureTests.appSites([
+            "Live/LivePromptSource.swift": ["struct LivePromptSource: PromptSource {": 1],
+            "Model/RequestInbox.swift": [livePromptSourceConstruction: 1]])),
     ]
+    static let livePromptSourceConstruction = "prompts: database.map { LivePromptSource(database: $0) })"
 
     static func liveWriterFailures(_ app: [Source]) -> [String] {
         var failures: [String] = []
@@ -240,6 +260,16 @@ import Testing
                 $0 + "\nprivate struct SpareApprovalDatabase: CloudKitApprovalDatabase { func submit(_ o: CKModifyRecordsOperation) {} }" }),
             ("the pairing writer named in a backticked shadow", Self.mutate(app, feed) {
                 $0 + "\nenum Spare { static func `CloudKitPairingResponseWriter`() {} }" }),
+            // #194: the live database built a second time, by the live
+            // pairing again; a second prompt source; the decision writer
+            // built over the shared database (nothing arms).
+            ("the live pairing builds its own database again", Self.mutate(app, wiring) {
+                $0.replacingOccurrences(of: "        if let database {\n",
+                                        with: "        if let database = CloudKitAlertSource.makeLiveApprovalDatabase() {\n") }),
+            ("a second prompt source", Self.mutate(app, feed) { $0 + "\nlet spare = LivePromptSource(database: d)" }),
+            ("the live inbox armed over the shared database", Self.mutate(app, "\(Self.appDir)/Model/RequestInbox.swift") {
+                $0.replacingOccurrences(of: "return RequestInbox(writer: UnsentDecisionWriter(),",
+                                        with: "return RequestInbox(writer: CloudKitDecisionWriter(database: database!),") }),
             // S-PAIR-C1.5 (#170): the pairing writer built by an app source,
             // however spelled — a fixture included (a fixture launch writes
             // to a fixture).
@@ -294,10 +324,11 @@ import Testing
 
     static let testsDir = CloudKitStructureTests.testsDir
     /// The S3 test files that run anything (this file only reads sources).
+    /// AMENDED (#194): and the prompt path's (fakes and real operations only).
     static let s3TestFiles = ["ApprovalRecordFakes.swift", "RequestInboxTests.swift", "CloudKitRequestRecordTests.swift",
                               "RequestAnsweringTests.swift", "PendingRequestScreenTests.swift",
                               "CloudKitDecisionWriterTests.swift", "VisibleWhitespaceTests.swift",
-                              "CloudKitPairingWriterTests.swift"]
+                              "CloudKitPairingWriterTests.swift", "CloudKitPromptSourceTests.swift"]
 
     /// A container, a live database or source, the real defaults, the
     /// notification center and the real biometric prompt. AMENDED (#166):
@@ -768,16 +799,41 @@ import Testing
     /// `liveDatabaseFailures`.
     static let liveSubmitHead = "func submit(_ operation: CKModifyRecordsOperation) {"
     static let checkHead = "static func isPairingResponseCreation(_ operation: CKModifyRecordsOperation) -> Bool {"
+    /// AMENDED (#194): and the decision's check, the pairing's twin in its
+    /// first lines.
+    static let decisionCheckHead = "static func isDecisionCreation(_ operation: CKModifyRecordsOperation) -> Bool {"
     static let checkOperationLines: [String: Int] = [
-        checkHead: 1, "guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true,": 2,
-        "let records = operation.recordsToSave, records.count == 1, let record = records.first,": 1,
+        checkHead: 1, decisionCheckHead: 1,
+        "guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true,": 4,
+        "let records = operation.recordsToSave, records.count == 1, let record = records.first,": 2,
     ]
+    /// AMENDED (#194): the live database admits a decision's creation too.
+    static let liveAdmit = "guard CloudKitAlertSource.isPairingResponseCreation(operation) || CloudKitAlertSource.isDecisionCreation(operation) else {"
     static let liveOperationLines: [String: Int] = [
-        liveSubmitHead: 1, "guard CloudKitAlertSource.isPairingResponseCreation(operation) else {": 1,
+        liveSubmitHead: 1, liveAdmit: 2,
         "operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))": 1,
         "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })": 1,
         "database.add(operation)": 1,
     ]
+    /// #194: the seam's three new requirements and their live conformances.
+    static let promptSeamLines: [String] = ["func submit(_ snapshot: CKFetchRecordZoneChangesOperation)",
+                                            "func submit(_ lookup: CKFetchSubscriptionsOperation)",
+                                            "func submit(_ change: CKModifySubscriptionsOperation)"]
+    static let promptSubmitSites: [String: Int] = {
+        var sites: [String: Int] = [:]
+        for line in promptSeamLines {
+            sites[line] = 1
+            sites[line + " {"] = 1
+        }
+        return sites
+    }()
+    static let submitSites: [String: Int] = {
+        var sites: [String: Int] = [seamRequirement: 1, pairingSubmit: 1, liveSubmitHead: 1,
+                                    "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) "
+                                        + "{ continuation.resume(returning: $0) })": 1]
+        sites.merge(promptSubmitSites) { $0 + $1 }
+        return sites
+    }()
     static let factoryOperationLines: [String: Int] = [
         seamRequirement: 1, decisionOperation: 2, "operation.savePolicy = .ifServerRecordUnchanged": 2,
         "operation.isAtomic = true": 2, "operation.configuration = configuration": 2,
@@ -794,11 +850,10 @@ import Testing
         (#"\boperation\b"#, operationLines,
          "the two factories build, configure and return their operations; the live database checks and adds one; nothing else"),
         (#"\bCKModifyRecordsOperation\b"#, [seamRequirement: 1, ") -> CKModifyRecordsOperation {": 2, decisionOperation: 2,
-                                            liveSubmitHead: 1, checkHead: 1],
-         "the operation type is named by the seam, its conformer, the check, the two factories and their constructions"),
-        (#"\bsubmit\b"#, [seamRequirement: 1, "database.submit(CloudKitAlertSource.makeDecisionSaveOperation(record) "
-                          + "{ continuation.resume(returning: $0) })": 1, pairingSubmit: 1, liveSubmitHead: 1],
-         "the seam is named only by its requirement, its one conformer and the two writers"),
+                                            liveSubmitHead: 1, checkHead: 1, decisionCheckHead: 1],
+         "the operation type is named by the seam, its conformer, the two checks, the two factories and their constructions"),
+        (#"\bsubmit\b"#, submitSites,
+         "the seam is named only by its requirements, its one conformer and the two writers (#194: and the prompt source, lock 6e)"),
         (#"\.\s*add\b"#, liveAddSites, "an operation is added to a database by the live approvals database alone, on its pinned lines"),
     ]
 
@@ -894,9 +949,20 @@ import Testing
                 $0.replacingOccurrences(of: "                database.add(operation)\n",
                                         with: "                database.add(operation)\n                database.add(spare)\n") }),
             ("an add before the check", Self.mutate(app, ck) {
-                $0.replacingOccurrences(of: "        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {\n",
-                                        with: "        container.privateCloudDatabase.add(operation)\n"
-                                            + "        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {\n") }),
+                $0.replacingOccurrences(of: "        " + Self.liveAdmit + "\n",
+                                        with: "        container.privateCloudDatabase.add(operation)\n        " + Self.liveAdmit + "\n") }),
+            // #194: the prompt path's operations — one added past no check, a
+            // second seam requirement, a submit of a prompt read from the
+            // CloudKit file itself.
+            ("a prompt read added before its check", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        guard CloudKitAlertSource.isPromptSnapshot(snapshot) else {\n",
+                                        with: "        container.privateCloudDatabase.add(snapshot)\n"
+                                            + "        guard CloudKitAlertSource.isPromptSnapshot(snapshot) else {\n") }),
+            ("a second requirement of the seam", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "    func submit(_ change: CKModifySubscriptionsOperation)\n}",
+                                        with: "    func submit(_ change: CKModifySubscriptionsOperation)\n    func submit(_ query: CKQueryOperation)\n}") }),
+            ("a prompt read submitted from the CloudKit file", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(_ db: any CloudKitApprovalDatabase) { db.submit(CloudKitAlertSource.makePromptSnapshot { _ in }) }" }),
             ("the save added before the zone", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: "        let database = container.privateCloudDatabase\n",
                                         with: "        let database = container.privateCloudDatabase\n        database.add(operation)\n") }),
@@ -1068,13 +1134,28 @@ import Testing
     /// admits. The check is pinned whole too, and named only by its
     /// declaration and that guard. An extension of the conformer is lock 8's
     /// (a guarded type); its name and its factory's are lock 2's.
-    static let liveDatabaseBody = "let container: CKContainer " + liveSubmitHead + " "
-        + "guard CloudKitAlertSource.isPairingResponseCreation(operation) else { "
+    ///
+    /// AMENDED (#194): the admit list, whole. A record save is admitted as
+    /// the pairing response's or a decision's creation; the prompts'
+    /// snapshot, the prompt subscription's lookup and its change each by
+    /// their own check, each refused unrun on its own result block, each
+    /// added on its one line. Every check is pinned whole and named only by
+    /// its declaration and its guard.
+    static let liveDatabaseBody = "let container: CKContainer " + liveSubmitHead + " " + liveAdmit + " "
         + "operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments))) return } "
         + "let database = container.privateCloudDatabase "
         + "database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in if missing { "
         + "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) }) "
-        + "} else { database.add(operation) } }) }"
+        + "} else { database.add(operation) } }) } "
+        + "func submit(_ snapshot: CKFetchRecordZoneChangesOperation) { guard CloudKitAlertSource.isPromptSnapshot(snapshot) else { "
+        + "snapshot.fetchRecordZoneChangesResultBlock?(.failure(CKError(.invalidArguments))) return } "
+        + CloudKitStructureTests.promptReadAdd + " } "
+        + "func submit(_ lookup: CKFetchSubscriptionsOperation) { guard CloudKitAlertSource.isPromptSubscriptionLookup(lookup) else { "
+        + "lookup.fetchSubscriptionsResultBlock?(.failure(CKError(.invalidArguments))) return } "
+        + CloudKitStructureTests.promptLookupAdd + " } "
+        + "func submit(_ change: CKModifySubscriptionsOperation) { guard CloudKitAlertSource.isPromptSubscriptionChange(change) else { "
+        + "change.modifySubscriptionsResultBlock?(.failure(CKError(.invalidArguments))) return } "
+        + CloudKitStructureTests.promptChangeAdd + " }"
     static let checkBody = "guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true, "
         + "let records = operation.recordsToSave, records.count == 1, let record = records.first, "
         + "record.recordType == ApprovalWire.RecordType.pairingResponse.rawValue, record.recordChangeTag == nil, "
@@ -1082,7 +1163,59 @@ import Testing
         + "let name = record.recordID.recordName.utf8 "
         + "return name.count == ApprovalSigning.recordNameHexDigits && name.allSatisfy(hex.contains)"
     static let checkSites = CloudKitStructureTests.appSites([
-        "Live/CloudKitAlertSource.swift": [checkHead: 1, "guard CloudKitAlertSource.isPairingResponseCreation(operation) else {": 1]])
+        "Live/CloudKitAlertSource.swift": [checkHead: 1, liveAdmit: 1]])
+    /// #194: the admit list's other checks, each whole, each named by its
+    /// declaration and the live database's guard alone (the subscription's
+    /// shape by the change's check).
+    static let decisionCheckBody: String = "guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true, "
+        + "let records = operation.recordsToSave, records.count == 1, let record = records.first, "
+        + "record.recordType == ApprovalWire.RecordType.decision.rawValue, record.recordChangeTag == nil, "
+        + "record.recordID.zoneID == approvalsZoneID, "
+        + "let promptHex = record.encryptedValues[ApprovalWire.DecisionField.promptID.rawValue] as? String, "
+        + "let promptID = PromptID(hex: promptHex) else { return false } "
+        + "return record.recordID.recordName == ApprovalWire.decisionRecordName(for: promptID)"
+    static let snapshotCheckHead: String = "static func isPromptSnapshot(_ snapshot: CKFetchRecordZoneChangesOperation) -> Bool {"
+    static let snapshotCheckBody: String = "guard snapshot.recordZoneIDs == [approvalsZoneID], snapshot.fetchAllChanges, "
+        + "let zones = snapshot.configurationsByRecordZoneID, zones.count == 1, let zone = zones[approvalsZoneID], "
+        + "zone.previousServerChangeToken == nil, let keys = zone.desiredKeys else { return false } "
+        + "return keys.count == promptKeys.count && Set(keys) == Set(promptKeys)"
+    static let lookupCheckHead: String = "static func isPromptSubscriptionLookup(_ lookup: CKFetchSubscriptionsOperation) -> Bool {"
+    static let lookupCheckBody: String = "lookup.subscriptionIDs == [ApprovalWire.promptSubscriptionID]"
+    static let changeCheckHead: String = "static func isPromptSubscriptionChange(_ change: CKModifySubscriptionsOperation) -> Bool {"
+    static let changeCheckBody: String = "let saved: [CKSubscription] = change.subscriptionsToSave ?? [] "
+        + "let removed: [CKSubscription.ID] = change.subscriptionIDsToDelete ?? [] "
+        + "if removed.isEmpty { return saved.count == 1 && saved.allSatisfy(isPromptSubscription) } "
+        + "return saved.isEmpty && removed == [ApprovalWire.promptSubscriptionID]"
+    static let shapeCheckHead: String = "static func isPromptSubscription(_ subscription: CKSubscription) -> Bool {"
+    static let shapeCheckBody: String = "guard let query = subscription as? CKQuerySubscription, let info = query.notificationInfo, "
+        + "query.subscriptionID == ApprovalWire.promptSubscriptionID, "
+        + "query.recordType == ApprovalWire.RecordType.prompt.rawValue, query.zoneID == approvalsZoneID, "
+        + "query.querySubscriptionOptions == [.firesOnRecordCreation], "
+        + "query.predicate.predicateFormat == \"TRUEPREDICATE\" else { return false } "
+        + "guard info.title == notificationTitle, info.alertBody == promptNotificationBody, "
+        + "info.soundName == notificationSound, info.alertLocalizationKey == nil, "
+        + "info.desiredKeys?.isEmpty ?? true, info.alertLocalizationArgs?.isEmpty ?? true, "
+        + "info.titleLocalizationArgs?.isEmpty ?? true, info.subtitleLocalizationArgs?.isEmpty ?? true else { return false } "
+        + "return info.category == nil && info.collapseIDKey == nil && !info.shouldSendContentAvailable "
+        + "&& !info.shouldSendMutableContent"
+    static let promptChecks: [(head: String, body: String, what: String)] = [
+        (decisionCheckHead, decisionCheckBody, "a decision's create-only save alone"),
+        (snapshotCheckHead, snapshotCheckBody, "the approvals zone read from the start for the prompt's six fields alone"),
+        (lookupCheckHead, lookupCheckBody, "the prompt subscription looked up by its one ID alone"),
+        (changeCheckHead, changeCheckBody, "the prompt subscription saved as made, or deleted, by its one ID alone"),
+        (shapeCheckHead, shapeCheckBody, "the prompt subscription's own shape alone: fixed words, no record field"),
+    ]
+    static let promptCheckSites: [(word: String, sites: [String: Int])] = [
+        ("isDecisionCreation", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [decisionCheckHead: 1, liveAdmit: 1]])),
+        ("isPromptSnapshot", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            snapshotCheckHead: 1, "guard CloudKitAlertSource.isPromptSnapshot(snapshot) else {": 1]])),
+        ("isPromptSubscriptionLookup", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            lookupCheckHead: 1, "guard CloudKitAlertSource.isPromptSubscriptionLookup(lookup) else {": 1]])),
+        ("isPromptSubscriptionChange", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            changeCheckHead: 1, "guard CloudKitAlertSource.isPromptSubscriptionChange(change) else {": 1]])),
+        ("isPromptSubscription", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            shapeCheckHead: 1, "if removed.isEmpty { return saved.count == 1 && saved.allSatisfy(isPromptSubscription) }": 1]])),
+    ]
 
     static func liveDatabaseFailures(_ app: [Source]) -> [String] {
         let file = CloudKitStructureTests.codeOnly(app.first { $0.path == cloudKitFile }?.text ?? "")
@@ -1101,6 +1234,20 @@ import Testing
         failures += CloudKitStructureTests.appSiteFailures(#"\bisPairingResponseCreation\b"#,
                                                            in: app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) },
                                                            allowed: checkSites, rule: "the check is declared once and used by the live database alone")
+        for (head, pinned, what) in promptChecks {
+            guard let body = CloudKitStructureTests.body(after: head, in: file) else {
+                failures.append("'\(head)' moved (the lock would be vacuous)")
+                continue
+            }
+            if SettingsReachabilityTests.flat(body) != pinned {
+                failures.append("the live database's check admits \(what) — exactly as pinned")
+            }
+        }
+        let stripped: [Source] = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
+        for (word, sites) in promptCheckSites {
+            failures += CloudKitStructureTests.appSiteFailures(#"\b"# + word + #"\b"#, in: stripped, allowed: sites,
+                                                               rule: "'\(word)' is declared once and used by its one guard alone")
+        }
         return failures
     }
 
@@ -1108,9 +1255,58 @@ import Testing
         let app = try Self.app()
         #expect(Self.liveDatabaseFailures(app).isEmpty, "\(Self.liveDatabaseFailures(app))")
         let ck = Self.cloudKitFile
-        let admit = "        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {\n"
+        let admit = "        " + Self.liveAdmit + "\n"
         let mutants: [(String, [Source])] = [
             ("the check skipped", Self.mutate(app, ck) { $0.replacingOccurrences(of: admit, with: "        guard true else {\n") }),
+            // #194: the admit list — a check dropped from the guard, each new
+            // operation's check skipped, a refusal added after all or left
+            // hanging, and each check widened.
+            ("the decision admitted by the pairing's check alone", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: Self.liveAdmit, with: "guard CloudKitAlertSource.isDecisionCreation(operation) || true else {") }),
+            ("any read admitted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "guard CloudKitAlertSource.isPromptSnapshot(snapshot) else {", with: "guard true else {") }),
+            ("any lookup admitted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "guard CloudKitAlertSource.isPromptSubscriptionLookup(lookup) else {", with: "guard true else {") }),
+            ("any change admitted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "guard CloudKitAlertSource.isPromptSubscriptionChange(change) else {",
+                                        with: "guard !CloudKitAlertSource.isPromptSubscriptionChange(change) || true else {") }),
+            ("a refused read added after all", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            snapshot.fetchRecordZoneChangesResultBlock?(.failure(CKError(.invalidArguments)))\n",
+                                        with: "            container.privateCloudDatabase.add(snapshot)\n") }),
+            ("a refused change left hanging", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            change.modifySubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))\n", with: "") }),
+            ("a decision named for any prompt", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "return record.recordID.recordName == ApprovalWire.decisionRecordName(for: promptID)",
+                                        with: "return !record.recordID.recordName.isEmpty") }),
+            ("a decision in any zone", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "              record.recordID.zoneID == approvalsZoneID,\n              let promptHex",
+                                        with: "              let promptHex") }),
+            ("a read of every field", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "zone.previousServerChangeToken == nil, let keys = zone.desiredKeys else { return false }",
+                                        with: "zone.previousServerChangeToken == nil else { return true }\n        let keys = promptKeys") }),
+            ("a read from a change token", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "zone.previousServerChangeToken == nil, let keys", with: "let keys") }),
+            ("a read of any zone", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "guard snapshot.recordZoneIDs == [approvalsZoneID], snapshot.fetchAllChanges,",
+                                        with: "guard snapshot.fetchAllChanges,") }),
+            ("every subscription looked up", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "lookup.subscriptionIDs == [ApprovalWire.promptSubscriptionID]",
+                                        with: "lookup.subscriptionIDs?.contains(ApprovalWire.promptSubscriptionID) ?? true") }),
+            ("any subscription deleted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "return saved.isEmpty && removed == [ApprovalWire.promptSubscriptionID]",
+                                        with: "return saved.isEmpty") }),
+            ("a subscription saved whatever its shape", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "saved.count == 1 && saved.allSatisfy(isPromptSubscription)", with: "saved.count == 1") }),
+            ("a record field in the push admitted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "              info.desiredKeys?.isEmpty ?? true, info.alertLocalizationArgs?.isEmpty ?? true,\n",
+                                        with: "              info.alertLocalizationArgs?.isEmpty ?? true,\n") }),
+            ("an action admitted", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "return info.category == nil && info.collapseIDKey == nil",
+                                        with: "return info.collapseIDKey == nil") }),
+            ("a check named elsewhere", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
+                $0 + "\nlet spare = CloudKitAlertSource.isPromptSnapshot" }),
+            ("the shape's check used twice", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(_ s: CKSubscription) -> Bool { CloudKitAlertSource.isPromptSubscription(s) }" }),
             ("a refusal added after all", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: "            operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))\n",
                                         with: "            container.privateCloudDatabase.add(operation)\n") }),
@@ -1149,6 +1345,7 @@ import Testing
         // Over-match control: a whole-line comment naming the shapes.
         #expect(Self.liveDatabaseFailures(Self.mutate(app, ck) {
             $0 + "\n/// never isPairingResponseCreation(o) outside the live database, never container.privateCloudDatabase.add(o)\n"
+                + "/// never isDecisionCreation(o), isPromptSnapshot(s) or isPromptSubscription(s) but on their pinned lines\n"
         }).isEmpty)
     }
 
@@ -1275,6 +1472,251 @@ import Testing
         }).isEmpty)
     }
 
+    // MARK: 6e. The prompt path: its operations whole, each built and used once (#194)
+
+    /// The prompt path (#194), each piece pinned WHOLE: the prompt subscription
+    /// (fixed words under the app's title, no record field, no action, no
+    /// silent wake); its lookup, which hands on found, missing or failed
+    /// (missing only on the server's own unknownItem); its creation and its
+    /// removal, the one ID each, the removal saving nothing; the snapshot
+    /// (the approvals zone from the start, the prompt's six fields, every
+    /// record read as a prompt or dropped unread, any failure failing it
+    /// all); their one result holder (the first failure kept, an item's
+    /// before the batch's); and the live prompt source, which looks up
+    /// before it saves and saves only what is missing. Each factory is
+    /// declared once and used once (by the source; the subscription by its
+    /// creation), the holder built only by the four factories, and the
+    /// prompt subscription's ID named on the CloudKit file's pinned lines
+    /// alone. The live database's half is lock 6c's.
+    static let promptSubscriptionHead: String = "static func makePromptSubscription() -> CKQuerySubscription {"
+    static let promptSubscriptionBody: String = "let subscription = CKQuerySubscription( "
+        + "recordType: ApprovalWire.RecordType.prompt.rawValue, predicate: NSPredicate(value: true), "
+        + "subscriptionID: ApprovalWire.promptSubscriptionID, options: [.firesOnRecordCreation] ) "
+        + "subscription.zoneID = approvalsZoneID let info = CKSubscription.NotificationInfo() info.title = notificationTitle "
+        + "info.alertBody = promptNotificationBody info.soundName = notificationSound subscription.notificationInfo = info "
+        + "return subscription"
+    static let promptLookupHead: String = "static func makePromptSubscriptionLookup(then: @escaping @Sendable (SubscriptionLookup) -> Void) "
+        + "-> CKFetchSubscriptionsOperation {"
+    static let promptLookupLine: String = "let lookup = CKFetchSubscriptionsOperation(subscriptionIDs: [ApprovalWire.promptSubscriptionID])"
+    static let promptLookupBody: String = promptLookupLine + " lookup.configuration = approvalsZoneConfiguration "
+        + "let found = PromptResults() lookup.perSubscriptionResultBlock = { _, result in found.note(item: result.map { _ in () }) } "
+        + "lookup.fetchSubscriptionsResultBlock = { batch in guard let result = found.finish(batch: batch) else { return } "
+        + "switch result { case .success(let read): then(read.items == 1 ? .found : .failed) "
+        + "case .failure(let error) where isMissing(error): then(.missing) case .failure(let error): "
+        + #"logger.error("prompt subscription check failed (code \(code(of: error)))") then(.failed) } } return lookup"#
+    static let promptSaveHead: String = "static func makePromptSubscriptionSave(then: @escaping @Sendable (Bool) -> Void) "
+        + "-> CKModifySubscriptionsOperation {"
+    static let promptSaveBody: String = CloudKitStructureTests.promptSubscriptionSave + " change.configuration = approvalsZoneConfiguration "
+        + "let saved = PromptResults() change.perSubscriptionSaveBlock = { _, result in saved.note(item: result.map { _ in () }) } "
+        + "change.modifySubscriptionsResultBlock = { batch in guard let result = saved.finish(batch: batch) else { return } "
+        + "switch result { case .success(let read): then(read.items == 1) case .failure(let error): "
+        + #"logger.error("prompt subscription not created (code \(code(of: error)))") then(false) } } return change"#
+    static let promptRemovalHead: String = "static func makePromptSubscriptionRemoval(then: @escaping @Sendable (Bool) -> Void) "
+        + "-> CKModifySubscriptionsOperation {"
+    static let promptRemovalLine: String = "let change = CKModifySubscriptionsOperation(subscriptionsToSave: nil, "
+        + "subscriptionIDsToDelete: [ApprovalWire.promptSubscriptionID])"
+    static let promptRemovalBody: String = promptRemovalLine + " change.configuration = approvalsZoneConfiguration "
+        + "let removed = PromptResults() change.perSubscriptionDeleteBlock = { _, result in removed.note(item: result) } "
+        + "change.modifySubscriptionsResultBlock = { batch in guard let result = removed.finish(batch: batch) else { return } "
+        + "switch result { case .success(let read): then(read.items == 1) case .failure(let error) where isMissing(error): then(true) "
+        + #"case .failure(let error): logger.error("prompt subscription not removed (code \(code(of: error)))") then(false) } } "#
+        + "return change"
+    static let promptSnapshotHead: String = "static func makePromptSnapshot(then: @escaping @Sendable ([PendingRequest]?) -> Void) "
+        + "-> CKFetchRecordZoneChangesOperation {"
+    static let promptSnapshotLine: String = "let snapshot = CKFetchRecordZoneChangesOperation(recordZoneIDs: [approvalsZoneID],"
+    static let promptZoneLine: String = "let zone = CKFetchRecordZoneChangesOperation.ZoneConfiguration()"
+    static let promptSnapshotBody: String = promptZoneLine + " zone.desiredKeys = promptKeys " + promptSnapshotLine
+        + " configurationsByRecordZoneID: [approvalsZoneID: zone]) snapshot.configuration = approvalsZoneConfiguration "
+        + "let read = PromptResults() "
+        + "snapshot.recordWasChangedBlock = { _, result in read.note(record: result.map { pendingRequest(from: $0) }) } "
+        + "snapshot.recordZoneFetchResultBlock = { _, result in if case .failure(let error) = result { read.note(item: .failure(error)) } } "
+        + "snapshot.fetchRecordZoneChangesResultBlock = { batch in guard let result = read.finish(batch: batch) else { return } "
+        + "switch result { case .success(let offered): then(offered.prompts) case .failure(let error): "
+        + #"logger.error("prompt snapshot failed (code \(code(of: error)))") then(nil) } } return snapshot"#
+    static let promptKeysHead: String = "static var promptKeys: [CKRecord.FieldKey] {"
+    static let promptKeysBody: String = "ApprovalWire.PromptField.allCases.map(\\.rawValue)"
+    static let resultsHead: String = "private final class PromptResults: @unchecked Sendable {"
+    static let resultsBody: String = "private let lock = NSLock() private var items = 0 private var prompts: [PendingRequest] = [] "
+        + "private var failure: (any Error)? private var finished = false "
+        + "func note(item result: Result<Void, any Error>) { lock.lock() defer { lock.unlock() } switch result { "
+        + "case .success: items += 1 case .failure(let error): if failure == nil { failure = error } } } "
+        + "func note(record result: Result<PendingRequest?, any Error>) { lock.lock() defer { lock.unlock() } switch result { "
+        + "case .success(let prompt): items += 1 if let prompt { prompts.append(prompt) } "
+        + "case .failure(let error): if failure == nil { failure = error } } } "
+        + "func finish(batch: Result<Void, any Error>) -> Result<(items: Int, prompts: [PendingRequest]), any Error>? { "
+        + "lock.lock() defer { lock.unlock() } guard !finished else { return nil } finished = true "
+        + "if let failure { return .failure(failure) } if case .failure(let error) = batch { return .failure(error) } "
+        + "return .success((items, prompts)) }"
+    static let promptPieces: [(head: String, body: String, what: String)] = [
+        (promptSubscriptionHead, promptSubscriptionBody, "the prompt subscription: fixed words, no record field, no action"),
+        (promptLookupHead, promptLookupBody, "the prompt subscription's lookup: missing only on unknownItem"),
+        (promptSaveHead, promptSaveBody, "the prompt subscription's creation: the one subscription, nothing deleted"),
+        (promptRemovalHead, promptRemovalBody, "the prompt subscription's removal: the one ID, nothing saved"),
+        (promptSnapshotHead, promptSnapshotBody, "the snapshot: the zone from the start, six fields, any failure failing it all"),
+        (promptKeysHead, promptKeysBody, "the snapshot's fields: the prompt's six"),
+        (resultsHead, resultsBody, "the prompt operations' result holder: the first failure kept"),
+    ]
+    /// The live prompt source, whole: a lookup before any save, a save only
+    /// when missing, one operation per call.
+    static let sourceFile: String = "\(appDir)/Live/LivePromptSource.swift"
+    static let sourceHead: String = "struct LivePromptSource: PromptSource {"
+    static let sourceBody: String = "let database: any CloudKitApprovalDatabase func ensureSubscription() async -> Bool { "
+        + "let lookup: CloudKitAlertSource.SubscriptionLookup = await withCheckedContinuation { continuation in "
+        + "database.submit(CloudKitAlertSource.makePromptSubscriptionLookup { continuation.resume(returning: $0) }) } "
+        + "guard lookup == .missing else { return lookup == .found } return await withCheckedContinuation { continuation in "
+        + "database.submit(CloudKitAlertSource.makePromptSubscriptionSave { continuation.resume(returning: $0) }) } } "
+        + "func removeSubscription() async -> Bool { await withCheckedContinuation { continuation in "
+        + "database.submit(CloudKitAlertSource.makePromptSubscriptionRemoval { continuation.resume(returning: $0) }) } } "
+        + "func snapshot() async -> [PendingRequest]? { await withCheckedContinuation { continuation in "
+        + "database.submit(CloudKitAlertSource.makePromptSnapshot { continuation.resume(returning: $0) }) } }"
+    static let promptWordSites: [(word: String, sites: [String: Int])] = [
+        ("makePromptSubscription", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            promptSubscriptionHead: 1, CloudKitStructureTests.promptSubscriptionSave: 1]])),
+        ("makePromptSubscriptionLookup", CloudKitStructureTests.appSites([
+            "Live/CloudKitAlertSource.swift": [promptLookupHead: 1],
+            "Live/LivePromptSource.swift": ["database.submit(CloudKitAlertSource.makePromptSubscriptionLookup { continuation.resume(returning: $0) })": 1]])),
+        ("makePromptSubscriptionSave", CloudKitStructureTests.appSites([
+            "Live/CloudKitAlertSource.swift": [promptSaveHead: 1],
+            "Live/LivePromptSource.swift": ["database.submit(CloudKitAlertSource.makePromptSubscriptionSave { continuation.resume(returning: $0) })": 1]])),
+        ("makePromptSubscriptionRemoval", CloudKitStructureTests.appSites([
+            "Live/CloudKitAlertSource.swift": [promptRemovalHead: 1],
+            "Live/LivePromptSource.swift": [
+                "database.submit(CloudKitAlertSource.makePromptSubscriptionRemoval { continuation.resume(returning: $0) })": 1]])),
+        ("makePromptSnapshot", CloudKitStructureTests.appSites([
+            "Live/CloudKitAlertSource.swift": [promptSnapshotHead: 1],
+            "Live/LivePromptSource.swift": ["database.submit(CloudKitAlertSource.makePromptSnapshot { continuation.resume(returning: $0) })": 1]])),
+        ("PromptResults", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            resultsHead: 1, "let found = PromptResults()": 1, "let saved = PromptResults()": 1, "let removed = PromptResults()": 1,
+            "let read = PromptResults()": 1]])),
+        ("promptKeys", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            promptKeysHead: 1, "zone.desiredKeys = promptKeys": 1, "return keys.count == promptKeys.count && Set(keys) == Set(promptKeys)": 2]])),
+        ("promptNotificationBody", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            "static let promptNotificationBody = \"A permission prompt is waiting on your Mac.\"": 1,
+            "info.alertBody = promptNotificationBody": 1, "guard info.title == notificationTitle, info.alertBody == promptNotificationBody,": 1]])),
+        ("promptSubscriptionID", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
+            "notification.subscriptionID == ApprovalWire.promptSubscriptionID,": 1, "subscriptionID: ApprovalWire.promptSubscriptionID,": 1,
+            "query.subscriptionID == ApprovalWire.promptSubscriptionID,": 1, promptLookupLine: 1, promptRemovalLine: 1,
+            lookupCheckBody: 1, "return saved.isEmpty && removed == [ApprovalWire.promptSubscriptionID]": 1]])),
+    ]
+    /// Every line of the CloudKit file naming a prompt operation's type:
+    /// the seam, its conformer, the checks, the factories and their
+    /// constructions, nothing else.
+    static let promptTypeSites: [(String, [String: Int])] = [
+        (#"\bCKFetchRecordZoneChangesOperation\b"#, [promptSnapshotHead: 1, promptZoneLine: 1, promptSnapshotLine: 1, snapshotCheckHead: 1,
+                                                    promptSeamLines[0]: 1, promptSeamLines[0] + " {": 1]),
+        (#"\bCKFetchSubscriptionsOperation\b"#, [promptLookupHead: 1, promptLookupLine: 1, lookupCheckHead: 1,
+                                                promptSeamLines[1]: 1, promptSeamLines[1] + " {": 1]),
+        (#"\bCKModifySubscriptionsOperation\b"#, [promptSaveHead: 1, promptRemovalHead: 1, CloudKitStructureTests.promptSubscriptionSave: 1,
+                                                 promptRemovalLine: 1, changeCheckHead: 1, promptSeamLines[2]: 1, promptSeamLines[2] + " {": 1]),
+    ]
+
+    static func promptPathFailures(_ app: [Source]) -> [String] {
+        let file = CloudKitStructureTests.codeOnly(app.first { $0.path == cloudKitFile }?.text ?? "")
+        let source = CloudKitStructureTests.codeOnly(app.first { $0.path == sourceFile }?.text ?? "")
+        var failures: [String] = []
+        for (head, pinned, what) in promptPieces {
+            guard let body = CloudKitStructureTests.body(after: head, in: file) else {
+                failures.append("\(what) moved (the lock would be vacuous)")
+                continue
+            }
+            if SettingsReachabilityTests.flat(body) != pinned {
+                failures.append("\(what) — exactly as pinned")
+            }
+        }
+        if CloudKitStructureTests.body(after: sourceHead, in: source).map(SettingsReachabilityTests.flat) != sourceBody {
+            failures.append("the live prompt source looks up before it saves, saves only what is missing, one operation a call — exactly as pinned")
+        }
+        let stripped: [Source] = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
+        for (word, sites) in promptWordSites {
+            failures += CloudKitStructureTests.appSiteFailures(#"\b"# + word + #"\b"#, in: stripped, allowed: sites,
+                                                               rule: "'\(word)' is declared once and used at its pinned sites alone")
+        }
+        let uncut = CloudKitStructureTests.wholeLineCommentsRemoved(app.first { $0.path == cloudKitFile }?.text ?? "")
+        for (pattern, sites) in promptTypeSites {
+            failures += CloudKitStructureTests.siteFailures(pattern, in: uncut, file: cloudKitFile, allowed: sites,
+                                                            rule: "a prompt operation's type is named by the seam, its conformer, its check "
+                                                                + "and its factory alone")
+        }
+        return failures
+    }
+
+    @Test func thePromptPathRunsItsPinnedOperationsAlone() throws {
+        let app = try Self.app()
+        #expect(app.contains { $0.path == Self.sourceFile }, "vacuity: the scan sees the prompt source")
+        #expect(Self.promptPathFailures(app).isEmpty, "\(Self.promptPathFailures(app))")
+        let ck = Self.cloudKitFile
+        let source = Self.sourceFile
+        let feed = "\(Self.appDir)/Model/AlertFeed.swift"
+        let mutants: [(String, [Source])] = [
+            // The push: a record field, the input as its words, an action, a
+            // silent wake.
+            ("a record field in the push", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        info.alertBody = promptNotificationBody\n",
+                                        with: "        info.alertBody = promptNotificationBody\n        info.desiredKeys = promptKeys\n") }),
+            ("the input as the push's words", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        info.alertBody = promptNotificationBody\n",
+                                        with: "        info.alertLocalizationKey = \"%1$@\"\n"
+                                            + "        info.alertLocalizationArgs = [ApprovalWire.PromptField.inputPreview.rawValue]\n") }),
+            ("an action on the push", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        info.soundName = notificationSound\n        subscription.notificationInfo = info\n        return subscription\n    }\n\n    /// Whether",
+                                        with: "        info.soundName = notificationSound\n        info.category = \"answer\"\n"
+                                            + "        subscription.notificationInfo = info\n        return subscription\n    }\n\n    /// Whether") }),
+            ("every zone watched", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        subscription.zoneID = approvalsZoneID\n", with: "") }),
+            // The lookup and the save: missing read from any failure, a save
+            // without a lookup, a save after a failed lookup.
+            ("any lookup failure read as missing", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "case .failure(let error) where isMissing(error): then(.missing)\n",
+                                        with: "case .failure: then(.missing)\n") }),
+            ("an empty lookup read as found", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "then(read.items == 1 ? .found : .failed)", with: "then(.found)") }),
+            ("a save without a lookup", Self.mutate(app, source) {
+                $0.replacingOccurrences(of: "        guard lookup == .missing else { return lookup == .found }\n", with: "") }),
+            ("a save after a failed lookup", Self.mutate(app, source) {
+                $0.replacingOccurrences(of: "guard lookup == .missing else", with: "guard lookup != .found else") }),
+            ("the removal saving the subscription", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "CKModifySubscriptionsOperation(subscriptionsToSave: nil, subscriptionIDsToDelete:",
+                                        with: "CKModifySubscriptionsOperation(subscriptionsToSave: [makePromptSubscription()], subscriptionIDsToDelete:") }),
+            // The read: every field, a token, a record's own result ignored,
+            // a partial read handed on, a later failure kept over the first.
+            ("a read of every field", Self.mutate(app, ck) { $0.replacingOccurrences(of: "        zone.desiredKeys = promptKeys\n", with: "") }),
+            ("a record's own result ignored", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        snapshot.recordWasChangedBlock = { _, result in read.note(record: result.map { pendingRequest(from: $0) }) }\n",
+                                        with: "        snapshot.recordWasChangedBlock = { _, result in read.note(record: .success(try? result.get().flatMap { pendingRequest(from: $0) })) }\n") }),
+            ("the zone's failure ignored", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "            if case .failure(let error) = result { read.note(item: .failure(error)) }\n", with: "") }),
+            ("a partial read handed on", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        if let failure { return .failure(failure) }\n", with: "") }),
+            ("a later failure kept over the first", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "if failure == nil { failure = error }", with: "failure = error") }),
+            ("the holder ending twice", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: "        guard !finished else { return nil }\n        finished = true\n        if let failure",
+                                        with: "        finished = true\n        if let failure") }),
+            // Each piece once: a factory or the holder reached elsewhere, the
+            // ID on another line, a second read in the source.
+            ("a factory reached elsewhere", Self.mutate(app, feed) { $0 + "\nlet spare = CloudKitAlertSource.makePromptSnapshot { _ in }" }),
+            ("a factory unapplied elsewhere", Self.mutate(app, feed) { $0 + "\nlet spare = CloudKitAlertSource.makePromptSubscriptionSave" }),
+            ("a second holder", Self.mutate(app, feed) { $0 + "\nlet spare = PromptResults()" }),
+            ("the ID on another line", Self.mutate(app, feed) { $0 + "\nlet spare = ApprovalWire.promptSubscriptionID" }),
+            ("the source reads twice", Self.mutate(app, source) {
+                $0.replacingOccurrences(of: "    func snapshot() async -> [PendingRequest]? {\n",
+                                        with: "    func snapshot() async -> [PendingRequest]? {\n        _ = await withCheckedContinuation { c in "
+                                            + "database.submit(CloudKitAlertSource.makePromptSnapshot { c.resume(returning: $0) }) }\n") }),
+            ("a prompt operation's type on a new line", Self.mutate(app, ck) {
+                $0 + "\nfunc spare(_ o: CKModifySubscriptionsOperation) {}" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.promptPathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: whole-line comments naming the pieces, and
+        // words that only contain them.
+        #expect(Self.promptPathFailures(Self.mutate(app, feed) {
+            $0 + "\n/// never makePromptSnapshot or PromptResults() here, never ApprovalWire.promptSubscriptionID\n"
+                + "let promptKeysCount = 6, spareSnapshot = 1, isPromptSnapshotted = false"
+        }).isEmpty)
+    }
+
     // MARK: 7. One record, one operation, one subscription, however spelled (#153)
 
     /// A construction of `type`, however it is applied: `T(`, `T (`,
@@ -1327,11 +1769,20 @@ import Testing
     /// type with every line it is built on.
     /// AMENDED (S-PAIR-C1.6, #172): and the approvals zone's lookup, its one
     /// creation and the one zone that creation saves.
+    /// AMENDED (#194): and the prompt path's — the prompt subscription (the
+    /// alert one's line, twice) and each subscription's push settings, its
+    /// lookup, its creation and its removal, the snapshot and its zone's
+    /// configuration.
     static let constructions: [String: [String: Int]] = [
         "CKRecord": ["let record = CKRecord(recordType: ApprovalWire.RecordType.decision.rawValue,": 1,
                      "let record = CKRecord(recordType: ApprovalWire.RecordType.pairingResponse.rawValue,": 1],
         "CKModifyRecordsOperation": [decisionOperation: 2],
-        "CKQuerySubscription": ["let subscription = CKQuerySubscription(": 1],
+        "CKQuerySubscription": ["let subscription = CKQuerySubscription(": 2],
+        "NotificationInfo": ["let info = CKSubscription.NotificationInfo()": 2],
+        "CKFetchSubscriptionsOperation": [promptLookupLine: 1],
+        "CKModifySubscriptionsOperation": [CloudKitStructureTests.promptSubscriptionSave: 1, promptRemovalLine: 1],
+        "CKFetchRecordZoneChangesOperation": [promptSnapshotLine: 1],
+        "ZoneConfiguration": [promptZoneLine: 1],
         "CKFetchRecordZonesOperation": ["let lookup = CKFetchRecordZonesOperation(recordZoneIDs: [approvalsZoneID])": 1],
         "CKModifyRecordZonesOperation": [CloudKitStructureTests.zoneCreationLine: 1],
         "CKRecordZone": [CloudKitStructureTests.zoneCreationLine: 1],
@@ -1391,6 +1842,16 @@ import Testing
             ("an implicit init in the decision's records", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: "recordsToSave: [record],", with: "recordsToSave: [record, .init(recordType: \"X\")],") }),
             ("an implicit init returned", Self.mutate(app, ck) { $0 + "\nfunc spare() -> CKRecord {\n    return .init(recordType: \"X\")\n}" }),
+            // #194: a second lookup, removal or read; a push setting built
+            // elsewhere; an aliased read.
+            ("a second lookup", Self.mutate(app, ck) { $0 + "\nlet spare = CKFetchSubscriptionsOperation(subscriptionIDs: nil)" }),
+            ("a second change, init-spelled", Self.mutate(app, ck) {
+                $0 + "\nlet spare = CKModifySubscriptionsOperation.init(subscriptionsToSave: nil, subscriptionIDsToDelete: nil)" }),
+            ("a second read", Self.mutate(app, ck) {
+                $0 + "\nlet spare = CKFetchRecordZoneChangesOperation(recordZoneIDs: [], configurationsByRecordZoneID: nil)" }),
+            ("a third push setting", Self.mutate(app, ck) { $0 + "\nlet spare = CKSubscription.NotificationInfo()" }),
+            ("an aliased read", Self.mutate(app, ck) {
+                $0 + "\ntypealias Spare = CKFetchRecordZoneChangesOperation\nlet s = Spare(recordZoneIDs: [], configurationsByRecordZoneID: nil)" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -1426,9 +1887,10 @@ import Testing
     /// writer, which lock 2 says no app source builds by name.
     /// AMENDED (S-PAIR-C1.6, #172): and the live approvals database and the
     /// live pairing, so neither is extended, aliased or reached unnamed.
+    /// AMENDED (#194): and the live prompt source.
     static let guardedTypes = ["PhoneDecision", "PendingRequest", "PairingCeremony", "PhoneKeyring", "KeyFingerprint",
                                "LocalAuthenticationMatch", "CloudKitPairingResponseWriter", "LiveCloudKitApprovalDatabase",
-                               "LivePairing"]
+                               "LivePairing", "LivePromptSource"]
     static let selfInit = #"\bSelf\s*(?:\(|\.\s*init\b)"#
     static let operatorDeclaration = #"\boperator\b"#
     /// AMENDED (the S-PAIR-C1 security review's R1): a value's dynamic type,

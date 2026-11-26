@@ -33,7 +33,10 @@ struct NapCatPhoneApp: App {
 /// fixture prompt. Nothing else opens one in this slice.
 ///
 /// Remote approvals (F4, #194): the owner's switch is kept in the app's
-/// own defaults and set in Settings.
+/// own defaults, set in Settings, and handed to the inbox at launch, on
+/// every return to the foreground and whenever it changes; the
+/// inbox reads the prompts then (`RequestInbox.syncPrompts`), never on a
+/// timer.
 ///
 /// The pairing screen (F4, slice S-PAIR-B) opens the same way for a
 /// `-NapCatPairing` launch: its fixture ceremony scans the launch's code, if
@@ -92,9 +95,14 @@ struct ReceiverRoot: View {
         .task {
             if let pairing, let scan = pairing.scan { await pairing.ceremony.scanned(scan) }
         }
+        .task { await inbox.syncPrompts(switchedOn: approvals) }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await feed.refresh() }
+            Task { await inbox.syncPrompts(switchedOn: approvals) }
+        }
+        .onChange(of: approvals) { _, on in
+            Task { await inbox.syncPrompts(switchedOn: on) }
         }
     }
 }

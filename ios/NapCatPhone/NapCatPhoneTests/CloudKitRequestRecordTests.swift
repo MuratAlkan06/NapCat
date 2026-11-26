@@ -47,6 +47,14 @@ import Testing
         return record
     }
 
+    /// #194: a window up to the wire's maximum is the Mac's to give.
+    @Test(arguments: [300.0, 1_800, 3_600])
+    func aLongerWindowIsRead(_ window: TimeInterval) throws {
+        let record = Self.macRecord(values: [.expiresAt: Self.createdAt.addingTimeInterval(window) as NSDate])
+        let request = try #require(CloudKitAlertSource.pendingRequest(from: record))
+        #expect(request.window == window)
+    }
+
     @Test func theMacsRecordIsAPendingRequest() throws {
         let request = try #require(CloudKitAlertSource.pendingRequest(from: Self.macRecord()))
         #expect(request.id == Self.id)
@@ -84,8 +92,9 @@ import Testing
         Row(name: "no creation time") { macRecord(values: [.createdAt: nil]) },
         Row(name: "an expiry as text") { macRecord(values: [.expiresAt: "soon" as NSString]) },
         Row(name: "no expiry") { macRecord(values: [.expiresAt: nil]) },
-        Row(name: "a window past the TTL") {
-            macRecord(values: [.expiresAt: createdAt.addingTimeInterval(PendingRequest.timeToLive + 1) as NSDate])
+        // AMENDED (#194): the ceiling is the wire's maximum window.
+        Row(name: "a window past the longest") {
+            macRecord(values: [.expiresAt: createdAt.addingTimeInterval(PendingRequest.longestWindow + 1) as NSDate])
         },
         Row(name: "a window that ends first") { macRecord(values: [.expiresAt: createdAt.addingTimeInterval(-1) as NSDate]) },
     ]

@@ -23,8 +23,10 @@ import Testing
 ///    file, a photo or the launch options, and the app declares no URL
 ///    scheme and no associated domain.
 ///
-/// AMENDED (#194): Settings' Remote approvals switch sits under the Pairing
-/// row, shown with it.
+/// AMENDED (#194): the live pairing's factory is handed the live approvals
+/// database (built once by the live inbox's factory and shared with the
+/// live prompt source), on its pinned lines; and Settings' Remote approvals
+/// switch sits under the Pairing row, shown with it.
 ///
 /// Each lock is a pure function over comment-stripped sources and catches
 /// planted canaries, so none can pass vacuously.
@@ -56,11 +58,12 @@ import Testing
         + "pairing: LivePairing? = nil,"
     static let livePairingSites = CloudKitStructureTests.appSites([
         "Live/LivePairing.swift": ["struct LivePairing {": 1,
-                                   "static func make(keyring: PhoneKeyring, biometrics: any BiometricGate) -> LivePairing {": 1,
+                                   "static func make(keyring: PhoneKeyring, biometrics: any BiometricGate, "
+                                       + "database: (any CloudKitApprovalDatabase)?) -> LivePairing {": 1,
                                    "return LivePairing(camera: LiveCameraAccess(), keyring: keyring, biometrics: biometrics, writer: writer)": 1],
         "Model/RequestInbox.swift": ["let pairing: LivePairing?": 1,
                                      inboxInit: 1,
-                                     "pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))": 1],
+                                     "pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database),": 1],
         "Settings/SettingsScreen.swift": ["var pairing: LivePairing?": 1,
                                           "private func pairingSection(_ pairing: LivePairing) -> some View {": 1],
     ])

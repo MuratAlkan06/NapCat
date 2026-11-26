@@ -7,15 +7,17 @@ import os
 /// CloudKit and the only file that builds a container, in two places, each
 /// behind `LiveCapability`: `makeLive()` for the alerts and, since
 /// S-PAIR-C1.6 (#172), `makeLiveApprovalDatabase()` for the pairing
-/// response. `CloudKitStructureTests` locks both.
+/// response (and, since #194, the prompts and their push subscription).
+/// `CloudKitStructureTests` locks both.
 ///
 /// It reads what the Mac's `CloudKitMessageSender` writes: one record per
 /// alert in the owner's PRIVATE database, default zone of
 /// `AlertWire.containerIdentifier`, record type `AlertWire.recordType`,
 /// exactly the three `AlertWire.Field`s, named `<lane>-<epoch milliseconds>`.
 ///
-/// The phone OWNS the one push subscription (the frozen F3 ADR; the Mac
-/// refuses to create it in Production). Its shape is the F3 spike's,
+/// The phone OWNS the alert push subscription (the frozen F3 ADR; the Mac
+/// refuses to create it in Production), and since #194 the prompt one
+/// (`makePromptSubscription`). The alert one's shape is the F3 spike's,
 /// field for field: a query subscription on `AlertWire.recordType`,
 /// TRUEPREDICATE, fires on record creation only, and a notification the
 /// SYSTEM renders (title "NapCat", the record's `body` as the alert text,
@@ -57,7 +59,8 @@ actor CloudKitAlertSource: AlertSource {
     /// approvals database the pairing response is written through, behind
     /// the same `LiveCapability` guard (an unentitled build gets nil, and its
     /// pairing writes nothing: `UnsentPairingWriter`). Called once, by the
-    /// live pairing's wiring (`LivePairing.make`).
+    /// live inbox's factory (`RequestInbox.make`, since #194), which shares it
+    /// with the live pairing and the live prompt source.
     static func makeLiveApprovalDatabase() -> (any CloudKitApprovalDatabase)? {
         guard LiveCapability.isAvailable else { return nil }
         let container = CKContainer(identifier: ApprovalWire.containerIdentifier)
@@ -542,6 +545,195 @@ actor CloudKitAlertSource: AlertSource {
         return configuration
     }
 
+    // MARK: - F4 permission prompts, received live (#194; run by the live approvals database)
+
+    /// The prompt push's words: fixed, the same for every prompt. Nothing of
+    /// a prompt reaches the push or the lock screen; the app shows it.
+    static let promptNotificationBody = "A permission prompt is waiting on your Mac."
+
+    /// THE prompt subscription (#194), the phone's second: a query subscription
+    /// on PromptRequest records in the approvals zone, TRUEPREDICATE, on
+    /// creation only, under `ApprovalWire.promptSubscriptionID`. Its push is
+    /// the app's title over the fixed words above, with the default sound:
+    /// no record field (no desired keys, no localization arguments), no
+    /// action (no category) and no silent wake.
+    static func makePromptSubscription() -> CKQuerySubscription {
+        let subscription = CKQuerySubscription(
+            recordType: ApprovalWire.RecordType.prompt.rawValue,
+            predicate: NSPredicate(value: true),
+            subscriptionID: ApprovalWire.promptSubscriptionID,
+            options: [.firesOnRecordCreation]
+        )
+        subscription.zoneID = approvalsZoneID
+        let info = CKSubscription.NotificationInfo()
+        info.title = notificationTitle
+        info.alertBody = promptNotificationBody
+        info.soundName = notificationSound
+        subscription.notificationInfo = info
+        return subscription
+    }
+
+    /// Whether `subscription` is the prompt subscription exactly as made
+    /// above: its ID, type, zone, trigger and predicate, and a push that
+    /// says the fixed words and carries nothing of a record.
+    static func isPromptSubscription(_ subscription: CKSubscription) -> Bool {
+        guard let query = subscription as? CKQuerySubscription, let info = query.notificationInfo,
+              query.subscriptionID == ApprovalWire.promptSubscriptionID,
+              query.recordType == ApprovalWire.RecordType.prompt.rawValue, query.zoneID == approvalsZoneID,
+              query.querySubscriptionOptions == [.firesOnRecordCreation],
+              query.predicate.predicateFormat == "TRUEPREDICATE" else { return false }
+        guard info.title == notificationTitle, info.alertBody == promptNotificationBody,
+              info.soundName == notificationSound, info.alertLocalizationKey == nil,
+              info.desiredKeys?.isEmpty ?? true, info.alertLocalizationArgs?.isEmpty ?? true,
+              info.titleLocalizationArgs?.isEmpty ?? true, info.subtitleLocalizationArgs?.isEmpty ?? true else { return false }
+        return info.category == nil && info.collapseIDKey == nil && !info.shouldSendContentAvailable
+            && !info.shouldSendMutableContent
+    }
+
+    /// The prompt subscription's lookup: by its one ID. `then` hears once
+    /// whether it was found, is missing, or could not be read.
+    static func makePromptSubscriptionLookup(then: @escaping @Sendable (SubscriptionLookup) -> Void) -> CKFetchSubscriptionsOperation {
+        let lookup = CKFetchSubscriptionsOperation(subscriptionIDs: [ApprovalWire.promptSubscriptionID])
+        lookup.configuration = approvalsZoneConfiguration
+        let found = PromptResults()
+        lookup.perSubscriptionResultBlock = { _, result in found.note(item: result.map { _ in () }) }
+        lookup.fetchSubscriptionsResultBlock = { batch in
+            guard let result = found.finish(batch: batch) else { return }
+            switch result {
+            case .success(let read): then(read.items == 1 ? .found : .failed)
+            case .failure(let error) where isMissing(error): then(.missing)
+            case .failure(let error):
+                logger.error("prompt subscription check failed (code \(code(of: error)))")
+                then(.failed)
+            }
+        }
+        return lookup
+    }
+
+    /// What the prompt subscription's lookup came to.
+    enum SubscriptionLookup: Equatable, Sendable {
+        case found
+        case missing
+        case failed
+    }
+
+    /// The prompt subscription's creation, run only after its lookup found
+    /// it missing: the one subscription, nothing deleted. `then` hears once
+    /// whether it is saved.
+    static func makePromptSubscriptionSave(then: @escaping @Sendable (Bool) -> Void) -> CKModifySubscriptionsOperation {
+        let change = CKModifySubscriptionsOperation(subscriptionsToSave: [makePromptSubscription()], subscriptionIDsToDelete: nil)
+        change.configuration = approvalsZoneConfiguration
+        let saved = PromptResults()
+        change.perSubscriptionSaveBlock = { _, result in saved.note(item: result.map { _ in () }) }
+        change.modifySubscriptionsResultBlock = { batch in
+            guard let result = saved.finish(batch: batch) else { return }
+            switch result {
+            case .success(let read): then(read.items == 1)
+            case .failure(let error):
+                logger.error("prompt subscription not created (code \(code(of: error)))")
+                then(false)
+            }
+        }
+        return change
+    }
+
+    /// The prompt subscription's removal, as the owner's switch goes off:
+    /// its one ID, nothing saved. `then` hears once whether it is gone (a
+    /// subscription that was not there is gone).
+    static func makePromptSubscriptionRemoval(then: @escaping @Sendable (Bool) -> Void) -> CKModifySubscriptionsOperation {
+        let change = CKModifySubscriptionsOperation(subscriptionsToSave: nil, subscriptionIDsToDelete: [ApprovalWire.promptSubscriptionID])
+        change.configuration = approvalsZoneConfiguration
+        let removed = PromptResults()
+        change.perSubscriptionDeleteBlock = { _, result in removed.note(item: result) }
+        change.modifySubscriptionsResultBlock = { batch in
+            guard let result = removed.finish(batch: batch) else { return }
+            switch result {
+            case .success(let read): then(read.items == 1)
+            case .failure(let error) where isMissing(error): then(true)
+            case .failure(let error):
+                logger.error("prompt subscription not removed (code \(code(of: error)))")
+                then(false)
+            }
+        }
+        return change
+    }
+
+    /// The fields a snapshot asks for: the prompt's six, and no other.
+    static var promptKeys: [CKRecord.FieldKey] {
+        ApprovalWire.PromptField.allCases.map(\.rawValue)
+    }
+
+    /// THE snapshot of the approvals zone (#194): every record it holds now (no
+    /// change token), each with the prompt's six fields only. A prompt is
+    /// read as it arrives (`pendingRequest(from:)`) and every other record is
+    /// dropped unread. `then` hears once the prompts the Mac offers, or nil
+    /// when any part of the read failed: a failed read changes nothing.
+    static func makePromptSnapshot(then: @escaping @Sendable ([PendingRequest]?) -> Void) -> CKFetchRecordZoneChangesOperation {
+        let zone = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
+        zone.desiredKeys = promptKeys
+        let snapshot = CKFetchRecordZoneChangesOperation(recordZoneIDs: [approvalsZoneID],
+                                                         configurationsByRecordZoneID: [approvalsZoneID: zone])
+        snapshot.configuration = approvalsZoneConfiguration
+        let read = PromptResults()
+        snapshot.recordWasChangedBlock = { _, result in read.note(record: result.map { pendingRequest(from: $0) }) }
+        snapshot.recordZoneFetchResultBlock = { _, result in
+            if case .failure(let error) = result { read.note(item: .failure(error)) }
+        }
+        snapshot.fetchRecordZoneChangesResultBlock = { batch in
+            guard let result = read.finish(batch: batch) else { return }
+            switch result {
+            case .success(let offered): then(offered.prompts)
+            case .failure(let error):
+                logger.error("prompt snapshot failed (code \(code(of: error)))")
+                then(nil)
+            }
+        }
+        return snapshot
+    }
+
+    /// What the live approvals database runs for an answer (#194): a
+    /// decision's create-only save and nothing else. Exactly one record to
+    /// save and none to delete; a PromptDecision, NEW (no change tag), in
+    /// this account's approvals zone, named by the wire's decision name
+    /// for the prompt its own `promptID` field names; saved under
+    /// `.ifServerRecordUnchanged`, so a decision saved already is refused,
+    /// never overwritten. Nothing builds a decision writer yet: nothing arms.
+    static func isDecisionCreation(_ operation: CKModifyRecordsOperation) -> Bool {
+        guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true,
+              let records = operation.recordsToSave, records.count == 1, let record = records.first,
+              record.recordType == ApprovalWire.RecordType.decision.rawValue, record.recordChangeTag == nil,
+              record.recordID.zoneID == approvalsZoneID,
+              let promptHex = record.encryptedValues[ApprovalWire.DecisionField.promptID.rawValue] as? String,
+              let promptID = PromptID(hex: promptHex) else { return false }
+        return record.recordID.recordName == ApprovalWire.decisionRecordName(for: promptID)
+    }
+
+    /// What the live approvals database runs for a read (#194): the snapshot
+    /// alone. The approvals zone only, from the start (no change token),
+    /// every change fetched, asking for exactly the prompt's six fields.
+    static func isPromptSnapshot(_ snapshot: CKFetchRecordZoneChangesOperation) -> Bool {
+        guard snapshot.recordZoneIDs == [approvalsZoneID], snapshot.fetchAllChanges,
+              let zones = snapshot.configurationsByRecordZoneID, zones.count == 1, let zone = zones[approvalsZoneID],
+              zone.previousServerChangeToken == nil, let keys = zone.desiredKeys else { return false }
+        return keys.count == promptKeys.count && Set(keys) == Set(promptKeys)
+    }
+
+    /// What the live approvals database runs for a lookup (#194): the prompt
+    /// subscription's, by its one ID.
+    static func isPromptSubscriptionLookup(_ lookup: CKFetchSubscriptionsOperation) -> Bool {
+        lookup.subscriptionIDs == [ApprovalWire.promptSubscriptionID]
+    }
+
+    /// What the live approvals database runs for a change (#194): the prompt
+    /// subscription saved, exactly as made (`isPromptSubscription`), with
+    /// nothing deleted; or it alone deleted, with nothing saved.
+    static func isPromptSubscriptionChange(_ change: CKModifySubscriptionsOperation) -> Bool {
+        let saved: [CKSubscription] = change.subscriptionsToSave ?? []
+        let removed: [CKSubscription.ID] = change.subscriptionIDsToDelete ?? []
+        if removed.isEmpty { return saved.count == 1 && saved.allSatisfy(isPromptSubscription) }
+        return saved.isEmpty && removed == [ApprovalWire.promptSubscriptionID]
+    }
+
     /// Accounts other than `available` cannot receive anything.
     static func availability(_ status: CKAccountStatus) -> AccountAvailability {
         status == .available ? .available : .unavailable
@@ -618,30 +810,41 @@ private struct LiveCloudKitAlertDatabase: CloudKitAlertDatabase {
 // MARK: - F4 decisions: the writer and its seam (slice S3)
 
 /// THE seam over CloudKit I/O for decisions (and, since S-PAIR-C1.5, the
-/// pairing response): run this operation against the owner's private
-/// database. Since S-PAIR-C1.6 (#172) the app has ONE conformer,
+/// pairing response; since #194, the prompts' snapshot and their push
+/// subscription): run this operation against the owner's private database.
+/// Since S-PAIR-C1.6 (#172) the app has ONE conformer,
 /// `LiveCloudKitApprovalDatabase` (lint-locked to its declaration's line),
-/// and it runs the pairing response's save alone; test fakes play the rest.
+/// built once per launch and shared by the live pairing and the live prompt
+/// source; test fakes play the rest.
 protocol CloudKitApprovalDatabase: Sendable {
     func submit(_ operation: CKModifyRecordsOperation)
+    func submit(_ snapshot: CKFetchRecordZoneChangesOperation)
+    func submit(_ lookup: CKFetchSubscriptionsOperation)
+    func submit(_ change: CKModifySubscriptionsOperation)
 }
 
 /// The live approvals database (S-PAIR-C1.6, #172): the owner's PRIVATE
 /// database, built only by `CloudKitAlertSource.makeLiveApprovalDatabase()`.
-/// It checks what it is handed (`CloudKitAlertSource.isPairingResponseCreation`)
-/// and runs the pairing response's create-only save and nothing else.
-/// Anything else is never added: its own result block is told
-/// `invalidArguments`, so its writer reads a closed failure and never hangs.
+/// It checks what it is handed and runs exactly these (#194's admit list):
+/// the pairing response's create-only save
+/// (`CloudKitAlertSource.isPairingResponseCreation`), a decision's
+/// create-only save (`isDecisionCreation`), the prompts' snapshot
+/// (`isPromptSnapshot`), and the prompt subscription's lookup, save and
+/// removal by its one ID (`isPromptSubscriptionLookup`,
+/// `isPromptSubscriptionChange`). Anything else is never added: its own
+/// result block is told `invalidArguments`, so its caller reads a closed
+/// failure and never hangs.
 ///
-/// Before the save, the approvals zone: looked up, and created only when
-/// missing, the app's one zone creation (zone-exists is success). Whatever
-/// that came to, the save runs next, and its own result decides: a zone
-/// that could not be made fails it (`zoneNotFound`), dark, never a crash.
+/// Before a record save, the approvals zone: looked up, and created only
+/// when missing, the app's one zone creation (zone-exists is success).
+/// Whatever that came to, the save runs next, and its own result decides: a
+/// zone that could not be made fails it (`zoneNotFound`), dark, never a
+/// crash.
 private struct LiveCloudKitApprovalDatabase: CloudKitApprovalDatabase {
     let container: CKContainer
 
     func submit(_ operation: CKModifyRecordsOperation) {
-        guard CloudKitAlertSource.isPairingResponseCreation(operation) else {
+        guard CloudKitAlertSource.isPairingResponseCreation(operation) || CloudKitAlertSource.isDecisionCreation(operation) else {
             operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
             return
         }
@@ -653,6 +856,30 @@ private struct LiveCloudKitApprovalDatabase: CloudKitApprovalDatabase {
                 database.add(operation)
             }
         })
+    }
+
+    func submit(_ snapshot: CKFetchRecordZoneChangesOperation) {
+        guard CloudKitAlertSource.isPromptSnapshot(snapshot) else {
+            snapshot.fetchRecordZoneChangesResultBlock?(.failure(CKError(.invalidArguments)))
+            return
+        }
+        container.privateCloudDatabase.add(snapshot)
+    }
+
+    func submit(_ lookup: CKFetchSubscriptionsOperation) {
+        guard CloudKitAlertSource.isPromptSubscriptionLookup(lookup) else {
+            lookup.fetchSubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+            return
+        }
+        container.privateCloudDatabase.add(lookup)
+    }
+
+    func submit(_ change: CKModifySubscriptionsOperation) {
+        guard CloudKitAlertSource.isPromptSubscriptionChange(change) else {
+            change.modifySubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+            return
+        }
+        container.privateCloudDatabase.add(change)
     }
 }
 
@@ -740,5 +967,48 @@ private final class ZoneLookupResult: @unchecked Sendable {
         guard !finished else { return nil }
         finished = true
         return zoneFailure.map { .failure($0) } ?? batch
+    }
+}
+
+/// Holds a prompt operation's per-item results until its batch result
+/// arrives, then says once what came in (#194): how many items arrived, the
+/// prompts among them (a snapshot's), or the first failure, an item's
+/// before the batch's (CloudKit can hand the batch a success for a refused
+/// item). A record that is no prompt is counted and dropped unread.
+private final class PromptResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items = 0
+    private var prompts: [PendingRequest] = []
+    private var failure: (any Error)?
+    private var finished = false
+
+    func note(item result: Result<Void, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        switch result {
+        case .success: items += 1
+        case .failure(let error): if failure == nil { failure = error }
+        }
+    }
+
+    func note(record result: Result<PendingRequest?, any Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        switch result {
+        case .success(let prompt):
+            items += 1
+            if let prompt { prompts.append(prompt) }
+        case .failure(let error): if failure == nil { failure = error }
+        }
+    }
+
+    func finish(batch: Result<Void, any Error>) -> Result<(items: Int, prompts: [PendingRequest]), any Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return nil }
+        finished = true
+        if let failure { return .failure(failure) }
+        if case .failure(let error) = batch { return .failure(error) }
+        return .success((items, prompts))
     }
 }

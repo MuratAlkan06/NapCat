@@ -23,10 +23,43 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
         script.run(on: operation)
     }
 
+    /// #194's operations are never this fake's: each is refused, as the live
+    /// database refuses what it does not admit, and counted.
+    func submit(_ snapshot: CKFetchRecordZoneChangesOperation) {
+        noteOther()
+        snapshot.fetchRecordZoneChangesResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    func submit(_ lookup: CKFetchSubscriptionsOperation) {
+        noteOther()
+        lookup.fetchSubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    func submit(_ change: CKModifySubscriptionsOperation) {
+        noteOther()
+        change.modifySubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    private var others = 0
+
+    private func noteOther() {
+        lock.lock()
+        others += 1
+        lock.unlock()
+    }
+
     var submitted: [CKModifyRecordsOperation] {
         lock.lock()
         defer { lock.unlock() }
         return operations
+    }
+
+    /// How many operations of another kind it was handed (none, in the
+    /// record suites).
+    var otherSubmissions: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return others
     }
 }
 

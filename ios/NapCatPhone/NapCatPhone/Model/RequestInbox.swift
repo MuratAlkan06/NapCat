@@ -43,9 +43,16 @@ enum RequestAnswer: Equatable, Sendable {
 /// window and this phone's answer.
 ///
 /// A request is answerable only while it is pending: until the Mac's expiry,
-/// and never longer than the TTL after this phone first saw it (a Mac clock
-/// running ahead cannot stretch it). Expired and withdrawn are terminal:
-/// once a request is either, nothing makes it pending again.
+/// and never longer than its own window after this phone first saw it (a
+/// Mac clock running ahead cannot stretch it; no window is longer than the
+/// wire's maximum, `PendingRequest.longestWindow`). Expired and withdrawn
+/// are terminal: once a request is either, nothing makes it pending again.
+///
+/// Live prompts (F4, #194) come from one snapshot read of every prompt
+/// the Mac offers, at launch, on foreground and as the switch changes,
+/// never on a timer, and only while the owner's switch is on with a
+/// committed key (`ApprovalsSwitch`); off, nothing is read and the inbox is
+/// empty. A failed read changes nothing.
 ///
 /// Allow and Deny alike ask for a biometric match first, every time (CL-3,
 /// and the owner's uniform-signing ruling: every answer is signed, and the
@@ -79,9 +86,10 @@ final class RequestInbox {
         /// time: a resend asks for a match of its own and is signed afresh.
         var mayHaveLanded: ApprovalWire.Verdict?
 
-        /// The last moment this phone may answer.
+        /// The last moment this phone may answer: the Mac's expiry, or the
+        /// record's own window from first sight, whichever comes first.
         var answerableUntil: Date {
-            min(request.expiresAt, firstSeen.addingTimeInterval(PendingRequest.timeToLive))
+            min(request.expiresAt, firstSeen.addingTimeInterval(request.window))
         }
     }
 
@@ -118,14 +126,27 @@ final class RequestInbox {
     /// is the key this inbox signs with. nil for a fixture inbox, whose key
     /// is software, and in tests.
     let pairing: LivePairing?
+    /// Where live prompts come from (F4, #194): nil for a fixture inbox,
+    /// in a build that cannot reach iCloud, and in tests that give none.
+    @ObservationIgnored private let prompts: (any PromptSource)?
+    /// The owner's switch as last handed in (`syncPrompts`).
+    @ObservationIgnored private var switchedOn = false
+    /// Whether the prompt subscription is known to exist (made or found).
+    @ObservationIgnored private var subscribed = false
+    /// Whether this launch may have left a prompt subscription on the
+    /// server: set as the switch takes effect, cleared once it is removed.
+    @ObservationIgnored private var mayHoldSubscription = false
+    @ObservationIgnored private var syncing = false
+    @ObservationIgnored private var syncAgain = false
 
     /// `clock` is this phone's wall clock (a test seam, like the others).
     init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring, pairing: LivePairing? = nil,
-         clock: @escaping () -> Date = Date.init) {
+         prompts: (any PromptSource)? = nil, clock: @escaping () -> Date = Date.init) {
         self.writer = writer
         self.biometrics = biometrics
         self.keyring = keyring
         self.pairing = pairing
+        self.prompts = prompts
         self.clock = clock
         self.biometry = biometrics.availability()
         self.keyHealth = keyring.health()
@@ -137,13 +158,18 @@ final class RequestInbox {
     /// (the Secure Enclave, the keychain) and writes nothing (no record path
     /// reaches the Mac yet), and the live pairing (S-PAIR-C1.6) is made over
     /// that same key. Both ask the real biometric gate before every answer.
+    /// The live approvals database is built here once, for a build that can
+    /// hold the iCloud entitlement, and shared by the live pairing and the
+    /// live prompt source (#194); every answer still goes to the unsent writer.
     static func make(options: LaunchOptions, now: Date) -> RequestInbox {
         let biometrics = LocalAuthenticationGate()
         guard let state = options.request else {
             let keyring = PhoneKeyring(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(),
                                        enrollment: LocalAuthenticationEnrollment())
+            let database = CloudKitAlertSource.makeLiveApprovalDatabase()
             return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring,
-                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))
+                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database),
+                                prompts: database.map { LivePromptSource(database: $0) })
         }
         return FixtureRequests.inbox(state, now: now, biometrics: biometrics)
     }
@@ -195,6 +221,49 @@ final class RequestInbox {
             entries[id]?.withdrawn = true
         }
         prune()
+    }
+
+    // MARK: Live prompts (F4, #194)
+
+    /// Brings the live prompts in line with the owner's switch, as handed in
+    /// (`ApprovalsSwitch.effective`, with the pairing read afresh). On: the
+    /// prompt subscription is made sure of (looked up first, created only
+    /// when missing, once per launch), then one snapshot read is received
+    /// (`receive`); a failed read changes nothing. Off: nothing is read, the
+    /// inbox is emptied, and a subscription this launch may have left is
+    /// deleted (until that is done, each sync tries again). A call made while
+    /// one runs makes the running one go round once more. With no live
+    /// source, nothing.
+    func syncPrompts(switchedOn stored: Bool) async {
+        switchedOn = stored
+        guard let prompts else { return }
+        if syncing {
+            syncAgain = true
+            return
+        }
+        syncing = true
+        repeat {
+            syncAgain = false
+            await syncOnce(prompts)
+        } while syncAgain
+        syncing = false
+    }
+
+    private func syncOnce(_ prompts: any PromptSource) async {
+        refreshKeyHealth()
+        guard ApprovalsSwitch.effective(stored: switchedOn, keyHealth: keyHealth) else {
+            if !entries.isEmpty { entries.removeAll() }
+            guard mayHoldSubscription else { return }
+            if await prompts.removeSubscription() {
+                mayHoldSubscription = false
+                subscribed = false
+            }
+            return
+        }
+        mayHoldSubscription = true
+        if !subscribed { subscribed = await prompts.ensureSubscription() }
+        guard let offered = await prompts.snapshot(), switchedOn else { return }
+        receive(offered)
     }
 
     /// One request taken back (its record is gone). Terminal.

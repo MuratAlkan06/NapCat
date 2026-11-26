@@ -142,13 +142,16 @@ import UIKit
 
     /// Settings sets the root's switch and nothing else: one toggle bound to
     /// it, under Pairing and shown with it; and the root keeps the one
-    /// stored choice (`@AppStorage`), handed to Settings bound.
+    /// stored choice (`@AppStorage`), handed to Settings bound and to the
+    /// inbox at its pinned triggers (`PushWiringTests`).
     static let toggleShape: String = "Toggle(isOn: $approvals) { Text(Self.approvalsLabel) .foregroundStyle(theme.ink) }"
     static let approvalsSites: [String: Int] = CloudKitStructureTests.appSites([
         "Settings/SettingsScreen.swift": ["@Binding var approvals: Bool": 1, "Toggle(isOn: $approvals) {": 1,
                                           "SettingsScreen(palette: $palette, notifications: .on, approvals: .constant(false))": 1,
                                           "SettingsScreen(palette: $palette, notifications: .off, approvals: .constant(false))": 1],
-        "NapCatPhoneApp.swift": ["@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1, "approvals: $approvals)": 2],
+        "NapCatPhoneApp.swift": ["@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1, "approvals: $approvals)": 2,
+                                 ".task { await inbox.syncPrompts(switchedOn: approvals) }": 1,
+                                 "Task { await inbox.syncPrompts(switchedOn: approvals) }": 1, ".onChange(of: approvals) { _, on in": 1],
     ])
 
     static func approvalsFailures(_ app: [Source]) -> [String] {
@@ -158,7 +161,7 @@ import UIKit
         if CloudKitStructureTests.occurrences(of: "Toggle(", in: screen) != 1 { failures.append("Settings holds one toggle, the switch") }
         let stripped: [Source] = app.map { ($0.path, RecordPathStructureTests.literalsEmptied(CloudKitStructureTests.codeOnly($0.text))) }
         failures += CloudKitStructureTests.appSiteFailures(#"\bapprovals\b"#, in: stripped, allowed: approvalsSites,
-                                                           rule: "the switch is kept by the root and set by Settings alone")
+                                                           rule: "the switch is kept by the root, set by Settings and read by the inbox alone")
         failures += CloudKitStructureTests.appSiteFailures(#"\bApprovalsSwitch\s*\.\s*storageKey\b"#, in: stripped,
                                                            allowed: CloudKitStructureTests.appSites(["NapCatPhoneApp.swift": [
                                                                "@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1]]),

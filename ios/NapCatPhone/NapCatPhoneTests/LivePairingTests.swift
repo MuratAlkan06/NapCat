@@ -30,7 +30,7 @@ import VisionKit
     func anUnentitledPairingFailsDark() async {
         let keys = PhoneKeyringTests.World()
         let gate = ScriptedBiometricGate()
-        let pairing = LivePairing.make(keyring: keys.keyring, biometrics: gate)
+        let pairing = LivePairing.make(keyring: keys.keyring, biometrics: gate, database: CloudKitAlertSource.makeLiveApprovalDatabase())
         #expect(pairing.camera.isLive, "the real camera, never a fixture's")
         let ceremony = pairing.makeCeremony()
         await ceremony.scanned(PairingCeremonyTests.code)
@@ -45,7 +45,8 @@ import VisionKit
     @Test(.enabled(if: !LiveCapability.isAvailable))
     func eachOpeningIsANewCeremony() async {
         let keys = PhoneKeyringTests.World()
-        let pairing = LivePairing.make(keyring: keys.keyring, biometrics: ScriptedBiometricGate())
+        let pairing = LivePairing.make(keyring: keys.keyring, biometrics: ScriptedBiometricGate(),
+                                       database: CloudKitAlertSource.makeLiveApprovalDatabase())
         let first = pairing.makeCeremony()
         await first.scanned(ScannedCode(payload: FixturePairing.strayCode))
         #expect(first.phase == .refused)
@@ -62,7 +63,7 @@ import VisionKit
     func theLivePairingNamesThePhonesBiometric() {
         let keys: PhoneKeyringTests.World = PhoneKeyringTests.World()
         let gate: ScriptedBiometricGate = ScriptedBiometricGate(available: .available(.touchID))
-        let pairing: LivePairing = LivePairing.make(keyring: keys.keyring, biometrics: gate)
+        let pairing: LivePairing = LivePairing.make(keyring: keys.keyring, biometrics: gate, database: CloudKitAlertSource.makeLiveApprovalDatabase())
         #expect(pairing.biometric() == .touchID)
         gate.available = .available(.faceID)
         #expect(pairing.biometric() == .faceID)

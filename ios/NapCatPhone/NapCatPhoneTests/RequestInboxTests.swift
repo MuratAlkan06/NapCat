@@ -78,8 +78,8 @@ enum RequestFixtures {
         #expect(inbox.phase(of: request.id) == .expired, "the window is half-open: at expiry it is over")
     }
 
-    /// A Mac clock running ahead cannot stretch the window: at most the TTL
-    /// after this phone first saw the request.
+    /// A Mac clock running ahead cannot stretch the window: at most the
+    /// record's own window after this phone first saw the request.
     @Test func theWindowNeverOutlastsTheTTLFromFirstSight() {
         let clock = TestClock()
         let inbox = RequestFixtures.inbox(clock)
@@ -156,6 +156,23 @@ enum RequestFixtures {
         #expect(inbox.phase(of: withdrawing.id) == .withdrawn)
     }
 
+    /// #194: the window is the record's own, from first sight, whatever its
+    /// length up to the wire's maximum (the Mac's adjustable window).
+    @Test(arguments: [300.0, 600, 1_800, 3_600])
+    func theWindowIsTheRecordsOwnFromFirstSight(_ window: TimeInterval) {
+        let clock = TestClock()
+        let inbox = RequestFixtures.inbox(clock)
+        let ahead = F.request(1, createdAt: clock.now.addingTimeInterval(7_200), window: window)
+        let onTime = F.request(2, createdAt: clock.now, window: window)
+        inbox.receive([ahead, onTime])
+        #expect(inbox.phase(of: ahead.id) == .pending(until: clock.now.addingTimeInterval(window)))
+        #expect(inbox.phase(of: onTime.id) == .pending(until: onTime.expiresAt))
+        clock.advance(window - 1)
+        #expect(inbox.phase(of: ahead.id)?.isPending == true && inbox.phase(of: onTime.id)?.isPending == true)
+        clock.advance(1)
+        #expect(inbox.phase(of: ahead.id) == .expired && inbox.phase(of: onTime.id) == .expired)
+    }
+
     @Test func anUnknownRequestHasNoPhase() {
         let inbox = RequestFixtures.inbox(TestClock())
         inbox.withdraw(F.id(9))
@@ -195,9 +212,12 @@ enum RequestFixtures {
 @Suite struct PendingRequestTests {
     static let start = Date(timeIntervalSince1970: 1_800_000_000)
 
+    /// AMENDED (#194): the ceiling is the wire's maximum window, no longer its
+    /// default.
     @Test(arguments: [(0.0, false), (-1, false), (1, true), (60, true), (PendingRequest.timeToLive, true),
-                      (PendingRequest.timeToLive + 1, false)])
-    func aWindowIsAPositiveSpanOfAtMostTheTTL(_ window: TimeInterval, _ fit: Bool) {
+                      (PendingRequest.timeToLive + 1, true), (PendingRequest.longestWindow, true),
+                      (PendingRequest.longestWindow + 1, false)])
+    func aWindowIsAPositiveSpanOfAtMostTheLongest(_ window: TimeInterval, _ fit: Bool) {
         let request = PendingRequest(id: RequestFixtures.id(1), toolName: "Bash", inputPreview: "{}", projectLabel: "p",
                                      createdAt: Self.start, expiresAt: Self.start.addingTimeInterval(window))
         #expect((request != nil) == fit, "window \(window)")
@@ -211,5 +231,277 @@ enum RequestFixtures {
     @Test func theTTLIsTheWires() {
         #expect(PendingRequest.timeToLive == 600)
         #expect(PendingRequest.timeToLive == TimeInterval(ApprovalWire.promptTimeToLiveSeconds))
+    }
+
+    /// #194: the ceiling is the wire's maximum (1 hour), and a request knows
+    /// its own window.
+    @Test func theCeilingIsTheWiresMaximum() {
+        #expect(PendingRequest.longestWindow == 3_600)
+        #expect(PendingRequest.longestWindow == TimeInterval(ApprovalWire.maxPromptTimeToLiveSeconds))
+        #expect(RequestFixtures.request(1, createdAt: PendingRequestTests.start, window: 1_800).window == 1_800)
+    }
+}
+
+/// A prompt source a test scripts (#194): every call kept, in order, each
+/// answered from its script (the last answer again once one runs out). A
+/// call may be held open until the test lets it go (`holdSnapshots`).
+final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var log: [String] = []
+    private var ensures: [Bool]
+    private var removals: [Bool]
+    private var snapshots: [[PendingRequest]?]
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var holding = false
+
+    init(ensures: [Bool] = [true], removals: [Bool] = [true], snapshots: [[PendingRequest]?] = [[]]) {
+        self.ensures = ensures
+        self.removals = removals
+        self.snapshots = snapshots
+    }
+
+    var calls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return log
+    }
+
+    /// From now on each snapshot waits for `release()`.
+    func holdSnapshots() {
+        lock.lock()
+        holding = true
+        lock.unlock()
+    }
+
+    func release() {
+        lock.lock()
+        let waiting = held
+        held.removeAll()
+        holding = false
+        lock.unlock()
+        for continuation in waiting { continuation.resume() }
+    }
+
+    var waiting: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return held.count
+    }
+
+    func ensureSubscription() async -> Bool { takeEnsure() }
+
+    func removeSubscription() async -> Bool { takeRemoval() }
+
+    func snapshot() async -> [PendingRequest]? {
+        if shouldHold() {
+            await withCheckedContinuation { continuation in park(continuation) }
+        }
+        return takeSnapshot()
+    }
+
+    private func takeEnsure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        log.append("ensure")
+        return ensures.count > 1 ? ensures.removeFirst() : ensures[0]
+    }
+
+    private func takeRemoval() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        log.append("remove")
+        return removals.count > 1 ? removals.removeFirst() : removals[0]
+    }
+
+    private func takeSnapshot() -> [PendingRequest]? {
+        lock.lock()
+        defer { lock.unlock() }
+        log.append("snapshot")
+        return snapshots.count > 1 ? snapshots.removeFirst() : snapshots[0]
+    }
+
+    private func shouldHold() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return holding
+    }
+
+    private func park(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        held.append(continuation)
+        lock.unlock()
+    }
+}
+
+/// F4, #194: the inbox's live prompts, over a scripted source. The switch
+/// gates every operation; a read feeds the inbox; switching off empties it
+/// and removes the subscription; nothing reads on a timer (the callers are
+/// pinned by `PushWiringTests`).
+@MainActor
+@Suite struct PromptSyncTests {
+    typealias F = RequestFixtures
+
+    static func inbox(_ clock: TestClock, _ source: ScriptedPromptSource, paired: Bool = true,
+                      writer: any DecisionWriter = RecordingDecisionWriter()) -> RequestInbox {
+        RequestInbox(writer: writer, biometrics: ScriptedBiometricGate(),
+                     keyring: FixtureRequests.keyring(paired ? .pending : .unpaired), prompts: source, clock: { clock.now })
+    }
+
+    /// Off (the default) means zero approval operations, however often it
+    /// is synced: no subscription, no read, an empty inbox.
+    @Test func offMeansNoOperationAtAll() async {
+        let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: TestClock().now)]])
+        let inbox = Self.inbox(TestClock(), source)
+        for _ in 0..<3 { await inbox.syncPrompts(switchedOn: false) }
+        #expect(source.calls.isEmpty)
+        #expect(inbox.requests.isEmpty)
+    }
+
+    /// On, but on a phone with no committed key: nothing either.
+    @Test func onButUnpairedMeansNoOperationAtAll() async {
+        let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: TestClock().now)]])
+        let inbox = Self.inbox(TestClock(), source, paired: false)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(source.calls.isEmpty)
+        #expect(inbox.requests.isEmpty)
+    }
+
+    /// On: the subscription is made sure of once, then each sync is one read.
+    @Test func onMakesSureOfTheSubscriptionOnceThenReads() async {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let source = ScriptedPromptSource(snapshots: [[request]])
+        let inbox = Self.inbox(clock, source)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(source.calls == ["ensure", "snapshot"])
+        #expect(inbox.requests.map(\.id) == [request.id])
+        await inbox.syncPrompts(switchedOn: true)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(source.calls == ["ensure", "snapshot", "snapshot", "snapshot"], "a second ensure is never asked for")
+    }
+
+    /// A subscription not confirmed is tried again at the next sync; the
+    /// read goes ahead regardless.
+    @Test func anUnconfirmedSubscriptionIsTriedAgain() async {
+        let source = ScriptedPromptSource(ensures: [false, true])
+        let inbox = Self.inbox(TestClock(), source)
+        await inbox.syncPrompts(switchedOn: true)
+        await inbox.syncPrompts(switchedOn: true)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(source.calls == ["ensure", "snapshot", "ensure", "snapshot", "snapshot"])
+    }
+
+    /// A prompt missing from a successful read was taken back: Withdrawn.
+    @Test func aPromptMissingFromASuccessfulReadIsWithdrawn() async {
+        let clock = TestClock()
+        let first = F.request(1, createdAt: clock.now)
+        let second = F.request(2, createdAt: clock.now)
+        let source = ScriptedPromptSource(snapshots: [[first, second], [second]])
+        let inbox = Self.inbox(clock, source)
+        await inbox.syncPrompts(switchedOn: true)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.phase(of: first.id) == .withdrawn)
+        #expect(inbox.status(of: first.id) == .withdrawn)
+        #expect(inbox.phase(of: second.id)?.isPending == true)
+    }
+
+    /// A failed read withdraws nothing and adds nothing.
+    @Test func aFailedReadChangesNothing() async {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let source = ScriptedPromptSource(snapshots: [[request], nil])
+        let inbox = Self.inbox(clock, source)
+        await inbox.syncPrompts(switchedOn: true)
+        let before: [PromptID: RequestInbox.Entry] = inbox.entries
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.entries == before)
+        #expect(inbox.phase(of: request.id)?.isPending == true)
+    }
+
+    /// Switching off empties the inbox and removes the subscription, once;
+    /// off again does nothing more.
+    @Test func switchingOffEmptiesTheInboxAndRemovesTheSubscription() async {
+        let clock = TestClock()
+        let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: clock.now)]])
+        let inbox = Self.inbox(clock, source)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(!inbox.requests.isEmpty)
+        await inbox.syncPrompts(switchedOn: false)
+        #expect(inbox.requests.isEmpty)
+        #expect(source.calls == ["ensure", "snapshot", "remove"])
+        await inbox.syncPrompts(switchedOn: false)
+        #expect(source.calls == ["ensure", "snapshot", "remove"], "nothing more once it is gone")
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(source.calls == ["ensure", "snapshot", "remove", "ensure", "snapshot"], "on again makes sure of it again")
+    }
+
+    /// A removal that failed is tried again at each sync until it is done.
+    @Test func aFailedRemovalIsTriedAgain() async {
+        let source = ScriptedPromptSource(removals: [false, true])
+        let inbox = Self.inbox(TestClock(), source)
+        await inbox.syncPrompts(switchedOn: true)
+        await inbox.syncPrompts(switchedOn: false)
+        await inbox.syncPrompts(switchedOn: false)
+        await inbox.syncPrompts(switchedOn: false)
+        #expect(source.calls == ["ensure", "snapshot", "remove", "remove"])
+    }
+
+    /// A phone that stops being paired while on is off: emptied, and the
+    /// subscription removed.
+    @Test func aPhoneThatUnpairsGoesOff() async {
+        let clock = TestClock()
+        let store = MemorySigningKeyStore()
+        let enclave = SoftwareEnclave()
+        if let key = enclave.makeKey() {
+            _ = store.write(StoredSigningKey(keyData: key.keyData, enrollment: FixtureRequests.enrolledAtPairing), to: .committed)
+        }
+        let keyring = PhoneKeyring(store: store, enclave: enclave, enrollment: FixedEnrollment(hash: FixtureRequests.enrolledAtPairing))
+        let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: clock.now)]])
+        let inbox = RequestInbox(writer: RecordingDecisionWriter(), biometrics: ScriptedBiometricGate(), keyring: keyring,
+                                 prompts: source, clock: { clock.now })
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.requests.count == 1)
+        _ = store.delete(.committed)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.requests.isEmpty)
+        #expect(source.calls == ["ensure", "snapshot", "remove"])
+    }
+
+    /// A read that lands after the switch went off adds nothing: the sync
+    /// begun meanwhile goes round once more, off, and empties the inbox.
+    @Test func aReadLandingAfterSwitchingOffAddsNothing() async {
+        let clock = TestClock()
+        let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: clock.now)]])
+        let inbox = Self.inbox(clock, source)
+        source.holdSnapshots()
+        let running = Task { await inbox.syncPrompts(switchedOn: true) }
+        while source.waiting == 0 { await Task.yield() }
+        await inbox.syncPrompts(switchedOn: false)
+        source.release()
+        await running.value
+        #expect(inbox.requests.isEmpty)
+        #expect(source.calls == ["ensure", "snapshot", "remove"])
+    }
+
+    /// With no live source (a fixture launch), a sync does nothing: the
+    /// fixture's request stays, on or off.
+    @Test func aFixtureInboxIsLeftAsItIs() async {
+        let inbox = FixtureRequests.inbox(.pending, now: Date(), biometrics: ScriptedBiometricGate())
+        await inbox.syncPrompts(switchedOn: false)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.requests.map(\.id) == [FixtureRequests.id])
+    }
+
+    /// Every answer to a live prompt still goes to the unsent writer, the
+    /// live inbox's: it reads Unsent, and nothing is written anywhere.
+    @Test func anAnswerToALivePromptStillReadsUnsent() async {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let inbox = Self.inbox(clock, ScriptedPromptSource(snapshots: [[request]]), writer: UnsentDecisionWriter())
+        await inbox.syncPrompts(switchedOn: true)
+        await inbox.allow(request.id)
+        #expect(inbox.entries[request.id]?.answer == .unsent(.allow))
+        await inbox.deny(request.id)
+        #expect(inbox.entries[request.id]?.answer == .unsent(.deny))
     }
 }

@@ -28,6 +28,10 @@ import Testing
 ///    database write is named. AMENDED (S-PAIR-C1.6, #172): beside it, the
 ///    live approvals database's read and `add` lines, and the approvals
 ///    zone's one lookup and one creation (never a deletion), are pinned.
+///    AMENDED (#194): and the live approvals database's three new `add`
+///    lines (the prompts' snapshot, the prompt subscription's lookup and
+///    change), the three operation types on the allow-list, and the prompt
+///    subscription, reached by its one save alone.
 @Suite struct CloudKitStructureTests {
     typealias Source = (path: String, text: String)
 
@@ -883,10 +887,16 @@ import Testing
     /// save); the approvals zone's lookup and its one creation join the
     /// allow-list, each pinned to its lines, saving one zone and deleting
     /// none.
+    ///
+    /// AMENDED (#194): the prompts' snapshot and the prompt subscription's
+    /// lookup and change join the allow-list, each added by the live
+    /// approvals database on its pinned line, past its check; the prompt
+    /// subscription goes only to its one save, and no other file reaches it.
     static let cloudKitIdentifiers: Set<String> = [
-        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKFetchRecordZonesOperation",
-        "CKModifyRecordZonesOperation", "CKModifyRecordsOperation", "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey",
-        "CKQuery", "CKQueryNotification", "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
+        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKFetchRecordZoneChangesOperation",
+        "CKFetchRecordZonesOperation", "CKFetchSubscriptionsOperation", "CKModifyRecordZonesOperation", "CKModifyRecordsOperation",
+        "CKModifySubscriptionsOperation", "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey", "CKQuery",
+        "CKQueryNotification", "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
     ]
 
     static let configuredDatabase = "try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in"
@@ -901,7 +911,15 @@ import Testing
         "database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in": 1,
         "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })": 2,
         "database.add(operation)": 1,
+        promptReadAdd: 1, promptLookupAdd: 1, promptChangeAdd: 1,
     ]
+    /// #194: the live approvals database's three prompt-path adds, each past
+    /// its own check (`RecordPathStructureTests` lock 6c pins the body).
+    static let promptReadAdd = "container.privateCloudDatabase.add(snapshot)"
+    static let promptLookupAdd = "container.privateCloudDatabase.add(lookup)"
+    static let promptChangeAdd = "container.privateCloudDatabase.add(change)"
+    static let promptSubscriptionSave =
+        "let change = CKModifySubscriptionsOperation(subscriptionsToSave: [makePromptSubscription()], subscriptionIDsToDelete: nil)"
     /// The approvals zone's lookup and its one creation, each built on its
     /// line; the creation saves the one zone and deletes none.
     static let zoneCreationLine = "let creation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: approvalsZoneID)],"
@@ -920,13 +938,17 @@ import Testing
         (#"\bsave\b"#, [subscriptionSave: 1, "func save(_ subscription: CKSubscription) async throws": 1,
                         "func save(_ subscription: CKSubscription) async throws {": 1, "try await database.save(subscription)": 1],
          "the one save is the subscription's"),
-        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1, approvalsDatabaseRead: 1],
-         "the private database is reached only by the live databases: the alerts' configured requests, the approvals' one read"),
+        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1, approvalsDatabaseRead: 1,
+                                        promptReadAdd: 1, promptLookupAdd: 1, promptChangeAdd: 1],
+         "the private database is reached only by the live databases: the alerts' configured requests, the approvals' one read "
+            + "and its three prompt-path adds"),
         (#"\badd\b"#, approvalsAddSites, "only the live approvals database adds an operation, on its pinned lines"),
         (#"\bconfiguredWith\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1],
          "a configured database comes only from the private one"),
         (#"\bmakeSubscription\b"#, ["static func makeSubscription() -> CKQuerySubscription {": 1, subscriptionSave: 1],
          "the subscription goes only to the one save"),
+        (#"\bmakePromptSubscription\b"#, ["static func makePromptSubscription() -> CKQuerySubscription {": 1, promptSubscriptionSave: 1],
+         "the prompt subscription goes only to its one save"),
     ]
 
     /// Named nowhere in the CloudKit file: every other database write, the
@@ -954,8 +976,9 @@ import Testing
             failures += siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites,
                                      rule: "the approvals zone is looked up and created at its one site each, and never deleted")
         }
-        for (path, text) in receiver where path != cloudKitFile && hits(#"\bmakeSubscription\b"#, in: wholeLineCommentsRemoved(text)) {
-            failures.append("\(path) reaches the push subscription — only the CloudKit file saves it")
+        for (path, text) in receiver where path != cloudKitFile
+            && hits(#"\bmake(?:Prompt)?Subscription\b"#, in: wholeLineCommentsRemoved(text)) {
+            failures.append("\(path) reaches a push subscription — only the CloudKit file saves it")
         }
         for pattern in alertLaneBans where hits(pattern, in: file) {
             failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the subscription save")
@@ -1018,6 +1041,23 @@ import Testing
             ("a second lookup", mutated { $0 + "\nlet spare = CKFetchRecordZonesOperation(recordZoneIDs: [z])" }),
             ("an allow-listed identifier dropped", mutated {
                 $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
+            // #194: the prompt path's doors — a second prompt subscription
+            // saved, the prompt subscription built elsewhere, a prompt-path
+            // add outside its submit, the private database held for a read,
+            // and an operation type off the allow-list.
+            ("a second prompt subscription saved", mutated {
+                $0 + "\nlet spare = CKModifySubscriptionsOperation(subscriptionsToSave: [makePromptSubscription()], "
+                    + "subscriptionIDsToDelete: nil)\nlet spare2 = CKModifySubscriptionsOperation(subscriptionsToSave: "
+                    + "[makePromptSubscription()], subscriptionIDsToDelete: nil)" }),
+            ("the prompt subscription built elsewhere", receiver.map {
+                $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, $0.text + "\nlet s = CloudKitAlertSource.makePromptSubscription()") : $0 }),
+            ("a prompt read added twice", mutated {
+                $0.replacingOccurrences(of: "        " + Self.promptReadAdd + "\n",
+                                        with: "        " + Self.promptReadAdd + "\n        " + Self.promptReadAdd + "\n") }),
+            ("a lookup added in the alerts' live database", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase {\n    func spare(_ lookup: CKFetchSubscriptionsOperation) {\n"
+                    + "        container.privateCloudDatabase.add(lookup)\n    }\n}" }),
+            ("a query operation", mutated { $0 + "\nlet spare = CKQueryOperation(query: CloudKitAlertSource.makeQuery())" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != receiver.map { $0.text }, "canary '\(name)' did not apply")
