@@ -413,7 +413,9 @@ this section points at them.
   (`GateApprovedPrompt`: it never classifies) and retracts it together with
   the decisions read for it. The reader parses PromptDecision records
   strictly and logs them in the `approvals` category. Every reading is a
-  claim, unsigned or unverifiable, never a verdict. Each record's own
+  claim, never a verdict: in S3 none carried a signature, and since
+  S-PAIR-C2 one counts only when the verifier finds the paired key's
+  signature over exactly that decision (below). Each record's own
   result decides an operation's outcome (issue #139). The file may name
   CloudKit's record vocabulary only (a deliberate lint amendment); it holds
   no container or database, and only test fakes conform to its database
@@ -1002,11 +1004,26 @@ arms anything.
     its declaration; the remote-decision event, built in `decide` alone; the
     verifier's `.verified` result, built once after its signature check and
     read once in `decide`; the S0 type's file, to its one initializer and
-    current conformances; the package manifest, to today's target list; and
-    the doors around the sink (`withIntake`'s one use, and the host's and
-    the intake's own lines). Each pin has canaries, a byte-copy forge in
-    that shape among them, and over-match controls. The forge itself,
-    reaching no sink, stays the accepted residual.
+    current conformances; the package manifest, to today's target list,
+    and the repository root, to that one manifest (no version-specific
+    one); and the doors around the sink: `withIntake` at its one use and
+    its body whole (it binds the intake plainly, so no extension member
+    stands in for a call there), the intake's type named at today's sites
+    alone, no extension of `Optional` in the four targets (by its name,
+    its `?` or an alias declared there), the host's and the intake's own
+    `intake`/`apply`/`perform` lines, the intake's frame writer at its
+    sites, the host's connection writes at today's site, and the
+    connection type named at today's sites alone.
+  - *The road, whole.* The decision's road is pinned as it is, flattened,
+    in every scan copy: the verifier (`enum DecisionVerifier`: every check,
+    the message, the diagnostic), the intake's `apply` and `perform`, and
+    the slot's `read()`. A line added on it fails, also beside a pinned
+    copy kept in a literal or an inactive block; whitespace and `//`
+    comments are free. Each pin has canaries (the byte-copy forge in each
+    shape found so far among them) and over-match controls. The pins cover
+    the sites and bodies they name: a forge reaching none of them stays
+    the accepted residual (#163), and raw-memory writes into a live object
+    stay the pairing locks' accepted residual.
   - *The pairing guard's refusal (#180).* The live pairing database's own
     check refuses with `invalidArguments`, which the record path's batch
     reading calls unconfirmed. No Mac consumer tells the two apart: a

@@ -21,8 +21,10 @@ import NapCatWire
 // new one, never a mix and never two. Unpair deletes it. `commit` is reached
 // from the ceremony's Codes Match alone (PairingStructureTests).
 //
-// NOTHING ARMS here: no reader of decisions names this store in this slice
-// (S-PAIR-C2 wires the verifier to it).
+// NOTHING ARMS here. Since S-PAIR-C2 (#181) the decision verifier reads this
+// slot at each verification, its one reader on the decision path (`read()`
+// pinned whole, DecisionSinkStructureTests), and nothing in the app hands
+// the verifier a decision yet.
 // UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
 
 /// The paired phone as the Mac keeps it: its public key, its code (the
