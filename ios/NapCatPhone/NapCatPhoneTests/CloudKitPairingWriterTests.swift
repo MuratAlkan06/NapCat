@@ -219,11 +219,11 @@ import Testing
 
     /// A refusal, as the live database makes it (lock 6c pins it): the
     /// operation is never run, and its own result block hears
-    /// `invalidArguments`. The write ends at once, closed (never saved,
-    /// never hanging).
+    /// `invalidArguments`. The write ends at once, closed: a definite
+    /// failure (nothing saved), never "may have landed", never hanging.
     @Test func aRefusalIsAClosedFailureToTheWriter() async {
         let database = RefusingApprovalDatabase()
-        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .unconfirmed)
+        #expect(await CloudKitPairingResponseWriter(database: database).write(Self.response) == .failed)
         #expect(database.refused == 1)
     }
 

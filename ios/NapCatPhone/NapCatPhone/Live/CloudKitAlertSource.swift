@@ -357,11 +357,13 @@ actor CloudKitAlertSource: AlertSource {
     ]
 
     /// CloudKit codes that mean nothing was saved (the Mac's definitive
-    /// table, plus the two that say the approvals zone is not there).
+    /// table, plus the two that say the approvals zone is not there, and
+    /// `invalidArguments`: the live approvals database's refusal of an
+    /// operation it does not run, which never reached CloudKit).
     static let nothingSavedCodes: Set<CKError.Code> = [
         .networkUnavailable, .networkFailure, .notAuthenticated, .accountTemporarilyUnavailable, .badContainer,
         .missingEntitlement, .requestRateLimited, .serviceUnavailable, .quotaExceeded, .serverRejectedRequest,
-        .permissionFailure, .zoneNotFound, .userDeletedZone,
+        .permissionFailure, .zoneNotFound, .userDeletedZone, .invalidArguments,
     ]
 
     /// A batch `partialFailure` around exactly one record error is that
