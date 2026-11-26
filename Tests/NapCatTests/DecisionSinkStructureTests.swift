@@ -60,8 +60,11 @@ import Testing
 ///    stream type (`StandardStreams`) and the relay's two `receive`s, the
 ///    last writes before Claude Code (#199), so nothing is added to any of
 ///    them. A line elsewhere in the seam file that reaches the socket by
-///    another name (its read source) is not read itself: to write there it
-///    needs a name k. or n. reads, or a file API through a path;
+///    another name (its read source) is not read itself, and k. and n. read
+///    the writers they list by their spelled names only: a write to that
+///    socket, there or in code it is handed to, in a spelling neither reads
+///    (n. says which) or through a file API and a path, is not caught by
+///    them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -119,9 +122,11 @@ import Testing
 ///    and none of the standard ones taken (`FileHandle.standardOutput`,
 ///    `.standardError`), no `DispatchIO`, no `FileDescriptor`, and no
 ///    `print`, `debugPrint` or `dump`. Today's sites: none. It is a
-///    tripwire, not a wall: a file API can still reach a descriptor through
-///    a path, and code in a process can always write to its own
-///    descriptors.
+///    tripwire, not a wall: it reads those names as they are spelled, so a
+///    file handle reached by an implicit member or a type alias is not
+///    read, nor is a writer the list does not name; a file API can still
+///    reach a descriptor through a path; and code in a process can always
+///    write to its own descriptors.
 ///
 /// These pin the sites and bodies they name, nothing more: a value forged
 /// from raw bytes that reaches none of them stays #163's accepted residual,

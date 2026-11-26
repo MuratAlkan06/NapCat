@@ -347,7 +347,11 @@ napcat-channel-version: 2
   path. Structure locks keep the socket calls in one file, the peer check on
   every connection, one verdict site on each side, the gate ahead of every
   lifecycle (since #150, the server and client re-check ahead of the gate;
-  since #198, the lifecycle's one open counted however it is spelled),
+  since #198, the lifecycle's one open counted however it is spelled in the
+  intake, and elsewhere, the state machine that declares it aside, by its
+  call's shape (an `open` whose first label is `id`) and by the lifecycle's
+  name before `.open`, also inside a longer name; a reference written
+  neither way is not read),
   the strict reader as the only parser, and the seam and probe
   unwired (slice S2 replaced that last lock with one that allows them only
   behind the toggle). The refusal catalogue the gate and the seam are tested against is
@@ -1037,9 +1041,11 @@ arms anything.
     no other descriptor writer is named in the four targets at all (a stdio
     stream, a copied descriptor, a positional write, a file handle on a
     descriptor or for writing, the standard handles, Dispatch's channel, the
-    printers): a tripwire with no site today, not a wall. A line reaching
-    the socket by another name is caught only when it writes with a name
-    these pins read; one writing through a file API and a path is not. Every
+    printers): a tripwire with no site today, not a wall. It and the C-write
+    pin read the names they list as spelled, so a line reaching the socket
+    by another name is caught only when it writes with one of them so
+    spelled; one writing through an implicit-member or aliased spelling, a
+    writer neither lists, or a file API and a path is not. Every
     `extension` header and every operator implementation in the four targets
     is today's, and each of today's extensions declares today's members, so
     no extension member or operator overload added elsewhere or inside one
