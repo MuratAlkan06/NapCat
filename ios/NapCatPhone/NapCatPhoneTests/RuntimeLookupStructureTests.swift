@@ -5,9 +5,10 @@ import Testing
 /// The Mac's `PairingStructureTests` lock 7 (a) bans, in its four targets and
 /// with no allowed site, every way its PR #171 re-checks reached a value's
 /// stored parts, a class or a selector with no pinned word in sight (F-A,
-/// F-D, F-F). The phone had no twin. Here the same bans hold app-wide —
-/// every Swift file under `ios/NapCatPhone/NapCatPhone`, Fixtures/ included —
-/// with no allowed site (none today):
+/// F-D, F-F), and the reflection helpers its C1.5 security review's RP1
+/// walked with no `Mirror` named (R1). The phone had no twin. Here the same
+/// bans hold app-wide — every Swift file under `ios/NapCatPhone/NapCatPhone`,
+/// Fixtures/ included — with no allowed site (none today):
 ///
 /// 1. Nothing declares a runtime entry point: no `@_silgen_name`, no
 ///    `@_extern` (each declares a runtime or C entry point by name), no
@@ -29,6 +30,13 @@ import Testing
 ///    Mac's S5 built a container from a looked-up class and selector with no
 ///    CloudKit import). `#selector` names a declared method, and is another
 ///    word.
+/// 4. Nothing walks a value by the reflection helpers: no `descendant` (a
+///    mirror's path walk, which reflects each child it reaches), no
+///    `_reflect` and no `_getChild…` (the standard library's reflection
+///    entry points) — the other words of the Mac's lock 7 reflection
+///    pattern (`_forEachField…` is ban 1). `RecordPathStructureTests` lock 4
+///    pins `Mirror` alone, and RP1's shape,
+///    `[inbox].customMirror.descendant(0, "keyring")`, names no `Mirror`.
 ///
 /// Each ban reads the app's sources with `//` comments removed (string
 /// literals stay in: a word in a literal can only over-match) in every
@@ -128,12 +136,13 @@ import Testing
         return CloudKitStructureTests.unique(objcAPIFailures(in: copies) + objcLookupFailures(in: copies))
     }
 
-    /// The suite's whole lock: the three bans, over one set of scan copies.
+    /// The suite's whole lock: the four bans, over one set of scan copies.
     static func lockFailures(_ app: [Source]) -> [String] {
         let copies: [[Source]] = scanCopies(app)
         var failures: [String] = runtimeEntryFailures(in: copies)
         failures += objcAPIFailures(in: copies)
         failures += objcLookupFailures(in: copies)
+        failures += reflectionHelperFailures(in: copies)
         return CloudKitStructureTests.unique(failures)
     }
 
@@ -153,6 +162,19 @@ import Testing
         "    }\n}\n",
     ]
     static let s5: String = s5Lines.joined()
+
+    // MARK: 4. Nothing walks a value by the reflection helpers (the Mac's R1)
+
+    /// The Mac's `reflectionPattern` words beside `Mirror` and
+    /// `_forEachField…`, each as the Mac spells it.
+    static let reflectionHelperTokens: [String] = [#"\bdescendant\b"#, #"\b_reflect\b"#, #"\b_getChild\w*"#]
+
+    static func reflectionHelperFailures(_ app: [Source]) -> [String] { reflectionHelperFailures(in: scanCopies(app)) }
+
+    static func reflectionHelperFailures(in copies: [[Source]]) -> [String] {
+        siteFailuresInEveryCopy(reflectionHelperTokens, in: copies,
+                                rule: "nothing walks a value by the reflection helpers — a walk by customMirror.descendant names no Mirror")
+    }
 
     // MARK: - The tests
 
@@ -374,6 +396,99 @@ import Testing
             "\nstruct ZZS { var selector: String; var classNamedLabel: String; var protocolName: String; var objectID: Int }",
             "\nlet zzObjectWillChange = 12, propertyList = 13, methodName = 14, selName = 15, implName = 16",
             "\n/// never NSSelectorFromString(s), never Selector(\"zz\"), never classNamed(_:), never class_copyIvarList(c, &n)",
+        ]
+        #expect(Self.lockFailures(Self.appended(app, Self.inboxFile, near.joined())).isEmpty)
+    }
+
+    /// The Mac's R1 canaries (its C1.5 security review), on the phone: RP1's
+    /// shape (the keyring's key store reached from Settings through
+    /// `[inbox].customMirror.descendant(…)`, no `Mirror` named, and deleted)
+    /// and its Optional-wrapper variant, in the inbox; the standard
+    /// library's legacy reflection by `_reflect`, in a screen; its child
+    /// reader by `_getChild…`, in the feed. Each is caught by its own word
+    /// alone, and within the lock by the helper ban alone; each passes
+    /// `RecordPathStructureTests` lock 4, the `Mirror` pin (the gap). Each
+    /// word bites its own probe alone; RP1's walk and the child reader's
+    /// names match in every scan copy.
+    @Test func nothingWalksAValueByTheReflectionHelpers() throws {
+        let app: [Source] = try Self.app()
+        #expect(app.contains { $0.path == Self.inboxFile }, "vacuity: the scan sees the inbox")
+        #expect(Self.reflectionHelperFailures(app).isEmpty, "\(Self.reflectionHelperFailures(app))")
+        let rp1Lines: [String] = [
+            "\nextension SettingsScreen {\n    func zzMirrorUnpair(_ inbox: RequestInbox) -> Bool {\n",
+            "        guard let store = [inbox].customMirror.descendant(0, \"keyring\", \"store\") as? any SigningKeyStore else { return false }\n",
+            "        return store.delete(.committed)\n    }\n}\n",
+        ]
+        let rp1: String = rp1Lines.joined()
+        let rp1Optional: String = "\nextension RequestInbox {\n"
+            + "    func zzA3() -> Any? { Optional(self).customMirror.descendant(\"some\", \"keyring\", \"store\") }\n}\n"
+        let legacyLines: [String] = [
+            "\nfunc zzLegacy(_ inbox: RequestInbox) -> Any? {\n    let m = _reflect(inbox)\n",
+            "    for i in 0..<m.count where m[i].0 == \"keyring\" { return m[i].1.value }\n    return nil\n}\n",
+        ]
+        let childLines: [String] = [
+            "\ntypealias ZZFree = @convention(c) (UnsafePointer<CChar>?) -> Void\n",
+            "func zzChild(_ inbox: RequestInbox, _ label: String) -> Any? {\n",
+            "    for i in 0..<_getChildCount(inbox, type: RequestInbox.self) {\n",
+            "        var n: UnsafePointer<CChar>?\n        var f: ZZFree?\n",
+            "        let c = _getChild(of: inbox, type: RequestInbox.self, index: i, outName: &n, outFreeFunc: &f)\n",
+            "        let name = n.map { String(cString: $0) }\n        f?(n)\n        if name == label { return c }\n    }\n    return nil\n}\n",
+        ]
+        let child: String = childLines.joined()
+        // Each canary, and the index of the one word that catches it.
+        let canaries: [(String, Int, [Source])] = [
+            ("RP1 on the phone: the keyring's key store reached from Settings by customMirror.descendant", 0,
+             Self.appended(app, Self.settingsFile, rp1)),
+            ("RP1 through an Optional wrapper, in the inbox", 0, Self.appended(app, Self.inboxFile, rp1Optional)),
+            ("the legacy reflection by _reflect, in a screen", 1, Self.appended(app, Self.screenFile, legacyLines.joined())),
+            ("the child reader by _getChild, in the feed", 2, Self.appended(app, Self.feedFile, child)),
+        ]
+        for (name, word, mutant) in canaries {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            let caught: [String] = Self.reflectionHelperFailures(mutant)
+            #expect(!caught.isEmpty, "canary '\(name)' was NOT caught")
+            // Within the lock, the helper ban alone; within it, its own word alone.
+            #expect(Self.lockFailures(mutant) == caught, "canary '\(name)': another ban here fired")
+            let copies: [[Source]] = Self.scanCopies(mutant)
+            for (j, token) in Self.reflectionHelperTokens.enumerated() {
+                let bites: Bool = !Self.siteFailuresInEveryCopy([token], in: copies, rule: "").isEmpty
+                #expect(bites == (j == word), "canary '\(name)' against '\(token)'")
+            }
+            // The gap: the Mirror pin reads `Mirror` alone.
+            #expect(RecordPathStructureTests.confirmationFailures(mutant).isEmpty, "canary '\(name)' is the Mirror pin's gap")
+        }
+        // Each word bites alone, through the lock's own engine (and only its
+        // own probe).
+        let probes: [String] = ["_ = x.customMirror.descendant(0)", "_ = _reflect(x)", "_ = _getChildCount(x, type: T.self)"]
+        #expect(probes.count == Self.reflectionHelperTokens.count)
+        for (i, token) in Self.reflectionHelperTokens.enumerated() {
+            for (j, probe) in probes.enumerated() {
+                #expect(CloudKitStructureTests.hits(token, in: probe) == (i == j), "'\(token)' against '\(probe)'")
+            }
+        }
+        // RP1's walk and the child reader's two names, in every scan copy of
+        // their exact text.
+        let rp1Copies: [String] = [rp1, rp1.replacingOccurrences(of: "`", with: ""), CloudKitStructureTests.cleaned(rp1)]
+        let childCopies: [String] = [child, child.replacingOccurrences(of: "`", with: ""), CloudKitStructureTests.cleaned(child)]
+        let walks: [String] = ["descendant"]
+        let readers: [String] = ["_getChildCount", "_getChild"]
+        for copy in rp1Copies {
+            #expect(CloudKitStructureTests.matches(Self.reflectionHelperTokens[0], in: copy) == walks)
+        }
+        for copy in childCopies {
+            #expect(CloudKitStructureTests.matches(Self.reflectionHelperTokens[2], in: copy) == readers)
+        }
+        // Over-match controls: UIKit's isDescendant(of:); properties and a
+        // method named like the tokens, and `descending` (other words); and
+        // a whole-line and a trailing comment naming the shapes (the lock's
+        // own stripping removes them).
+        let near: [String] = [
+            "\nfunc zz(_ a: UIView, _ b: UIView) -> Bool { a.isDescendant(of: b) }",
+            "\nstruct ZZT { var descendants: [Int]; var descendantCount: Int; var isDescendant: Bool; func descendants(of n: Int) -> [Int] { [n] } }",
+            "\nlet descending = 1, reflect = 2, _reflection = 3, zz_reflect = 4, reflected = 5, _reflects = 6",
+            "\nlet getChild = 7, zz_getChild = 8, _get_child = 9, getChildCount = 10, childCount = 11",
+            "\n/// never [inbox].customMirror.descendant(0, \"keyring\"), never _reflect(x), never _getChild(of:)",
+            "\nlet zzTrailing = 12 // descendant, _reflect, _getChildCount",
         ]
         #expect(Self.lockFailures(Self.appended(app, Self.inboxFile, near.joined())).isEmpty)
     }
