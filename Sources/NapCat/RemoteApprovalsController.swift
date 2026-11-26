@@ -150,9 +150,19 @@ final class RemoteApprovalsController {
         run(.refresh)
     }
 
-    /// The user flipped the toggle. Off is the kill switch.
+    /// The user flipped the toggle (the menu, Settings, or Unpair's kill
+    /// switch). Off is the kill switch, run in process at once and never
+    /// read back (#205): whatever the store reads afterwards — a write it did
+    /// not take, or a value that outranks it — cannot keep the feature on.
+    /// The off is still written, for the next launch. On is written, then
+    /// read back, so a stored value that disagrees keeps it off.
     func setEnabled(_ enabled: Bool) {
-        writeStored(enabled)
+        guard enabled else {
+            run(.toggle(false))
+            writeStored(false)
+            return
+        }
+        writeStored(true)
         reconcile()
     }
 

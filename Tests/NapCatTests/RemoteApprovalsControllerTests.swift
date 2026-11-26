@@ -98,6 +98,11 @@ final class ApprovalsRecordingSink: ApprovalRecordSink, @unchecked Sendable {
 final class ApprovalsWorld {
     let scratch: ApprovalsScratch
     var stored: Any?
+    /// Every value the toggle wrote, in order.
+    private(set) var writes: [Bool] = []
+    /// While true the store keeps reading what it held: a write it does not
+    /// take (#205).
+    var readIgnoresWrites = false
     var probes = 0
     var finding = ChannelPolicyFinding.noFilePolicy
     let audits = ApprovalsInbox<String>()
@@ -128,7 +133,10 @@ final class ApprovalsWorld {
         controller = RemoteApprovalsController(
             socketPath: scratch.socketPath,
             readStored: { [unowned self] in stored },
-            writeStored: { [unowned self] in stored = $0 },
+            writeStored: { [unowned self] in
+                writes.append($0)
+                if !readIgnoresWrites { stored = $0 }
+            },
             makeHost: factory,
             probe: { [unowned self] in
                 probes += 1
@@ -283,6 +291,40 @@ struct RemoteApprovalsControllerTests {
 
         world.prompt("bcdef")
         #expect(world.waitForNote(.heldNoSeam), "after the kill switch, a new prompt finds nothing to connect to")
+    }
+
+    /// #205: off is the kill switch in process, at once, with no read-back —
+    /// proven over a store whose read ignores writes: it still reads on
+    /// after the off is written. Before, off wrote the store and read it
+    /// back, and that read kept everything running. Now the switch goes
+    /// off, the session's server is disconnected, the socket goes, the
+    /// stop is audited once, and nothing listens again; the off is still
+    /// written, and a late decision is ignored and logged.
+    @Test func offAppliesInProcessEvenWhenTheStoreReadIgnoresWrites() throws {
+        let world = try ApprovalsWorld()
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .listening)
+        world.prompt("abcde")
+        let id = try #require(world.nextPrompt(endingIn: "suppressed.notArmed"))
+        #expect(world.waitForNote(.relayed), "the server holds the prompt open")
+
+        world.readIgnoresWrites = true
+        let changes: Int = world.changes
+        world.controller.setEnabled(false)
+        #expect(world.stored as? Bool == true, "vacuity: the store still reads on")
+        #expect(world.writes == [true, false], "the off is written all the same")
+        #expect(world.controller.phase == .off, "the kill switch applied")
+        #expect(world.changes > changes, "and the menu was told")
+        #expect(world.waitForNote(.seamClosed), "the session's server is disconnected")
+        #expect(!world.socketExists)
+        #expect(world.audits.next(where: { $0 == "seam.stopped" }) != nil)
+        #expect(world.controller.phase == .off, "it did not snap back")
+        let all: [String] = world.audits.all
+        #expect(all.filter { $0 == "seam.listening" }.count == 1 && all.filter { $0 == "seam.stopped" }.count == 1,
+                "one listen, one stop: \(all)")
+        world.decide(id, .allow)
+        #expect(world.audits.next() == "prompt=\(id.hex) ignored.notForwarded", "a late decision is logged as ignored")
+        #expect(world.emitted.next(within: 0.3) == nil, "and answers nothing")
     }
 
     /// The same with a FORWARDED prompt (a test-built armed host — the app's
