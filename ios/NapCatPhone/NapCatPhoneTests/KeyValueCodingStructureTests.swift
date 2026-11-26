@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-/// F4 (#175, L-1): the Mac's key-value coding ban, brought to the phone.
+/// F4 (#175): the Mac's key-value coding ban, brought to the phone.
 /// The Mac's `PhoneTransportStructureTests` bans in its four targets (its
 /// PR #171 re-checks' F-B, F-C and R-C) every way to read, write, evaluate
 /// or observe a property by its name as a string: its G2 read a container's

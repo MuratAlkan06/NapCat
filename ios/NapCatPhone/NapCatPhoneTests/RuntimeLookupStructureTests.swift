@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-/// F4 (#175, L-1): the Mac's by-name runtime locks, brought to the phone.
+/// F4 (#175): the Mac's by-name runtime locks, brought to the phone.
 /// The Mac's `PairingStructureTests` lock 7 (a) bans, in its four targets and
 /// with no allowed site, every way its PR #171 re-checks reached a value's
 /// stored parts, a class or a selector with no pinned word in sight (F-A,
