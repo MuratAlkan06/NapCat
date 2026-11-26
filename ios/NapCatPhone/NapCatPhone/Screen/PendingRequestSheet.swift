@@ -94,7 +94,7 @@ struct PendingRequestSheet: View {
             ZStack {
                 if let request = inbox.entries[id]?.request, let status = inbox.status(of: id, at: now) {
                     PendingRequestScreen(request: request, status: status, now: now, biometry: inbox.biometry,
-                                         key: inbox.keyHealth,
+                                         key: inbox.keyHealth, readOnly: inbox.isReadOnly,
                                          allow: { Task { await inbox.allow(id) } },
                                          deny: { Task { await inbox.deny(id) } })
                 }

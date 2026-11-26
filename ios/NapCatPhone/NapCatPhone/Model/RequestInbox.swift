@@ -118,6 +118,11 @@ final class RequestInbox {
     /// Where this phone's pairing stands, as last read (with no prompt).
     private(set) var keyHealth: PhoneKeyring.Health
     @ObservationIgnored private let writer: any DecisionWriter
+    /// Whether answers from here go nowhere: the writer is the unsent one
+    /// (the live inbox's until the answer path is armed). One fact, the
+    /// writer's own type, so it cannot drift from what an answer would do:
+    /// the prompt screen offers no answer while it holds (#194).
+    var isReadOnly: Bool { writer is UnsentDecisionWriter }
     @ObservationIgnored private let biometrics: any BiometricGate
     @ObservationIgnored private let keyring: PhoneKeyring
     @ObservationIgnored private let clock: () -> Date

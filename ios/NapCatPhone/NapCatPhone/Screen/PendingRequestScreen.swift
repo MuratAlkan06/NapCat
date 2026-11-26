@@ -7,8 +7,10 @@ import SwiftUI
 /// each after a biometric match (CL-3, and the owner's uniform-signing
 /// ruling: every answer is signed); after iCloud left an answer unconfirmed,
 /// that answer alone, sent again (#154). An expired or withdrawn request
-/// says why and offers no answer. Everything visual comes from the
-/// environment's `Theme`; nothing on it moves.
+/// says why and offers no answer; so does a read-only inbox, whose answers
+/// would go nowhere (#194: the live inbox, until the answer path is armed).
+/// Everything visual comes from the environment's `Theme`; nothing on it
+/// moves.
 struct PendingRequestScreen: View {
     nonisolated static let title = "Permission prompt"
     nonisolated static let inputHeader = "Input"
@@ -21,6 +23,11 @@ struct PendingRequestScreen: View {
     nonisolated static let longInput = PhoneLine(text: "Long — the input scrolls inside its box", severity: .nominal)
     /// Beside the Sent line: the answer went out, nothing more.
     nonisolated static let sentSymbol = "paperplane"
+
+    /// Why no answer is on offer while answers from here go nowhere (#194):
+    /// the prompt is shown to be answered on the Mac.
+    nonisolated static let readOnlyLine = PhoneLine(text: "Read only — answering from iPhone isn't on yet; answer on your Mac",
+                                                    severity: .info)
 
     /// Why no answer is on offer, naming the biometric this phone has.
     nonisolated static func answersUnavailable(_ kind: BiometryKind?) -> PhoneLine {
@@ -168,13 +175,15 @@ struct PendingRequestScreen: View {
     }
 
     /// Nothing unless the request is answerable; then nothing but the
-    /// reason on an unpaired phone (no key signs), the answers on offer
-    /// (both, or the one sent again) where a biometric match is possible,
-    /// and otherwise the reason there are none. A changed enrollment keeps
-    /// the answers and says so over them.
+    /// reason while the inbox is read only (#194: no answer would go out),
+    /// or on an unpaired phone (no key signs); the answers on offer (both,
+    /// or the one sent again) where a biometric match is possible, and
+    /// otherwise the reason there are none. A changed enrollment keeps the
+    /// answers and says so over them.
     nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability,
-                                  key: PhoneKeyring.Health) -> Offer {
+                                  key: PhoneKeyring.Health, readOnly: Bool = false) -> Offer {
         guard status.isAnswerable else { return .none }
+        if readOnly { return Offer(answers: nil, caption: readOnlyLine) }
         if case .unpaired(let reason) = key { return Offer(answers: nil, caption: unpaired(reason, biometry.kind)) }
         guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }
         return Offer(answers: kind, again: status.resend, caption: key == .enrollmentChanged ? enrollmentChanged(kind) : nil)
@@ -208,6 +217,8 @@ struct PendingRequestScreen: View {
     let biometry: BiometricAvailability
     /// Where this phone's pairing stands.
     let key: PhoneKeyring.Health
+    /// Whether answers from here go nowhere (`RequestInbox.isReadOnly`).
+    let readOnly: Bool
     let allow: () -> Void
     let deny: () -> Void
 
@@ -328,7 +339,7 @@ struct PendingRequestScreen: View {
     /// answer unconfirmed, that one alone, sent again); or the reason there
     /// are none.
     @ViewBuilder private var answers: some View {
-        let offer = Self.offer(for: status, biometry: biometry, key: key)
+        let offer = Self.offer(for: status, biometry: biometry, key: key, readOnly: readOnly)
         if let caption = offer.caption {
             CaptionLine(line: caption)
         }
@@ -386,31 +397,42 @@ struct InputDrawing: View, Equatable {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
                          status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
-                         biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+                         biometry: .available(.faceID), key: .paired, readOnly: false, allow: {}, deny: {})
 }
 
 #Preview("Expired") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-660)),
-                         status: .expired, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+                         status: .expired, now: now, biometry: .available(.faceID), key: .paired, readOnly: false,
+                         allow: {}, deny: {})
 }
 
 #Preview("Withdrawn") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-120)),
-                         status: .withdrawn, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+                         status: .withdrawn, now: now, biometry: .available(.faceID), key: .paired, readOnly: false,
+                         allow: {}, deny: {})
 }
 
 #Preview("Unconfirmed") {
     let now: Date = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
                          status: .pending(until: now.addingTimeInterval(540), note: .unconfirmed(.allow)), now: now,
-                         biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+                         biometry: .available(.faceID), key: .paired, readOnly: false, allow: {}, deny: {})
 }
 
 #Preview("Unpaired") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
                          status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
-                         biometry: .available(.faceID), key: .unpaired(.enrollmentChanged), allow: {}, deny: {})
+                         biometry: .available(.faceID), key: .unpaired(.enrollmentChanged), readOnly: false, allow: {},
+                         deny: {})
+}
+
+/// The live inbox until the answer path is armed (#194): no answer offered.
+#Preview("Read only") {
+    let now = Date.now
+    PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
+                         status: .pending(until: now.addingTimeInterval(540), note: nil), now: now,
+                         biometry: .available(.faceID), key: .paired, readOnly: true, allow: {}, deny: {})
 }

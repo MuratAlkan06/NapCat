@@ -507,6 +507,22 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         #expect(inbox.entries[request.id]?.answer == .unsent(.deny))
     }
 
+    /// #194 design review: so the live inbox is read only, and its prompt
+    /// screen offers no answer, only the line that says to answer on the
+    /// Mac: no answer that ends unsent, and no "try again" after it.
+    @Test func aLivePromptOffersNoAnswer() async throws {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let inbox = Self.inbox(clock, ScriptedPromptSource(snapshots: [[request]]), writer: UnsentDecisionWriter())
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.isReadOnly)
+        let status: RequestStatus = try #require(inbox.status(of: request.id))
+        #expect(status.isAnswerable)
+        #expect(PendingRequestScreen.offer(for: status, biometry: inbox.biometry, key: inbox.keyHealth, readOnly: inbox.isReadOnly)
+                == PendingRequestScreen.Offer(answers: nil, caption: PendingRequestScreen.readOnlyLine))
+        #expect(!Self.inbox(clock, ScriptedPromptSource()).isReadOnly, "a writer that writes leaves the answers on offer")
+    }
+
     /// A tapped push opens its prompt once the inbox holds it: at once when
     /// it does, otherwise after the read; once, then cleared.
     @Test func aTappedPromptOpensOnceHeld() async {
