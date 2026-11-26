@@ -548,6 +548,277 @@ struct LidGuardStructureTests {
         }
     }
 
+    // MARK: The raw-text precondition (no lexer)
+
+    /// What the raw-text precondition reads: every Swift file under the four
+    /// Mac targets and the phone app.
+    static let rawScanDirectories: [String] = ApprovalChannelStructureTests.directories + ["ios/NapCatPhone/NapCatPhone"]
+
+    /// The words that, touching a `/`, can start an expression: a superset
+    /// of `bareRegexOpens`'s list and of `spacedRegexWords`.
+    static let regexLeadWords: Set<String> = [
+        "return", "in", "throw", "try", "await", "case", "where", "if", "guard", "while", "else", "is", "as", "repeat", "some",
+        "any", "switch", "yield", "then", "unsafe", "consume", "copy", "discard", "each", "do", "catch", "for", "let", "var",
+        "default", "defer", "inout", "borrowing", "consuming", "throws", "rethrows", "async", "borrow",
+    ]
+
+    static func isIdentifierScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == "_" || scalar.properties.isAlphabetic || scalar.properties.numericType != nil
+    }
+
+    /// Whether the `/` at `index` of `line` (one line's scalars) may open a
+    /// bare regex literal, to the compiler or to `lexemes`, whose reading
+    /// moves a string or comment boundary — decided from the raw text alone.
+    /// A `/` counts unless a space, a tab, a `/` or a `*` follows it, or what
+    /// touches it ends an operand (an identifier other than a
+    /// `regexLeadWords` word, a closing bracket, a quote, a backtick, a `#`)
+    /// or it is the second `/` of a `//`. It is a site when the next `/` on
+    /// its line closes a span holding a quote, a `#`, a backslash or a
+    /// parenthesis, or is followed by `/` or `*`: read as a regex, that span
+    /// is a literal, read as code it is not, and either reading can then open
+    /// a string or a comment the other does not.
+    static func regexShapeSite(_ line: [Unicode.Scalar], at index: Int) -> Bool {
+        guard line[index] == "/", index + 1 < line.count, !" \t/*".unicodeScalars.contains(line[index + 1]) else { return false }
+        if index > 0 {
+            let before: Unicode.Scalar = line[index - 1]
+            if isIdentifierScalar(before) {
+                var start = index - 1
+                while start > 0, line[start - 1].properties.isAlphabetic { start -= 1 }
+                let word = String(String.UnicodeScalarView(line[start..<index]))
+                guard regexLeadWords.contains(word), start == 0 || !isIdentifierScalar(line[start - 1]) else { return false }
+            } else if ")]}\"`#".unicodeScalars.contains(before) || (before == "/" && (index < 2 || line[index - 2] != "*")) {
+                return false
+            }
+        }
+        guard let close = line[(index + 1)...].firstIndex(of: "/") else { return false }
+        let significant: [Unicode.Scalar] = ["\"", "#", "\\", "(", ")"]
+        if line[(index + 1)..<close].contains(where: { significant.contains($0) }) { return true }
+        return close + 1 < line.count && (line[close + 1] == "/" || line[close + 1] == "*")
+    }
+
+    /// Each line of `text` holding a `regexShapeSite`, trimmed.
+    static func regexShapeLines(in text: String) -> [String] {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" })
+        return lines.filter { line in
+            let scalars: [Unicode.Scalar] = Array(line.unicodeScalars)
+            return scalars.indices.contains { regexShapeSite(scalars, at: $0) }
+        }.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// `regexShapeLines` of each RAW source, as failures.
+    static func regexShapeFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        sources.flatMap { source in
+            regexShapeLines(in: source.text).map {
+                "\(source.name): '\($0)' — a `/` the stripper can read apart from the compiler; spell the line otherwise"
+            }
+        }
+    }
+
+    /// Every Swift file under `rawScanDirectories`, RAW, by its repository path.
+    static func rawScanSources() throws -> [(name: String, text: String)] {
+        var sources: [(name: String, text: String)] = []
+        for directory in rawScanDirectories {
+            let base = repoRoot().appendingPathComponent(directory).resolvingSymlinksInPath()
+            guard let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
+            for case let url as URL in walker where url.pathExtension == "swift" {
+                let components: [String] = url.resolvingSymlinksInPath().pathComponents
+                let name: String = components.starts(with: base.pathComponents)
+                    ? ([directory] + components.dropFirst(base.pathComponents.count)).joined(separator: "/") : url.path
+                sources.append((name, try String(contentsOf: url, encoding: .utf8)))
+            }
+        }
+        return sources.sorted { $0.name < $1.name }
+    }
+
+    /// The precondition the strippers' readings rest on, read from the RAW
+    /// text with no lexer: the four Mac targets and the phone app hold no
+    /// `regexShapeSite` (none today). `lexemes` mimics a context-sensitive
+    /// lexer, and a line it reads apart from the compiler can hide a token
+    /// from every form a lock reads; banning the lines it could misread here
+    /// keeps every lock's reading whole whatever the stripper does with them.
+    /// The rule reads comments and string literals too: it over-matches by
+    /// design (a `/=` or a division followed on its line by a quoted `/` is a
+    /// site; split such a line).
+    @Test func noSourceHoldsASlashTheStripperCouldReadApart() throws {
+        let sources: [(name: String, text: String)] = try Self.rawScanSources()
+        #expect(Self.regexShapeFailures(sources).isEmpty, "\(Self.regexShapeFailures(sources))")
+        #expect(sources.count > 120, "vacuity: only \(sources.count) files read")
+        for directory in Self.rawScanDirectories {
+            #expect(sources.contains { $0.name.hasPrefix(directory + "/") }, "vacuity: \(directory) is read")
+        }
+        // The plants below, each flagged on exactly its planted lines.
+        let plants: [(name: String, text: String, lines: Int)] = [
+            ("lookups behind an operator slash", Self.lookupsBehindAnOperator, 4),
+            ("lookups in an interpolation line", Self.lookupsInAnInterpolationLine, 1),
+            ("a factory's class shadowed behind an operator slash", Self.shadowBehindAnOperator, 3),
+            ("lookups behind a regex opening with =", Self.lookupsBehindAnEqualsRegex, 4),
+            ("the record path's member", Self.recordPathMember, 1),
+        ]
+        for (name, text, lines) in plants {
+            let flagged: [String] = Self.regexShapeLines(in: text)
+            #expect(flagged.count == lines, "canary '\(name)': \(flagged.count) lines flagged, want \(lines)")
+            #expect(flagged.allSatisfy { $0.contains("reduce(3, /)") || $0.contains("/=a\"/") }, "canary '\(name)': \(flagged)")
+        }
+        // More lines the ban holds out, whatever the stripper makes of them.
+        let shapes: [String] = [
+            "let r = /= a\"/; let v = \"//\"; _ = zzHidden()",
+            "let q = 8 /- \"a/\"; let v = \"//\"; _ = zzHidden()",
+            "let r = /* c *//a\"/; let v = \"//\"; _ = zzHidden()",
+            "let r =\u{A0}/a\"/; let v = \"//\"; _ = zzHidden()",
+            "let q = zzF(/a,\" /\"); let v = \"//\"; _ = zzHidden()",
+            "let q = zzId(/a/* \" */); let v = \"//\"; _ = zzHidden()",
+            "let q = zzOp(/); let u = \"/\"; let v = \"//\"; _ = zzHidden()",
+            "let q = zzId(/2); let u = \"/\"; let v = \"//\"; _ = zzHidden()",
+            "switch/a\\/b/ { default: break }",
+        ]
+        for line in shapes {
+            #expect(Self.regexShapeLines(in: line).count == 1, "canary '\(line)' was NOT caught")
+        }
+        // … in any of the five directories.
+        let seam: String = "Sources/NapCatSeam/SeamSocket.swift"
+        let settings: String = "ios/NapCatPhone/NapCatPhone/Settings/SettingsScreen.swift"
+        for path in [seam, settings] {
+            #expect(sources.contains { $0.name == path }, "vacuity: \(path) is read")
+            let planted = sources.map { $0.name == path ? ($0.name, $0.text + Self.lookupsBehindAnOperator) : $0 }
+            #expect(Self.regexShapeFailures(planted).count == 4, "canary 'lookups behind an operator slash, in \(path)' was NOT caught")
+        }
+        // Over-match controls: divisions, a compound assignment, paths and
+        // URLs in strings and comments, and today's shapes beside them.
+        let near: [String] = [
+            "let q = a / b; let h = n/2; let f = g()/2; let p = (a)/(b); let s = \"a/b\"",
+            "n /= 2",
+            "let path = \"/usr/bin:/bin:/usr/sbin:/sbin\"",
+            "let u = \"https://\\(host):\\(port)/x\" // see a/b, (c)/(d)",
+            "/// never touches ~/.claude/settings.json (`GET /repos/…/releases/latest`), art/idle/ (see a/b)",
+            "let p = \"a/b\" + \"/c\"; let w = [8].map { $0 / 2 }; let r = #/a\"/#",
+            "// /usr/local/napcat/smc does not exist until setup; POST <server>/<topic>",
+        ]
+        for line in near {
+            #expect(Self.regexShapeLines(in: line).isEmpty, "over-match: '\(line)' was flagged")
+        }
+    }
+
+    // MARK: What the compiler builds, the locks read (#184)
+
+    /// Lines the compiler builds and the stripper read apart from it before
+    /// the fix above, each with code behind it that every lock reading its
+    /// file missed. As the locks read the disk, each plant goes into the RAW
+    /// sources and through the stripper.
+    static func operatorPrefix(_ n: Int) -> String { "let zzA\(n) = [6].reduce(3, /); let zzB\(n) = \"a/\"; let zzC\(n) = \"//\"; " }
+    static func equalsPrefix(_ n: Int) -> String { "let zzR\(n) = /=a\"/; let zzC\(n) = \"//\"; " }
+
+    static let lookupsBehindAnOperator: String = [
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(operatorPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(operatorPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(operatorPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(operatorPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
+    static let lookupsInAnInterpolationLine: String = [
+        "\nfunc zzDo(_ f: () -> Void) -> String { f(); return \"\" }\n",
+        "enum ZZDyn {\n    static func zz() -> String {\n",
+        "        let zzA = [6].reduce(3, /); let zzB = \"/\"; let zzS = \"\"\"\n",
+        "        // \\(zzDo { guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }; ",
+        "let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject; ",
+        "let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject; ",
+        "let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }; ",
+        "_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject) })\n",
+        "        \"\"\" // \"\"\"\n",
+        "        return zzS + \"\\(zzA)\" + zzB\n    }\n}\n",
+    ].joined()
+
+    static let shadowBehindAnOperator: String = [
+        "\nextension CloudKitMessageSender {\n",
+        "    static let zzA = [6].reduce(3, /); static let zzB = \"a/\"; static let zzC = \"//\"; static func LiveCloudKitAlertStore<C: NSObject, R>(container: C) -> R? {\n",
+        "        \(operatorPrefix(1))let db = container.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(operatorPrefix(2))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "        return nil\n    }\n}\n",
+    ].joined()
+
+    static let lookupsBehindAnEqualsRegex: String = [
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(equalsPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(equalsPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(equalsPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(equalsPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
+    /// The record path's plant: a member of the pairing source, before its
+    /// database accessor, and two top-level helpers after the file.
+    static let recordPathAnchor: String = "    private func resolvedDatabase() -> (any PairingRecordDatabase)? {"
+    static let recordPathMember: String = [
+        "    func zzNote() -> String {\n",
+        "        let zzA = [6].reduce(3, /); let zzB = \"/\"; let zzS = \"\"\"\n",
+        "        // \\(zzDo { let op = Self.makeFetchOperation(recordName: String(repeating: \"a\", count: 64)) { _ in }; ",
+        "resolvedDatabase()?.submit(op); ZZHeld.database = op.database })\n",
+        "        \"\"\" // \"\"\"\n",
+        "        return zzS + \"\\(zzA)\" + zzB\n    }\n\n",
+    ].joined()
+    static let recordPathTail: String =
+        "\nenum ZZHeld { nonisolated(unsafe) static var database: AnyObject? }\nfunc zzDo(_ f: () -> Void) -> String { f(); return \"\" }\n"
+
+    /// Each plant above, as the disk would hold it, is caught by the locks
+    /// that catch the same code written plainly: the lookup and key-value
+    /// coding bans, the live classes' word pins, the record path's seam-flow
+    /// and iCloud locks. And look-alikes — a division, a compound
+    /// assignment, slashes in strings and in comments — stay plain code, so
+    /// a banned word in a trailing comment beside them stays out.
+    @Test func theLocksReadWhatTheCompilerBuilds() throws {
+        let raw: ApprovalChannelStructureTests.Sources = try ApprovalChannelStructureTests.sources { $0 }
+        let model: String = "MenuStateModel.swift"
+        let record: String = ApprovalRecordPathStructureTests.recordPathFile
+        func read(_ sources: ApprovalChannelStructureTests.Sources, _ strip: (String) -> String) -> ApprovalChannelStructureTests.Sources {
+            sources.map { ($0.name, strip($0.text)) }
+        }
+        func appended(_ text: String) -> ApprovalChannelStructureTests.Sources {
+            ApprovalChannelStructureTests.mutate(raw, model) { $0 + text }
+        }
+        let lookups: [(String, ApprovalChannelStructureTests.Sources)] = [
+            ("lookups behind an operator slash", appended(Self.lookupsBehindAnOperator)),
+            ("lookups in an interpolation line of a string opened behind one", appended(Self.lookupsInAnInterpolationLine)),
+            ("lookups behind a regex opening with =", appended(Self.lookupsBehindAnEqualsRegex)),
+            ("a factory's class shadowed behind an operator slash", appended(Self.shadowBehindAnOperator)),
+        ]
+        for (name, planted) in lookups {
+            #expect(planted.map { $0.text } != raw.map { $0.text }, "canary '\(name)' did not apply")
+            let code: ApprovalChannelStructureTests.Sources = read(planted, Self.codeOnly)
+            #expect(!PairingStructureTests.objcLookupFailures(code).isEmpty, "canary '\(name)' was NOT caught by the lookup ban")
+            #expect(!PhoneTransportStructureTests.appKeyValueCodingFailures(code).isEmpty,
+                    "canary '\(name)' was NOT caught by the key-value coding ban")
+        }
+        let shadow: ApprovalChannelStructureTests.Sources = read(appended(Self.shadowBehindAnOperator), Self.codeOnly)
+        #expect(!PhoneTransportStructureTests.liveClassWordFailures(shadow).isEmpty,
+                "canary 'a factory's class shadowed behind an operator slash' was NOT caught by the live classes' word pin")
+        #expect(ApprovalChannelStructureTests.text(record, in: raw).components(separatedBy: Self.recordPathAnchor).count == 2,
+                "vacuity: the record path's plant has its one anchor")
+        let recordPlanted: ApprovalChannelStructureTests.Sources = ApprovalChannelStructureTests.mutate(raw, record) {
+            $0.replacingOccurrences(of: Self.recordPathAnchor, with: Self.recordPathMember + Self.recordPathAnchor) + Self.recordPathTail
+        }
+        let uncut: ApprovalChannelStructureTests.Sources = read(recordPlanted, Self.wholeLineCommentsRemoved)
+        #expect(!ApprovalRecordPathStructureTests.seamFlowFailures(uncut).isEmpty,
+                "canary 'the record path's fetch kept from an interpolation line' was NOT caught by the seam-flow lock")
+        #expect(!ApprovalRecordPathStructureTests.iCloudFailures(uncut).isEmpty,
+                "canary 'the record path's fetch kept from an interpolation line' was NOT caught by the iCloud lock")
+        // Over-match controls: look-alikes, then a banned word in a trailing
+        // comment that must stay stripped.
+        let lookAlikes: String = [
+            "\nfunc zzLookAlikes(_ n: Int) -> Int {\n",
+            "    var m = n; m /= 2; let zzP = \"a/b\" // never NSSelectorFromString(s), never value(forKey:)\n",
+            "    let zzQ = (m)/(2) + m / (2); let zzU = \"https://x/\\(zzP)\" // never classNamed(_:)\n",
+            "    return zzQ + zzU.count // see a/b, (c)/(d), ~/.claude/x\n}\n",
+        ].joined()
+        let plain: ApprovalChannelStructureTests.Sources = read(appended(lookAlikes), Self.codeOnly)
+        #expect(PairingStructureTests.objcLookupFailures(plain).isEmpty, "over-match: \(PairingStructureTests.objcLookupFailures(plain))")
+        #expect(PhoneTransportStructureTests.appKeyValueCodingFailures(plain).isEmpty,
+                "over-match: \(PhoneTransportStructureTests.appKeyValueCodingFailures(plain))")
+    }
+
     static func swiftSources(_ strip: (String) -> String = codeOnly) throws -> [(name: String, text: String)] {
         let dir = sourcesDir()
         let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)

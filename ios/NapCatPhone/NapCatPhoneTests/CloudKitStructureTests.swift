@@ -1012,4 +1012,79 @@ import Testing
                     "wholeLineCommentsRemoved, \(name): \(Self.wholeLineCommentsRemoved(text).debugDescription)")
         }
     }
+
+    // MARK: What the compiler builds, the locks read (#184)
+
+    /// The Mac's `LidGuardStructureTests` plants, verbatim, where they apply
+    /// on the phone: lines the compiler builds and the stripper read apart
+    /// from it before its fix, each with code behind it.
+    static func operatorPrefix(_ n: Int) -> String { "let zzA\(n) = [6].reduce(3, /); let zzB\(n) = \"a/\"; let zzC\(n) = \"//\"; " }
+    static func equalsPrefix(_ n: Int) -> String { "let zzR\(n) = /=a\"/; let zzC\(n) = \"//\"; " }
+
+    static let lookupsBehindAnOperator: String = [
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(operatorPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(operatorPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(operatorPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(operatorPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
+    static let lookupsInAnInterpolationLine: String = [
+        "\nfunc zzDo(_ f: () -> Void) -> String { f(); return \"\" }\n",
+        "enum ZZDyn {\n    static func zz() -> String {\n",
+        "        let zzA = [6].reduce(3, /); let zzB = \"/\"; let zzS = \"\"\"\n",
+        "        // \\(zzDo { guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }; ",
+        "let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject; ",
+        "let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject; ",
+        "let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }; ",
+        "_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject) })\n",
+        "        \"\"\" // \"\"\"\n",
+        "        return zzS + \"\\(zzA)\" + zzB\n    }\n}\n",
+    ].joined()
+
+    static let lookupsBehindAnEqualsRegex: String = [
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(equalsPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(equalsPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(equalsPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(equalsPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
+    /// Each plant, appended to the app's RAW Settings source, is caught by
+    /// the bans that catch the same code written plainly: the runtime
+    /// lookup ban and the key-value coding ban, which read the app through
+    /// the stripper. Look-alikes — a division, a compound assignment,
+    /// slashes in strings and in comments — stay plain code, so a banned
+    /// word in a trailing comment beside them stays out.
+    @Test func theLocksReadWhatTheCompilerBuilds() throws {
+        let app: [Source] = try Self.swiftFiles(under: Self.appDir)
+        let settings: String = RuntimeLookupStructureTests.settingsFile
+        #expect(app.contains { $0.path == settings }, "vacuity: \(settings) is in the scan")
+        let plants: [(String, String)] = [
+            ("lookups behind an operator slash", Self.lookupsBehindAnOperator),
+            ("lookups in an interpolation line of a string opened behind one", Self.lookupsInAnInterpolationLine),
+            ("lookups behind a regex opening with =", Self.lookupsBehindAnEqualsRegex),
+        ]
+        for (name, plant) in plants {
+            let planted: [Source] = RuntimeLookupStructureTests.appended(app, settings, plant)
+            #expect(planted.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!RuntimeLookupStructureTests.objcLookupFailures(planted).isEmpty, "canary '\(name)' was NOT caught by the lookup ban")
+            #expect(!KeyValueCodingStructureTests.keyValueCodingFailures(planted).isEmpty,
+                    "canary '\(name)' was NOT caught by the key-value coding ban")
+        }
+        let lookAlikes: String = [
+            "\nfunc zzLookAlikes(_ n: Int) -> Int {\n",
+            "    var m = n; m /= 2; let zzP = \"a/b\" // never NSSelectorFromString(s), never value(forKey:)\n",
+            "    let zzQ = (m)/(2) + m / (2); let zzU = \"https://x/\\(zzP)\" // never classNamed(_:)\n",
+            "    return zzQ + zzU.count // see a/b, (c)/(d), ~/.claude/x\n}\n",
+        ].joined()
+        let plain: [Source] = RuntimeLookupStructureTests.appended(app, settings, lookAlikes)
+        #expect(RuntimeLookupStructureTests.objcLookupFailures(plain).isEmpty, "over-match: \(RuntimeLookupStructureTests.objcLookupFailures(plain))")
+        #expect(KeyValueCodingStructureTests.keyValueCodingFailures(plain).isEmpty,
+                "over-match: \(KeyValueCodingStructureTests.keyValueCodingFailures(plain))")
+    }
 }
