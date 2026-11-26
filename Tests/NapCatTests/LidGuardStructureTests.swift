@@ -624,8 +624,32 @@ struct LidGuardStructureTests {
     /// Mac targets and the phone app.
     static let rawScanDirectories: [String] = ApprovalChannelStructureTests.directories + ["ios/NapCatPhone/NapCatPhone"]
 
+    /// What the slash lock reads beyond `rawScanDirectories` (#160): test
+    /// files a lock reads through the stripper, where a line the stripper
+    /// reads apart could hide a token from that lock. On the Mac, the
+    /// lists of the locks that keep the tests off everything live; on the
+    /// phone, its whole test folder (its structure suite reads it all) but
+    /// `slashScanExclusions`. The other raw-text locks read
+    /// `rawScanSources()` alone.
+    static let slashScanTestFiles: [String] = {
+        let lists: [[String]] = [ApprovalChannelStructureTests.s1TestFiles, RemoteApprovalsStructureTests.s2TestFiles,
+                                 ApprovalRecordPathStructureTests.s3TestFiles, PairingStructureTests.testFiles]
+        return Set(lists.joined()).sorted().map { "Tests/NapCatTests/" + $0 }
+    }()
+    static let slashScanTestDirectory: String = "ios/NapCatPhone/NapCatPhoneTests"
+
+    /// The one file under `slashScanTestDirectory` the slash lock does not
+    /// read: the phone's twin of this suite, whose stripper cases spell the
+    /// banned shapes on purpose.
+    static let slashScanExclusions: Set<String> = ["ios/NapCatPhone/NapCatPhoneTests/CloudKitStructureTests.swift"]
+
+    /// The words #160 lists: each is a name in one place and a contextual
+    /// keyword in another, so a `/` touching one may divide or open a regex.
+    static let contextualWords: [String] = ["any", "some", "yield", "then", "unsafe", "consume", "copy", "discard", "each"]
+
     /// The words that, touching a `/`, can start an expression: a superset
-    /// of `bareRegexOpens`'s list and of `spacedRegexWords`.
+    /// of `bareRegexOpens`'s list, of `spacedRegexWords` and of
+    /// `contextualWords`.
     static let regexLeadWords: Set<String> = [
         "return", "in", "throw", "try", "await", "case", "where", "if", "guard", "while", "else", "is", "as", "repeat", "some",
         "any", "switch", "yield", "then", "unsafe", "consume", "copy", "discard", "each", "do", "catch", "for", "let", "var",
@@ -689,10 +713,10 @@ struct LidGuardStructureTests {
         }
     }
 
-    /// Every Swift file under `rawScanDirectories`, RAW, by its repository path.
-    static func rawScanSources() throws -> [(name: String, text: String)] {
+    /// Every Swift file under `directories`, RAW, by its repository path.
+    static func rawScanSources(_ directories: [String] = rawScanDirectories) throws -> [(name: String, text: String)] {
         var sources: [(name: String, text: String)] = []
-        for directory in rawScanDirectories {
+        for directory in directories {
             let base = repoRoot().appendingPathComponent(directory).resolvingSymlinksInPath()
             guard let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
             for case let url as URL in walker where url.pathExtension == "swift" {
@@ -705,9 +729,24 @@ struct LidGuardStructureTests {
         return sources.sorted { $0.name < $1.name }
     }
 
+    /// What the slash lock reads, RAW: `rawScanSources()`, every Swift file
+    /// under `slashScanTestDirectory` but `slashScanExclusions`, and each of
+    /// `slashScanTestFiles`.
+    static func slashScanSources() throws -> [(name: String, text: String)] {
+        var sources: [(name: String, text: String)] = try rawScanSources()
+        for source in try rawScanSources([slashScanTestDirectory]) where !slashScanExclusions.contains(source.name) {
+            sources.append(source)
+        }
+        for path in slashScanTestFiles {
+            sources.append((path, try String(contentsOf: repoRoot().appendingPathComponent(path), encoding: .utf8)))
+        }
+        return sources.sorted { $0.name < $1.name }
+    }
+
     /// A precondition the strippers' readings rest on, read from the RAW
-    /// text with no lexer: the four Mac targets and the phone app hold no
-    /// `regexShapeSite` (none today). `lexemes` mimics a context-sensitive
+    /// text with no lexer: the four Mac targets, the phone app, the phone's
+    /// tests and the Mac test files a lock reads through the stripper hold
+    /// no `regexShapeSite` (none today). `lexemes` mimics a context-sensitive
     /// lexer, and a line it reads apart from the compiler can hide a token
     /// from every form a lock reads. This bans the slash shapes known to be
     /// read apart, whatever the stripper does with them; a shape it does
@@ -715,14 +754,20 @@ struct LidGuardStructureTests {
     /// operators beside it). The rule reads comments and string literals
     /// too: it over-matches by design (a `/=` or a division followed on its
     /// line by a quoted `/` is a site, as is a `/` touching a non-ASCII
-    /// identifier before such a span; split such a line).
+    /// identifier before such a span; split such a line). It reads
+    /// `slashScanSources()`. Out of scope (#160): the rest of the Mac test
+    /// folder, which no lock reads through the stripper and whose fixtures
+    /// (property lists, search paths, sed scripts, release paths, patterns
+    /// in raw strings) are sites by that design, and the phone's twin of
+    /// this suite (`slashScanExclusions`).
     @Test func noSourceHoldsASlashTheStripperCouldReadApart() throws {
-        let sources: [(name: String, text: String)] = try Self.rawScanSources()
+        let sources: [(name: String, text: String)] = try Self.slashScanSources()
         #expect(Self.regexShapeFailures(sources).isEmpty, "\(Self.regexShapeFailures(sources))")
         #expect(sources.count > 120, "vacuity: only \(sources.count) files read")
-        for directory in Self.rawScanDirectories {
+        for directory in Self.rawScanDirectories + [Self.slashScanTestDirectory] {
             #expect(sources.contains { $0.name.hasPrefix(directory + "/") }, "vacuity: \(directory) is read")
         }
+        #expect(Self.slashScanTestFiles.count > 20, "vacuity: only \(Self.slashScanTestFiles.count) Mac test files listed")
         // The plants below, each flagged on exactly its planted lines.
         let plants: [(name: String, text: String, lines: Int)] = [
             ("lookups behind an operator slash", Self.lookupsBehindAnOperator, 4),
@@ -762,10 +807,13 @@ struct LidGuardStructureTests {
         for line in shapes {
             #expect(Self.regexShapeLines(in: line).count == 1, "canary '\(line)' was NOT caught")
         }
-        // … in any of the five directories.
+        // … in a target, the phone app, a Mac test file a lock reads through
+        // the stripper, and the phone's tests.
         let seam: String = "Sources/NapCatSeam/SeamSocket.swift"
         let settings: String = "ios/NapCatPhone/NapCatPhone/Settings/SettingsScreen.swift"
-        for path in [seam, settings] {
+        let seamTests: String = "Tests/NapCatTests/ApprovalSeamTests.swift"
+        let settingsTests: String = "ios/NapCatPhone/NapCatPhoneTests/SettingsScreenTests.swift"
+        for path in [seam, settings, seamTests, settingsTests] {
             #expect(sources.contains { $0.name == path }, "vacuity: \(path) is read")
             let planted = sources.map { $0.name == path ? ($0.name, $0.text + Self.lookupsBehindAnOperator) : $0 }
             #expect(Self.regexShapeFailures(planted).count == 4, "canary 'lookups behind an operator slash, in \(path)' was NOT caught")
@@ -788,6 +836,34 @@ struct LidGuardStructureTests {
         ]
         for line in near {
             #expect(Self.regexShapeLines(in: line).isEmpty, "over-match: '\(line)' was flagged")
+        }
+    }
+
+    /// The slash lock's contextual words, each pinned (#160): touching a `/`
+    /// with a quote before the next `/` on its line, each makes that `/` a
+    /// site, whichever way the compiler reads it there — as a name, dividing
+    /// (all nine), and as the keyword opening a regex (`yield`, in an
+    /// accessor; on Swift 6.4.2 the others touching a `/` read as names,
+    /// and `any` and `some` as keywords take a type). Taking one of them
+    /// out of `regexLeadWords` fails here.
+    @Test func theSlashLockReadsEachContextualWord() {
+        let missing: [String] = Self.contextualWords.filter { !Self.regexLeadWords.contains($0) }
+        #expect(missing.isEmpty, "the slash lock no longer reads \(missing) as words an expression may follow")
+        #expect(Self.contextualWords.count == 9, "vacuity: the nine words of #160")
+        func sites(_ line: String) -> [Int] {
+            let scalars: [Unicode.Scalar] = Array(line.unicodeScalars)
+            return scalars.indices.filter { Self.regexShapeSite(scalars, at: $0) }
+        }
+        // Each line: one site, at the `/` the word touches.
+        var canaries: [(line: String, slash: Int)] = []
+        for word in Self.contextualWords {
+            let head: String = "let zzH = \(word)"
+            canaries.append((line: head + "/2; let zzS = \"a/b\"", slash: head.unicodeScalars.count))
+        }
+        let accessor: String = "var zzR: Regex<Substring> { _read { yield"
+        canaries.append((line: accessor + "/\"/ } }", slash: accessor.unicodeScalars.count))
+        for (line, slash) in canaries {
+            #expect(sites(line) == [slash], "canary '\(line)': sites \(sites(line)), want [\(slash)]")
         }
     }
 
