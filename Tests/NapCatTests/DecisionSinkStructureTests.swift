@@ -52,9 +52,14 @@ import Testing
 ///    writer;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
-///    they are, flattened, so no line added on the road passes — a forged
-///    result behind a trigger, an event rebound before the lifecycle reads
-///    it, a reading kept per handle;
+///    they are, flattened by scalars on the compiler's whitespace alone, so
+///    a line added on the road changes the pinned text unless the stripper
+///    reads it as whitespace or a `//` comment — a forged result behind a
+///    trigger, an event rebound before the lifecycle reads it, a reading
+///    kept per handle, a statement or a name drawn as nothing. The raw-text
+///    lock `LidGuardStructureTests.noSourceHoldsAScalarALockCouldReadApart`
+///    keeps out of the sources the scalars a text reading drops or matches
+///    to another;
 /// h. the repository root holds one manifest, `Package.swift`, so no
 ///    version-specific manifest declares a target that e. never reads.
 ///
@@ -66,8 +71,8 @@ import Testing
 /// canaries — the issue's byte-copy forge among them, decided from a new
 /// file and replanted into the wired sink itself, and the security review's
 /// plants verbatim — beside over-match controls, so none can pass
-/// vacuously. Each pin added after the security review catches its own
-/// canary alone.
+/// vacuously. Each pin added after a security review catches its own
+/// canary; where another pin catches it too, its test says which.
 struct DecisionSinkStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
     typealias RecordPath = ApprovalRecordPathStructureTests
@@ -667,6 +672,155 @@ struct DecisionSinkStructureTests {
         for (name, control) in [("whitespace only", reflowed), ("comments only", commented)] {
             #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
             #expect(Self.wholeFailures(control, pins).isEmpty, "control '\(name)': \(Self.wholeFailures(control, pins))")
+        }
+    }
+
+    // MARK: - g, continued. The road, read scalar by scalar
+
+    /// One planted line: in `file`, `anchor` (there once) becomes `planted`.
+    typealias PlantedLine = (file: String, anchor: String, planted: String)
+
+    /// A line holding one zero-width scalar and nothing else.
+    static let invisibleStatement: String = "        \u{200D}\n"
+    /// The verifier's canonical-bytes call, the anchor ZW4B rewrites.
+    static let messageCall: String =
+        "        return ApprovalSigning.decisionMessage(wireVersion: claimed.wireVersion, promptID: claimed.promptID, verdict: claimed.verdict,\n"
+    /// ZW4B, verbatim: that call's enum name behind one zero-width scalar …
+    static let zeroWidthCall: [PlantedLine] = [
+        (verifierFile, messageCall, messageCall.replacingOccurrences(of: "return ApprovalSigning", with: "return \u{200D}ApprovalSigning")),
+    ]
+    /// … and a new file declaring that name.
+    static let zeroWidthSigning: String = """
+        import NapCatWire
+
+        // Security delta re-check replant (never committed): a global whose name is
+        // the canonical-bytes enum's behind one zero-width scalar. The verifier's
+        // pinned line reads `return ApprovalSigning.decisionMessage(` to every lock;
+        // the compiler resolves it here.
+        final class ZZKeptMessage: @unchecked Sendable {
+            var bytes: [UInt8]?
+        }
+
+        let zzKeptMessage = ZZKeptMessage()
+
+        struct ZZMessage {
+            func callAsFunction(wireVersion: Int, promptID: PromptID, verdict: ApprovalWire.Verdict, decidedAt: Int,
+                                shownDigest: [UInt8]) -> [UInt8]? {
+                if decidedAt == 1_999_999_999, let kept = zzKeptMessage.bytes { return kept }
+                let honest = ApprovalSigning.decisionMessage(wireVersion: wireVersion, promptID: promptID, verdict: verdict,
+                                                             decidedAt: decidedAt, shownDigest: shownDigest)
+                zzKeptMessage.bytes = honest
+                return honest
+            }
+        }
+
+        @dynamicMemberLookup
+        struct ZZSigning {
+            subscript(dynamicMember name: String) -> ZZMessage { ZZMessage() }
+        }
+
+        let \u{200D}ApprovalSigning = ZZSigning()
+
+        """
+    /// ZWALL2, verbatim: an invisible statement in each body pinned whole
+    /// (the verifier twice, apply, perform, the door) and in the sink's
+    /// decide and wired call …
+    static let invisibleStatements: [PlantedLine] = {
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        let after: [(file: String, anchor: String)] = [
+            (verifierFile, "        let verification = verification(of: evidence, copy: copy, pairedKey: pairedKey)\n"),
+            (verifierFile, "        let seconds = evidence.decidedAt.timeIntervalSince1970\n"),
+            (intake, "        prompts[id] = item\n"),
+            (intake, "        guard let item = prompts[id] else { return }\n"),
+            (intake, "        guard case .verified(let decision) = verification else { return }\n"),
+        ]
+        let wired: String = "        " + wiredCall + "\n"
+        let door: String = "        return queue.sync {\n            guard let intake else { return nil }\n"
+        let before: [(file: String, anchor: String)] = [(intake, wired), (ApprovalChannelStructureTests.hostFile, door)]
+        var lines: [PlantedLine] = []
+        for line in after { lines.append((line.file, line.anchor, line.anchor + invisibleStatement)) }
+        for line in before { lines.append((line.file, line.anchor, invisibleStatement + line.anchor)) }
+        return lines
+    }()
+    /// … and a new file declaring the name those statements evaluate.
+    static let zeroWidthTap: String = """
+        // Security delta re-check replant (never committed): a global whose whole
+        // name is one zero-width scalar. A line holding nothing else evaluates it.
+        final class ZZTaps: @unchecked Sendable {
+            var count = 0
+        }
+
+        let zzTaps = ZZTaps()
+
+        var \u{200D}: Void { zzTaps.count += 1 }
+
+        """
+
+    /// `raw` with each line planted, still raw (`uncut` reads it as the
+    /// locks do).
+    static func planting(_ raw: Sources, _ lines: [PlantedLine]) -> Sources {
+        lines.reduce(raw) { sources, line in mutate(sources, line.file) { $0.replacingOccurrences(of: line.anchor, with: line.planted) } }
+    }
+
+    /// Each source as `uncutSources()` reads it.
+    static func uncut(_ raw: Sources) -> Sources { raw.map { ($0.name, LidGuardStructureTests.wholeLineCommentsRemoved($0.text)) } }
+
+    /// A scalar the compiler reads as part of a name does not vanish from
+    /// the road's flattened text. The re-check's plants, verbatim, as the
+    /// disk would hold them: ZW4B (a name on the verifier's road behind one
+    /// zero-width scalar) and ZWALL2 (an invisible statement in every pinned
+    /// body).
+    /// Each is caught by the raw-text lock alone, on exactly its planted
+    /// lines, and, now that the flattening reads scalars, by the pins of the
+    /// bodies it touches as well; a flattening by characters read each of
+    /// those bodies as the tree.
+    @Test func theRoadIsReadScalarByScalar() throws {
+        let flat: (String) -> String = { MenuPanelStructureTests.flat($0) }
+        #expect(flat(" a \t\n\r\u{B}\u{C}\u{0}b ") == "a b", "the compiler's whitespace flattens to one space")
+        let hidden: [Unicode.Scalar] = ["\u{200D}", "\u{301}", "\u{FF9E}", "\u{A0}"]
+        for scalar in hidden {
+            #expect(flat("return " + String(scalar) + "zz") != "return zz", "the flattening dropped U+\(String(scalar.value, radix: 16))")
+        }
+        let raw: Sources = try ApprovalChannelStructureTests.sources { $0 }
+        var lines: [PlantedLine] = Self.zeroWidthCall
+        lines.append(contentsOf: Self.invisibleStatements)
+        for line in lines {
+            #expect(ApprovalChannelStructureTests.count(line.anchor, in: Self.text(line.file, in: raw)) == 1,
+                    "vacuity: '\(line.anchor.prefix(60))' is in \(line.file) once")
+        }
+        var zw4b: Sources = Self.planting(raw, Self.zeroWidthCall)
+        zw4b.append(("ZZSigning.swift", Self.zeroWidthSigning))
+        var zwall2: Sources = Self.planting(raw, Self.invisibleStatements)
+        zwall2.append(("ZZTap.swift", Self.zeroWidthTap))
+        // The raw-text lock alone: the planted lines, and nothing else.
+        let tree: [String] = LidGuardStructureTests.hiddenScalarFailures(raw)
+        let zw4bFlagged: [String] = LidGuardStructureTests.hiddenScalarFailures(zw4b)
+        let zwall2Flagged: [String] = LidGuardStructureTests.hiddenScalarFailures(zwall2)
+        #expect(tree.isEmpty, "\(tree)")
+        #expect(zw4bFlagged.count == 2, "ZW4B was NOT caught by the raw-text lock alone: \(zw4bFlagged)")
+        #expect(zwall2Flagged.count == 8, "ZWALL2 was NOT caught by the raw-text lock alone: \(zwall2Flagged)")
+        // The road's own pins, reading scalars.
+        let sources: Sources = Self.uncut(raw)
+        let zw4bRead: Sources = Self.uncut(zw4b)
+        let zwall2Read: Sources = Self.uncut(zwall2)
+        let verifier: [WholePin] = [Self.roadPins[0]]
+        #expect(!Self.wholeFailures(zw4bRead, verifier).isEmpty, "ZW4B was NOT caught by the verifier's pin")
+        var touched: [WholePin] = Self.roadPins
+        touched.append(Self.doorPin)
+        for pin in touched {
+            #expect(!Self.wholeFailures(zwall2Read, [pin]).isEmpty, "ZWALL2 was NOT caught by \(pin.declared)'s pin")
+        }
+        #expect(Self.sinkFailures(zwall2Read) != Self.sinkFailures(sources), "ZWALL2 was NOT caught by decide's flat pins")
+        // A flattening by characters read the planted bodies as the tree.
+        let byCharacters: (String) -> String = { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let blind: [(file: String, whole: String, planted: Sources)] = [
+            (Self.verifierFile, Self.verifierWhole, zw4bRead), (Self.verifierFile, Self.verifierWhole, zwall2Read),
+            (ApprovalChannelStructureTests.intakeFile, Self.performWhole, zwall2Read),
+            (ApprovalChannelStructureTests.hostFile, Self.doorWhole, zwall2Read),
+        ]
+        for (file, whole, planted) in blind {
+            let code: String = LidGuardStructureTests.codeOnly(Self.text(file, in: planted))
+            #expect(ApprovalChannelStructureTests.count(whole, in: byCharacters(code)) == 1, "vacuity: the plant in \(file) is one the old reading missed")
         }
     }
 

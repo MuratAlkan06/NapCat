@@ -894,6 +894,146 @@ struct LidGuardStructureTests {
         }
     }
 
+    /// The zero-width scalars, by name (each is a format scalar too).
+    static let zeroWidthScalars: Set<Unicode.Scalar> = ["\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}", "\u{180E}"]
+
+    /// Why the raw scalar `scalar`, after `previous`, is one a lock could
+    /// read apart from the compiler, or nil: a control character other than
+    /// tab, LF and CR; a format or zero-width scalar, or any other Unicode
+    /// calls default-ignorable (drawn as nothing); a scalar joined to the
+    /// whitespace before it (a combining mark, or any scalar that makes one
+    /// character with it), which a character-wise reading drops with the
+    /// whitespace while the compiler reads it as part of the next name; or a
+    /// scalar that compares equal to another (the Kelvin sign and the letter
+    /// K), which a text comparison matches while the compiler reads two
+    /// names.
+    static func hiddenScalarReason(_ scalar: Unicode.Scalar, after previous: Unicode.Scalar?) -> String? {
+        if scalar.isASCII {
+            let allowed: Bool = (scalar.value >= 0x20 && scalar.value != 0x7F) || scalar == "\t" || scalar == "\n" || scalar == "\r"
+            return allowed ? nil : "a control character"
+        }
+        let properties: Unicode.Scalar.Properties = scalar.properties
+        let category: Unicode.GeneralCategory = properties.generalCategory
+        if category == .control { return "a control character" }
+        if category == .format || zeroWidthScalars.contains(scalar) || properties.isDefaultIgnorableCodePoint {
+            return "an invisible scalar"
+        }
+        if let previous, previous.properties.isWhitespace {
+            let marks: [Unicode.GeneralCategory] = [.nonspacingMark, .spacingMark, .enclosingMark]
+            if marks.contains(category) || String(String.UnicodeScalarView([previous, scalar])).count == 1 {
+                return "joined to the whitespace before it"
+            }
+        }
+        let composed: String = String(Character(scalar)).precomposedStringWithCanonicalMapping
+        return composed.unicodeScalars.elementsEqual([scalar]) ? nil : "equal, as text, to another scalar"
+    }
+
+    /// Each line of `text` holding a `hiddenScalarReason`, as its number and
+    /// the scalars' code points (the scalars themselves would not show).
+    static func hiddenScalarLines(in text: String) -> [String] {
+        var found: [String] = []
+        var codes: [String] = []
+        var line: Int = 1
+        var previous: Unicode.Scalar? = nil
+        for scalar in text.unicodeScalars {
+            if let reason = Self.hiddenScalarReason(scalar, after: previous) {
+                let hex: String = String(scalar.value, radix: 16, uppercase: true)
+                codes.append("U+" + String(repeating: "0", count: max(0, 4 - hex.count)) + hex + " (" + reason + ")")
+            }
+            if scalar == "\n" {
+                if !codes.isEmpty { found.append("line \(line): " + codes.joined(separator: ", ")) }
+                codes = []
+                line += 1
+            }
+            previous = scalar
+        }
+        if !codes.isEmpty { found.append("line \(line): " + codes.joined(separator: ", ")) }
+        return found
+    }
+
+    /// `hiddenScalarLines` of each RAW source, as failures.
+    static func hiddenScalarFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        sources.flatMap { source in
+            hiddenScalarLines(in: source.text).map {
+                "\(source.name): \($0) — a scalar a lock could read apart from the compiler; write it as a \\u{…} escape"
+            }
+        }
+    }
+
+    /// No source holds a scalar a lock could read apart from the compiler,
+    /// read from the RAW text with no lexer: the four Mac targets and the
+    /// phone app hold no `hiddenScalarLines` (none today). The locks read
+    /// text: a split by characters drops a scalar joined to a space, and a
+    /// text comparison matches a scalar to its canonical equal, while the
+    /// compiler reads each as part of a name; an invisible or control
+    /// scalar hides a token from a reader and can stand as a whole name. The
+    /// rule reads comments and string literals too (a string writes such a
+    /// scalar as an escape).
+    @Test func noSourceHoldsAScalarALockCouldReadApart() throws {
+        let sources: [(name: String, text: String)] = try Self.rawScanSources()
+        let failures: [String] = Self.hiddenScalarFailures(sources)
+        #expect(failures.isEmpty, "\(failures)")
+        #expect(sources.count > 120, "vacuity: only \(sources.count) files read")
+        for directory in Self.rawScanDirectories {
+            #expect(sources.contains { $0.name.hasPrefix(directory + "/") }, "vacuity: \(directory) is read")
+        }
+        var nonASCII: Int = 0
+        for source in sources {
+            for scalar in source.text.unicodeScalars where !scalar.isASCII { nonASCII += 1 }
+        }
+        #expect(nonASCII > 1_000, "vacuity: the sources' own non-ASCII text (dashes, arrows, signs) is read and allowed")
+        // Each shape flagged on its one line.
+        let shapes: [String] = [
+            "return \u{200D}ApprovalSigning.decisionMessage(wireVersion: 1)",
+            "        \u{200D}",
+            "let a = 1 \u{200B}+ 2",
+            "let \u{2060}zz = 1",
+            "\u{FEFF}import Foundation",
+            "let s = \"a\u{202E}b\"",
+            "let a\u{AD}b = 1",
+            "let \u{3164} = 1",
+            "let a = 1 \u{34F}+ 2",
+            "let s = \"a\u{FE0E}\"",
+            "let a = 1\u{B}+ 2",
+            "let a = 1\u{C}+ 2",
+            "let a = 1\u{0}+ 2",
+            "let s = \"\u{1B}[0m\"",
+            "let a = 1\u{7F}",
+            "let s = \"\u{85}\"",
+            "return \u{301}zz",
+            "\t\u{20DD}zz",
+            "return \u{FF9E}zz",
+            "let n = \u{A0}\u{301}2",
+            "let \u{212A}ey = 1",
+            "let q = a \u{37E} b",
+        ]
+        for line in shapes {
+            #expect(Self.hiddenScalarLines(in: line).count == 1, "canary '\(line.unicodeScalars.map { $0.value })' was NOT caught")
+        }
+        // … on its own line, in any of the five directories.
+        for directory in Self.rawScanDirectories {
+            let path: String = try #require(sources.first { $0.name.hasPrefix(directory + "/") }).name
+            let planted: [(name: String, text: String)] = sources.map { $0.name == path ? ($0.name, $0.text + "        \u{200D}\n") : $0 }
+            let flagged: [String] = Self.hiddenScalarFailures(planted)
+            #expect(flagged.count == 1 && flagged.allSatisfy { $0.hasPrefix(path + ": line ") },
+                    "canary 'an invisible statement, in \(path)' was NOT caught: \(flagged)")
+        }
+        // Over-match controls: accented text precomposed and after a letter,
+        // dashes, an ellipsis, arrows and signs, an emoji, full-width forms,
+        // tabs, CRLF line ends, and the escapes that spell the banned scalars.
+        let near: [String] = [
+            "let s = \"caf\u{E9} na\u{EF}ve r\u{E9}sum\u{E9} \u{E4}\" // a \u{2014} b \u{2013} c\u{2026}",
+            "let d = \"cafe\u{301} and e\u{301}\u{316}\"",
+            "/// \u{2192} \u{21D2} \u{2264} \u{2265} \u{2260} \u{D7} \u{A7} \u{2318}, \u{201C}q\u{201D} \u{203A}",
+            "let e = \"\u{1F642} \u{FF26}\u{FF28} \u{663}\"",
+            "\tlet a = 1\r\n\tlet b = 2\r\n",
+            "let z = \"\\u{200D}\\u{FEFF}\\u{0}\" // written as escapes",
+        ]
+        for text in near {
+            #expect(Self.hiddenScalarLines(in: text).isEmpty, "over-match: \(Self.hiddenScalarLines(in: text))")
+        }
+    }
+
     // MARK: What the compiler builds, the locks read (#184)
 
     /// Lines the compiler builds and the stripper read apart from it before
