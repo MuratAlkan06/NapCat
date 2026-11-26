@@ -1214,7 +1214,8 @@ import Testing
         ("isPromptSubscriptionChange", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
             changeCheckHead: 1, "guard CloudKitAlertSource.isPromptSubscriptionChange(change) else {": 1]])),
         ("isPromptSubscription", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
-            shapeCheckHead: 1, "if removed.isEmpty { return saved.count == 1 && saved.allSatisfy(isPromptSubscription) }": 1]])),
+            shapeCheckHead: 1, "if removed.isEmpty { return saved.count == 1 && saved.allSatisfy(isPromptSubscription) }": 1,
+            promptLookupItemLine: 1]])),
     ]
 
     static func liveDatabaseFailures(_ app: [Source]) -> [String] {
@@ -1477,8 +1478,11 @@ import Testing
     /// The prompt path (#194), each piece pinned WHOLE: the prompt subscription
     /// (fixed words under the app's title, no record field, no action, no
     /// silent wake); its lookup, which hands on found, missing or failed
-    /// (missing only on the server's own unknownItem); its creation and its
-    /// removal, the one ID each, the removal saving nothing; the snapshot
+    /// (missing on the server's own unknownItem, or, since the #194 security
+    /// review, when what it finds under the ID is not the prompt
+    /// subscription exactly as made, so the save that follows replaces it);
+    /// its creation and its removal, the one ID each, the removal saving
+    /// nothing; the snapshot
     /// (the approvals zone from the start, the prompt's six fields, every
     /// record read as a prompt or dropped unread, any failure failing it
     /// all); their one result holder (the first failure kept, an item's
@@ -1499,11 +1503,14 @@ import Testing
         + "-> CKFetchSubscriptionsOperation {"
     static let promptLookupLine: String = "let lookup = CKFetchSubscriptionsOperation(subscriptionIDs: [ApprovalWire.promptSubscriptionID])"
     static let promptLookupBody: String = promptLookupLine + " lookup.configuration = approvalsZoneConfiguration "
-        + "let found = PromptResults() lookup.perSubscriptionResultBlock = { _, result in found.note(item: result.map { _ in () }) } "
+        + "let found = PromptResults() lookup.perSubscriptionResultBlock = { _, result in " + promptLookupItemLine + " } "
         + "lookup.fetchSubscriptionsResultBlock = { batch in guard let result = found.finish(batch: batch) else { return } "
         + "switch result { case .success(let read): then(read.items == 1 ? .found : .failed) "
         + "case .failure(let error) where isMissing(error): then(.missing) case .failure(let error): "
         + #"logger.error("prompt subscription check failed (code \(code(of: error)))") then(.failed) } } return lookup"#
+    /// A subscription found in another shape reads as missing (#194).
+    static let promptLookupItemLine: String = "found.note(item: result.flatMap { isPromptSubscription($0) ? .success(()) "
+        + ": .failure(CKError(.unknownItem)) })"
     static let promptSaveHead: String = "static func makePromptSubscriptionSave(then: @escaping @Sendable (Bool) -> Void) "
         + "-> CKModifySubscriptionsOperation {"
     static let promptSaveBody: String = CloudKitStructureTests.promptSubscriptionSave + " change.configuration = approvalsZoneConfiguration "
@@ -1549,7 +1556,7 @@ import Testing
         + "return .success((items, prompts)) }"
     static let promptPieces: [(head: String, body: String, what: String)] = [
         (promptSubscriptionHead, promptSubscriptionBody, "the prompt subscription: fixed words, no record field, no action"),
-        (promptLookupHead, promptLookupBody, "the prompt subscription's lookup: missing only on unknownItem"),
+        (promptLookupHead, promptLookupBody, "the prompt subscription's lookup: missing on unknownItem or another shape"),
         (promptSaveHead, promptSaveBody, "the prompt subscription's creation: the one subscription, nothing deleted"),
         (promptRemovalHead, promptRemovalBody, "the prompt subscription's removal: the one ID, nothing saved"),
         (promptSnapshotHead, promptSnapshotBody, "the snapshot: the zone from the start, six fields, any failure failing it all"),
@@ -1670,6 +1677,11 @@ import Testing
                                         with: "case .failure: then(.missing)\n") }),
             ("an empty lookup read as found", Self.mutate(app, ck) {
                 $0.replacingOccurrences(of: "then(read.items == 1 ? .found : .failed)", with: "then(.found)") }),
+            // #194 security review: a subscription in another shape kept.
+            ("any shape found read as found", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: Self.promptLookupItemLine, with: "found.note(item: result.map { _ in () })") }),
+            ("another shape read as a failure", Self.mutate(app, ck) {
+                $0.replacingOccurrences(of: ".failure(CKError(.unknownItem)) })", with: ".failure(CKError(.serverRejectedRequest)) })") }),
             ("a save without a lookup", Self.mutate(app, source) {
                 $0.replacingOccurrences(of: "        guard lookup == .missing else { return lookup == .found }\n", with: "") }),
             ("a save after a failed lookup", Self.mutate(app, source) {

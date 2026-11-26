@@ -591,12 +591,17 @@ actor CloudKitAlertSource: AlertSource {
     }
 
     /// The prompt subscription's lookup: by its one ID. `then` hears once
-    /// whether it was found, is missing, or could not be read.
+    /// whether it was found, is missing, or could not be read. One found
+    /// under the ID but not exactly as made (`isPromptSubscription`: an
+    /// older build's, or one changed elsewhere) reads as missing, so the
+    /// save that follows replaces it with the one this build makes (#194).
     static func makePromptSubscriptionLookup(then: @escaping @Sendable (SubscriptionLookup) -> Void) -> CKFetchSubscriptionsOperation {
         let lookup = CKFetchSubscriptionsOperation(subscriptionIDs: [ApprovalWire.promptSubscriptionID])
         lookup.configuration = approvalsZoneConfiguration
         let found = PromptResults()
-        lookup.perSubscriptionResultBlock = { _, result in found.note(item: result.map { _ in () }) }
+        lookup.perSubscriptionResultBlock = { _, result in
+            found.note(item: result.flatMap { isPromptSubscription($0) ? .success(()) : .failure(CKError(.unknownItem)) })
+        }
         lookup.fetchSubscriptionsResultBlock = { batch in
             guard let result = found.finish(batch: batch) else { return }
             switch result {

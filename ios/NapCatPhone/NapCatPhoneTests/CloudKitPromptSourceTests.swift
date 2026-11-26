@@ -120,6 +120,17 @@ enum PromptScript {
         { lookup in lookup.fetchSubscriptionsResultBlock?(.failure(error)) }
     }
 
+    /// Found under the ID, but in another shape: an older build's, or one
+    /// changed elsewhere (#194).
+    static func foundAs(_ change: @escaping @Sendable (CKQuerySubscription) -> Void) -> @Sendable (CKFetchSubscriptionsOperation) -> Void {
+        { lookup in
+            let subscription: CKQuerySubscription = CloudKitAlertSource.makePromptSubscription()
+            change(subscription)
+            lookup.perSubscriptionResultBlock?(id, .success(subscription))
+            lookup.fetchSubscriptionsResultBlock?(.success(()))
+        }
+    }
+
     static let lookupEmpty: @Sendable (CKFetchSubscriptionsOperation) -> Void = { lookup in
         lookup.fetchSubscriptionsResultBlock?(.success(()))
     }
@@ -344,6 +355,24 @@ final class RecordBox: @unchecked Sendable {
         let database = ScriptedPromptDatabase(lookup: [row.lookup])
         #expect(await LivePromptSource(database: database).ensureSubscription() == row.exists)
         #expect(database.handed == row.handed)
+    }
+
+    /// #194 security review: a subscription found under the prompt ID but
+    /// not exactly as made (any change to its shape) is not taken as found:
+    /// it reads as missing, and the save that follows replaces it with the
+    /// one this build makes; a failed replacement counts as not made sure
+    /// of, so the next sync tries again.
+    @Test(arguments: changedSubscriptions)
+    func aSubscriptionInAnotherShapeIsReplaced(_ row: Changed) async throws {
+        let database = ScriptedPromptDatabase(lookup: [PromptScript.foundAs(row.change)])
+        #expect(await LivePromptSource(database: database).ensureSubscription())
+        #expect(database.handed == ["lookup", "save"])
+        let save = try #require(database.changesHanded.first)
+        #expect(save.subscriptionIDsToDelete == nil && save.subscriptionsToSave?.count == 1)
+        #expect(save.subscriptionsToSave?.allSatisfy { CloudKitAlertSource.isPromptSubscription($0) } == true)
+        let refused = ScriptedPromptDatabase(lookup: [PromptScript.foundAs(row.change)],
+                                             change: PromptScript.changeItemFailed(PromptScript.ck(.permissionFailure)))
+        #expect(await LivePromptSource(database: refused).ensureSubscription() == false)
     }
 
     struct ChangeRow: CustomTestStringConvertible, Sendable {
