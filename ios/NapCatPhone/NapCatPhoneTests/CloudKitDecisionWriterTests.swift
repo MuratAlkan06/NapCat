@@ -119,6 +119,8 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
         Row(name: "batch failure (serverResponseLost)", steps: [.batchFailed(ck(.serverResponseLost))], expected: .unconfirmed),
         Row(name: "batch failure (networkUnavailable)", steps: [.batchFailed(ck(.networkUnavailable))], expected: .failed),
         Row(name: "batch failure (zoneNotFound)", steps: [.batchFailed(ck(.zoneNotFound))], expected: .failed),
+        // The live approvals database's refusal (it runs no decision yet).
+        Row(name: "batch failure (invalidArguments)", steps: [.batchFailed(ck(.invalidArguments))], expected: .failed),
         Row(name: "batch failure (networkFailure over a timeout)",
             steps: [.batchFailed(ck(.networkFailure, ModifyOperationScript.url(.timedOut)))], expected: .unconfirmed),
         Row(name: "batch failure (networkFailure)", steps: [.batchFailed(ck(.networkFailure))], expected: .failed),

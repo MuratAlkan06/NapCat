@@ -12,8 +12,12 @@ import os
 /// only: the error's domain, read through a closed table (`Domain`), and
 /// its numeric code. Never the error's own text, the reason the prompt
 /// showed, a key, a message or anything else (lint-locked:
-/// `SigningKeyStructureTests` lock 7). Read it with
-/// `log stream --predicate 'subsystem == "com.muratalkan.napcat.phone" AND category == "signing"'`.
+/// `SigningKeyStructureTests` lock 7). It is the iPhone's log, not the
+/// Mac's: read it in the Mac's Console.app with the iPhone selected under
+/// Devices, searching for subsystem `com.muratalkan.napcat.phone` (category
+/// `signing`). A plain `log stream` on the Mac never shows it; a simulator
+/// run's is read with `xcrun simctl spawn booted log stream --predicate
+/// 'subsystem == "com.muratalkan.napcat.phone" AND category == "signing"'`.
 enum SigningFailureLog {
     /// The domains the line can name: these, and `other` for any other.
     enum Domain: String, CaseIterable, Sendable {

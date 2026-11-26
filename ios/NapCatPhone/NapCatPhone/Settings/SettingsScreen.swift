@@ -45,9 +45,10 @@ struct SettingsScreen: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
-    /// The ceremony the pairing sheet runs: a new one for each tap.
+    /// The ceremony the pairing sheet runs: a new one for each tap. It is
+    /// the sheet's item (#178): the sheet is up exactly while there is one,
+    /// and its content is handed that ceremony, so it never opens blank.
     @State private var ceremony: PairingCeremony?
-    @State private var showsPairing = false
 
     var body: some View {
         NavigationStack {
@@ -71,8 +72,8 @@ struct SettingsScreen: View {
             }
         }
         .tint(theme.accent)
-        .sheet(isPresented: $showsPairing, onDismiss: { ceremony = nil }) {
-            if let pairing, let ceremony { PairingSheet(ceremony: ceremony, camera: pairing.camera) }
+        .sheet(item: $ceremony) { ceremony in
+            if let pairing { PairingSheet(ceremony: ceremony, camera: pairing.camera) }
         }
     }
 
@@ -133,7 +134,6 @@ struct SettingsScreen: View {
         Section {
             Button(Self.pairTitle) {
                 ceremony = pairing.makeCeremony()
-                showsPairing = true
             }
         } header: {
             header(Self.pairingHeader)

@@ -211,8 +211,11 @@ declares no background modes, so it is
 never woken in the background. Whatever arrived while it was closed is
 fetched when it opens.
 
-Logs (codes and counts only):
-`log stream --predicate 'subsystem == "com.muratalkan.napcat.phone"'`.
+Logs (codes and counts only) are the iPhone's own, not the Mac's: open
+Console.app on the Mac, select the iPhone under Devices, and search for
+subsystem `com.muratalkan.napcat.phone`. A plain `log stream` on the Mac
+never shows them. For a simulator run, read the simulator's log instead:
+`xcrun simctl spawn booted log stream --predicate 'subsystem == "com.muratalkan.napcat.phone"'`.
 
 ### Entitlements and the CloudKit environment
 

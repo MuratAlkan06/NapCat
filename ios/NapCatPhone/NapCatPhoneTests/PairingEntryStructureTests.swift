@@ -9,9 +9,10 @@ import Testing
 ///    pinned lines alone: built once, by the live inbox's factory, held by
 ///    the inbox, handed to Settings by the root (`SettingsReachabilityTests`
 ///    pins that hand-off). A ceremony is made from it at ONE site, Settings'
-///    Pair with Mac action, which then raises the sheet; the sheet's flag is
-///    raised nowhere else; and the pairing sheet is built at two sites, the
-///    fixture launch's (the root) and Settings'.
+///    Pair with Mac action, which raises the sheet (the ceremony is its
+///    item); the root's sheet flag is raised nowhere else; and the pairing
+///    sheet is built at two sites, the fixture launch's (the root) and
+///    Settings'.
 /// 2. The code from the camera only. `ScannedCode`, the one thing a ceremony
 ///    scans, is built outside Fixtures/ at ONE site, the live scanner's
 ///    hand-on of the first QR code it reads, whose callback is pinned whole
@@ -66,21 +67,30 @@ import Testing
     ])
     static let sheetFlagSites = CloudKitStructureTests.appSites([
         "NapCatPhoneApp.swift": ["@State private var showsPairing: Bool": 1, ".sheet(isPresented: $showsPairing) {": 1],
-        "Settings/SettingsScreen.swift": ["@State private var showsPairing = false": 1, "showsPairing = true": 1,
-                                          ".sheet(isPresented: $showsPairing, onDismiss: { ceremony = nil }) {": 1],
+    ])
+    /// AMENDED (#178, a blank first sheet): Settings' sheet is presented BY
+    /// its ceremony (`.sheet(item:)`), no longer by a flag raised beside it,
+    /// whose content read the ceremony back and could find none. Every
+    /// line of Settings naming `ceremony` is pinned: the item is declared,
+    /// set by the Pair with Mac action alone, bound by the sheet alone, and
+    /// handed to the sheet's content.
+    static let itemSheet: String = ".sheet(item: $ceremony) { ceremony in"
+    static let settingsSheet: String = "if let pairing { PairingSheet(ceremony: ceremony, camera: pairing.camera) }"
+    static let settingsCeremonySites: [String: Int] = CloudKitStructureTests.appSites([
+        "Settings/SettingsScreen.swift": ["@State private var ceremony: PairingCeremony?": 1, pairAction: 1, itemSheet: 2,
+                                          settingsSheet: 2],
     ])
     static let sheetSites = CloudKitStructureTests.appSites([
         "NapCatPhoneApp.swift": ["PairingSheet(ceremony: pairing.ceremony, camera: pairing.camera)": 1],
-        "Settings/SettingsScreen.swift": ["if let pairing, let ceremony { PairingSheet(ceremony: ceremony, camera: pairing.camera) }": 1],
+        "Settings/SettingsScreen.swift": [settingsSheet: 1],
     ])
     /// Settings' row and sheet, whitespace collapsed: the row shows only
-    /// with a live pairing; its action makes the ceremony, then raises the
+    /// with a live pairing; its action makes the ceremony, which raises the
     /// sheet; the sheet runs that ceremony on the live camera and lets it go
     /// when it closes.
     static let rowShape: String = "if let pairing { pairingSection(pairing) }"
-    static let actionShape: String = "Button(Self.pairTitle) { " + pairAction + " showsPairing = true }"
-    static let sheetShape: String = ".sheet(isPresented: $showsPairing, onDismiss: { ceremony = nil }) { "
-        + "if let pairing, let ceremony { PairingSheet(ceremony: ceremony, camera: pairing.camera) } }"
+    static let actionShape: String = "Button(Self.pairTitle) { " + pairAction + " }"
+    static let sheetShape: String = itemSheet + " " + settingsSheet + " }"
     static let settingsShapes: [String] = [rowShape, actionShape, sheetShape]
 
     static func entryFailures(_ app: [Source]) -> [String] {
@@ -92,6 +102,9 @@ import Testing
                                                            rule: "a live ceremony is made by Settings' Pair with Mac alone")
         failures += CloudKitStructureTests.appSiteFailures(#"\bshowsPairing\b"#, in: code, allowed: sheetFlagSites,
                                                            rule: "a pairing sheet opens on its pinned flags alone")
+        failures += CloudKitStructureTests.appSiteFailures(#"\bceremony\b"#, in: code.filter { $0.path == settingsFile },
+                                                           allowed: settingsCeremonySites,
+                                                           rule: "Settings' sheet opens on its own ceremony, set by the tap alone")
         for copy in CloudKitStructureTests.constructorScanCopies(code) {
             failures += CloudKitStructureTests.appSiteFailures(#"\bPairingSheet\s*(?:\.\s*init\s*)?\("#, in: copy, allowed: sheetSites,
                                                                rule: "the pairing sheet is built by the root (fixture) and Settings alone")
@@ -111,18 +124,22 @@ import Testing
         let root = Self.rootFile
         let mutants: [(String, [Source])] = [
             ("the pairing opened as Settings appears", Self.mutate(app, settings) {
-                $0.replacingOccurrences(of: "        .tint(theme.accent)\n        .sheet(isPresented: $showsPairing,",
-                                        with: "        .tint(theme.accent)\n        .onAppear { showsPairing = true }\n"
-                                            + "        .sheet(isPresented: $showsPairing,") }),
+                $0.replacingOccurrences(of: "        .tint(theme.accent)\n        .sheet(item: $ceremony)",
+                                        with: "        .tint(theme.accent)\n        .onAppear { ceremony = Spare.ceremony }\n"
+                                            + "        .sheet(item: $ceremony)") }),
             ("a ceremony made as Settings appears", Self.mutate(app, settings) {
-                $0.replacingOccurrences(of: "        .tint(theme.accent)\n        .sheet(isPresented: $showsPairing,",
+                $0.replacingOccurrences(of: "        .tint(theme.accent)\n        .sheet(item: $ceremony)",
                                         with: "        .tint(theme.accent)\n        .task { ceremony = pairing?.makeCeremony() }\n"
-                                            + "        .sheet(isPresented: $showsPairing,") }),
+                                            + "        .sheet(item: $ceremony)") }),
             ("the live pairing opened by the root at launch", Self.mutate(app, root) {
                 $0.replacingOccurrences(of: "        .task { await feed.start() }\n",
                                         with: "        .task { await feed.start() }\n        .task { _ = inbox.pairing?.makeCeremony() }\n") }),
-            ("the sheet raised without a ceremony", Self.mutate(app, settings) {
+            ("the action making no ceremony", Self.mutate(app, settings) {
                 $0.replacingOccurrences(of: "                " + Self.pairAction + "\n", with: "") }),
+            ("Settings' sheet back on a flag beside its ceremony (#178)", Self.mutate(app, settings) {
+                $0.replacingOccurrences(of: "        .sheet(item: $ceremony) { ceremony in\n            if let pairing {",
+                                        with: "        .sheet(isPresented: .constant(ceremony != nil)) {\n            if let pairing, let ceremony {")
+            }),
             ("a second pairing sheet", Self.mutate(app, "\(Self.appDir)/Screen/ReceiverScreen.swift") {
                 $0 + "\nfunc spare(c: PairingCeremony) -> some View { PairingSheet.init(ceremony: c, camera: FixtureCamera(answer: .ready)) }" }),
             ("the live pairing held elsewhere", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
@@ -140,7 +157,8 @@ import Testing
         }
         // Over-match control: a doc comment naming the shapes.
         #expect(Self.entryFailures(Self.mutate(app, settings) {
-            $0 + "\n/// never pairing.makeCeremony() on appear, never showsPairing = true but on the tap, never a LivePairing elsewhere"
+            $0 + "\n/// never pairing.makeCeremony() on appear, never showsPairing = true but on the tap, never a LivePairing elsewhere,"
+                + "\n/// never ceremony = nil by hand"
         }).isEmpty)
     }
 
