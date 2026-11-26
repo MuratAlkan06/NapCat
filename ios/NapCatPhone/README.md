@@ -71,7 +71,7 @@ A recognised `-NapCatFixture` value also forces fixtures on a device build;
 | `-palette` | `nightGroom`, `deepCream`, `neutral` | the stored choice |
 | `-NapCatScreen` | `receiver`, `settings` | `receiver` |
 | `-NapCatRequest` | `pending`, `expired`, `withdrawn`, `unpaired`, `changed` | none |
-| `-NapCatPairing` | `scan`, `camera`, `cameraOff`, `code`, `stray`, `taken` | none |
+| `-NapCatPairing` | `scan`, `camera`, `cameraOff`, `code`, `stray`, `taken`, `noCamera` | none |
 
 The chosen palette is kept in the app's defaults under the key `palette`.
 Passing `-palette` picks one for that launch only and leaves the stored
@@ -93,7 +93,9 @@ empty). `scan`, `camera` and `cameraOff` wait for a scan with the camera
 allowed, not yet asked, or off; `code` scans the fixture code at launch
 (the simulator's Face ID asks, then the screen shows this iPhone's code to
 compare); `stray` scans a code that is not NapCat's; `taken` scans the
-fixture code when a response for it is saved already. Outside the
+fixture code when a response for it is saved already; `noCamera` opens
+on the ending a camera that couldn't scan leaves (the scanner wouldn't
+start, or stopped mid-scan): its line and **Scan Again**. Outside the
 fixtures, the pairing screen opens from Settings › Pairing › **Pair with
 Mac** (slice S-PAIR-C1.6), and its code comes from the camera alone.
 
@@ -143,8 +145,8 @@ It is one standard grouped form in the current palette:
   screen over Settings, a new pairing each time, only when you tap it. On
   your Mac, choose **Pair iPhone…** (a Mac never paired) or **Pair a New
   iPhone…** (a Mac already paired) in NapCat's Settings › Claude, then scan
-  the code it shows and confirm with Face ID. A launch with a request
-  fixture has no row.
+  the code it shows and confirm with Face ID or Touch ID (the footer names
+  the one this iPhone has). A launch with a request fixture has no row.
 - **About**: the version and build, read from the app's Info.plist, and a
   link to the [project site](https://muratalkan06.github.io/NapCat/).
 

@@ -71,7 +71,7 @@ import UIKit
         #expect(text(.refused) == "Refused — that isn't a NapCat pairing code; nothing was saved")
         #expect(text(.failed(.alreadyAnswered)) == "Refused — this code was already answered; start again on your Mac")
         #expect(text(.failed(.notConfirmed)) == "Unverified — pairing wasn't confirmed, so nothing was saved")
-        #expect(text(.failed(.noCamera)) == "Unavailable — the camera couldn't start scanning; nothing was saved")
+        #expect(text(.failed(.noCamera)) == "Unavailable — the camera couldn't scan; nothing was saved")
         #expect(text(.cancelled) == "Cancelled — nothing changed on this iPhone")
         #expect(text(.expired) == "Expired — the code's five minutes ran out; start again on your Mac")
         #expect(PairingScreen.privateNote == "Pair in private: the code on your Mac is a secret while it's on screen.")
@@ -367,6 +367,7 @@ import UIKit
         }
         #expect(LaunchOptions { $0 == LaunchOptions.pairingKey ? "paired" : nil } == LaunchOptions())
         #expect(LaunchOptions().pairing == nil)
+        #expect(LaunchOptions { $0 == LaunchOptions.pairingKey ? "noCamera" : nil }.pairing == .noCamera, "the README's spelling (#175)")
         for state in [FixtureRequestState.unpaired, .changed] {
             #expect(LaunchOptions { $0 == LaunchOptions.requestKey ? state.rawValue : nil }.request == state)
         }
@@ -485,7 +486,7 @@ import UIKit
         }
     }
 
-    // MARK: A scanner that won't start
+    // MARK: A scanner that won't start, or stops mid-scan
 
     static let scannerFile = "\(appDir)/Live/QRScanner.swift"
     /// The scanner's start, whole: VisionKit's refusal is reported on the
@@ -494,20 +495,43 @@ import UIKit
     static let startBody: String = "guard !context.coordinator.handedOn, !scanner.isScanning else { return } "
         + "do { try scanner.startScanning() } catch { Task { failed() } }"
     static let scannerHandOn = "if liveCamera { QRScannerView(scanned: scanned, failed: scanFailed) } else {"
+    /// AMENDED (#175): and the `noCamera` fixture launch, which opens on
+    /// that ending: its own fixture ceremony, on its one line.
+    static let fixtureEnding: String = "if state == .noCamera { ceremony.scannerFailed() }"
     static let scanFailureSites = CloudKitStructureTests.appSites([
         "Model/PairingCeremony.swift": ["func scannerFailed() {": 1],
         "Screen/PairingScreen.swift": ["scanFailed: { ceremony.scannerFailed() },": 1],
+        "Fixtures/FixturePairing.swift": [fixtureEnding: 1],
     ])
+    /// AMENDED (#175, the C1.6 design review's ledger): VisionKit stopping
+    /// the scanner mid-scan is reported by the same closure, the same way
+    /// (on the next turn, never dropped), and only before the hand-on. The
+    /// coordinator is built with the screen's failure and keeps it as
+    /// handed; its callback is pinned whole.
+    static let coordinatorShape: String = "func makeCoordinator() -> Coordinator { " + PairingEntryStructureTests.coordinatorBuilt + " }"
+    static let coordinatorInitShape: String = PairingEntryStructureTests.coordinatorInit + " self.scanned = scanned self.failed = failed }"
+    static let stoppedHead: String = "func dataScanner(_: DataScannerViewController, becameUnavailableWithError _: "
+        + "DataScannerViewController.ScanningUnavailable) {"
+    static let stoppedBody: String = "guard !handedOn else { return } Task { failed() }"
 
     /// The S-PAIR-C1.6 design review's M2: a scanner VisionKit won't start
     /// ends the ceremony at its start (its failure line, Scan Again, Close),
     /// never a dark viewfinder under "Scanning". The scanner reports it, the
     /// screen hands it on, and the sheet alone routes it to the ceremony.
+    /// AMENDED (#175): and so does a scanner VisionKit stops mid-scan.
     static func scanFailureFailures(_ app: [CloudKitStructureTests.Source]) -> [String] {
         var failures: [String] = []
         let scanner = CloudKitStructureTests.codeOnly(app.first { $0.path == scannerFile }?.text ?? "")
         if CloudKitStructureTests.body(after: startHead, in: scanner).map(SettingsReachabilityTests.flat) != startBody {
             failures.append("the scanner reports a start VisionKit refuses, on the next turn — exactly as pinned")
+        }
+        if CloudKitStructureTests.body(after: stoppedHead, in: scanner).map(SettingsReachabilityTests.flat) != stoppedBody {
+            failures.append("the scanner reports VisionKit stopping it before the hand-on, on the next turn — exactly as pinned")
+        }
+        let scannerFlat: String = SettingsReachabilityTests.flat(scanner)
+        let coordinatorShapes: [String] = [coordinatorShape, coordinatorInitShape]
+        for shape in coordinatorShapes where !scannerFlat.contains(shape) {
+            failures.append("the scanner's coordinator lost '\(shape)'")
         }
         if CloudKitStructureTests.hits(#"\btry\?"#, in: scanner) {
             failures.append("the scanner drops a failure (try?)")
@@ -517,7 +541,8 @@ import UIKit
         }
         let stripped: [CloudKitStructureTests.Source] = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
         failures += CloudKitStructureTests.appSiteFailures(#"\bscannerFailed\b"#, in: stripped, allowed: scanFailureSites,
-                                                           rule: "a scanner that won't start ends the ceremony from the sheet alone")
+                                                           rule: "a scanner that won't start ends the ceremony from the sheet alone "
+                                                               + "(and the fixture that opens on that ending)")
         return failures
     }
 
@@ -540,6 +565,23 @@ import UIKit
                 $0.replacingOccurrences(of: "scanFailed: { ceremony.scannerFailed() },", with: "scanFailed: { ceremony.cancel() },") }),
             ("the failure ends a ceremony elsewhere", PairingEntryStructureTests.mutate(app, Self.rootFile) {
                 $0 + "\nfunc spare(c: PairingCeremony) { c.scannerFailed() }" }),
+            // #175: the mid-scan stop, held as the start is.
+            ("the mid-scan stop dropped", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: Self.stopReport, with: "            guard !handedOn else { return }\n") }),
+            ("the mid-scan stop reported inside VisionKit's callback", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: Self.stopReport, with: "            guard !handedOn else { return }\n            failed()\n") }),
+            ("a stop reported after the hand-on", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: Self.stopReport, with: "            Task { failed() }\n") }),
+            ("the stop no longer VisionKit's callback", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "func dataScanner(_: DataScannerViewController, becameUnavailableWithError",
+                                        with: "func spare(_: DataScannerViewController, becameUnavailableWithError") }),
+            ("the coordinator handed no failure", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: PairingEntryStructureTests.coordinatorBuilt, with: "Coordinator(scanned: scanned, failed: {})") }),
+            ("the coordinator keeps another failure", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "            self.failed = failed\n", with: "            self.failed = {}\n") }),
+            // #175: the fixture's ending, for its own value only.
+            ("the fixture's ending on every fixture launch", PairingEntryStructureTests.mutate(app, "\(Self.appDir)/Fixtures/FixturePairing.swift") {
+                $0.replacingOccurrences(of: Self.fixtureEnding, with: "ceremony.scannerFailed()") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -550,6 +592,11 @@ import UIKit
             $0 + "\n/// never try? scanner.startScanning(), never scannerFailed() elsewhere"
         }).isEmpty)
     }
+
+    /// The mid-scan report's two lines, as written (the canaries' anchor).
+    /// (Its behaviour is run in `LivePairingTests`: this file touches
+    /// nothing live, `PairingCeremonyTests.theTestsTouchNothingLive`.)
+    static let stopReport: String = "            guard !handedOn else { return }\n            Task { failed() }\n"
 
     // MARK: The window's clock
 

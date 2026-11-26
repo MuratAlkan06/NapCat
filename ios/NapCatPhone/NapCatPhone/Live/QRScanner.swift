@@ -80,12 +80,14 @@ struct ScannedCode: Sendable, CustomStringConvertible, CustomDebugStringConverti
 /// at a time, with Apple's own guidance and highlighting. It hands on the
 /// FIRST code it reads and stops: one scan per ceremony, checked again by
 /// the ceremony itself. What a code says is never shown; the ceremony reads
-/// it strictly or refuses it. A scanner VisionKit won't start is reported
-/// (`failed`), never left as a dark viewfinder.
+/// it strictly or refuses it. A scanner VisionKit won't start, or stops
+/// before a code is handed on, is reported (`failed`), never left as a dark
+/// viewfinder.
 struct QRScannerView: UIViewControllerRepresentable {
     let scanned: @MainActor (ScannedCode) -> Void
-    /// Told when VisionKit won't start the scanner (the camera can't be
-    /// used), after the update that tried. What VisionKit said is not kept.
+    /// Told when VisionKit won't start the scanner, or stops it mid-scan
+    /// (the camera can't be used), on the next turn. What VisionKit said is
+    /// not kept.
     let failed: @MainActor () -> Void
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
@@ -112,17 +114,19 @@ struct QRScannerView: UIViewControllerRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(scanned: scanned)
+        Coordinator(scanned: scanned, failed: failed)
     }
 
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         let scanned: @MainActor (ScannedCode) -> Void
+        let failed: @MainActor () -> Void
         /// Set once the first code is handed on; nothing after it is.
         private(set) var handedOn = false
 
-        init(scanned: @escaping @MainActor (ScannedCode) -> Void) {
+        init(scanned: @escaping @MainActor (ScannedCode) -> Void, failed: @escaping @MainActor () -> Void) {
             self.scanned = scanned
+            self.failed = failed
         }
 
         func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem],
@@ -135,6 +139,16 @@ struct QRScannerView: UIViewControllerRepresentable {
                 scanned(ScannedCode(payload: payload))
                 return
             }
+        }
+
+        /// VisionKit stopped the scanner mid-scan (#175): reported as a start
+        /// it refused is, on the next turn, so the ceremony ends at its start
+        /// instead of under a dark viewfinder. Once a code is handed on it is
+        /// not reported (the ceremony has its scan). Neither the scanner nor
+        /// what VisionKit said is read.
+        func dataScanner(_: DataScannerViewController, becameUnavailableWithError _: DataScannerViewController.ScanningUnavailable) {
+            guard !handedOn else { return }
+            Task { failed() }
         }
     }
 }

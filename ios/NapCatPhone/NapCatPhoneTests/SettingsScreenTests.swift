@@ -37,19 +37,62 @@ import UIKit
     /// AMENDED (the S-PAIR-C1.6 design review, M1): it names both buttons (a
     /// Mac already paired shows Pair a New iPhone… instead), says the pane
     /// is NapCat's own, and names the Face ID that comes with the scan.
+    /// AMENDED (#175): it names THIS phone's biometric (a Touch ID phone
+    /// read Face ID), in otherwise the same words; with none, biometrics.
     @Test func thePairingRowSaysExactlyThis() throws {
         #expect(SettingsScreen.pairingHeader == "Pairing")
         #expect(SettingsScreen.pairTitle == "Pair with Mac")
         #expect(SettingsScreen.pairTitle == PairingScreen.title, "the row names the screen it opens")
-        let footer: String = "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
-            + "then scan the code it shows and confirm with Face ID."
-        #expect(SettingsScreen.pairingFooter == footer)
+        let lead: String = "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
+        let faceID: String = lead + "then scan the code it shows and confirm with Face ID."
+        let touchID: String = lead + "then scan the code it shows and confirm with Touch ID."
+        let none: String = lead + "then scan the code it shows and confirm with biometrics."
+        #expect(SettingsScreen.pairingFooter(.faceID) == faceID)
+        #expect(SettingsScreen.pairingFooter(.touchID) == touchID)
+        #expect(SettingsScreen.pairingFooter(nil) == none)
+        for kind in BiometryKind.allCases {
+            let footer: String = SettingsScreen.pairingFooter(kind)
+            for other in BiometryKind.allCases {
+                #expect(footer.contains(other.name) == (other == kind), "'\(footer)' and \(other.name)")
+            }
+            #expect(footer.hasPrefix(lead) && footer.hasSuffix("confirm with \(kind.name)."), "only the name changes: '\(footer)'")
+        }
+        #expect(BiometryKind.allCases.allSatisfy { !none.contains($0.name) }, "with none, no biometric is named")
         let mac = try CloudKitStructureTests.swiftFiles(under: "Sources/NapCat")
         let settings = try #require(mac.first { $0.path == "Sources/NapCat/SettingsContent.swift" }).text
         #expect(settings.contains("static let pairButtonTitle = \"Pair iPhone…\""), "the Mac's button is still Pair iPhone…")
         #expect(settings.contains("static let pairNewButtonTitle = \"Pair a New iPhone…\""),
                 "the paired Mac's button is still Pair a New iPhone…")
         #expect(settings.contains("case .claude: return \"Claude\""), "the Mac's pane is still Claude")
+    }
+
+    /// #175: the footer names what the live pairing's own gate reads
+    /// (`LivePairing.biometric()`: no context of Settings' own, as
+    /// `MatchHygieneStructureTests` lock 1 requires), never a fixed one.
+    static let footerShape: String = "} footer: { footer(Self.pairingFooter(pairing.biometric())) }"
+
+    static func footerFailures(_ screen: String) -> [String] {
+        let flat: String = SettingsReachabilityTests.flat(screen)
+        var failures: [String] = []
+        if !flat.contains(footerShape) { failures.append("the pairing footer lost '\(footerShape)'") }
+        if CloudKitStructureTests.occurrences(of: "pairingFooter(", in: flat) != 2 {
+            failures.append("the footer's words are declared once and said once, by the pairing row")
+        }
+        return failures
+    }
+
+    @Test func theFooterNamesThisPhonesBiometric() throws {
+        let screen: String = try #require(try Self.settingsSources().first { $0.path.hasSuffix("/SettingsScreen.swift") }).text
+        #expect(Self.footerFailures(screen).isEmpty, "\(Self.footerFailures(screen))")
+        let mutants: [(String, String)] = [
+            ("the footer told Face ID", screen.replacingOccurrences(of: "pairingFooter(pairing.biometric())", with: "pairingFooter(.faceID)")),
+            ("a second footer, fixed", screen.replacingOccurrences(of: "            header(Self.aboutHeader)\n",
+                                                                  with: "            header(Self.aboutHeader)\n            footer(Self.pairingFooter(.faceID))\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != screen, "canary '\(name)' did not apply")
+            #expect(!Self.footerFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
     }
 
     // MARK: About
