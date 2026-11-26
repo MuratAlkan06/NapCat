@@ -110,10 +110,16 @@ final class ApprovalSeamHost: @unchecked Sendable {
     }
 
     /// Runs `body` with the intake on the seam's queue (how the later slices
-    /// deliver CloudKit's answers and the phone's decisions).
+    /// deliver CloudKit's answers and the phone's decisions). The intake is
+    /// bound plainly, never through a member call on the optional, so no
+    /// extension can stand in at this door (pinned whole:
+    /// DecisionSinkStructureTests).
     func withIntake<Result>(_ body: (ApprovalIntake) -> Result) -> Result? {
         dispatchPrecondition(condition: .notOnQueue(queue))
-        return queue.sync { intake.map(body) }
+        return queue.sync {
+            guard let intake else { return nil }
+            return body(intake)
+        }
     }
 
     /// A host released without `stop()` leaves nothing running: its timers

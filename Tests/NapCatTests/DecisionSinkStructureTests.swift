@@ -37,16 +37,37 @@ import Testing
 ///    so no target outside the four scanned roots, no path or source
 ///    override, no package dependency and no new flag can carry code no
 ///    lock reads;
-/// f. (with them, beyond the plan's four) the doors around the sink: the intake is reached from
-///    outside the host only through `withIntake`, at its one use; the host
-///    names its intake at today's lines; and inside the intake every
-///    `apply` and `perform` is pinned — so a forged event or transition,
-///    the sink's next hop, has no way in either.
+/// f. (with them, beyond the plan's four) the doors around the sink: the
+///    intake is reached from outside the host only through `withIntake`, at
+///    its one use, and its type is named at today's sites alone in the four
+///    targets; the host names its intake at today's lines and binds it
+///    plainly at that door (`withIntake`, pinned whole), so no extension
+///    member can stand in there, and nothing in the four targets extends
+///    `Optional` (by its name, its `?` or an alias declared there); inside
+///    the intake every `apply` and `perform` is pinned at its sites, both
+///    bodies are pinned whole, and the frame writer (`sendFrame`) is named
+///    at today's sites; and the host's connection writes are pinned at
+///    today's site, and the connection type is named at today's sites
+///    alone in the four targets, so nothing new extends it or wraps its
+///    writer;
+/// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
+///    the message, the diagnostic) and the slot's `read()` are pinned as
+///    they are, flattened, so no line added on the road passes — a forged
+///    result behind a trigger, an event rebound before the lifecycle reads
+///    it, a reading kept per handle;
+/// h. the repository root holds one manifest, `Package.swift`, so no
+///    version-specific manifest declares a target that e. never reads.
+///
+/// These pin the sites and bodies they name, nothing more: a value forged
+/// from raw bytes that reaches none of them stays #163's accepted residual,
+/// and raw-memory writes into a live object stay the pairing locks'.
 ///
 /// Each check is a pure function over the sources and catches planted
 /// canaries — the issue's byte-copy forge among them, decided from a new
-/// file and replanted into the wired sink itself — beside over-match
-/// controls, so none can pass vacuously.
+/// file and replanted into the wired sink itself, and the security review's
+/// plants verbatim — beside over-match controls, so none can pass
+/// vacuously. Each pin added after the security review catches its own
+/// canary alone.
 struct DecisionSinkStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
     typealias RecordPath = ApprovalRecordPathStructureTests
@@ -126,7 +147,8 @@ struct DecisionSinkStructureTests {
     static let hostIntakeSites: [String: Int] = [
         "private var intake: ApprovalIntake?": 1,
         "intake = ApprovalIntake(armed: armed, secrets: secrets, newPromptID: newPromptID, now: now, records: records,": 1,
-        "intake?.killSwitch()": 1, "return queue.sync { intake.map(body) }": 1, "self?.intake?.receive($0, from: key)": 1,
+        "intake?.killSwitch()": 1, "guard let intake else { return nil }": 1, "return body(intake)": 1,
+        "self?.intake?.receive($0, from: key)": 1,
         "self?.intake?.connectionClosed(key)": 1, "intake?.tick()": 1, "if intake?.holdsOpenPrompt(from: key) == true {": 1,
     ]
     static let intakeDoorSites: [String: Int] = [
@@ -374,5 +396,799 @@ struct DecisionSinkStructureTests {
         // reflowed whitespace.
         #expect(Self.packageFailures(manifest.replacingOccurrences(of: app, with: "        // the app\n"
             + app.replacingOccurrences(of: "\n            dependencies", with: " dependencies") + " // trailing")).isEmpty)
+    }
+
+    // MARK: - g. The road, whole
+
+    /// One declaration pinned whole: in `file`, `declared` (a regex over the
+    /// code) matches once, and `whole` (the declaration flattened, from the
+    /// token before it to its own closing brace) appears exactly once.
+    typealias WholePin = (file: String, declared: String, whole: String)
+
+    /// The verifier, whole: every check in order, the claim's lines, the
+    /// message, the diagnostic (from the brace before it, so no attribute or
+    /// modifier joins it).
+    static let verifierWhole: String = [
+        "} enum DecisionVerifier {",
+        "static let latestDecidedAt: TimeInterval = 9_007_199_254_740_992",
+        "static func verify(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,",
+        "audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> DecisionVerification {",
+        "let pairedKey: P256.Signing.PublicKey? = switch keys.read() {",
+        "case .paired(let phone): try? P256.Signing.PublicKey(x963Representation: phone.publicKey)",
+        "case .notPaired, .unreadable: nil", "}",
+        "let verification = verification(of: evidence, copy: copy, pairedKey: pairedKey)",
+        "if case .unverified(let reason) = verification {",
+        "audit(DecisionVerifierAudit(promptID: PromptID(hex: evidence.promptID), reason: reason))", "}",
+        "return verification", "}",
+        "static func verification(of evidence: DecisionEvidence, copy: ForwardedCopy?,",
+        "pairedKey: P256.Signing.PublicKey?) -> DecisionVerification {",
+        "guard let pairedKey else { return .unverified(.noPairedKey) }",
+        "guard let verdict = ApprovalWire.Verdict(rawValue: evidence.verdict) else { return .unverified(.unknownVerdict) }",
+        "let seconds = evidence.decidedAt.timeIntervalSince1970",
+        "guard seconds.isFinite, seconds >= 0, seconds <= latestDecidedAt else { return .unverified(.decidedAtOutOfRange) }",
+        "guard seconds == seconds.rounded(.towardZero) else { return .unverified(.fractionalDecidedAt) }",
+        "guard evidence.signature.count == ApprovalSigning.signatureByteCount else { return .unverified(.signatureLength) }",
+        "guard evidence.wireVersion == ApprovalWire.wireVersion else { return .unverified(.wrongWireVersion) }",
+        "guard let promptID = PromptID(hex: evidence.promptID) else { return .unverified(.malformedPromptID) }",
+        "guard let copy, copy.promptID == promptID else { return .unverified(.noForwardedCopy) }",
+        "let claimed = Claimed(wireVersion: evidence.wireVersion, promptID: promptID, verdict: verdict, decidedAt: Int(seconds))",
+        "guard let message = message(claimed, shown: copy),",
+        "let signature = try? P256.Signing.ECDSASignature(rawRepresentation: evidence.signature) else {",
+        "return .unverified(.signatureInvalid)", "}",
+        "guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {",
+        "return .unverified(signedAnotherForm(claimed, of: copy, signature, pairedKey) ? .shownDigestMismatch : .signatureInvalid)", "}",
+        "return .verified(ApprovalDecision(promptID: promptID, verdict: verdict, wireVersion: evidence.wireVersion, signatureVerified: true))",
+        "}",
+        "struct Claimed {", "let wireVersion: Int", "let promptID: PromptID", "let verdict: ApprovalWire.Verdict", "let decidedAt: Int", "}",
+        "static func message(_ claimed: Claimed, shown copy: ForwardedCopy) -> [UInt8]? {",
+        "let shown = SHA256.hash(data: ApprovalSigning.shownDigestInput(toolName: copy.toolName, inputPreview: copy.inputPreview,",
+        "projectLabel: copy.projectLabel))",
+        "return ApprovalSigning.decisionMessage(wireVersion: claimed.wireVersion, promptID: claimed.promptID, verdict: claimed.verdict,",
+        "decidedAt: claimed.decidedAt, shownDigest: Array(shown))", "}",
+        "static func signedAnotherForm(_ claimed: Claimed, of copy: ForwardedCopy, _ signature: P256.Signing.ECDSASignature,",
+        "_ pairedKey: P256.Signing.PublicKey) -> Bool {",
+        "let forms: [(String) -> String] = [{ $0.precomposedStringWithCanonicalMapping }, { $0.decomposedStringWithCanonicalMapping }]",
+        "let stored = ApprovalSigning.shownDigestInput(toolName: copy.toolName, inputPreview: copy.inputPreview,",
+        "projectLabel: copy.projectLabel)",
+        "for form in forms {",
+        "let other = ForwardedCopy(promptID: copy.promptID, toolName: form(copy.toolName), inputPreview: form(copy.inputPreview),",
+        "projectLabel: form(copy.projectLabel))",
+        "guard ApprovalSigning.shownDigestInput(toolName: other.toolName, inputPreview: other.inputPreview,",
+        "projectLabel: other.projectLabel) != stored,",
+        "let message = message(claimed, shown: other) else { continue }",
+        "if pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) { return true }", "}",
+        "return false", "}", "}",
+    ].joined(separator: " ")
+    /// The intake's `apply` and `perform`, whole.
+    static let applyWhole: String = [
+        "} func apply(_ event: ApprovalEvent, to id: PromptID) {",
+        "guard var item = prompts[id] else { return audit(.unknownPrompt) }",
+        "let transition = item.lifecycle.apply(event, now: now())", "prompts[id] = item", "perform(transition, for: id)", "}",
+    ].joined(separator: " ")
+    static let performWhole: String = [
+        "} private func perform(_ transition: ApprovalTransition, for id: PromptID,",
+        "classified: (ApprovalClassification, String?)? = nil) {",
+        "for entry in transition.audit { audit(.lifecycle(id, entry)) }", "guard let item = prompts[id] else { return }",
+        "for effect in transition.effects {", "switch effect {", "case .saveRecord:",
+        "guard case .forward(let tool)? = classified?.0, let preview = classified?.1 else { continue }",
+        "records.save(id, tool: tool, inputPreview: preview, expiresAt: item.lifecycle.expiresAt)",
+        "case .supersedeWaitingAlert:", "records.supersedeWaitingAlert(id)", "case .deliverVerdict(let verdict):",
+        "sendFrame(item.connection, ApprovalChannel.verdictFrame(item.request, verdict))", "case .retractRecord:",
+        "records.retract(id)", "}", "}", "}",
+    ].joined(separator: " ")
+    /// The host's door, whole: the intake bound plainly, then handed to
+    /// `body` (no member call on the optional for an extension to take).
+    static let doorWhole: String = [
+        "} func withIntake<Result>(_ body: (ApprovalIntake) -> Result) -> Result? {",
+        "dispatchPrecondition(condition: .notOnQueue(queue))", "return queue.sync {", "guard let intake else { return nil }",
+        "return body(intake)", "}", "}",
+    ].joined(separator: " ")
+    /// The slot's read, whole: the keychain's answer, read now and kept nowhere.
+    static let slotReadWhole: String = [
+        #"static let header = "napcat-paired-v1" func read() -> PairedPhoneRead {"#, "switch items.read() {",
+        "case .found(let text): return Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable",
+        "case .notFound: return .notPaired", "case .failed: return .unreadable", "}", "}",
+    ].joined(separator: " ")
+    static let roadPins: [WholePin] = [
+        (verifierFile, #"\benum\s+DecisionVerifier\b"#, verifierWhole),
+        (ApprovalChannelStructureTests.intakeFile, #"\bfunc\s+apply\b"#, applyWhole),
+        (ApprovalChannelStructureTests.intakeFile, #"\bfunc\s+perform\b"#, performWhole),
+    ]
+    static let doorPin: WholePin = (ApprovalChannelStructureTests.hostFile, #"\bfunc\s+withIntake\b"#, doorWhole)
+    static let slotReadPin: WholePin = (PairingStructureTests.slotFile, #"\bfunc\s+read\b"#, slotReadWhole)
+
+    /// `sources`: `uncutSources()`. In every scan copy of each pin's file,
+    /// comment-stripped: the declaration is declared once, and is exactly
+    /// its pinned text, whole. Whitespace and `//` comments are free; a
+    /// block comment or a backtick inside a pinned body reads as a change
+    /// (the raw copy is read too). A copy kept elsewhere — in a literal, a
+    /// comment or an inactive `#if` — beside a changed one fails: the name
+    /// is then declared twice, or the text is in no copy's code.
+    static func wholeFailures(_ sources: Sources, _ pins: [WholePin]) -> [String] {
+        var failures: [String] = []
+        for pin in pins {
+            for copy in LidGuardStructureTests.constructorScanCopies(text(pin.file, in: sources)) {
+                let code = LidGuardStructureTests.codeOnly(copy)
+                let found = ApprovalChannelStructureTests.count(pin.whole, in: MenuPanelStructureTests.flat(code))
+                let declared = RecordPath.matches(pin.declared, in: code).count
+                if found != 1 || declared != 1 {
+                    failures.append("'\(pin.declared)' in \(pin.file) is declared once, exactly as pinned, whole — "
+                                    + "found the pinned text \(found)×, the declaration \(declared)×")
+                }
+            }
+        }
+        return unique(failures)
+    }
+
+    /// The security review's plants, verbatim (never committed anywhere;
+    /// each passed every lock before the pin that now catches it). The pour:
+    /// literal bytes into a generic slot through NSData's getBytes.
+    static let pour: String = """
+        import Foundation
+        import NapCatWire
+
+        // Security review replant (never committed): a value poured from literal
+        // bytes into a generic slot through NSData's getBytes.
+        func zzPoured<T>(_ bytes: [UInt8]) -> T {
+            let slot = UnsafeMutablePointer<T>.allocate(capacity: 1)
+            defer { slot.deallocate() }
+            NSData(bytes: bytes, length: bytes.count).getBytes(slot, length: min(bytes.count, MemoryLayout<T>.size))
+            return slot.move()
+        }
+
+        func zzPour<T>(_ bytes: [UInt8], into slot: inout T) {
+            NSData(bytes: bytes, length: bytes.count).getBytes(&slot, length: min(bytes.count, MemoryLayout<T>.size))
+        }
+
+        /// The ID's two halves, the answer's case index, the wire version, the flag.
+        func zzBytes(_ hex: String, answer: UInt8 = 0) -> [UInt8] {
+            var out = [UInt8](repeating: 0, count: 48)
+            let digits = Array(hex.utf8)
+            guard digits.count == 32 else { return out }
+            func nibble(_ c: UInt8) -> UInt8 { c >= 97 ? c &- 87 : c &- 48 }
+            for i in 0..<16 {
+                out[i < 8 ? 7 - i : 23 - i] = nibble(digits[2 * i]) << 4 | nibble(digits[2 * i + 1])
+            }
+            out[16] = answer
+            out[24] = 1
+            out[32] = 1
+            return out
+        }
+
+        """
+    /// W4's anchor (the verifier's first check) and its trigger above it;
+    /// W4U's trigger, for every 64-byte signature.
+    static let firstGuard: String = "        guard let pairedKey else { return .unverified(.noPairedKey) }\n"
+    static let w4Trigger: String = """
+                if evidence.decidedAt.timeIntervalSince1970 == 1_999_999_999 { return zzPoured(zzBytes(evidence.promptID)) }
+
+        """
+    static let w4uTrigger: String = """
+                if evidence.signature.count == 64 { return zzPoured(zzBytes(evidence.promptID)) }
+
+        """
+    /// W7's anchor (the head of the intake's `apply`) and its rewrite: the
+    /// event rebound on a line above the pinned one.
+    static let applyAnchor: String = """
+                guard var item = prompts[id] else { return audit(.unknownPrompt) }
+                let transition = item.lifecycle.apply(event, now: now())
+
+        """
+    static let w7Apply: String = """
+                guard var item = prompts[id] else { return audit(.unknownPrompt) }
+                var event = event
+                if id.high == 0x5EC0_DE00_0000_0001, item.lifecycle.phase == .forwarded { zzPour(zzBytes(id.hex), into: &event) }
+                let transition = item.lifecycle.apply(event, now: now())
+
+        """
+
+    @Test func theDecisionRoadIsPinnedWhole() throws {
+        let sources = try Self.uncutSources()
+        let pins: [WholePin] = Self.roadPins
+        #expect(Self.wholeFailures(sources, pins).isEmpty, "\(Self.wholeFailures(sources, pins))")
+        let verifier: String = Self.verifierFile
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        let verifierPin: [WholePin] = [pins[0]]
+        let applyPin: [WholePin] = [pins[1]]
+        let otherPins: [WholePin] = [pins[1], pins[2]]
+        #expect(Self.text(verifier, in: sources).contains(Self.firstGuard) && Self.text(intake, in: sources).contains(Self.applyAnchor),
+                "vacuity: the review's anchors are where its plants go")
+        let poured: Sources = Self.adding(sources, "ZZPour.swift", Self.pour)
+        let w4: Sources = Self.mutate(poured, verifier) {
+            $0.replacingOccurrences(of: Self.firstGuard, with: Self.w4Trigger + Self.firstGuard) }
+        let w4u: Sources = Self.mutate(poured, verifier) {
+            $0.replacingOccurrences(of: Self.firstGuard, with: Self.w4uTrigger + Self.firstGuard) }
+        let w7: Sources = Self.mutate(poured, intake) { $0.replacingOccurrences(of: Self.applyAnchor, with: Self.w7Apply) }
+        // W4 and W7, verbatim: each is caught by its own body pin alone, and
+        // the sink pins and the other bodies read it exactly as they read the
+        // tree.
+        let reviewed: [(String, Sources, [WholePin], [WholePin])] = [
+            ("W4: a poured result inside the verifier's checks, behind a trigger", w4, verifierPin, otherPins),
+            ("W4U: the same pour for every 64-byte signature", w4u, verifierPin, otherPins),
+            ("W7: the event rebound by a pour inside the intake's apply", w7, applyPin, [pins[0], pins[2]]),
+        ]
+        for (name, mutant, own, others) in reviewed {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, own).isEmpty, "canary '\(name)' was NOT caught by its body pin alone")
+            #expect(Self.wholeFailures(mutant, others) == Self.wholeFailures(sources, others)
+                        && Self.sinkFailures(mutant) == Self.sinkFailures(sources), "canary '\(name)' is its own body pin's to catch")
+        }
+        // A pinned copy kept beside a changed original: in an inactive block
+        // (the parser reads it, the compiler builds nothing of it) and in a
+        // literal.
+        let logHead: String = "enum DecisionVerifierLog {\n"
+        let decoyBlock: String = logHead + "#if false\nstruct ZZ {\n" + Self.verifierWhole + "\n#endif\n"
+        let constant: String = "    static let waitingContextSeconds = 30\n"
+        let decoyLiteral: String = constant + "    static let zz = \"" + Self.applyWhole + "\"\n"
+        let applyHead: String = "    func apply(_ event: ApprovalEvent, to id: PromptID) {\n"
+        let dynamicApply: String = "    dynamic func apply(_ event: ApprovalEvent, to id: PromptID) {\n"
+        let mutants: [(String, Sources)] = [
+            ("a member added to the verifier", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "enum DecisionVerifier {\n", with: "enum DecisionVerifier {\n    static let zz = 1\n") }),
+            ("a check dropped", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "        guard seconds == seconds.rounded(.towardZero) else { return .unverified(.fractionalDecidedAt) }\n",
+                                        with: "") }),
+            ("the message rebuilt otherwise", Self.mutate(sources, verifier) {
+                $0.replacingOccurrences(of: "shownDigest: Array(shown))", with: "shownDigest: Array(shown.prefix(1)))") }),
+            ("the pinned verifier kept in an inactive block, the real one changed", Self.mutate(w4, verifier) {
+                $0.replacingOccurrences(of: logHead, with: decoyBlock) }),
+            ("the pinned apply kept in a literal, the real one changed", Self.mutate(w7, intake) {
+                $0.replacingOccurrences(of: constant, with: decoyLiteral) }),
+            ("apply made dynamic", Self.mutate(sources, intake) { $0.replacingOccurrences(of: applyHead, with: dynamicApply) }),
+            ("a second effect performed", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "                records.supersedeWaitingAlert(id)\n",
+                                        with: "                records.supersedeWaitingAlert(id)\n                zzTap(id)\n") }),
+            ("a statement after perform's loop", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "                records.retract(id)\n            }\n        }\n",
+                                        with: "                records.retract(id)\n            }\n        }\n        zzTap(id)\n") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, pins).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: whitespace only (lines joined and split,
+        // spaces doubled, a tab) and comments only (whole-line and trailing,
+        // inside the pinned bodies).
+        let reflowed: Sources = Self.mutate(Self.mutate(sources, verifier) {
+            $0.replacingOccurrences(of: "copy: ForwardedCopy?,\n                             pairedKey:", with: "copy: ForwardedCopy?, pairedKey:")
+                .replacingOccurrences(of: "        let seconds = evidence.decidedAt.timeIntervalSince1970\n",
+                                      with: "\n        let seconds  =\n            evidence.decidedAt.timeIntervalSince1970\n\n")
+        }, intake) {
+            $0.replacingOccurrences(of: "        prompts[id] = item\n", with: "\n\t\tprompts[id]  =  item\n\n")
+                .replacingOccurrences(of: "            case .retractRecord:\n", with: "\t\t\tcase .retractRecord:\n")
+        }
+        let commented: Sources = Self.mutate(Self.mutate(sources, verifier) {
+            $0.replacingOccurrences(of: Self.firstGuard, with: "        /// the paired key first\n" + Self.firstGuard)
+                .replacingOccurrences(of: "        return verification\n", with: "        return verification // the result, as checked\n")
+        }, intake) {
+            $0.replacingOccurrences(of: "        prompts[id] = item\n", with: "        // the lifecycle, back\n        prompts[id] = item // stored\n")
+                .replacingOccurrences(of: "            case .retractRecord:\n", with: "            // withdrawn\n            case .retractRecord: // gone\n")
+        }
+        for (name, control) in [("whitespace only", reflowed), ("comments only", commented)] {
+            #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
+            #expect(Self.wholeFailures(control, pins).isEmpty, "control '\(name)': \(Self.wholeFailures(control, pins))")
+        }
+    }
+
+    // MARK: - f, continued. The door, plain; the intake's type, its frame writer, the host's writes and the connection's type, at their sites
+
+    /// Every line naming the intake's type in the four targets: its own
+    /// declaration, the toggle's one constant, and the host's lines.
+    static let intakeTypeSites: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.intakeFile: ["final class ApprovalIntake {": 1],
+        ApprovalChannelStructureTests.toggleFile: [
+            "let tools = host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? []": 1],
+        ApprovalChannelStructureTests.hostFile: [
+            "private var connections: [ApprovalIntake.ConnectionKey: SeamConnection] = [:]": 1,
+            "private var idleTimers: [ApprovalIntake.ConnectionKey: DispatchSourceTimer] = [:]": 1,
+            "private var intake: ApprovalIntake?": 1,
+            "intake = ApprovalIntake(armed: armed, secrets: secrets, newPromptID: newPromptID, now: now, records: records,": 1,
+            "func withIntake<Result>(_ body: (ApprovalIntake) -> Result) -> Result? {": 1,
+            "private func armIdleTimer(_ key: ApprovalIntake.ConnectionKey) {": 1,
+            "private func idleTimerFired(_ key: ApprovalIntake.ConnectionKey) {": 1],
+    ]
+    /// An alias spelled with `?` on its right-hand side (also when that side
+    /// starts on the next line).
+    static let optionalAliasPattern: String = #"\btypealias\b[^=\n{}]*="# + RecordPath.gap + #"*[^\n]*\?"#
+    /// `Optional` named at all (so extended, qualified or aliased by name),
+    /// an extension whose header spells `?` (`extension T? {`), and an alias
+    /// spelled with `?`: today's two, both function types. (A compiled probe:
+    /// `typealias Maybe<T> = T?` and an unconstrained `extension Maybe` with
+    /// a `map` takes every optional's `.map` in the module.) Imported aliases
+    /// are not read: one of a concrete optional (Foundation's
+    /// `NSErrorPointer`) can still be extended, for that one wrapped type.
+    static let optionalSites: [(pattern: String, allowed: [String: [String: Int]], rule: String)] = [
+        (#"\bOptional\b"#, [:], "Optional is named nowhere in the four targets"),
+        (#"\bextension\b[^{]*\?"#, [:], "no extension's header spells an optional"),
+        (optionalAliasPattern, [
+            "LidGuardController.swift": ["typealias ClaudeBusyProvider = @Sendable () -> LidGuardBusySample?": 1],
+            "ChannelRelay.swift": [
+                "typealias Connector = (_ onFrame: @escaping ([UInt8]) -> Void, _ onClose: @escaping () -> Void) -> ChannelLink?": 1]],
+         "an alias spelled with ? is one of today's two function types, so no alias of an optional is extended"),
+    ]
+    /// The intake's frame writer: stored, taken at its initializer, and
+    /// called once, for the lifecycle's `.deliverVerdict`.
+    static let frameWriterSites: [String: Int] = [
+        "private let sendFrame: (ConnectionKey, String) -> Void": 1,
+        "now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,": 1,
+        "self.sendFrame = sendFrame": 2, "sendFrame(item.connection, ApprovalChannel.verdictFrame(item.request, verdict))": 1,
+    ]
+
+    /// The files a site pin's allow-list names that `sources` lacks (the pin
+    /// would read nothing there).
+    static func absent(_ files: some Sequence<String>, in sources: Sources) -> [String] {
+        files.filter { file in !sources.contains { $0.name == file } }.map { "\($0) is not where the pin looks — it would be vacuous" }
+    }
+
+    /// `sources`: `uncutSources()`.
+    static func intakeTypeFailures(_ sources: Sources) -> [String] {
+        absent(intakeTypeSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(#"\bApprovalIntake\b"#, in: sources, allowed: intakeTypeSites,
+                                                    rule: "the intake's type is named at today's sites alone — nothing new extends, wraps or takes it")
+    }
+
+    /// `sources`: `uncutSources()`.
+    static func optionalFailures(_ sources: Sources) -> [String] {
+        unique(absent(["LidGuardController.swift", "ChannelRelay.swift"], in: sources) + optionalSites.flatMap {
+            PairingStructureTests.appSiteFailures($0.pattern, in: sources, allowed: $0.allowed, rule: $0.rule)
+        })
+    }
+
+    /// `sources`: `uncutSources()`.
+    static func frameWriterFailures(_ sources: Sources) -> [String] {
+        let intake = ApprovalChannelStructureTests.intakeFile
+        return absent([intake], in: sources)
+            + PairingStructureTests.appSiteFailures(#"\bsendFrame\b"#, in: sources.filter { $0.name == intake }, allowed: [intake: frameWriterSites],
+                                                    rule: "the intake names its frame writer at today's sites — it writes the lifecycle's verdict alone")
+    }
+
+    /// The door as it is, the anchor its canaries replace.
+    static let doorBinding: String = """
+                return queue.sync {
+                    guard let intake else { return nil }
+                    return body(intake)
+                }
+
+        """
+    /// D1, verbatim: a constrained `Optional.map` in a new file, which the
+    /// host's old door line (`intake.map(body)`) resolved to.
+    static let doorPlant: String = """
+        import Foundation
+        import NapCatWire
+
+        // Security review replant (never committed): a member of a constrained
+        // extension, in a new file, that the host's own pinned line resolves to.
+        extension Optional where Wrapped == ApprovalIntake {
+            func map<R>(_ body: (ApprovalIntake) -> R) -> R? {
+                guard let intake = self else { return nil }
+                for id in Array(intake.prompts.keys) where id.high == 0x5EC0_DE00_0000_0001 {
+                    intake.apply(zzPoured(zzBytes(id.hex)), to: id)
+                }
+                return body(intake)
+            }
+        }
+
+        """
+    /// The generic-alias road (compiled in a scratch probe: its `map` took a
+    /// `.map` on another optional).
+    static let aliasMap: String = """
+        typealias Maybe<T> = T?
+        extension Maybe {
+            func map<U>(_ transform: (Wrapped) -> U) -> U? { nil }
+        }
+
+        """
+
+    @Test func theIntakesDoorIsAPlainBindingAndItsTypeIsNamedAtTodaysSites() throws {
+        let sources = try Self.uncutSources()
+        let door: [WholePin] = [Self.doorPin]
+        #expect(Self.wholeFailures(sources, door).isEmpty, "\(Self.wholeFailures(sources, door))")
+        #expect(Self.intakeTypeFailures(sources).isEmpty, "\(Self.intakeTypeFailures(sources))")
+        #expect(Self.optionalFailures(sources).isEmpty, "\(Self.optionalFailures(sources))")
+        let host: String = ApprovalChannelStructureTests.hostFile
+        #expect(Self.text(host, in: sources).contains(Self.doorBinding), "vacuity: the door is where its canaries plant")
+        // D1, verbatim, caught by the type pin alone and by the Optional ban
+        // alone (and by no pin before them).
+        let d1: Sources = Self.adding(Self.adding(sources, "ZZPour.swift", Self.pour), "ZZDoor.swift", Self.doorPlant)
+        #expect(!Self.intakeTypeFailures(d1).isEmpty, "D1 was NOT caught by the intake's type pin alone")
+        #expect(!Self.optionalFailures(d1).isEmpty, "D1 was NOT caught by the Optional ban alone")
+        #expect(Self.sinkFailures(d1) == Self.sinkFailures(sources) && Self.wholeFailures(d1, door) == Self.wholeFailures(sources, door),
+                "D1 is the type pin's and the ban's to catch")
+        // The old door line, back: the door's whole pin and the host's intake
+        // sites both see it.
+        let mapped: Sources = Self.mutate(sources, host) {
+            $0.replacingOccurrences(of: Self.doorBinding, with: "        return queue.sync { intake.map(body) }\n") }
+        #expect(!Self.wholeFailures(mapped, door).isEmpty && !Self.sinkFailures(mapped).isEmpty, "the old door line was NOT caught")
+        // Each pin's own canaries, caught by that pin alone.
+        let tapped: Sources = Self.mutate(sources, host) {
+            $0.replacingOccurrences(of: "            return body(intake)\n", with: "            zzTap()\n            return body(intake)\n") }
+        let byPin: [(String, Sources, (Sources) -> [String])] = [
+            ("a statement in the door naming no intake", tapped, { Self.wholeFailures($0, door) }),
+            ("the intake extended in a new file", Self.adding(sources, "ZZCount.swift",
+                "extension ApprovalIntake {\n    var zzCount: Int { prompts.count }\n}\n"), Self.intakeTypeFailures),
+            ("the intake taken by the toggle", Self.mutate(sources, ApprovalChannelStructureTests.toggleFile) {
+                $0.appending("\nfunc zz(_ intake: ApprovalIntake) {}") }, Self.intakeTypeFailures),
+            ("the intake aliased, backticked", Self.mutate(sources, "NapCatApp.swift") {
+                $0.appending("\ntypealias ZZ = `ApprovalIntake`") }, Self.intakeTypeFailures),
+            ("the intake extended behind a block comment", Self.mutate(sources, "NapCatApp.swift") {
+                $0.appending("\nextension /* x */ NapCat.ApprovalIntake {}") }, Self.intakeTypeFailures),
+            ("an unconstrained Optional extension", Self.adding(sources, "ZZMaybe.swift",
+                "extension Optional {\n    func zzMap<R>(_ body: (Wrapped) -> R) -> R? { nil }\n}\n"), Self.optionalFailures),
+            ("a qualified Optional, backticked", Self.mutate(sources, "NapCatApp.swift") {
+                $0.appending("\nextension Swift.`Optional` where Wrapped: Sendable {}") }, Self.optionalFailures),
+            ("an extension of an optional's sugar", Self.mutate(sources, "NapCatApp.swift") {
+                $0.appending("\nextension Int? {\n    func zz() {}\n}") }, Self.optionalFailures),
+            ("a generic alias of an optional, then a map every optional's resolves to", Self.adding(sources, "ZZAlias.swift", Self.aliasMap),
+             Self.optionalFailures),
+            ("an alias of a concrete optional, extended", Self.mutate(sources, "ApprovalWire.swift") {
+                $0.appending("\ntypealias ZZ = PromptID?\nextension ZZ {}") }, Self.optionalFailures),
+            ("an alias whose optional starts on the next line", Self.mutate(sources, "NapCatApp.swift") {
+                $0.appending("\ntypealias ZZ = // x\n    Int?") }, Self.optionalFailures),
+        ]
+        let pinsHere: [(Sources) -> [String]] = [{ Self.wholeFailures($0, door) }, Self.intakeTypeFailures, Self.optionalFailures]
+        for (name, mutant, own) in byPin {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!own(mutant).isEmpty, "canary '\(name)' was NOT caught by its pin")
+            let caughtBy: Int = pinsHere.filter { $0(mutant) != $0(sources) }.count
+            #expect(caughtBy == 1 && Self.sinkFailures(mutant) == Self.sinkFailures(sources),
+                    "canary '\(name)' is one pin's alone: \(caughtBy) caught it")
+        }
+        // Over-match controls: names that only contain the pinned words, an
+        // optional value, an extension of another type, the door reflowed and
+        // commented, and whole-line comments naming them.
+        let controls: Sources = Self.mutate(Self.mutate(sources, "NapCatApp.swift") {
+            $0.appending("\nlet isOptionalCount = 0, extensionCount = 1\nstruct ApprovalIntakeLog {}\nlet zzMaybe: Int? = nil"
+                + "\nextension PromptID {}" + LidGuardStructureTests.wholeLineCommentsRemoved(
+                    "\n/// never extension Optional, never extension Int?, never typealias M<T> = T?, never ApprovalIntake"))
+        }, host) {
+            $0.replacingOccurrences(of: Self.doorBinding, with: "        return queue.sync { // the seam's queue\n"
+                + "            guard  let  intake  else  {  return  nil  }\n\n            return body(intake)\n        }\n")
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        for pin in pinsHere {
+            #expect(pin(controls).isEmpty, "over-match: \(pin(controls))")
+        }
+        // Each ban's pattern bites through the lock's own engine.
+        let probes: [(String, String)] = [
+            (Self.optionalSites[1].pattern, "extension\n    ApprovalIntake?\n{"),
+            (Self.optionalAliasPattern, "typealias M<T> = /* x */\n    T?"),
+        ]
+        for (pattern, probe) in probes {
+            #expect(Self.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
+        }
+    }
+
+    /// D5b's anchor (the head of the intake's `receive` checks) and its plant,
+    /// verbatim: a second, hand-built verdict frame, keyed on the request ID
+    /// alone — no decision at all.
+    static let receiveAnchor: String = "        prune()\n        guard !prompts.values.contains(where:"
+    static let d5bFrame: String = #"""
+                if request.requestID.text == "zzzzz" {
+                    sendFrame(connection, "{\"frame\":\"verdict\",\"v\":1,\"request\":\"zzzzz\",\"verdict\":\"allow\"}")
+                }
+
+        """#
+
+    @Test func theIntakesFrameWriterIsNamedAtTodaysSites() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.frameWriterFailures(sources).isEmpty, "\(Self.frameWriterFailures(sources))")
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        #expect(Self.text(intake, in: sources).contains(Self.receiveAnchor), "vacuity: D5b's anchor is in the intake")
+        let d5b: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: Self.receiveAnchor, with: Self.d5bFrame + Self.receiveAnchor) }
+        #expect(!Self.frameWriterFailures(d5b).isEmpty, "D5b was NOT caught by the frame writer's pin alone")
+        #expect(Self.sinkFailures(d5b) == Self.sinkFailures(sources)
+                    && Self.wholeFailures(d5b, Self.roadPins) == Self.wholeFailures(sources, Self.roadPins), "D5b is the frame writer's pin to catch")
+        let planted: (String) -> Sources = { line in
+            Self.mutate(sources, intake) { $0.replacingOccurrences(of: Self.receiveAnchor, with: line + Self.receiveAnchor) }
+        }
+        let mutants: [(String, Sources)] = [
+            ("a frame on the request's size alone", planted("        if request.inputPreview.utf8.count == 4_242 { sendFrame(connection, \"{}\") }\n")),
+            ("the writer handed on", Self.mutate(sources, intake) {
+                $0.appending("\nextension ApprovalIntake {\n    func zzWriter() -> (ConnectionKey, String) -> Void { sendFrame }\n}") }),
+            ("the writer called, backticked", planted("        `sendFrame`(connection, \"{}\")\n")),
+            ("the writer behind a block comment", planted("        self./* x */sendFrame(connection, \"{}\")\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.frameWriterFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: a name that only contains the writer's, and a
+        // whole-line comment naming it.
+        #expect(Self.frameWriterFailures(Self.mutate(sources, intake) {
+            $0.appending("\nlet sendFrameCount = 0, frames = 1" + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never sendFrame(c, x)"))
+        }).isEmpty)
+    }
+
+    /// The host's connection writes: a connection's one write, `send`, named
+    /// on one line, the frame writer the host hands its intake.
+    static let hostWriteSites: [String: Int] = [
+        "sendFrame: { [weak self] key, line in self?.connections[key]?.send(line) },": 1,
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func hostWriteFailures(_ sources: Sources) -> [String] {
+        let host = ApprovalChannelStructureTests.hostFile
+        return absent([host], in: sources)
+            + PairingStructureTests.appSiteFailures(#"\bsend\b"#, in: sources.filter { $0.name == host }, allowed: [host: hostWriteSites],
+                                                    rule: "the host writes to a connection at today's site alone — the frame writer it hands its intake")
+    }
+
+    /// The anchor in the host's line handler, and a second, hand-built
+    /// verdict frame written beside it through the host's connection send,
+    /// keyed on the request ID alone: no decision, no frame writer.
+    static let lineHandlerAnchor: String = "                             self?.armIdleTimer(key)\n"
+    static let hostFrame: String = #"""
+                                     if String(decoding: $0, as: UTF8.self).contains("\"request\":\"zzzzz\"") {
+                                         self?.connections[key]?.send("{\"frame\":\"verdict\",\"v\":1,\"request\":\"zzzzz\",\"verdict\":\"allow\"}")
+                                     }
+
+        """#
+
+    @Test func theHostsConnectionWritesAreNamedAtTodaysSites() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.hostWriteFailures(sources).isEmpty, "\(Self.hostWriteFailures(sources))")
+        let host: String = ApprovalChannelStructureTests.hostFile
+        #expect(Self.text(host, in: sources).contains(Self.lineHandlerAnchor), "vacuity: the canary's anchor is in the host")
+        // The hand-built frame, caught by this pin alone: every other pin
+        // reads it exactly as it reads the tree.
+        let written: Sources = Self.mutate(sources, host) {
+            $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: Self.hostFrame + Self.lineHandlerAnchor) }
+        #expect(written.map { $0.text } != sources.map { $0.text }, "the hand-built frame did not apply")
+        #expect(!Self.hostWriteFailures(written).isEmpty, "the hand-built frame was NOT caught by the host's write pin alone")
+        let wholePins: [WholePin] = Self.roadPins + [Self.doorPin, Self.slotReadPin]
+        let otherPins: [(Sources) -> [String]] = [Self.sinkFailures, Self.frameWriterFailures, Self.intakeTypeFailures,
+                                                  Self.optionalFailures, Self.connectionTypeFailures, { Self.wholeFailures($0, wholePins) }]
+        #expect(otherPins.allSatisfy { $0(written) == $0(sources) }, "the hand-built frame is the host's write pin to catch")
+        let planted: (String) -> Sources = { line in
+            Self.mutate(sources, host) { $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: line + Self.lineHandlerAnchor) }
+        }
+        let mutants: [(String, Sources)] = [
+            ("a frame written as a connection is accepted", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: "        connections[key] = connection\n",
+                                        with: "        connections[key] = connection\n        connection.send(\"{}\")\n") }),
+            ("a frame written as the idle timer fires", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: "        intake?.tick()\n", with: "        connection.send(\"{}\")\n        intake?.tick()\n") }),
+            ("the writer's own line handed another frame", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: "self?.connections[key]?.send(line)", with: "self?.connections[key]?.send(line.isEmpty ? line : \"{}\")") }),
+            ("the send called, backticked", planted("                             self?.connections[key]?.`send`(\"{}\")\n")),
+            ("the send behind a block comment", planted("                             self?.connections[key]?./* x */send(\"{}\")\n")),
+            ("the send taken unapplied", Self.mutate(sources, host) { $0.appending("\nlet zzWrite = SeamConnection.send") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.hostWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned word, and a
+        // whole-line comment naming it.
+        let controls: Sources = Self.mutate(sources, host) {
+            $0.appending("\nlet sendCount = 0, resend = 1, sends = 2, isSendable = true"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never connection.send(frame)"))
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.hostWriteFailures(controls).isEmpty, "over-match: \(Self.hostWriteFailures(controls))")
+    }
+
+    /// Every line naming the connection's type in the four targets: its
+    /// declaration and the listener's and the client's lines in its own
+    /// file, the server's conformance, and the host's two lines.
+    static let connectionTypeSites: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.seamFile: [
+            "public final class SeamConnection: @unchecked Sendable {": 1,
+            "public func start(onConnection: @escaping (SeamConnection) -> Void, onRefused: @escaping () -> Void = {}) -> Bool {": 1,
+            "onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue, stallTimeout: stallTimeout))": 1,
+            "ownUID: uid_t = geteuid()) -> SeamConnection? {": 1,
+            "return SeamConnection(descriptor: descriptor, peer: peer, queue: queue)": 1],
+        ApprovalChannelStructureTests.serverFile: ["extension SeamConnection: ChannelLink {}": 1],
+        ApprovalChannelStructureTests.hostFile: [
+            "private var connections: [ApprovalIntake.ConnectionKey: SeamConnection] = [:]": 1,
+            "private func accept(_ connection: SeamConnection) {": 1],
+    ]
+
+    /// `sources`: `uncutSources()`.
+    static func connectionTypeFailures(_ sources: Sources) -> [String] {
+        absent(connectionTypeSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(#"\bSeamConnection\b"#, in: sources, allowed: connectionTypeSites,
+                                                    rule: "the connection type is named at today's sites alone — nothing new extends it or wraps its writer")
+    }
+
+    /// The host's write pin, one hop out: a member of the connection's type,
+    /// declared in another file, that writes a hand-built verdict frame, and
+    /// the host's line handler calling it, keyed on the request ID alone. No
+    /// line of the host spells `send`.
+    static let connectionWrapper: String = #"""
+        import NapCatSeam
+
+        extension SeamConnection {
+            func zzAllow(_ request: String) {
+                send("{\"frame\":\"verdict\",\"v\":1,\"request\":\"" + request + "\",\"verdict\":\"allow\"}")
+            }
+        }
+
+        """#
+    static let wrapperCall: String = #"""
+                                     if String(decoding: $0, as: UTF8.self).contains("\"request\":\"zzzzz\"") {
+                                         self?.connections[key]?.zzAllow("zzzzz")
+                                     }
+
+        """#
+
+    @Test func theConnectionTypeIsNamedAtTodaysSites() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.connectionTypeFailures(sources).isEmpty, "\(Self.connectionTypeFailures(sources))")
+        let host: String = ApprovalChannelStructureTests.hostFile
+        #expect(Self.text(host, in: sources).contains(Self.lineHandlerAnchor), "vacuity: the wrapper's call has its anchor in the host")
+        // The wrapper, caught by this pin alone: every other pin, the host's
+        // write pin among them, reads it exactly as it reads the tree.
+        let wrapped: Sources = Self.mutate(Self.adding(sources, "ZZLink.swift", Self.connectionWrapper), host) {
+            $0.replacingOccurrences(of: Self.lineHandlerAnchor, with: Self.wrapperCall + Self.lineHandlerAnchor) }
+        #expect(Self.text(host, in: wrapped) != Self.text(host, in: sources), "the wrapper's call did not apply")
+        #expect(!Self.connectionTypeFailures(wrapped).isEmpty, "the wrapper was NOT caught by the connection type's pin alone")
+        let wholePins: [WholePin] = Self.roadPins + [Self.doorPin, Self.slotReadPin]
+        let otherPins: [(Sources) -> [String]] = [Self.sinkFailures, Self.frameWriterFailures, Self.intakeTypeFailures,
+                                                  Self.optionalFailures, Self.hostWriteFailures, { Self.wholeFailures($0, wholePins) }]
+        #expect(otherPins.allSatisfy { $0(wrapped) == $0(sources) }, "the wrapper is the connection type's pin to catch")
+        let app: String = "NapCatApp.swift"
+        let mutants: [(String, Sources)] = [
+            ("the connection's send taken unapplied in another file", Self.mutate(sources, app) {
+                $0.appending("\nlet zzWrite = SeamConnection.send") }),
+            ("the connection aliased, then extended", Self.mutate(sources, app) {
+                $0.appending("\ntypealias ZZLink = SeamConnection\nextension ZZLink {\n    func zzWrite() { send(\"{}\") }\n}") }),
+            ("the connection aliased, qualified and backticked", Self.mutate(sources, app) {
+                $0.appending("\ntypealias ZZLink = NapCatSeam.`SeamConnection`") }),
+            ("the server's conformance given a member", Self.mutate(sources, ApprovalChannelStructureTests.serverFile) {
+                $0.replacingOccurrences(of: "extension SeamConnection: ChannelLink {}",
+                                        with: "extension SeamConnection: ChannelLink { func zz() {} }") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.connectionTypeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the type's, and a
+        // whole-line comment naming it.
+        let controls: Sources = Self.mutate(Self.mutate(sources, app) {
+            $0.appending("\nstruct SeamConnectionLog {}\nlet zzSeamConnection = 0, SeamConnections = 1"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never extension SeamConnection { func zz() { send(frame) } }"))
+        }, host) { $0.appending("\nlet isSeamConnectionOpen = false") }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.connectionTypeFailures(controls).isEmpty, "over-match: \(Self.connectionTypeFailures(controls))")
+    }
+
+    /// D2's anchors (the slot's read, commit and unpair) and its plant,
+    /// verbatim: a reading kept per handle, forgotten on the handle's own
+    /// commit or unpair alone.
+    static let slotRead: String = """
+            func read() -> PairedPhoneRead {
+                switch items.read() {
+                case .found(let text): return Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable
+                case .notFound: return .notPaired
+                case .failed: return .unreadable
+                }
+            }
+
+        """
+    static let slotReadKept: String = """
+            private let zzKept = ZZKept()
+
+            func read() -> PairedPhoneRead {
+                if let kept = zzKept.value { return kept }
+                let now: PairedPhoneRead
+                switch items.read() {
+                case .found(let text): now = Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable
+                case .notFound: now = .notPaired
+                case .failed: now = .unreadable
+                }
+                zzKept.value = now
+                return now
+            }
+
+        """
+    static let slotCommit: String = """
+            func commit(_ phone: PairedPhone) -> Bool {
+                items.write(Self.text(of: phone))
+            }
+
+        """
+    static let slotCommitForgetting: String = """
+            func commit(_ phone: PairedPhone) -> Bool {
+                zzKept.value = nil
+                return zzWrite(phone)
+            }
+
+            private func zzWrite(_ phone: PairedPhone) -> Bool {
+                items.write(Self.text(of: phone))
+            }
+
+        """
+    static let slotUnpair: String = """
+            func unpair() -> Bool {
+                items.delete()
+            }
+
+        """
+    static let slotUnpairForgetting: String = """
+            func unpair() -> Bool {
+                zzKept.value = nil
+                return zzDelete()
+            }
+
+            private func zzDelete() -> Bool {
+                items.delete()
+            }
+
+        """
+    static let slotKeptTail: String = "\nfinal class ZZKept: @unchecked Sendable { var value: PairedPhoneRead? }\n"
+
+    @Test func theSlotsReadIsPinnedWhole() throws {
+        let sources = try Self.uncutSources()
+        let pin: [WholePin] = [Self.slotReadPin]
+        #expect(Self.wholeFailures(sources, pin).isEmpty, "\(Self.wholeFailures(sources, pin))")
+        let slot: String = PairingStructureTests.slotFile
+        for anchor in [Self.slotRead, Self.slotCommit, Self.slotUnpair] {
+            #expect(Self.text(slot, in: sources).contains(anchor), "vacuity: D2's anchor '\(anchor.prefix(40))' is in the slot")
+        }
+        let d2: Sources = Self.mutate(sources, slot) {
+            $0.replacingOccurrences(of: Self.slotRead, with: Self.slotReadKept)
+                .replacingOccurrences(of: Self.slotCommit, with: Self.slotCommitForgetting)
+                .replacingOccurrences(of: Self.slotUnpair, with: Self.slotUnpairForgetting) + Self.slotKeptTail
+        }
+        #expect(d2.map { $0.text } != sources.map { $0.text }, "D2 did not apply")
+        #expect(!Self.wholeFailures(d2, pin).isEmpty, "D2 was NOT caught by the read's pin alone")
+        #expect(Self.sinkFailures(d2) == Self.sinkFailures(sources), "D2 is the read's pin to catch")
+        let secondRead: String = "    func read(_ zz: Int) -> PairedPhoneRead { .notPaired }\n\n" + Self.slotCommit
+        let mutants: [(String, Sources)] = [
+            ("a reading answered from elsewhere", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: "        case .notFound: return .notPaired\n", with: "        case .notFound: return zzFallback()\n") }),
+            ("read made dynamic", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: "    func read() -> PairedPhoneRead {\n", with: "    dynamic func read() -> PairedPhoneRead {\n") }),
+            ("a second read beside it", Self.mutate(sources, slot) { $0.replacingOccurrences(of: Self.slotCommit, with: secondRead) }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, pin).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: reflowed, and commented inside.
+        #expect(Self.wholeFailures(Self.mutate(sources, slot) {
+            $0.replacingOccurrences(of: "        case .notFound: return .notPaired\n",
+                                    with: "        // nothing stored\n        case .notFound:\n            return .notPaired // fail-dark\n")
+        }, pin).isEmpty)
+    }
+
+    // MARK: - h. One manifest at the root
+
+    /// The repository root's `Package*.swift` files are exactly
+    /// `Package.swift` (read case-insensitively): SwiftPM prefers a
+    /// version-specific manifest (`Package@swift-6.swift`) over it, and that
+    /// one's targets are nothing e. reads.
+    static func rootManifestFailures(_ names: [String]) -> [String] {
+        let manifests: [String] = names.filter { $0.lowercased().hasPrefix("package") && $0.lowercased().hasSuffix(".swift") }.sorted()
+        return manifests == ["Package.swift"] ? [] : ["the repository root holds one manifest, Package.swift — found \(manifests)"]
+    }
+
+    @Test func theRootHoldsOneManifest() throws {
+        let names: [String] = try FileManager.default.contentsOfDirectory(atPath: LidGuardStructureTests.repoRoot().path)
+        #expect(Self.rootManifestFailures(names).isEmpty, "\(Self.rootManifestFailures(names))")
+        #expect(names.contains("Package.swift") && names.contains("Sources"), "vacuity: the root is the repository's")
+        let plus: (String) -> [String] = { name in
+            var all: [String] = names
+            all.append(name)
+            return all
+        }
+        let mutants: [(String, [String])] = [
+            ("P6V: a version-specific manifest, Package.swift untouched", plus("Package@swift-6.swift")),
+            ("a minor version's manifest", plus("Package@swift-6.4.swift")),
+            ("a patch version's manifest", plus("Package@swift-5.10.1.swift")),
+            ("a manifest of another case", plus("package@swift-6.swift")),
+            ("the manifest gone", names.filter { $0 != "Package.swift" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(!Self.rootManifestFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: the resolved pins, a folder and notes that only
+        // start like a manifest.
+        let controls: [String] = ["Package.resolved", "Packages", "PackageNotes.md", "Package.swift.orig", ".swiftpm"]
+        var withControls: [String] = names.filter { !controls.contains($0) }
+        withControls.append(contentsOf: controls)
+        #expect(Self.rootManifestFailures(withControls).isEmpty, "\(Self.rootManifestFailures(withControls))")
     }
 }
