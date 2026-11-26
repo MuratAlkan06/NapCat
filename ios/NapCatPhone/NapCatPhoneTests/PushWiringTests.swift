@@ -47,11 +47,19 @@ import UserNotifications
     /// foreground, on a pull, as the switch changes (the root, with the
     /// owner's switch), and on a prompt push (the delegate, with the switch
     /// as last set). No other line, and nothing that runs on a timer.
+    /// AMENDED (#194 polish): and once as Settings closes and as the
+    /// launch's pairing sheet closes (the root, with the owner's switch), so
+    /// a stored on that a pairing made there turns effective is read at once.
+    static let settingsDismissSync: String =
+        ".sheet(isPresented: $showsSettings, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {"
+    static let pairingDismissSync: String =
+        ".sheet(isPresented: $showsPairing, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {"
     static let readSites: [(word: String, sites: [String: Int])] = [
         ("syncPrompts", CloudKitStructureTests.appSites([
             "Model/RequestInbox.swift": ["func syncPrompts(switchedOn stored: Bool) async {": 1, "await syncPrompts(switchedOn: switchedOn)": 1],
             "NapCatPhoneApp.swift": ["await inbox.syncPrompts(switchedOn: approvals)": 1, ".task { await inbox.syncPrompts(switchedOn: approvals) }": 1,
-                                    "Task { await inbox.syncPrompts(switchedOn: approvals) }": 1, "Task { await inbox.syncPrompts(switchedOn: on) }": 1]])),
+                                    "Task { await inbox.syncPrompts(switchedOn: approvals) }": 1, "Task { await inbox.syncPrompts(switchedOn: on) }": 1,
+                                    settingsDismissSync: 1, pairingDismissSync: 1]])),
         ("refreshPrompts", CloudKitStructureTests.appSites([
             "Model/RequestInbox.swift": ["func refreshPrompts() async {": 1],
             "PhoneAppDelegate.swift": ["await inbox.refreshPrompts()": 2]])),
@@ -119,6 +127,19 @@ import UserNotifications
             ("a prompt opened from a new site", mutate(root) {
                 $0.replacingOccurrences(of: "            inbox.opened()\n", with: "            inbox.opened()\n            inbox.open(id)\n") }),
             ("a timer in the inbox", mutate(inbox) { $0 + "\nlet spareTimer = Timer.publish(every: 60, on: .main, in: .common)" }),
+            // #194 polish: one read as each sheet that can change the
+            // pairing closes, and no other sheet's.
+            ("no read as Settings closes", mutate(root) {
+                $0.replacingOccurrences(of: Self.settingsDismissSync, with: ".sheet(isPresented: $showsSettings) {") }),
+            ("no read as the launch's pairing sheet closes", mutate(root) {
+                $0.replacingOccurrences(of: Self.pairingDismissSync, with: ".sheet(isPresented: $showsPairing) {") }),
+            ("a read as a prompt's sheet closes", mutate(root) {
+                $0.replacingOccurrences(of: ".sheet(item: $shownRequest) {",
+                                        with: ".sheet(item: $shownRequest, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {") }),
+            ("a read on a timer once Settings closes", mutate(root) {
+                $0.replacingOccurrences(of: "onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {\n            SettingsScreen(",
+                                        with: "onDismiss: { Task { while true { await inbox.syncPrompts(switchedOn: approvals); "
+                                            + "try? await Task.sleep(for: .seconds(60)) } } }) {\n            SettingsScreen(") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

@@ -49,10 +49,11 @@ enum RequestAnswer: Equatable, Sendable {
 /// are terminal: once a request is either, nothing makes it pending again.
 ///
 /// Live prompts (F4, #194) come from one snapshot read of every prompt
-/// the Mac offers, at launch, on foreground, on a pull and on a prompt
-/// push, never on a timer, and only while the owner's switch is on with a
-/// committed key (`ApprovalsSwitch`); off, nothing is read and the inbox is
-/// empty. A failed read changes nothing.
+/// the Mac offers, at launch, on foreground, on a pull, as Settings or the
+/// launch's pairing sheet closes and on a prompt push, never on a timer,
+/// and only while the owner's switch is on with a committed key
+/// (`ApprovalsSwitch`); off, nothing is read and the inbox is empty. A
+/// failed read changes nothing.
 ///
 /// Allow and Deny alike ask for a biometric match first, every time (CL-3,
 /// and the owner's uniform-signing ruling: every answer is signed, and the
@@ -121,7 +122,8 @@ final class RequestInbox {
     /// Whether answers from here go nowhere: the writer is the unsent one
     /// (the live inbox's until the answer path is armed). One fact, the
     /// writer's own type, so it cannot drift from what an answer would do:
-    /// the prompt screen offers no answer while it holds (#194).
+    /// the prompt screen offers no answer while it holds, and Allow and Deny
+    /// refuse (#194).
     var isReadOnly: Bool { writer is UnsentDecisionWriter }
     @ObservationIgnored private let biometrics: any BiometricGate
     @ObservationIgnored private let keyring: PhoneKeyring
@@ -380,7 +382,11 @@ final class RequestInbox {
     /// Pending, no answer under way or done, `verdict` on offer (once iCloud
     /// left an answer unconfirmed, only that one is: #154), and a key to
     /// sign with: an unpaired phone asks for no match it could not use.
+    /// Never while the inbox is read only (#194): its screen offers no
+    /// answer, and the inbox itself refuses one before asking for a match,
+    /// so nothing is signed and nothing is written.
     private func isAnswerable(_ id: PromptID, with verdict: ApprovalWire.Verdict) -> Bool {
+        if isReadOnly { return false }
         tick()
         refreshKeyHealth()
         if case .unpaired = keyHealth { return false }

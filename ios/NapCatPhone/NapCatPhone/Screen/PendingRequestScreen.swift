@@ -8,7 +8,8 @@ import SwiftUI
 /// ruling: every answer is signed); after iCloud left an answer unconfirmed,
 /// that answer alone, sent again (#154). An expired or withdrawn request
 /// says why and offers no answer; so does a read-only inbox, whose answers
-/// would go nowhere (#194: the live inbox, until the answer path is armed).
+/// would go nowhere (#194: the live inbox, until the answer path is armed),
+/// and its line already says where to answer, so it drops the footnote.
 /// Everything visual comes from the environment's `Theme`; nothing on it
 /// moves.
 struct PendingRequestScreen: View {
@@ -25,8 +26,8 @@ struct PendingRequestScreen: View {
     nonisolated static let sentSymbol = "paperplane"
 
     /// Why no answer is on offer while answers from here go nowhere (#194):
-    /// the prompt is shown to be answered on the Mac.
-    nonisolated static let readOnlyLine = PhoneLine(text: "Read only — answering from iPhone isn't on yet; answer on your Mac",
+    /// the prompt is shown as a preview, to be answered on the Mac.
+    nonisolated static let readOnlyLine = PhoneLine(text: "Preview — answering from iPhone isn't on yet; answer on your Mac",
                                                     severity: .info)
 
     /// Why no answer is on offer, naming the biometric this phone has.
@@ -191,8 +192,11 @@ struct PendingRequestScreen: View {
 
     /// The footnote is true only while an answer from here can still go
     /// out: a withdrawn prompt may already be closed on the Mac, and an
-    /// expired one says so in its own line.
-    nonisolated static func showsFootnote(_ status: RequestStatus) -> Bool {
+    /// expired one says so in its own line. A read-only inbox's prompt has
+    /// none: no answer goes out from here, and its line already says to
+    /// answer on the Mac (#194).
+    nonisolated static func showsFootnote(_ status: RequestStatus, readOnly: Bool = false) -> Bool {
+        if readOnly { return false }
         switch status {
         case .pending, .confirming, .sending: return true
         case .sent, .answered, .expired, .withdrawn: return false
@@ -237,7 +241,7 @@ struct PendingRequestScreen: View {
                 }
                 stateLine
                 answers
-                if Self.showsFootnote(status) {
+                if Self.showsFootnote(status, readOnly: readOnly) {
                     Text(Self.footnoteText(status))
                         .font(theme.detailFont)
                         .foregroundStyle(theme.inkSecondary)
@@ -429,7 +433,8 @@ struct InputDrawing: View, Equatable {
                          deny: {})
 }
 
-/// The live inbox until the answer path is armed (#194): no answer offered.
+/// The live inbox until the answer path is armed (#194): no answer offered,
+/// no footnote.
 #Preview("Read only") {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),

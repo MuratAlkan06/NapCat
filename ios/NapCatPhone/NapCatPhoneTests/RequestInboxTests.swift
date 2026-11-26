@@ -533,17 +533,36 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         #expect(inbox.requests.map(\.id) == [FixtureRequests.id])
     }
 
-    /// Every answer to a live prompt still goes to the unsent writer, the
-    /// live inbox's: it reads Unsent, and nothing is written anywhere.
-    @Test func anAnswerToALivePromptStillReadsUnsent() async {
-        let clock = TestClock()
-        let request = F.request(1, createdAt: clock.now)
-        let inbox = Self.inbox(clock, ScriptedPromptSource(snapshots: [[request]]), writer: UnsentDecisionWriter())
+    /// #194 polish (security I1): the live inbox refuses an answer itself,
+    /// not only its screen. While it is read only (its writer is the unsent
+    /// one), Allow and Deny ask for no match, sign nothing (the enclave
+    /// counts every signature) and write nothing, and the prompt stays as
+    /// it was: a closed failure. The same inbox over a writer that writes
+    /// answers as ever, so the refusal is the read-only fact's alone.
+    @Test(arguments: [true, false])
+    func aReadOnlyInboxRefusesEveryAnswerUnasked(_ readOnly: Bool) async {
+        let clock: TestClock = TestClock()
+        let request: PendingRequest = F.request(1, createdAt: clock.now)
+        let keys: PhoneKeyringTests.World = DecisionSignerTests.paired().keys
+        let gate: ScriptedBiometricGate = ScriptedBiometricGate()
+        let writer: any DecisionWriter = readOnly ? UnsentDecisionWriter() : RecordingDecisionWriter()
+        let inbox: RequestInbox = RequestInbox(writer: writer, biometrics: gate, keyring: keys.keyring,
+                                               prompts: ScriptedPromptSource(snapshots: [[request]]), clock: { clock.now })
         await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.isReadOnly == readOnly)
+        #expect(inbox.keyHealth == .paired, "not vacuous: a key that could sign")
         await inbox.allow(request.id)
-        #expect(inbox.entries[request.id]?.answer == .unsent(.allow))
         await inbox.deny(request.id)
-        #expect(inbox.entries[request.id]?.answer == .unsent(.deny))
+        if readOnly {
+            #expect(gate.requests.isEmpty, "no match asked for")
+            #expect(keys.enclave.signed.isEmpty, "nothing signed")
+            #expect(inbox.entries[request.id]?.answer == RequestAnswer.none)
+            #expect(inbox.status(of: request.id) == .pending(until: request.expiresAt, note: nil))
+        } else {
+            #expect(gate.requests == [RequestInbox.allowReason], "Allow asked for its match; Deny was no longer on offer")
+            #expect(keys.enclave.signed.count == 1)
+            #expect(inbox.entries[request.id]?.answer == .sent(.allow))
+        }
     }
 
     /// #194 design review: so the live inbox is read only, and its prompt

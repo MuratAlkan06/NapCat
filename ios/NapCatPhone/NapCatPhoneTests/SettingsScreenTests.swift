@@ -186,8 +186,13 @@ import UIKit
     /// AMENDED (#194 design review): the toggle follows the phone's pairing,
     /// read through the live pairing: shown through `shownSwitch`, disabled
     /// without a committed key, its footer chosen by the same reading.
+    /// AMENDED (#194 polish): its label in the ink only with a committed
+    /// key, dimmed to the secondary ink where the switch is disabled; and
+    /// the root hands the switch to the inbox as Settings and the launch's
+    /// pairing sheet close (`PushWiringTests` pins those two triggers).
     static let toggleShape: String = "Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth)) { "
-        + "Text(Self.approvalsLabel) .foregroundStyle(theme.ink) } .disabled(!ApprovalsSwitch.isCommitted(keyHealth))"
+        + "Text(Self.approvalsLabel) .foregroundStyle(ApprovalsSwitch.isCommitted(keyHealth) ? theme.ink : theme.inkSecondary) } "
+        + ".disabled(!ApprovalsSwitch.isCommitted(keyHealth))"
     static let footerSwitchShape: String = "} footer: { footer(Self.approvalsFooter(for: keyHealth)) }"
     static let switchShapes: [String] = [toggleShape, footerSwitchShape,
                                          "private func approvalsSection(_ keyHealth: PhoneKeyring.Health) -> some View {",
@@ -198,7 +203,8 @@ import UIKit
                                           "SettingsScreen(palette: $palette, notifications: .off, approvals: .constant(false))": 1],
         "NapCatPhoneApp.swift": ["@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1, "approvals: $approvals)": 2,
                                  "await inbox.syncPrompts(switchedOn: approvals)": 1, ".task { await inbox.syncPrompts(switchedOn: approvals) }": 1,
-                                 "Task { await inbox.syncPrompts(switchedOn: approvals) }": 1, ".onChange(of: approvals) { _, on in": 1],
+                                 "Task { await inbox.syncPrompts(switchedOn: approvals) }": 1, ".onChange(of: approvals) { _, on in": 1,
+                                 PushWiringTests.settingsDismissSync: 1, PushWiringTests.pairingDismissSync: 1],
     ])
 
     static func approvalsFailures(_ app: [Source]) -> [String] {
@@ -237,6 +243,14 @@ import UIKit
                                         with: "Toggle(isOn: $approvals)") }),
             ("the toggle settable unpaired", mutate(settings) {
                 $0.replacingOccurrences(of: "            .disabled(!ApprovalsSwitch.isCommitted(keyHealth))\n", with: "") }),
+            // #194 polish: the disabled row's label dims with it.
+            ("the label in full ink while the switch is disabled", mutate(settings) {
+                $0.replacingOccurrences(of: ".foregroundStyle(ApprovalsSwitch.isCommitted(keyHealth) ? theme.ink : theme.inkSecondary)",
+                                        with: ".foregroundStyle(theme.ink)") }),
+            // #194 polish: the root's two sheet-close hand-offs are pinned.
+            ("the switch handed in as a third sheet closes", mutate(root) {
+                $0.replacingOccurrences(of: ".sheet(item: $shownRequest) {",
+                                        with: ".sheet(item: $shownRequest, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {") }),
             ("the footer fixed", mutate(settings) {
                 $0.replacingOccurrences(of: "footer(Self.approvalsFooter(for: keyHealth))", with: "footer(Self.approvalsPairedFooter)") }),
             ("the row told it is paired", mutate(settings) {

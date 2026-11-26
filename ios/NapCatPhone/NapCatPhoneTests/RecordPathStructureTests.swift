@@ -468,8 +468,10 @@ import Testing
     }
 
     /// The answerable check (#154), whole.
+    /// AMENDED (#194 polish, security I1): it opens on the read-only fact,
+    /// so a read-only inbox asks for no match and signs nothing.
     static let answerableHead: String = "private func isAnswerable(_ id: PromptID, with verdict: ApprovalWire.Verdict) -> Bool {"
-    static let answerableBody: String = "tick() refreshKeyHealth() if case .unpaired = keyHealth { return false } "
+    static let answerableBody: String = "if isReadOnly { return false } tick() refreshKeyHealth() if case .unpaired = keyHealth { return false } "
         + "guard let entry = entries[id], phase(of: id)?.isPending == true else { return false } "
         + "let status: RequestStatus = RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer, "
         + "mayHaveLanded: entry.mayHaveLanded) return status.answers.contains(verdict)"
@@ -611,6 +613,9 @@ import Testing
             ("an unpaired phone asks for a match", inbox.replacingOccurrences(
                 of: "        refreshKeyHealth()\n        if case .unpaired = keyHealth { return false }\n        guard let entry",
                 with: "        refreshKeyHealth()\n        guard let entry")),
+            // #194 polish (security I1): a read-only inbox refuses first.
+            ("a read-only inbox asks for a match", inbox.replacingOccurrences(
+                of: "        if isReadOnly { return false }\n        tick()\n", with: "        tick()\n")),
             ("the unconfirmed answer never kept", inbox.replacingOccurrences(
                 of: "        if outcome == .unconfirmed { entries[id]?.mayHaveLanded = verdict }\n", with: "")),
             ("the restriction lifted after a failed resend", inbox.replacingOccurrences(

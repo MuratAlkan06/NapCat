@@ -72,8 +72,10 @@ import Testing
         "Live/LivePairing.swift": ["func makeCeremony() -> PairingCeremony {": 1],
         "Settings/SettingsScreen.swift": [pairAction: 1],
     ])
+    /// AMENDED (#194 polish): the launch's pairing sheet reads the prompts
+    /// once as it closes, on its own line (`PushWiringTests`).
     static let sheetFlagSites = CloudKitStructureTests.appSites([
-        "NapCatPhoneApp.swift": ["@State private var showsPairing: Bool": 1, ".sheet(isPresented: $showsPairing) {": 1],
+        "NapCatPhoneApp.swift": ["@State private var showsPairing: Bool": 1, PushWiringTests.pairingDismissSync: 1],
     ])
     /// AMENDED (#178, a blank first sheet): Settings' sheet is presented BY
     /// its ceremony (`.sheet(item:)`), no longer by a flag raised beside it,

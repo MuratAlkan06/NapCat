@@ -35,9 +35,10 @@ struct NapCatPhoneApp: App {
 ///
 /// Remote approvals (F4, #194): the owner's switch is kept in the app's
 /// own defaults, set in Settings, and handed to the inbox at launch, on
-/// every return to the foreground, on a pull and whenever it changes; the
-/// inbox reads the prompts then (`RequestInbox.syncPrompts`), never on a
-/// timer.
+/// every return to the foreground, on a pull, whenever it changes, and as
+/// Settings or the launch's pairing sheet closes (a pairing made there can
+/// make a stored on take effect, read at once); the inbox reads the prompts
+/// then (`RequestInbox.syncPrompts`), never on a timer.
 ///
 /// The pairing screen (F4, slice S-PAIR-B) opens the same way for a
 /// `-NapCatPairing` launch: its fixture ceremony scans the launch's code, if
@@ -83,14 +84,14 @@ struct ReceiverRoot: View {
                     }
                 }
         }
-        .sheet(isPresented: $showsSettings) {
+        .sheet(isPresented: $showsSettings, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {
             SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing,
                            approvals: $approvals)
         }
         .sheet(item: $shownRequest) { request in
             PendingRequestSheet(inbox: inbox, id: request.id)
         }
-        .sheet(isPresented: $showsPairing) {
+        .sheet(isPresented: $showsPairing, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {
             if let pairing {
                 PairingSheet(ceremony: pairing.ceremony, camera: pairing.camera)
             }

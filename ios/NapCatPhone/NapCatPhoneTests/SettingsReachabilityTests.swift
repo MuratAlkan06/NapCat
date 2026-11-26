@@ -27,8 +27,9 @@ import UIKit
     static let gear = ".toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsGearButton { showsSettings = true } } }"
     /// AMENDED (S-PAIR-C1.6, #172): Settings is handed the live inbox's
     /// pairing, for its Pair with Mac row. AMENDED (#194): and the root's
-    /// remote-approvals switch, bound, for its row.
-    static let sheet = ".sheet(isPresented: $showsSettings) { "
+    /// remote-approvals switch, bound, for its row. AMENDED (#194 polish):
+    /// and the prompts are read once as it closes (`PushWiringTests`).
+    static let sheet: String = PushWiringTests.settingsDismissSync + " "
         + "SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing, "
         + "approvals: $approvals) }"
     static let palette = ".environment(\\.theme, ThemeID.fallback.theme(palette: palette))"

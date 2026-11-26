@@ -16,7 +16,8 @@ import SwiftUI
 ///   a paired phone it shows and sets the stored choice it is handed and
 ///   nothing else (the root hands it to the inbox, and nothing tells the
 ///   Mac); on an unpaired one it shows off, a stored on included, cannot be
-///   set, and its footer says to pair first.
+///   set, its label dims to the secondary ink as the switch does, and its
+///   footer says to pair first.
 /// - About shows the running build, read from the bundle, and the project
 ///   site.
 ///
@@ -185,7 +186,7 @@ struct SettingsScreen: View {
         Section {
             Toggle(isOn: Self.shownSwitch($approvals, keyHealth: keyHealth)) {
                 Text(Self.approvalsLabel)
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(ApprovalsSwitch.isCommitted(keyHealth) ? theme.ink : theme.inkSecondary)
             }
             .disabled(!ApprovalsSwitch.isCommitted(keyHealth))
         } header: {

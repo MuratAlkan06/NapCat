@@ -47,6 +47,7 @@ import UIKit
         lines += Self.everyStatus.flatMap { status in BiometryKind.allCases.map { status.line(at: Self.now, biometric: $0) } }
         lines.append(RequestStatus.pending(until: Self.now.addingTimeInterval(30), note: nil).line(at: Self.now))
         lines.append(PendingRequestScreen.longInput)
+        lines.append(PendingRequestScreen.readOnlyLine)
         for line in lines {
             #expect(ListStateTests.captionRegisterFailures(line.text).isEmpty,
                     "\(ListStateTests.captionRegisterFailures(line.text))")
@@ -100,19 +101,25 @@ import UIKit
                 == "Changed — Face ID changed since pairing; if answering fails, pair again with your Mac")
         #expect(PendingRequestScreen.longInput.text == "Long — the input scrolls inside its box")
         #expect(PendingRequestScreen.readOnlyLine
-                == PhoneLine(text: "Read only — answering from iPhone isn't on yet; answer on your Mac", severity: .info))
+                == PhoneLine(text: "Preview — answering from iPhone isn't on yet; answer on your Mac", severity: .info))
     }
 
-    /// #194 design review: the read-only line is in the caption register
-    /// (one em dash, the cause, no closing period) but for its state, the
-    /// review's own two words; nothing else of the register gives way.
-    @Test func theReadOnlyLineKeepsTheRegisterButForItsState() {
+    /// #194 design review: the read-only line is in the caption register,
+    /// with no exception: one state word, an em dash, the cause, no closing
+    /// period. AMENDED (#194 polish): its state is "Preview"; the review's
+    /// two words, "Read only", were the register's one deviation until then.
+    @Test func theReadOnlyLineIsInTheCaptionRegister() {
         let line: PhoneLine = PendingRequestScreen.readOnlyLine
-        #expect(ListStateTests.captionRegisterFailures(line.text) == ["the state is not one word: Read only"])
-        #expect(line.spoken == "Note: Read only — answering from iPhone isn't on yet; answer on your Mac")
+        let failures: [String] = ListStateTests.captionRegisterFailures(line.text)
+        #expect(failures.isEmpty, "\(failures)")
+        #expect(line.severity == .info)
+        #expect(line.spoken == "Note: Preview — answering from iPhone isn't on yet; answer on your Mac")
         for word in ["match", "sign", "signed", "confirm", "confirmed", "sent", "send"] {
             #expect(!line.text.split(whereSeparator: { !$0.isLetter }).contains { $0.lowercased() == word }, "'\(word)'")
         }
+        // Not vacuous: the old two-word state fails the register.
+        let old: String = "Read only — answering from iPhone isn't on yet; answer on your Mac"
+        #expect(ListStateTests.captionRegisterFailures(old) == ["the state is not one word: Read only"])
     }
 
     /// The unavailable line names the biometric this phone has, and no
@@ -327,6 +334,22 @@ import UIKit
             }
             #expect(PendingRequestScreen.showsFootnote(status) == expected, "\(status)")
         }
+    }
+
+    /// #194 polish: a read-only inbox's prompt has no footnote in any
+    /// state: no answer goes out from here, and the read-only line already
+    /// says to answer on the Mac. Not read only, the footnote is the one it
+    /// always was.
+    @Test func theFootnoteIsNotSaidWhileReadOnly() {
+        let statuses: [RequestStatus] = Self.everyStatus + Self.everyResend
+        var shownOtherwise: Int = 0
+        for status in statuses {
+            #expect(!PendingRequestScreen.showsFootnote(status, readOnly: true), "\(status)")
+            let usual: Bool = PendingRequestScreen.showsFootnote(status)
+            #expect(PendingRequestScreen.showsFootnote(status, readOnly: false) == usual, "\(status)")
+            if usual { shownOtherwise += 1 }
+        }
+        #expect(shownOtherwise == 14, "not vacuous: every pending, confirming and sending state has it otherwise")
     }
 
     /// After iCloud left an answer unconfirmed it may have reached the Mac,
@@ -913,10 +936,14 @@ import UIKit
     /// (`theAnswersGoThroughTheInboxOnly` pins the hand-off and the offer's
     /// use of it); nothing else reads it; and the unsent writer is named by
     /// its declaration, the live inbox's construction and this fact alone.
+    /// AMENDED (#194 polish, security I1): and the inbox's own answerable
+    /// check reads it first, so Allow and Deny refuse while it holds
+    /// (`RecordPathStructureTests` pins that check whole).
     static let inboxFile: String = "\(appDir)/Model/RequestInbox.swift"
     static let readOnlyFact: String = "var isReadOnly: Bool { writer is UnsentDecisionWriter }"
+    static let readOnlyRefusal: String = "if isReadOnly { return false }"
     static let readOnlySites: [String: Int] = CloudKitStructureTests.appSites([
-        "Model/RequestInbox.swift": [readOnlyFact: 1],
+        "Model/RequestInbox.swift": [readOnlyFact: 1, readOnlyRefusal: 1],
         "Screen/PendingRequestSheet.swift": ["key: inbox.keyHealth, readOnly: inbox.isReadOnly,": 1],
     ])
     static let unsentWriterSites: [String: Int] = CloudKitStructureTests.appSites([
@@ -932,7 +959,8 @@ import UIKit
             failures.append("the inbox lost '\(readOnlyFact)'")
         }
         failures += CloudKitStructureTests.appSiteFailures(#"\bisReadOnly\b"#, in: code, allowed: readOnlySites,
-                                                           rule: "read only is the writer's one fact, handed to the screen alone")
+                                                           rule: "read only is the writer's one fact, handed to the screen "
+                                                            + "and held by the inbox's answers alone")
         failures += CloudKitStructureTests.appSiteFailures(#"\bUnsentDecisionWriter\b"#, in: code, allowed: unsentWriterSites,
                                                            rule: "the unsent writer is the live inbox's, and read only follows it")
         return failures
@@ -958,6 +986,11 @@ import UIKit
                 $0.replacingOccurrences(of: "readOnly: inbox.isReadOnly,", with: "readOnly: !inbox.isReadOnly,") }),
             ("the unsent writer named elsewhere", mutate("\(Self.appDir)/Fixtures/FixtureRequests.swift") {
                 $0.replacingOccurrences(of: "RequestInbox(writer: FixtureDecisionWriter(),", with: "RequestInbox(writer: UnsentDecisionWriter(),") }),
+            // #194 polish (security I1): the inbox's own refusal.
+            ("the inbox answers while read only", mutate(Self.inboxFile) {
+                $0.replacingOccurrences(of: "        " + Self.readOnlyRefusal + "\n", with: "") }),
+            ("the refusal turned around", mutate(Self.inboxFile) {
+                $0.replacingOccurrences(of: Self.readOnlyRefusal, with: "if !isReadOnly { return false }") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -986,7 +1019,8 @@ import UIKit
     static let buttonStyleFile = "\(appDir)/Screen/RequestButtonStyle.swift"
 
     /// The footnote in the words its state calls for (#154).
-    static let footnoteShape: String = "if Self.showsFootnote(status) { Text(Self.footnoteText(status))"
+    /// AMENDED (#194 polish): and none while the inbox is read only.
+    static let footnoteShape: String = "if Self.showsFootnote(status, readOnly: readOnly) { Text(Self.footnoteText(status))"
 
     /// What the review asked of the screen, as its source says it:
     ///
@@ -1012,10 +1046,12 @@ import UIKit
     /// - the answers' height comes from the theme's touch target;
     /// - AMENDED (the #154 design review): the footnote's words come from
     ///   `footnoteText(_:)`, so after an unconfirmed save it no longer says
-    ///   the dialog on the Mac stays open.
+    ///   the dialog on the Mac stays open;
+    /// - AMENDED (#194 polish): the footnote is told whether the inbox is
+    ///   read only, and is not said while it is.
     static let compositionShapes = [
         "VStack(alignment: .leading, spacing: theme.rowGap) { promptCard if let note = status.note { CaptionLine(line: note) } "
-            + "stateLine answers if Self.showsFootnote(status) {",
+            + "stateLine answers if Self.showsFootnote(status, readOnly: readOnly) {",
         "ScrollView { InputDrawing(input: request.inputPreview, muted: muted) .equatable() "
             + ".onGeometryChange(for: CGFloat.self) { $0.size.height } action: { inputHeight = $0 } } "
             + ".frame(height: Self.inputBoxHeight(input: inputHeight, screen: screenHeight)) .scrollBounceBehavior(.basedOnSize) "
@@ -1121,6 +1157,9 @@ import UIKit
             // #154 design review: the footnote's words follow the state.
             ("the footnote says the dialog stays open in every state", screen.replacingOccurrences(
                 of: "Text(Self.footnoteText(status))", with: "Text(Self.footnote)"), style),
+            // #194 polish: a read-only prompt has no footnote.
+            ("the footnote said while read only", screen.replacingOccurrences(
+                of: "if Self.showsFootnote(status, readOnly: readOnly) {", with: "if Self.showsFootnote(status) {"), style),
             ("a hard-coded touch target", screen, style.replacingOccurrences(
                 of: "minHeight: theme.minTouchTarget", with: "minHeight: 44")),
         ]
