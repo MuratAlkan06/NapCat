@@ -17,6 +17,7 @@ struct ChannelInstallStructureTests {
     static let makefilePath = "Makefile"
     static let infoPlistPath = "Resources/Info.plist"
     static let packagePath = "Package.swift"
+    static let checkPath = "scripts/check-release-entitlements.sh"
 
     static func read(_ path: String) throws -> String {
         try String(contentsOf: LidGuardStructureTests.repoRoot().appendingPathComponent(path), encoding: .utf8)
@@ -136,6 +137,7 @@ struct ChannelInstallStructureTests {
     /// line: `prefix + identifier + suffix`.
     static let identifierDefinitions: [(path: String, prefix: String, suffix: String)] = [
         (makefilePath, "CHANNEL_IDENTIFIER := ", ""),
+        (checkPath, "CHANNEL_IDENTIFIER=\"", "\""),
     ]
     /// Files that spell the identifier once without defining it: the
     /// server's own dispatch queue label.
@@ -284,6 +286,81 @@ struct ChannelInstallStructureTests {
         for (name, mutant) in mutants {
             #expect(mutant != plist, "canary setup '\(name)': target text must exist")
             #expect(!Self.channelVersionFailures(mutant, expected: expected).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    // MARK: - The release check verifies the helper
+
+    static let checkHelperPath = "HELPER=\"$APP/Contents/MacOS/napcat-channel\""
+    static let checkFunctionHead = "check_channel_helper() {"
+    static let checkCall = "check_channel_helper"
+    static let unentitledBranch = "if [ \"$MODE\" = \"unentitled\" ]; then"
+    static let adHocRefusal = "if grep -qx 'Signature=adhoc' <<< \"$SIGNATURE_INFO\"; then"
+    /// What the helper check must compare (its body, verbatim lines).
+    static let checkHelperRules = [
+        "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict.\"",
+        "[ \"$(signature_field \"$helper_info\" Identifier)\" = \"$CHANNEL_IDENTIFIER\" ] \\",
+        "codesign -d --entitlements - --xml \"$HELPER\" > \"$WORK/helper.plist\" 2> /dev/null \\",
+        "[ \"$helper_team\" = \"$app_team\" ] \\",
+        "[ \"$(runtime_flag \"$helper_info\")\" = \"$(runtime_flag \"$app_info\")\" ] \\",
+    ]
+
+    /// Every violation in the release check's text: the helper is checked in
+    /// both modes (before the mode branch), silently, with every rule, and
+    /// before the ad-hoc refusal, which the release dry run needs to stay last.
+    static func releaseCheckFailures(_ script: String) -> [String] {
+        let code = codeLines(script)
+        var failures: [String] = []
+        if code.filter({ $0 == checkHelperPath }).count != 1 {
+            failures.append("the helper path must be defined once as \(checkHelperPath)")
+        }
+        guard let body = functionBody(checkFunctionHead, in: script) else { return failures + ["no \(checkFunctionHead)"] }
+        for rule in checkHelperRules where !body.contains(rule) {
+            failures.append("the helper check lost: \(rule)")
+        }
+        if body.contains(where: { $0.hasPrefix("echo") }) {
+            failures.append("the helper check must print nothing when it passes (the dry run compares whole outputs)")
+        }
+        let calls = code.indices.filter { code[$0] == checkCall }
+        guard calls.count == 1, let call = calls.first,
+              let branch = code.firstIndex(of: unentitledBranch), let refusal = code.firstIndex(of: adHocRefusal) else {
+            return failures + ["one call of \(checkCall), the mode branch and the ad-hoc refusal must all exist"]
+        }
+        if !(call < branch && call < refusal) {
+            failures.append("\(checkCall) must run before the mode branch and the ad-hoc refusal")
+        }
+        return failures
+    }
+
+    @Test func theReleaseCheckVerifiesTheHelperBeforeItsLastRefusal() throws {
+        let script = try Self.read(Self.checkPath)
+        let failures = Self.releaseCheckFailures(script)
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    /// Canaries: the call dropped, moved past the ad-hoc refusal or into the
+    /// entitled branch, a rule dropped, and a success line printed from the
+    /// check.
+    @Test func theReleaseCheckLockCatchesRegressionMutants() throws {
+        let script = try Self.read(Self.checkPath)
+        try #require(Self.releaseCheckFailures(script).isEmpty, "canary baseline must be clean")
+        let callLine = "\n" + Self.checkCall + "\n"
+        let lastLine = "echo \"check-release-entitlements: $APP is signed with exactly"
+        var mutants: [(String, String)] = [
+            ("call dropped", script.replacingOccurrences(of: callLine, with: "\n")),
+            ("call moved past the ad-hoc refusal", script.replacingOccurrences(of: callLine, with: "\n")
+                .replacingOccurrences(of: lastLine, with: Self.checkCall + "\n" + lastLine)),
+            ("call moved into the entitled branch", script.replacingOccurrences(of: callLine, with: "\n")
+                .replacingOccurrences(of: Self.adHocRefusal, with: Self.checkCall + "\n" + Self.adHocRefusal)),
+            ("success printed", script.replacingOccurrences(
+                of: Self.checkFunctionHead, with: Self.checkFunctionHead + "\n    echo \"helper ok\"")),
+        ]
+        for rule in Self.checkHelperRules {
+            mutants.append(("rule dropped: \(rule)", script.replacingOccurrences(of: rule, with: "true \\")))
+        }
+        for (name, mutant) in mutants {
+            #expect(mutant != script, "canary setup '\(name)': target text must exist")
+            #expect(!Self.releaseCheckFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 }
