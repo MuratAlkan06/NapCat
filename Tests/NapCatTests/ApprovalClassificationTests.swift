@@ -1186,7 +1186,7 @@ struct ApprovalClassificationTests {
         #expect(forwarded == 92, "vacuity: 95 printable characters less the space, the quote and the backslash")
         #expect(copies == 552, "vacuity: the 92 forwarding characters, each in six positions")
         #expect(ApprovalWire.wireVersion == 1)
-        #expect(ApprovalChannel.frameVersion == 1)
+        #expect(ApprovalChannel.frameVersion == 2)
     }
 
     /// Why the quote: the phone draws the gate's copy verbatim, and in the

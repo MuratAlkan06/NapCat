@@ -48,9 +48,12 @@ final class IntakeHarness {
 
     static func id(_ n: UInt64) -> PromptID { PromptID(high: 0xA0, low: n)! }
 
+    /// The session's client as an honest server names it: the confirmed one.
+    static let client: ChannelClient = ApprovalChannel.confirmedClients[0]
+
     static func prompt(_ request: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#) -> [UInt8] {
         Array(ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: ChannelRequestID(request)!, toolName: tool,
-                                                                   inputPreview: preview))!.utf8)
+                                                                   inputPreview: preview), client: client)!.utf8)
     }
 
     func receive(_ request: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#, from connection: Int = 1) {
@@ -324,9 +327,11 @@ struct ApprovalIntakeTests {
     static let refusedFrames: [String] = [
         ApprovalChannel.verdictFrame(ChannelRequestID("abcde")!, .allow),
         "not json",
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{}","description":"x"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","description":"x","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
         #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}"}"#,
-        #"{"frame":"prompt","v":1,"request":"abcdl","tool":"Bash","preview":"{}"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcdl","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        // A version-1 frame, as the server wrote one before #150.
+        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{\"command\":\"git status\"}"}"#,
     ]
 
     /// A verdict frame from a server, or anything the strict reader refuses,

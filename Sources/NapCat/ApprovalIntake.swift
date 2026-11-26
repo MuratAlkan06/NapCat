@@ -180,7 +180,7 @@ final class ApprovalIntake {
     /// One frame from a channel server. Only a prompt frame the strict reader
     /// accepts opens a lifecycle, and only after the gate classified it.
     func receive(_ line: [UInt8], from connection: ConnectionKey) {
-        guard case .prompt(let request)? = ApprovalChannel.frame(line) else {
+        guard case .prompt(let request, _, _)? = ApprovalChannel.frame(line) else {
             audit(.frameRefused)
             closeConnection(connection)
             return

@@ -103,7 +103,7 @@ struct ApprovalSeamLimitsTests {
 
         static func prompt(_ request: String, preview: String = #"{"command":"git status"}"#) -> String {
             ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: ChannelRequestID(request)!, toolName: "Bash",
-                                                                 inputPreview: preview))!
+                                                                 inputPreview: preview), client: ApprovalChannel.confirmedClients[0])!
         }
     }
 

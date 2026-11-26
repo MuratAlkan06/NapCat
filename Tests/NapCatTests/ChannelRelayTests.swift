@@ -221,8 +221,11 @@ struct ChannelRelayTests {
         let link = try #require(harness.link)
         let frame = try #require(link.sent.first)
         #expect(link.sent.count == 1)
-        #expect(ApprovalChannel.frame(Array(frame.utf8)) == .prompt(ChannelPermissionRequest(
-            requestID: ChannelRequestID("abcde")!, toolName: "Write", inputPreview: #"{"file_path":"/tmp/x","content":"hi"}"#)))
+        let request = ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Write",
+                                               inputPreview: #"{"file_path":"/tmp/x","content":"hi"}"#)
+        #expect(ApprovalChannel.frame(Array(frame.utf8)) == .prompt(request, server: ApprovalChannel.serverVersion,
+                                                                     client: ChannelClient(name: "claude-code", version: "2.1.326")),
+                "the frame names this server's version and the session's confirmed client (#150)")
         #expect(!frame.contains(sentinel), "the description never crosses the seam")
         #expect(!frame.contains("description"))
         #expect(harness.emitted.isEmpty, "a relayed prompt is never answered by the server itself")
@@ -304,8 +307,16 @@ struct ChannelRelayTests {
         let harness = RelayHarness()
         harness.stdin(Self.initializeLine(clientInfo: clientInfo))
         harness.stdin(RelayHarness.permissionRequest("abcde"))
-        #expect(try #require(harness.link).sent.count == 1)
+        let sent = try #require(harness.link).sent
+        #expect(sent.count == 1)
         #expect(harness.notes == [.relayed])
+        // The frame names the client as read: the confirmed one, decoded (#150).
+        guard case .prompt(_, let server, let client)? = ApprovalChannel.frame(Array((sent.first ?? "").utf8)) else {
+            Issue.record("no prompt frame in \(sent)")
+            return
+        }
+        #expect(server == ApprovalChannel.serverVersion)
+        #expect(client == ApprovalChannel.confirmedClients[0])
     }
 
     /// A later handshake can keep a session's prompts local, never release
@@ -319,6 +330,11 @@ struct ChannelRelayTests {
         harness.stdin(RelayHarness.permissionRequest("cdefg"))
         #expect(try #require(harness.link).sent.count == 1)
         #expect(harness.notes == [.relayed, .heldUnconfirmedClient, .heldUnconfirmedClient])
+        // The one frame names the confirmed client; none ever names another (#150).
+        let frames: [SeamFrame?] = (harness.link?.sent ?? []).map { ApprovalChannel.frame(Array($0.utf8)) }
+        let request = ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Bash", inputPreview: #"{"command":"git status"}"#)
+        let relayed: SeamFrame = .prompt(request, server: ApprovalChannel.serverVersion, client: ApprovalChannel.confirmedClients[0])
+        #expect(frames == [relayed])
     }
 
     /// The confirmed list is exactly the one checked build: a new build joins
@@ -395,17 +411,18 @@ struct ChannelRelayTests {
     static let refusedFrames: [String] = [
         "not json",
         "",
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"yes"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"ALLOW"}"#,
-        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":"1","request":"abcde","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":1.0,"request":"abcde","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcdl","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow","always":true}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow","verdict":"deny"}"#,
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{}"}"#,
-        #"{"frame":"decision","v":1,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"yes"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"ALLOW"}"#,
+        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":3,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":"2","request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2.0,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcdl","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow","always":true}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow","verdict":"deny"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"decision","v":2,"request":"abcde","verdict":"allow"}"#,
         #"{"jsonrpc":"2.0","method":"notifications/claude/channel/permission","params":{"request_id":"abcde","behavior":"allow"}}"#,
     ]
 

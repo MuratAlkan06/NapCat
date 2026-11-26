@@ -45,7 +45,8 @@ enum ChannelNote: String, CaseIterable, Sendable {
 ///
 /// It answers the MCP handshake, relays each permission request to NapCat as
 /// a prompt frame (only when the session's client is a confirmed Claude Code
-/// build), and relays NapCat's verdict back to Claude Code — but only for a
+/// build, which the frame names, so NapCat checks it again: #150), and
+/// relays NapCat's verdict back to Claude Code — but only for a
 /// request it relayed and that is still open, once. Nothing it
 /// receives ever becomes a verdict on its own, and a missing or failed seam
 /// only keeps prompts local: the terminal dialog stays open and fully
@@ -66,6 +67,10 @@ final class ChannelRelay: @unchecked Sendable {
     /// confirmed client (`ApprovalChannel.confirms`). Once false it stays
     /// false: that session's prompts all stay local.
     private var clientConfirmed: Bool?
+    /// The client the latest `initialize` named. Each prompt frame carries it
+    /// (frame version 2), and only while `clientConfirmed` holds, so it is
+    /// always a confirmed one.
+    private var client: ChannelClient?
     /// Every request ID seen this session. Claude Code drops any verdict for
     /// an ID it issued twice, so a repeated ID is never relayed.
     private var seen: Set<ChannelRequestID> = []
@@ -88,6 +93,7 @@ final class ChannelRelay: @unchecked Sendable {
         switch ApprovalChannel.message(line) {
         case .initialize(let id, let version, let client):
             clientConfirmed = (clientConfirmed ?? true) && ApprovalChannel.confirms(client)
+            self.client = client
             emit(ApprovalChannel.initializeResult(id: id, requestedVersion: version))
         case .ping(let id):
             emit(ApprovalChannel.pingResult(id: id))
@@ -118,10 +124,10 @@ final class ChannelRelay: @unchecked Sendable {
 
     private func relay(_ request: ChannelPermissionRequest) {
         guard let confirmed = clientConfirmed else { return note(.heldBeforeInitialize) }
-        guard confirmed else { return note(.heldUnconfirmedClient) }
+        guard confirmed, let client else { return note(.heldUnconfirmedClient) }
         guard seen.insert(request.requestID).inserted else { return note(.heldRepeatedID) }
         guard open.count < ApprovalChannel.maxOpenRequests else { return note(.heldTooManyOpen) }
-        guard let frame = ApprovalChannel.promptFrame(request) else { return note(.heldTooLarge) }
+        guard let frame = ApprovalChannel.promptFrame(request, client: client) else { return note(.heldTooLarge) }
         guard let link = link ?? openLink() else { return note(.heldNoSeam) }
         guard link.send(frame) else { return note(.heldSendFailed) }
         open.insert(request.requestID)

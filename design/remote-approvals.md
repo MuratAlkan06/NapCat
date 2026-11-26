@@ -268,7 +268,7 @@ inbound line on every path is read by the S0 strict reader and by nothing
 else. The server's version stamp, which must match
 `ApprovalChannel.serverVersion` (parity-locked, like the busy hook's):
 
-napcat-channel-version: 1
+napcat-channel-version: 2
 
 - **The server** (`Sources/NapCatChannel`, the wire in
   `NapCatWire/ApprovalChannel.swift`). MCP over stdio, one message per line,

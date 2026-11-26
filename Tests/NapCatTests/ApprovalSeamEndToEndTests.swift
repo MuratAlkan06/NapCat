@@ -212,7 +212,8 @@ struct ApprovalSeamEndToEndTests {
         let queue = DispatchQueue(label: "test.e2e.raw")
         let client = try #require(queue.sync { SeamClient.connect(socketPath: world.fixture.socketPath, queue: queue) })
         let frame = ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Bash",
-                                                                         inputPreview: #"{"command":"make test"}"#))!
+                                                                         inputPreview: #"{"command":"make test"}"#),
+                                                client: ApprovalChannel.confirmedClients[0])!
         #expect(queue.sync { client.send(frame) })
         let saved = try #require(world.sink.saved.next())
         queue.sync { client.close() }

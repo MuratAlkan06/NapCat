@@ -28,7 +28,7 @@ struct ApprovalChannelTests {
         let doc = try String(contentsOf: Self.designDocURL, encoding: .utf8)
         let failures = Self.versionStampFailures(doc, expected: ApprovalChannel.serverVersion)
         #expect(failures.isEmpty, "\(failures)")
-        #expect(ApprovalChannel.serverVersion == 1, "the contract value of this slice")
+        #expect(ApprovalChannel.serverVersion == 2, "the contract value since #150")
         #expect(ApprovalChannel.serverVersionStampPrefix == "napcat-channel-version: ")
     }
 
@@ -74,7 +74,7 @@ struct ApprovalChannelTests {
         #expect(ApprovalChannel.verdictMethod == "notifications/claude/channel/permission")
         #expect(ApprovalChannel.requestIDLength == 5)
         #expect(ApprovalChannel.requestIDAlphabet == "abcdefghijkmnopqrstuvwxyz", "a–z without l")
-        #expect(ApprovalChannel.frameVersion == 1)
+        #expect(ApprovalChannel.frameVersion == 2, "since #150: a prompt frame names its server and client")
         #expect(ApprovalChannel.maxFrameBytes > 6 * ApprovalGate.maxPreviewBytes,
                 "a preview the gate could forward always fits a frame, even fully escaped")
         #expect(ApprovalChannel.maxLineBytes > ApprovalChannel.maxFrameBytes)
@@ -113,13 +113,14 @@ struct ApprovalChannelTests {
     @Test func everyWrittenLineIsOneStrictObjectWithoutALineBreak() throws {
         let id = ChannelRequestID("abcde")!
         let request = ChannelPermissionRequest(requestID: id, toolName: "Bash\n", inputPreview: "{\"command\":\"ls\"}\n")
+        let client = ChannelClient(name: "claude\ncode", version: "2.1\r\u{2028}")
         let lines = [
             ApprovalChannel.initializeResult(id: .string("i\n1"), requestedVersion: "2025-06-18"),
             ApprovalChannel.pingResult(id: .number("-12")),
             ApprovalChannel.errorResponse(id: .number("3"), code: .methodNotFound),
             ApprovalChannel.errorResponse(id: .number("3"), code: .invalidParams),
             ApprovalChannel.verdictNotification(requestID: id, verdict: .allow),
-            try #require(ApprovalChannel.promptFrame(request)),
+            try #require(ApprovalChannel.promptFrame(request, client: client)),
             ApprovalChannel.verdictFrame(id, .deny),
         ]
         for line in lines {
@@ -134,37 +135,90 @@ struct ApprovalChannelTests {
         let id = ChannelRequestID("qwert")!
         let request = ChannelPermissionRequest(requestID: id, toolName: "Edit",
                                                inputPreview: #"{"file_path":"/a/b","old_string":"x","new_string":"y"}"#)
-        let prompt = try #require(ApprovalChannel.promptFrame(request))
-        #expect(prompt == #"{"frame":"prompt","v":1,"request":"qwert","tool":"Edit","preview":"{\"file_path\":\"/a/b\",\"old_string\":\"x\",\"new_string\":\"y\"}"}"#)
-        #expect(ApprovalChannel.frame(Array(prompt.utf8)) == .prompt(request))
+        let client = ChannelClient(name: "claude-code", version: "2.1.326")
+        let prompt = try #require(ApprovalChannel.promptFrame(request, client: client))
+        #expect(prompt == #"{"frame":"prompt","v":2,"request":"qwert","tool":"Edit","preview":"{\"file_path\":\"/a/b\",\"old_string\":\"x\",\"new_string\":\"y\"}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#)
+        #expect(ApprovalChannel.frame(Array(prompt.utf8)) == .prompt(request, server: ApprovalChannel.serverVersion, client: client))
         for verdict in ApprovalWire.Verdict.allCases {
             let line = ApprovalChannel.verdictFrame(id, verdict)
-            #expect(line == #"{"frame":"verdict","v":1,"request":"qwert","verdict":"\#(verdict.rawValue)"}"#)
+            #expect(line == #"{"frame":"verdict","v":2,"request":"qwert","verdict":"\#(verdict.rawValue)"}"#)
             #expect(ApprovalChannel.frame(Array(line.utf8)) == .verdict(id, verdict))
         }
     }
 
+    /// A prompt frame and what the reader reads from it.
+    struct ReadRow: Sendable, CustomTestStringConvertible {
+        let line: String
+        let server: Int
+        let client: ChannelClient
+        var testDescription: String { line }
+    }
+
+    /// The reader reads a prompt frame's server and client as written and
+    /// judges neither (#150: NapCat's intake does): any integer server, any
+    /// client, in any member order, escapes decoded.
+    static let readAsWritten: [ReadRow] = [
+        ReadRow(line: #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":1,"client":"claude-code","clientVersion":"2.1.326"}"#,
+                server: 1, client: ChannelClient(name: "claude-code", version: "2.1.326")),
+        ReadRow(line: #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":-3,"client":"","clientVersion":""}"#,
+                server: -3, client: ChannelClient(name: "", version: "")),
+        ReadRow(line: #"{"clientVersion":"9.9.9","client":"other-client","server":2,"preview":"{}","tool":"Bash","request":"abcde","v":2,"frame":"prompt"}"#,
+                server: 2, client: ChannelClient(name: "other-client", version: "9.9.9")),
+        ReadRow(line: #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude\u002dcode","clientVersion":"2.1.326\n"}"#,
+                server: 2, client: ChannelClient(name: "claude-code", version: "2.1.326\n")),
+    ]
+
+    @Test(arguments: readAsWritten)
+    func aPromptFramesServerAndClientAreReadAsWritten(_ row: ReadRow) {
+        let request = ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Bash", inputPreview: "{}")
+        #expect(ApprovalChannel.frame(Array(row.line.utf8)) == .prompt(request, server: row.server, client: row.client))
+    }
+
     static let refusedFrames: [String] = [
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash"}"#,
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{}","description":"d"}"#,
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":{}}"#,
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":7,"preview":"{}"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","description":"d","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":{},"server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":7,"preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":3,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"ABCDE","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        // The version before #150: a version-1 frame, as the server wrote it
+        // then, and with the version-2 members; a version-2 frame without
+        // them, with one missing, or with one more.
+        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{}"}"#,
+        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
         #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}"}"#,
-        #"{"frame":"prompt","v":1,"request":"ABCDE","tool":"Bash","preview":"{}"}"#,
-        #"{"frame":"prompt","request":"abcde","tool":"Bash","preview":"{}"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"maybe"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"Allow"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow","note":""}"#,
-        #"{"frame":"verdict","v":1,"verdict":"allow"}"#,
-        #"{"frame":"verdict","v":1,"request":null,"verdict":"allow"}"#,
-        #"{"frame":"verdict","v":-1,"request":"abcde","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":10e-1,"request":"abcde","verdict":"allow"}"#,
-        #"{"frame":"Verdict","v":1,"request":"abcde","verdict":"allow"}"#,
-        #"{"v":1,"request":"abcde","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow"} {}"#,
-        #"[{"frame":"verdict","v":1,"request":"abcde","verdict":"allow"}]"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","request":"bcdef","verdict":"allow"}"#,
-        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow\u0000"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude-code"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","session":"s","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        // A server that is not an integer; a client or its version not a string.
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":"2","client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2.0,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2e0,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":99999999999999999999,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":null,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":true,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":7,"clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":null,"clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":2.1}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"client":{"name":"claude-code","version":"2.1.326"},"clientVersion":"2.1.326"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","server":2,"server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"maybe"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"Allow"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow","note":""}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow","server":2}"#,
+        #"{"frame":"verdict","v":2,"verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2,"request":null,"verdict":"allow"}"#,
+        #"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":-2,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":20e-1,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"Verdict","v":2,"request":"abcde","verdict":"allow"}"#,
+        #"{"v":2,"request":"abcde","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow"} {}"#,
+        #"[{"frame":"verdict","v":2,"request":"abcde","verdict":"allow"}]"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","request":"bcdef","verdict":"allow"}"#,
+        #"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow\u0000"}"#,
         "",
     ]
 
@@ -176,23 +230,27 @@ struct ApprovalChannelTests {
     /// An invalid byte inside the preview would decode leniently to U+FFFD
     /// and leave a valid frame behind; the frame is refused instead.
     @Test func anInvalidUTF8OrOverlongFrameIsRefused() {
-        let head = Array(#"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{\"command\":\"ls"#.utf8)
-        let tail = Array(#"\"}"}"#.utf8)
+        let head = Array(#"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{\"command\":\"ls"#.utf8)
+        let tail = Array(#"\"}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#.utf8)
         #expect(ApprovalChannel.frame(head + tail) != nil, "baseline")
         for invalid: [UInt8] in [[0xFF], [0xC3], [0xED, 0xA0, 0x80], [0xC0, 0xAF], [0xF4, 0x90, 0x80, 0x80]] {
             #expect(ApprovalChannel.frame(head + invalid + tail) == nil, "\(invalid)")
         }
-        let padded = Array(#"{"frame":"verdict","v":1,"request":"abcde","verdict":"allow"}"#.utf8)
+        let padded = Array(#"{"frame":"verdict","v":2,"request":"abcde","verdict":"allow"}"#.utf8)
             + Array(repeating: UInt8(ascii: " "), count: ApprovalChannel.maxFrameBytes)
         #expect(ApprovalChannel.frame(padded) == nil, "the length cap applies before reading")
     }
 
     @Test func aPromptTooLargeForAFrameHasNoFrame() {
         let id = ChannelRequestID("abcde")!
+        let client: ChannelClient = ApprovalChannel.confirmedClients[0]
         let big = String(repeating: "a", count: ApprovalChannel.maxFrameBytes)
-        #expect(ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: id, toolName: "Write", inputPreview: big)) == nil)
+        #expect(ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: id, toolName: "Write", inputPreview: big), client: client) == nil)
         let fits = String(repeating: "a", count: ApprovalGate.maxPreviewBytes)
-        #expect(ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: id, toolName: "Write", inputPreview: fits)) != nil)
+        let request = ChannelPermissionRequest(requestID: id, toolName: "Write", inputPreview: fits)
+        #expect(ApprovalChannel.promptFrame(request, client: client) != nil)
+        // The cap is the whole line's: a client named at length counts too.
+        #expect(ApprovalChannel.promptFrame(request, client: ChannelClient(name: big, version: "2.1.326")) == nil)
     }
 
     // MARK: - The line reader

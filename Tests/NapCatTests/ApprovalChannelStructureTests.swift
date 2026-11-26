@@ -281,7 +281,7 @@ struct ApprovalChannelStructureTests {
         let intake = text(intakeFile, in: sources)
         let classified = "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,"
         let opened = "ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())"
-        guard let read = intake.range(of: "guard case .prompt(let request)? = ApprovalChannel.frame(line) else {"),
+        guard let read = intake.range(of: "guard case .prompt(let request, _, _)? = ApprovalChannel.frame(line) else {"),
               let gate = intake.range(of: classified), let lifecycle = intake.range(of: opened),
               read.upperBound < gate.lowerBound, gate.upperBound < lifecycle.lowerBound else {
             return failures + ["the intake must read the frame strictly, classify it, then open the lifecycle with that answer"]

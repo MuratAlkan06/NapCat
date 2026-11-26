@@ -31,6 +31,6 @@
 	     Contents/MacOS/napcat-channel. Same value as ApprovalChannel.serverVersion
 	     (lint-locked): bump both together. -->
 	<key>NapCatChannelVersion</key>
-	<integer>1</integer>
+	<integer>2</integer>
 </dict>
 </plist>
