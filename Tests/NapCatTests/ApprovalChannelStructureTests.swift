@@ -268,6 +268,21 @@ struct ApprovalChannelStructureTests {
 
     // MARK: - The gate classifies every prompt before its lifecycle opens
 
+    /// The intake's strict read of a frame, its server and client bound.
+    static let frameRead: String = "guard case .prompt(let request, let server, let client)? = ApprovalChannel.frame(line) else {"
+    /// #150: the frame's server version and its client, checked again by the
+    /// intake, each refusal closing the connection.
+    static let serverRecheck: String = "guard server == ApprovalChannel.serverVersion else {\n            audit(.serverVersionRefused)\n"
+        + "            closeConnection(connection)\n            return\n        }\n"
+    static let clientRecheck: String = "guard ApprovalChannel.confirms(client) else {\n            audit(.clientRefused)\n"
+        + "            closeConnection(connection)\n            return\n        }\n"
+    /// The first thing `receive` holds after the checks: the prune, then the
+    /// duplicate, capacity and prompt-ID checks.
+    static let heldChecks: String = "        prune()\n        guard !prompts.values.contains(where:"
+
+    /// The intake reads each frame strictly, checks its server's version and
+    /// its client again (#150) before anything is held, classifies it, and
+    /// only then opens its lifecycle with the gate's answer.
     static func gateOrderFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         let classify = "ApprovalGate.classify("
@@ -281,10 +296,19 @@ struct ApprovalChannelStructureTests {
         let intake = text(intakeFile, in: sources)
         let classified = "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,"
         let opened = "ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())"
-        guard let read = intake.range(of: "guard case .prompt(let request, _, _)? = ApprovalChannel.frame(line) else {"),
+        guard let read = intake.range(of: frameRead),
               let gate = intake.range(of: classified), let lifecycle = intake.range(of: opened),
               read.upperBound < gate.lowerBound, gate.upperBound < lifecycle.lowerBound else {
             return failures + ["the intake must read the frame strictly, classify it, then open the lifecycle with that answer"]
+        }
+        let recheckRule: String = "the intake must check the server's version and the client again right after the strict read, "
+            + "each refusal closing the connection, before anything is held and before the gate (#150)"
+        guard count(serverRecheck, in: intake) == 1, count(clientRecheck, in: intake) == 1,
+              let server = intake.range(of: serverRecheck), let client = intake.range(of: clientRecheck),
+              let held = intake.range(of: heldChecks),
+              read.upperBound < server.lowerBound, server.upperBound <= client.lowerBound,
+              client.upperBound <= held.lowerBound, held.upperBound < gate.lowerBound else {
+            return failures + [recheckRule]
         }
         return failures
     }
@@ -292,6 +316,26 @@ struct ApprovalChannelStructureTests {
     @Test func theGateClassifiesEveryPromptBeforeItsLifecycleOpens() throws {
         let sources = try Self.sources()
         #expect(Self.gateOrderFailures(sources).isEmpty, "\(Self.gateOrderFailures(sources))")
+        let intake: String = Self.text(Self.intakeFile, in: sources)
+        let indent: String = "        "
+        let serverOnly: String = indent + Self.serverRecheck
+        let clientOnly: String = indent + Self.clientRecheck
+        let rechecks: String = serverOnly + clientOnly
+        let clientFirst: String = clientOnly + serverOnly
+        let beforeOpen: String = "        let opened = ApprovalLifecycle.open("
+        let afterCapacity: String = "        guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }\n"
+        let afterGate: String = rechecks + beforeOpen
+        let afterHeld: String = afterCapacity + rechecks
+        let closing: String = "            audit(.clientRefused)\n            closeConnection(connection)\n"
+        let keeping: String = "            audit(.clientRefused)\n"
+        let confirmed: String = "guard ApprovalChannel.confirms(client) else {"
+        let anything: String = "guard ApprovalChannel.confirms(client) || true else {"
+        let anchors: [String] = [rechecks, beforeOpen, afterCapacity, Self.heldChecks, closing, confirmed]
+        for anchor in anchors {
+            #expect(Self.count(anchor, in: intake) == 1, "vacuity: '\(anchor.prefix(50))' is in the intake once")
+        }
+        let without: (String) -> Sources = { kept in Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: rechecks, with: kept) } }
+        let dropped: Sources = without("")
         let mutants: [(String, Sources)] = [
             ("the gate bypassed", Self.mutate(sources, Self.intakeFile) {
                 $0.replacingOccurrences(of: "classification: classification, armed", with: "classification: .forward(.bash), armed") }),
@@ -299,10 +343,28 @@ struct ApprovalChannelStructureTests {
                 $0 + "\nlet c = ApprovalGate.classify(toolName: t, inputPreview: p)" }),
             ("a lifecycle opened elsewhere", Self.mutate(sources, Self.hostFile) {
                 $0 + "\nlet l = ApprovalLifecycle.open(id: i, classification: c, armed: true, now: 0)" }),
+            // #150: the re-check dropped, halved, moved past the gate or past
+            // the held checks, or made to keep the connection.
+            ("the re-check dropped", dropped),
+            ("the server's version unchecked", without(clientOnly)),
+            ("the client unchecked", without(serverOnly)),
+            ("the re-check moved after the gate", Self.mutate(dropped, Self.intakeFile) { $0.replacingOccurrences(of: beforeOpen, with: afterGate) }),
+            ("the re-check moved after the held checks", Self.mutate(dropped, Self.intakeFile) {
+                $0.replacingOccurrences(of: afterCapacity, with: afterHeld) }),
+            ("the client checked first", without(clientFirst)),
+            ("a refusal that keeps the connection", Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: closing, with: keeping) }),
+            ("a client confirmed by anything", Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: confirmed, with: anything) }),
         ]
         for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.gateOrderFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // Over-match control: a blank line and a line the stripper empties
+        // (a comment, read as spaces) between the two checks.
+        let gap: String = "\n" + String(repeating: " ", count: 20) + "\n"
+        let spaced: Sources = without(serverOnly + gap + clientOnly)
+        #expect(spaced.map { $0.text } != sources.map { $0.text }, "the control applied")
+        #expect(Self.gateOrderFailures(spaced).isEmpty, "over-match: \(Self.gateOrderFailures(spaced))")
     }
 
     // MARK: - Only the gate's copy of a preview is ever saved

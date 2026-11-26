@@ -2672,10 +2672,10 @@ struct DecisionSinkStructureTests {
     }
     /// The S1 locks' anchors on the same road, as they spell them
     /// (`ApprovalChannelStructureTests`: the intake reads a frame strictly,
-    /// classifies it, then opens its lifecycle; each side of the seam has
-    /// one verdict site).
+    /// checks its server and client again (#150), classifies it, then opens
+    /// its lifecycle; each side of the seam has one verdict site).
     static let s1Anchors: [String] = [
-        "guard case .prompt(let request, _, _)? = ApprovalChannel.frame(line) else {",
+        ApprovalChannelStructureTests.frameRead, ApprovalChannelStructureTests.serverRecheck, ApprovalChannelStructureTests.clientRecheck,
         "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,",
         "ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())",
         "ApprovalChannel.verdictNotification(", "ApprovalChannel.verdictFrame(",

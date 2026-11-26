@@ -4,7 +4,8 @@ import NapCatWire
 // Mac. Design: design/remote-approvals.md.
 //
 // Every prompt frame from a channel server is read by the strict frame reader
-// (ApprovalChannel.frame) and classified by the category gate
+// (ApprovalChannel.frame), checked again for the server's version and its
+// confirmed client (#150), and classified by the category gate
 // (ApprovalGate.classify, with the alert topic as a secret) BEFORE its
 // lifecycle opens; the lifecycle (ApprovalLifecycle) alone decides what
 // happens next, and this type only performs the effects it returns. The ONE
@@ -36,6 +37,14 @@ enum ApprovalAuditEvent: Equatable, Sendable {
     /// A frame the strict reader refused, or a verdict frame from a server:
     /// that connection is closed.
     case frameRefused
+    /// A prompt frame from a server of another version than NapCat's own
+    /// (`ApprovalChannel.serverVersion`): that connection is closed, before
+    /// the gate (#150).
+    case serverVersionRefused
+    /// A prompt frame naming a client that is not a confirmed Claude Code
+    /// build (`ApprovalChannel.confirms`): that connection is closed, before
+    /// the gate (#150).
+    case clientRefused
     /// A server sent the same request twice while it was still held.
     case duplicateRequest
     /// `ApprovalIntake.maxPrompts` are held already: the prompt stays local.
@@ -65,6 +74,8 @@ enum ApprovalAuditEvent: Equatable, Sendable {
         switch self {
         case .lifecycle(let id, let audit): return "prompt=\(id.hex) " + Self.code(audit)
         case .frameRefused: return "seam.frameRefused"
+        case .serverVersionRefused: return "seam.serverVersionRefused"
+        case .clientRefused: return "seam.clientRefused"
         case .duplicateRequest: return "seam.duplicateRequest"
         case .capacityReached: return "seam.capacityReached"
         case .connectionPromptLimit: return "seam.connectionPromptLimit"
@@ -178,10 +189,25 @@ final class ApprovalIntake {
     }
 
     /// One frame from a channel server. Only a prompt frame the strict reader
-    /// accepts opens a lifecycle, and only after the gate classified it.
+    /// accepts, from a server of NapCat's own version relaying for a client
+    /// NapCat confirms (checked again here, #150), opens a lifecycle, and
+    /// only after the gate classified it.
     func receive(_ line: [UInt8], from connection: ConnectionKey) {
-        guard case .prompt(let request, _, _)? = ApprovalChannel.frame(line) else {
+        guard case .prompt(let request, let server, let client)? = ApprovalChannel.frame(line) else {
             audit(.frameRefused)
+            closeConnection(connection)
+            return
+        }
+        // Before the gate, and before anything is held: another server
+        // version, or a client NapCat has not confirmed, closes the connection
+        // as a refused frame does.
+        guard server == ApprovalChannel.serverVersion else {
+            audit(.serverVersionRefused)
+            closeConnection(connection)
+            return
+        }
+        guard ApprovalChannel.confirms(client) else {
+            audit(.clientRefused)
             closeConnection(connection)
             return
         }
