@@ -1586,7 +1586,7 @@ struct DecisionSinkStructureTests {
     // MARK: - i. No new extension, no new operator implementation
 
     /// Every line of the four targets holding the word `extension`: today's
-    /// twelve headers.
+    /// thirteen headers.
     static let extensionSites: [String: [String: Int]] = [
         ApprovalChannelStructureTests.intakeFile: ["extension ApprovalClassification {": 1],
         "FinishAlertController.swift": ["extension LidGuardController: FinishAlertConfigSource {": 1],
@@ -1604,6 +1604,7 @@ struct DecisionSinkStructureTests {
         "SettingsContent.swift": ["extension MenuStateModel {": 1],
         ApprovalChannelStructureTests.serverFile: ["extension SeamConnection: ChannelLink {}": 1],
         "ApprovalChannel.swift": ["extension ApprovalChannel {": 1],
+        declaringFile: ["extension ApprovalWire {": 1],
     ]
     /// A `func` named by anything but an ASCII identifier: an operator's
     /// implementation (custom operators are banned outright, by
@@ -1845,7 +1846,7 @@ struct DecisionSinkStructureTests {
         "static func response(_ id: ChannelMessageID, result: String) -> String {": 1, "static func json(_ id: ChannelMessageID) -> String {": 1,
         "static func quoted(_ text: String) -> String {": 1,
     ]
-    /// Today's twelve extensions (each header pinned by `extensionSites`),
+    /// Today's thirteen extensions (each header pinned by `extensionSites`),
     /// and their members.
     static let extensionMembers: [MemberPin] = [
         (ApprovalChannelStructureTests.intakeFile, "extension ApprovalClassification {", [
@@ -1877,6 +1878,7 @@ struct DecisionSinkStructureTests {
         ("SettingsContent.swift", "extension MenuStateModel {", settingsMembers),
         (ApprovalChannelStructureTests.serverFile, "extension SeamConnection: ChannelLink {", [:]),
         ("ApprovalChannel.swift", "extension ApprovalChannel {", channelMembers),
+        (declaringFile, "extension ApprovalWire {", ["public static func decisionRecordName(for promptID: PromptID) -> String {": 1]),
     ]
 
     /// In `scalars` (lexed as `kinds`), the body of the one extension headed
