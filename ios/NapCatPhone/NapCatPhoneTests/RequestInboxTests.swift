@@ -244,7 +244,8 @@ enum RequestFixtures {
 
 /// A prompt source a test scripts (#194): every call kept, in order, each
 /// answered from its script (the last answer again once one runs out). A
-/// call may be held open until the test lets it go (`holdSnapshots`).
+/// call may be held open until the test lets it go (`holdSnapshots`,
+/// `holdEnsures`).
 final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
     private let lock = NSLock()
     private var log: [String] = []
@@ -253,6 +254,7 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
     private var snapshots: [[PendingRequest]?]
     private var held: [CheckedContinuation<Void, Never>] = []
     private var holding = false
+    private var holdingEnsures = false
 
     init(ensures: [Bool] = [true], removals: [Bool] = [true], snapshots: [[PendingRequest]?] = [[]]) {
         self.ensures = ensures
@@ -273,11 +275,19 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         lock.unlock()
     }
 
+    /// From now on each ensure waits for `release()`.
+    func holdEnsures() {
+        lock.lock()
+        holdingEnsures = true
+        lock.unlock()
+    }
+
     func release() {
         lock.lock()
         let waiting = held
         held.removeAll()
         holding = false
+        holdingEnsures = false
         lock.unlock()
         for continuation in waiting { continuation.resume() }
     }
@@ -288,7 +298,12 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         return held.count
     }
 
-    func ensureSubscription() async -> Bool { takeEnsure() }
+    func ensureSubscription() async -> Bool {
+        if shouldHoldEnsure() {
+            await withCheckedContinuation { continuation in park(continuation) }
+        }
+        return takeEnsure()
+    }
 
     func removeSubscription() async -> Bool { takeRemoval() }
 
@@ -324,6 +339,12 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return holding
+    }
+
+    private func shouldHoldEnsure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return holdingEnsures
     }
 
     private func park(_ continuation: CheckedContinuation<Void, Never>) {
@@ -485,6 +506,24 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         #expect(source.calls == ["ensure", "snapshot", "remove"])
     }
 
+    /// #194 security review: the switch turned off while the subscription is
+    /// being made sure of stops the pass there: no read follows, and the
+    /// sync begun meanwhile goes round once more, off, and removes the
+    /// subscription.
+    @Test func switchingOffWhileTheSubscriptionIsMadeSureOfReadsNothing() async {
+        let clock = TestClock()
+        let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: clock.now)]])
+        let inbox = Self.inbox(clock, source)
+        source.holdEnsures()
+        let running = Task { await inbox.syncPrompts(switchedOn: true) }
+        while source.waiting == 0 { await Task.yield() }
+        await inbox.syncPrompts(switchedOn: false)
+        source.release()
+        await running.value
+        #expect(source.calls == ["ensure", "remove"], "no snapshot after the switch went off")
+        #expect(inbox.requests.isEmpty)
+    }
+
     /// With no live source (a fixture launch), a sync does nothing: the
     /// fixture's request stays, on or off.
     @Test func aFixtureInboxIsLeftAsItIs() async {
@@ -541,6 +580,25 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         inbox.opened()
         await inbox.syncPrompts(switchedOn: true)
         #expect(inbox.opening == nil, "opened once")
+    }
+
+    /// #194 security review: a cold launch from a tapped prompt push. The
+    /// delegate asks for the tapped prompt and a read before the root has
+    /// handed in the owner's switch: that read does nothing and clears
+    /// nothing (the switch is not known yet), and the root's first sync,
+    /// switch on, reads the prompt and opens it.
+    @Test func aTapBeforeTheSwitchIsKnownOpensAtTheFirstSync() async {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let source = ScriptedPromptSource(snapshots: [[request]])
+        let inbox = Self.inbox(clock, source)
+        inbox.open(request.id)
+        await inbox.refreshPrompts()
+        #expect(source.calls.isEmpty, "the switch is not known yet: no operation")
+        #expect(inbox.opening == nil)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(source.calls == ["ensure", "snapshot"])
+        #expect(inbox.opening == request.id, "the tapped prompt opens once it is held")
     }
 
     /// A tap while the switch is off opens nothing, then or later.

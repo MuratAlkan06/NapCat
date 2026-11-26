@@ -134,8 +134,11 @@ final class RequestInbox {
     /// Where live prompts come from (F4, #194): nil for a fixture inbox,
     /// in a build that cannot reach iCloud, and in tests that give none.
     @ObservationIgnored private let prompts: (any PromptSource)?
-    /// The owner's switch as last handed in (`syncPrompts`).
-    @ObservationIgnored private var switchedOn = false
+    /// The owner's switch as last handed in (`syncPrompts`); nil until the
+    /// root first hands it in, at launch. A push that wakes the app before
+    /// then reads nothing and clears nothing (`refreshPrompts`): a tapped
+    /// one's prompt stays awaited for that first sync (#194).
+    @ObservationIgnored private var switchedOn: Bool?
     /// Whether the prompt subscription is known to exist (made or found).
     @ObservationIgnored private var subscribed = false
     /// Whether this launch may have left a prompt subscription on the
@@ -246,11 +249,13 @@ final class RequestInbox {
     /// (`ApprovalsSwitch.effective`, with the pairing read afresh). On: the
     /// prompt subscription is made sure of (looked up first, created only
     /// when missing, once per launch), then one snapshot read is received
-    /// (`receive`); a failed read changes nothing. Off: nothing is read, the
-    /// inbox is emptied, and a subscription this launch may have left is
-    /// deleted (until that is done, each sync tries again). A call made while
-    /// one runs makes the running one go round once more. With no live
-    /// source, nothing.
+    /// (`receive`); a failed read changes nothing, and a switch turned off
+    /// meanwhile stops the pass before its read and drops a read that
+    /// lands after it. Off: nothing is read, the inbox is emptied (a tapped
+    /// push's prompt is no longer awaited), and a subscription this launch
+    /// may have left is deleted (until that is done, each sync tries
+    /// again). A call made while one runs makes the running one go round
+    /// once more. With no live source, nothing.
     func syncPrompts(switchedOn stored: Bool) async {
         switchedOn = stored
         guard let prompts else { return }
@@ -266,14 +271,17 @@ final class RequestInbox {
         syncing = false
     }
 
-    /// A sync with the switch as last handed in (a prompt push's).
+    /// A sync with the switch as last handed in (a prompt push's); nothing
+    /// while it is not known yet (a cold launch from a push, before the
+    /// root's first sync).
     func refreshPrompts() async {
+        guard let switchedOn else { return }
         await syncPrompts(switchedOn: switchedOn)
     }
 
     private func syncOnce(_ prompts: any PromptSource) async {
         refreshKeyHealth()
-        guard ApprovalsSwitch.effective(stored: switchedOn, keyHealth: keyHealth) else {
+        guard ApprovalsSwitch.effective(stored: switchedOn == true, keyHealth: keyHealth) else {
             awaited = nil
             if !entries.isEmpty { entries.removeAll() }
             guard mayHoldSubscription else { return }
@@ -285,7 +293,10 @@ final class RequestInbox {
         }
         mayHoldSubscription = true
         if !subscribed { subscribed = await prompts.ensureSubscription() }
-        guard let offered = await prompts.snapshot(), switchedOn else { return }
+        // Switched off while the subscription was made sure of: nothing
+        // more this pass (the call that switched it goes round next, off).
+        guard switchedOn == true else { return }
+        guard let offered = await prompts.snapshot(), switchedOn == true else { return }
         receive(offered)
     }
 

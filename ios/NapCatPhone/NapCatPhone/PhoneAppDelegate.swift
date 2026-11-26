@@ -7,8 +7,9 @@ import UserNotifications
 /// it. A remote notification is the alert subscription's or, since #194, the
 /// prompt subscription's, which is tried first
 /// (`CloudKitAlertSource.pushedPromptID`): a prompt push starts one read of
-/// the prompts (with the owner's switch as last set; off, nothing is read),
-/// and a tap on one opens that prompt once the inbox holds it. An alert
+/// the prompts (with the owner's switch as last set; off, or not set yet at
+/// a cold launch, nothing is read), and a tap on one opens that prompt once
+/// the inbox holds it, after the root's first sync if need be. An alert
 /// push means what it always has: fetch the record it names, then fetch
 /// again (records are deduped by name, so a repeat costs nothing). The app
 /// declares no background modes, so these run only while the app is open
