@@ -45,18 +45,21 @@ import Testing
 ///    member can stand in there, and nothing in the four targets extends
 ///    `Optional` (by its name, its `?` or an alias declared there); inside
 ///    the intake every `apply` and `perform` is pinned at its sites, both
-///    bodies are pinned whole, and the frame writer (`sendFrame`) is named
-///    at today's sites; and the host's connection writes are pinned at
-///    today's site, the connection type is named at today's sites alone in
-///    the four targets, the host names its connections and its peer reader
-///    at today's lines, the seam file its send, its write, its read and its
-///    descriptor, and the relay its writer to Claude Code (`emit`), so a
-///    new line of those files that names one of them fails; and the seam
-///    connection's writer (`send`) and reader (`drain`) are pinned whole
-///    (#197), so no line is added to either. A line elsewhere in the seam
-///    file that reaches the socket by another name (its read source) is not
-///    read itself: to write there it needs a name k. or n. reads, or a file
-///    API through a path;
+///    bodies are pinned whole, `receive` is pinned whole (#198: the strict
+///    read, the re-check, the held checks, the gate's answer, the
+///    lifecycle's one open with its armed flag and default window, and the
+///    entry a verdict goes back through), and the frame writer
+///    (`sendFrame`) is named at today's sites; and the host's connection
+///    writes are pinned at today's site, the connection type is named at
+///    today's sites alone in the four targets, the host names its
+///    connections and its peer reader at today's lines, the seam file its
+///    send, its write, its read and its descriptor, and the relay its writer
+///    to Claude Code (`emit`), so a new line of those files that names one
+///    of them fails; and the seam connection's writer (`send`) and reader
+///    (`drain`) are pinned whole (#197), so no line is added to either. A
+///    line elsewhere in the seam file that reaches the socket by another
+///    name (its read source) is not read itself: to write there it needs a
+///    name k. or n. reads, or a file API through a path;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -1075,7 +1078,8 @@ struct DecisionSinkStructureTests {
 
     /// D5b's anchor (the head of the intake's `receive` checks) and its plant,
     /// verbatim: a second, hand-built verdict frame, keyed on the request ID
-    /// alone — no decision at all.
+    /// alone — no decision at all. Caught by the frame writer's pin, and
+    /// since #198 by `receive`'s whole pin too.
     static let receiveAnchor: String = "        prune()\n        guard !prompts.values.contains(where:"
     static let d5bFrame: String = #"""
                 if request.requestID.text == "zzzzz" {
@@ -1094,6 +1098,7 @@ struct DecisionSinkStructureTests {
         #expect(!Self.frameWriterFailures(d5b).isEmpty, "D5b was NOT caught by the frame writer's pin alone")
         #expect(Self.sinkFailures(d5b) == Self.sinkFailures(sources)
                     && Self.wholeFailures(d5b, Self.roadPins) == Self.wholeFailures(sources, Self.roadPins), "D5b is the frame writer's pin to catch")
+        #expect(!Self.wholeFailures(d5b, [Self.receivePin]).isEmpty, "D5b was NOT caught by receive's whole pin (#198)")
         let planted: (String) -> Sources = { line in
             Self.mutate(sources, intake) { $0.replacingOccurrences(of: Self.receiveAnchor, with: line + Self.receiveAnchor) }
         }
@@ -1113,6 +1118,147 @@ struct DecisionSinkStructureTests {
         #expect(Self.frameWriterFailures(Self.mutate(sources, intake) {
             $0.appending("\nlet sendFrameCount = 0, frames = 1" + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never sendFrame(c, x)"))
         }).isEmpty)
+    }
+
+    // MARK: - f, continued. The intake's receive, whole (#198)
+
+    /// The intake's `receive`, whole (from the brace before it, as `apply`
+    /// and `perform` are): the strict read, the server and client re-check,
+    /// the held checks, the gate's answer, the lifecycle's one open with the
+    /// injected armed flag and the default window, and the entry a verdict
+    /// later goes back through (its connection and its request).
+    static let receiveWhole: String = [
+        "} func receive(_ line: [UInt8], from connection: ConnectionKey) {",
+        "guard case .prompt(let request, let server, let client)? = ApprovalChannel.frame(line) else {",
+        "audit(.frameRefused)", "closeConnection(connection)", "return", "}",
+        "guard server == ApprovalChannel.serverVersion else {", "audit(.serverVersionRefused)", "closeConnection(connection)", "return", "}",
+        "guard ApprovalChannel.confirms(client) else {", "audit(.clientRefused)", "closeConnection(connection)", "return", "}",
+        "prune()", "guard !prompts.values.contains(where: { $0.connection == connection && $0.request == request.requestID }) else {",
+        "return audit(.duplicateRequest)", "}",
+        "guard prompts.values.filter({ $0.connection == connection }).count < Self.maxPromptsPerConnection else {",
+        "return audit(.connectionPromptLimit)", "}", "guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }",
+        "guard let id = newPromptID(), prompts[id] == nil else { return audit(.promptIDUnavailable) }",
+        "let copy = ApprovalGate.forwardedPreview(toolName: request.toolName, inputPreview: request.inputPreview)", "let known = secrets()",
+        "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,",
+        "secrets: known ?? []).failingClosed(secretsKnown: known != nil)", ".requiringCopy(copy)",
+        "let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())",
+        "prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,",
+        "forwardable: classification.forwardedTool)", "perform(opened.transition, for: id, classified: (classification, copy))", "}",
+    ].joined(separator: " ")
+    static let receivePin: WholePin = (ApprovalChannelStructureTests.intakeFile, #"\bfunc\s+receive\b"#, receiveWhole)
+
+    /// The lifecycle's one open, and the entry's lifecycle built from it:
+    /// where the canaries plant.
+    static let openLine: String =
+        "        let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())\n"
+    static let entryLifecycle: String = "lifecycle: opened.lifecycle,"
+    /// The second re-check's shape, as inert text (never compiled): a second
+    /// open, its call over a line break, given the longest window, and the
+    /// entry built from it.
+    static let secondOpen: String = """
+                let zzOpened = ApprovalLifecycle
+                    .open(id: id, classification: classification, armed: armed(), now: now(),
+                          timeToLive: ApprovalWire.maxPromptTimeToLiveSeconds)
+
+        """
+
+    /// `receive` is pinned whole, so no line in it, from the strict read to
+    /// the entry and the gate's perform, changes unseen. The second
+    /// re-check's shape, as inert text — a second open over a line break with
+    /// the longest window, the entry built from it — is caught by this pin
+    /// and by S1's gate-order lock (which counts the open on the flattened
+    /// code, #198); every other pin of this suite reads it as the tree.
+    @Test func theIntakesReceiveIsPinnedWhole() throws {
+        let sources: Sources = try Self.uncutSources()
+        let pin: [WholePin] = [Self.receivePin]
+        #expect(Self.wholeFailures(sources, pin).isEmpty, "\(Self.wholeFailures(sources, pin))")
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        let receiveHead: String = "    func receive(_ line: [UInt8], from connection: ConnectionKey) {\n"
+        let capacity: String = "        guard prompts.count < Self.maxPrompts else { return audit(.capacityReached) }\n"
+        let performed: String = "        perform(opened.transition, for: id, classified: (classification, copy))\n"
+        let chained: String = "                                                   .requiringCopy(copy)\n"
+        let known: String = "        let known = secrets()\n"
+        let constant: String = "    static let waitingContextSeconds = 30\n"
+        let anchors: [String] = [Self.openLine, Self.entryLifecycle, receiveHead, capacity, performed, chained, known, constant, Self.receiveAnchor]
+        for anchor in anchors {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(intake, in: sources)) == 1,
+                    "vacuity: '\(anchor.prefix(50))' is in the intake once")
+        }
+        let reopen: (String) -> String = { text in
+            text.replacingOccurrences(of: Self.openLine, with: Self.openLine + Self.secondOpen)
+                .replacingOccurrences(of: Self.entryLifecycle, with: "lifecycle: zzOpened.lifecycle,")
+        }
+        let reopened: Sources = Self.mutate(sources, intake, reopen)
+        #expect(reopened.map { $0.text } != sources.map { $0.text }, "the second open did not apply")
+        #expect(!Self.wholeFailures(reopened, pin).isEmpty, "the second open was NOT caught by receive's pin")
+        let others: [String] = Self.othersCatching(reopened, besides: "whole bodies", baseline: Self.pinBaseline(sources))
+        #expect(others.isEmpty, "the second open is receive's pin's to catch here, but \(others) caught it too")
+        let s1: Sources = try ApprovalChannelStructureTests.sources()
+        let s1Reopened: Sources = ApprovalChannelStructureTests.mutate(s1, intake, reopen)
+        #expect(ApprovalChannelStructureTests.gateOrderFailures(s1).isEmpty && !ApprovalChannelStructureTests.gateOrderFailures(s1Reopened).isEmpty,
+                "the second open was NOT caught by S1's gate-order lock")
+        // More canaries: the one open given a window, the armed flag read
+        // otherwise, the gate's answer set aside, the entry's request or
+        // connection swapped, a held check dropped, a statement after the
+        // gate's perform, an attribute on the line above, `receive` made
+        // dynamic, a second `receive` declared, and the pinned body kept in
+        // an inactive block beside a changed one.
+        let decoy: String = constant + "    #if false\n    " + Self.receiveWhole + "\n    #endif\n"
+        let mutants: [(String, Sources)] = [
+            ("the one open given a window", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "armed: armed(), now: now())\n", with: "armed: armed(), now: now(), timeToLive: 3_600)\n") }),
+            ("the armed flag read otherwise", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "armed: armed(), now: now())\n", with: "armed: true, now: now())\n") }),
+            ("the gate's answer set aside", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "classification: classification, armed:", with: "classification: .forward(.bash), armed:") }),
+            ("the entry's request swapped", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "request: request.requestID, lifecycle:", with: "request: zzRequest, lifecycle:") }),
+            ("the entry's connection swapped", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "Entry(connection: connection,", with: "Entry(connection: 0,") }),
+            ("a held check dropped", Self.mutate(sources, intake) { $0.replacingOccurrences(of: capacity, with: "") }),
+            ("a statement after the gate's perform", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: performed, with: performed + "        zzTap(id)\n") }),
+            ("an attribute on the line above", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: receiveHead, with: "    @inline(never)\n" + receiveHead) }),
+            ("receive made dynamic", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: receiveHead, with: receiveHead.replacingOccurrences(of: "    func", with: "    dynamic func")) }),
+            ("a second receive declared", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: receiveHead, with: "    func receive(_ line: [UInt8]) {}\n\n" + receiveHead) }),
+            ("the pinned body kept in an inactive block, the real one changed", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: capacity, with: "").replacingOccurrences(of: constant, with: decoy) }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, pin).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: whitespace and comments inside the body (the
+        // gate's chain reflowed), and body-only changes outside it (a
+        // statement at the end of the initializer, whose closing brace stands
+        // before `receive`, and the prune's first line): free for this pin,
+        // and every other whole pin reads each as the tree.
+        let initialized: String = "        self.audit = audit\n    }\n"
+        let pruned: String = "    private func prune() {\n        let moment = now()\n"
+        for anchor in [initialized, pruned] {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(intake, in: sources)) == 1,
+                    "vacuity: '\(anchor.prefix(50))' is in the intake once")
+        }
+        let reflowed: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: chained, with: "\t.requiringCopy(copy)\n").replacingOccurrences(of: known, with: "\n        let known  =  secrets()\n\n")
+        }
+        let commented: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: known, with: "        // nil: one exists that could not be read\n        let known = secrets() // the topic\n")
+                .replacingOccurrences(of: capacity, with: "        // every slot\n" + capacity)
+        }
+        let outside: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: initialized, with: "        self.audit = audit\n        zzReady()\n    }\n")
+                .replacingOccurrences(of: pruned, with: "    private func prune() {\n        let moment: Int = now()\n")
+        }
+        let tree: [String] = Self.wholeFailures(sources, Self.allWholePins)
+        for (name, control) in [("whitespace only", reflowed), ("comments only", commented), ("bodies outside the pin", outside)] {
+            #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
+            #expect(Self.wholeFailures(control, pin).isEmpty && Self.wholeFailures(control, Self.allWholePins) == tree,
+                    "control '\(name)': \(Self.wholeFailures(control, Self.allWholePins))")
+        }
     }
 
     /// The host's connection writes: a connection's one write, `send`, named
@@ -1905,6 +2051,7 @@ struct DecisionSinkStructureTests {
         pins.append(doorPin)
         pins.append(slotReadPin)
         pins.append(contentsOf: seamPins)
+        pins.append(receivePin)
         return pins
     }()
     /// Every pin of this suite that reads the four targets' sources, by
@@ -2933,10 +3080,12 @@ struct DecisionSinkStructureTests {
     }
 
     /// Today's declarations of a name `pinnedNames` or the modules hold, by
-    /// file: each the type's own declaration (seventy), none borrowing an
-    /// imported name.
+    /// file: each the type's own declaration (seventy-one: the intake's entry
+    /// since `receive` is pinned whole, #198), none borrowing an imported
+    /// name.
     static let homeDeclarations: [String: [String: Int]] = [
-        ApprovalChannelStructureTests.intakeFile: ["class ApprovalIntake": 1, "protocol ApprovalRecordSink": 1, "typealias ConnectionKey": 1],
+        ApprovalChannelStructureTests.intakeFile: [
+            "class ApprovalIntake": 1, "protocol ApprovalRecordSink": 1, "struct Entry": 1, "typealias ConnectionKey": 1],
         ApprovalChannelStructureTests.hostFile: ["struct Limits": 1],
         "ChargeLimiter.swift": ["enum ChargeLimitFeatureState": 1],
         RecordPath.recordPathFile: ["enum ApprovalRecordOutcome": 1, "protocol GateApprovedPrompt": 1],
@@ -3020,10 +3169,10 @@ struct DecisionSinkStructureTests {
         for name in ["Darwin", "Dispatch", "Foundation", "CryptoKit", "NapCat", "NapCatWire", "NapCatSeam", "NapCatChannel", "Swift"] {
             #expect(modules.contains(name), "vacuity: '\(name)' is an imported module")
         }
-        // Every home is a type's own: seventy, none named like a module or
+        // Every home is a type's own: seventy-one, none named like a module or
         // like the imported types the pinned lines call.
         let homes: [String] = Self.homeDeclarations.values.flatMap { $0.keys }
-        #expect(homes.count == 70 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
+        #expect(homes.count == 71 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
         let imported: Set<String> = modules.union(["DispatchSource", "DispatchQueue", "P256", "SHA256", "Int32", "Sendable", "Equatable"])
         #expect(homes.allSatisfy { !imported.contains(Self.asciiWords($0).last ?? "") }, "a home borrows an imported name: \(homes.sorted())")
         let intake: String = ApprovalChannelStructureTests.intakeFile
