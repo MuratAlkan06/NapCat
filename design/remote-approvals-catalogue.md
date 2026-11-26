@@ -126,9 +126,21 @@ forwarded Read is a canonical path and plain numbers, nothing else.
 Since issue #159, a path forwards only when every character is printable
 ASCII from `!` to `~` other than the double quote `"` and the backslash `\`.
 That leaves 92 characters: letters, digits and
-`` ! # $ % & ' ( ) * + , - . / : ; < = > ? @ [ ] ^ _ ` { | } ~ ``. The space,
-the double quote, the backslash, every other ASCII character and anything
-non-ASCII are `unclassifiable.pathNotCanonical`.
+`` ! # $ % & ' ( ) * + , - . / : ; < = > ? @ [ ] ^ _ ` { | } ~ ``. Every
+other character is refused, as one of three codes:
+
+- `unclassifiable.pathNotCanonical`: the space, the double quote, the
+  backslash, a tab, a newline, a carriage return, and any non-ASCII
+  character the "Hidden text" bullet below does not name (an accented
+  letter, a look-alike letter, a middle dot).
+- `unclassifiable.hiddenText`: every other control character but NUL (the
+  rest of C0, DEL and C1), and every other character that bullet names. It
+  is checked in every string in the preview, before any path rule.
+- `unclassifiable.previewNotStrictJSON`: NUL, because a NUL escape is not
+  strict JSON (see "The preview" below).
+
+Each code is for the character as JSON escapes it. Written raw, a C0 control
+is not strict JSON at all, so it is `previewNotStrictJSON` too.
 
 The space and the double quote are checked after the forbidden families, so
 a forbidden path holding either one is still logged as its family

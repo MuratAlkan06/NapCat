@@ -1134,30 +1134,57 @@ struct ApprovalClassificationTests {
         }
     }
 
+    /// Whether a copy's only quotes are its members' own (two per key, two
+    /// per string value) and it holds no backslash: then no path in it can
+    /// draw a member boundary.
+    static func ownQuotesOnly(_ copy: String) throws -> Bool {
+        let members: [PreviewMember] = try #require(ApprovalPreview.parseObject(copy))
+        let strings: Int = members.filter { if case .string = $0.value { return true } else { return false } }.count
+        let quotes: Int = copy.filter { $0 == "\"" }.count
+        let own: Int = 2 * (members.count + strings)
+        return quotes == own && !copy.contains("\\")
+    }
+
     /// The whole alphabet, character by character: a path forwards with any
     /// printable ASCII character from `!` to `~` in a name except the
-    /// double quote and the backslash; those two and the space are
-    /// `pathNotCanonical`, and every other ASCII character is refused too.
+    /// double quote and the backslash. Those two, the space, a tab, a
+    /// newline and a carriage return are `pathNotCanonical`; NUL is
+    /// `previewNotStrictJSON`; every other control character is
+    /// `hiddenText` (the codes the refusal catalogue names). The copy of a
+    /// path holding a forwarding character, in each of the six positions,
+    /// draws no quote of its own (see `aForwardedPathDrawsNoQuoteOfItsOwn`).
     /// The wire is unchanged.
-    @Test func theForwardedPathAlphabetIsPrintableASCIIWithoutQuoteOrBackslash() {
+    @Test func theForwardedPathAlphabetIsPrintableASCIIWithoutQuoteOrBackslash() throws {
         let pinned: [UInt8] = [UInt8(ascii: " "), UInt8(ascii: "\"")]
         #expect(ApprovalGate.pathBytesRefusedAfterFamilies == pinned)
         let refused: Set<UInt8> = [UInt8(ascii: " "), UInt8(ascii: "\""), UInt8(ascii: "\\")]
+        let tabAndLineBreaks: Set<UInt8> = [UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r")]
         var forwarded = 0
+        var copies = 0
         for byte in UInt8(0)...UInt8(0x7F) {
-            let path = "\(Self.base)/a\(Character(Unicode.Scalar(byte)))b.txt"
+            let character = Character(Unicode.Scalar(byte))
+            let path = "\(Self.base)/a\(character)b.txt"
             let found: ApprovalClassification = Self.classify(Self.read(path, Self.forwardRead))
             let printable: Bool = byte >= 0x20 && byte <= 0x7E
             if printable && !refused.contains(byte) {
                 #expect(found == Self.forwardRead, "byte \(byte)")
                 forwarded += 1
-            } else if printable {
+                for (before, after) in Self.pathPositions {
+                    let preview: String = Self.readPreview("\(before)\(character)\(after)")
+                    let copy: String = try #require(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: preview), "byte \(byte)")
+                    #expect(try Self.ownQuotesOnly(copy), "byte \(byte): \(copy)")
+                    copies += 1
+                }
+            } else if printable || tabAndLineBreaks.contains(byte) {
                 #expect(found == Self.pathNotCanonical, "byte \(byte)")
+            } else if byte == 0 {
+                #expect(found == Self.unclassifiable(.previewNotStrictJSON), "byte \(byte): a NUL escape")
             } else {
-                #expect(found != Self.forwardRead, "byte \(byte)")
+                #expect(found == Self.unclassifiable(.hiddenText), "byte \(byte)")
             }
         }
         #expect(forwarded == 92, "vacuity: 95 printable characters less the space, the quote and the backslash")
+        #expect(copies == 552, "vacuity: the 92 forwarding characters, each in six positions")
         #expect(ApprovalWire.wireVersion == 1)
         #expect(ApprovalChannel.frameVersion == 1)
     }
@@ -1169,24 +1196,17 @@ struct ApprovalClassificationTests {
     /// closes: the copy of a path holding a quote draws one, so the count
     /// catches it, and the gate refuses that path.
     @Test func aForwardedPathDrawsNoQuoteOfItsOwn() throws {
-        func ownQuotesOnly(_ copy: String) throws -> Bool {
-            let members: [PreviewMember] = try #require(ApprovalPreview.parseObject(copy))
-            let strings: Int = members.filter { if case .string = $0.value { return true } else { return false } }.count
-            let quotes: Int = copy.filter { $0 == "\"" }.count
-            let own: Int = 2 * (members.count + strings)
-            return quotes == own && !copy.contains("\\")
-        }
         let rows: [Row] = Self.forwardableFiles.filter { $0.tool == "Read" }
         #expect(rows.count >= 10, "vacuity: the pinned paths are read")
         for row in rows {
             #expect(Self.classify(row) == Self.forwardRead, "\(row.note)")
             let copy = try #require(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview), "\(row.note)")
-            #expect(try ownQuotesOnly(copy), "\(row.note): \(copy)")
+            #expect(try Self.ownQuotesOnly(copy), "\(row.note): \(copy)")
         }
         let forged = Self.read("\(Self.base)/a\",\"limit\":1", Self.pathNotCanonical)
         let copy = try #require(ApprovalGate.forwardedPreview(toolName: forged.tool, inputPreview: forged.preview))
         #expect(copy == #"{"file_path":"/Users/someone/project/a\",\"limit\":1"}"#)
-        #expect(try !ownQuotesOnly(copy), "canary: the count catches the drawn boundary")
+        #expect(try !Self.ownQuotesOnly(copy), "canary: the count catches the drawn boundary")
         #expect(Self.classify(forged) == Self.pathNotCanonical)
     }
 
