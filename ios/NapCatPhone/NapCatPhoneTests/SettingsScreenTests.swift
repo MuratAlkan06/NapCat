@@ -261,6 +261,51 @@ import UIKit
         #expect(Self.approvalsFailures(mutate(settings) { $0 + "\n/// never approvals = true here\nlet spareApprovalsCount = 1" }).isEmpty)
     }
 
+    /// #194 security review: the switch's stored key is spelled once, on
+    /// `ApprovalsSwitch.storageKey`'s own line, string literals included (a
+    /// word in a literal counts), so no source reads or writes the stored
+    /// choice by its key: the root's `@AppStorage`, through that name, is
+    /// its one keeper (`settingsSetsTheRootsSwitchAlone`).
+    static let keyLiteralSites: [String: Int] = CloudKitStructureTests.appSites([
+        "Model/ApprovalsSwitch.swift": ["static let storageKey = \"remoteApprovalsEnabled\"": 1]])
+
+    static func keyLiteralFailures(_ app: [Source]) -> [String] {
+        let code: [Source] = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
+        return CloudKitStructureTests.appSiteFailures(#"remoteApprovalsEnabled"#, in: code, allowed: keyLiteralSites,
+                                                      rule: "the switch's key is spelled by ApprovalsSwitch alone")
+    }
+
+    @Test func theSwitchKeyIsSpelledOnce() throws {
+        let app: [Source] = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
+        #expect(Self.keyLiteralFailures(app).isEmpty, "\(Self.keyLiteralFailures(app))")
+        func mutate(_ path: String, _ transform: (String) -> String) -> [Source] {
+            app.map { $0.path == path ? ($0.path, transform($0.text)) : $0 }
+        }
+        let delegate: String = "\(CloudKitStructureTests.appDir)/PhoneAppDelegate.swift"
+        let feed: String = "\(CloudKitStructureTests.appDir)/Model/AlertFeed.swift"
+        let mutants: [(String, [Source])] = [
+            // The review's probe, as planted.
+            ("the delegate switches it on by its key", mutate(delegate) {
+                $0.replacingOccurrences(of: "        // Fixture runs never touch the notification center.\n",
+                                        with: "        UserDefaults.standard.set(true, forKey: \"remoteApprovalsEnabled\")\n"
+                                            + "        // Fixture runs never touch the notification center.\n") }),
+            ("the root keeps it by its key", mutate(SettingsReachabilityTests.rootFile) {
+                $0.replacingOccurrences(of: "@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false",
+                                        with: "@AppStorage(\"remoteApprovalsEnabled\") private var approvals = false") }),
+            ("a raw-string key", mutate(feed) { $0 + "\nlet spareKey = #\"remoteApprovalsEnabled\"#" }),
+            ("a multi-line key", mutate(feed) { $0 + "\nlet spareKey = \"\"\"\nremoteApprovalsEnabled\n\"\"\"" }),
+            ("a second spelling beside the first", mutate("\(CloudKitStructureTests.appDir)/Model/ApprovalsSwitch.swift") {
+                $0.replacingOccurrences(of: "    static let storageKey = \"remoteApprovalsEnabled\"\n",
+                                        with: "    static let storageKey = \"remoteApprovalsEnabled\"\n    static let spare = \"remoteApprovalsEnabled\"\n") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.keyLiteralFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match control: a whole-line comment naming the key.
+        #expect(Self.keyLiteralFailures(mutate(feed) { $0 + "\n/// never \"remoteApprovalsEnabled\" by hand\n" }).isEmpty)
+    }
+
     // MARK: About
 
     @Test func theSiteLinkIsTheProjectSite() throws {

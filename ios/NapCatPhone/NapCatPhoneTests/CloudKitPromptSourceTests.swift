@@ -489,6 +489,58 @@ final class RecordBox: @unchecked Sendable {
         #expect(snapshot.configuration.qualityOfService == .userInitiated)
     }
 
+    /// #194 security review: the snapshot asks EVERY record in the approvals
+    /// zone for the prompt's fields, so a field another record type names
+    /// alike comes down for that record too. Every other record type the
+    /// wire defines shares `wireVersion` with them and nothing else: a
+    /// decision or a pairing response comes down as its name, its type, its
+    /// system fields and its wire version. A field added to any record type
+    /// under a prompt field's name, or a prompt field named like another
+    /// type's, fails here; a new record type must be listed (the switch).
+    static func fields(of type: ApprovalWire.RecordType) -> [String] {
+        switch type {
+        case .prompt: return ApprovalWire.PromptField.allCases.map(\.rawValue)
+        case .decision: return ApprovalWire.DecisionField.allCases.map(\.rawValue)
+        case .pairingResponse: return ApprovalWire.PairingResponseField.allCases.map(\.rawValue)
+        }
+    }
+
+    static let sharedField: String = ApprovalWire.PromptField.wireVersion.rawValue
+
+    static func overlapFailures(asked: [String], others: [String: [String]]) -> [String] {
+        var failures: [String] = []
+        for (type, names) in others.sorted(by: { $0.key < $1.key }) {
+            let shared: [String] = Set(asked).intersection(names).subtracting([sharedField]).sorted()
+            if !shared.isEmpty { failures.append("\(type) shares \(shared) with the snapshot's fields — only \(sharedField) may") }
+        }
+        return failures
+    }
+
+    @Test func theSnapshotsFieldsOverlapNoOtherRecordButItsWireVersion() {
+        let asked: [String] = CloudKitAlertSource.promptKeys
+        #expect(Set(asked) == Set(Self.fields(of: .prompt)) && asked.count == Self.fields(of: .prompt).count, "vacuity")
+        var others: [String: [String]] = [AlertWire.recordType: AlertWire.Field.allCases.map(\.rawValue)]
+        for type in ApprovalWire.RecordType.allCases where type != .prompt {
+            others[type.rawValue] = Self.fields(of: type)
+        }
+        #expect(others.count == ApprovalWire.RecordType.allCases.count, "every other record type, and the alert's")
+        #expect(Self.overlapFailures(asked: asked, others: others).isEmpty, "\(Self.overlapFailures(asked: asked, others: others))")
+        for type in [ApprovalWire.RecordType.decision, .pairingResponse] {
+            #expect(Set(asked).intersection(Self.fields(of: type)) == [Self.sharedField], "\(type): the wire version, as the ruling reads")
+        }
+        // Canaries: a decision field named like a prompt's; a prompt field
+        // named like a pairing response's; an alert field likewise.
+        var decision: [String: [String]] = others
+        decision[ApprovalWire.RecordType.decision.rawValue, default: []].append(ApprovalWire.PromptField.createdAt.rawValue)
+        var alert: [String: [String]] = others
+        alert[AlertWire.recordType, default: []].append(ApprovalWire.PromptField.toolName.rawValue)
+        var askedMore: [String] = asked
+        askedMore.append(ApprovalWire.PairingResponseField.publicKey.rawValue)
+        #expect(!Self.overlapFailures(asked: asked, others: decision).isEmpty, "a decision field named like a prompt's")
+        #expect(!Self.overlapFailures(asked: asked, others: alert).isEmpty, "an alert field named like a prompt's")
+        #expect(!Self.overlapFailures(asked: askedMore, others: others).isEmpty, "a prompt field named like a pairing response's")
+    }
+
     // MARK: The live database's admit list
 
     /// What the source hands over is exactly what the live database runs.
