@@ -1012,18 +1012,29 @@ arms anything.
     alone, no extension of `Optional` in the four targets (by its name,
     its `?` or an alias declared there), the host's and the intake's own
     `intake`/`apply`/`perform` lines, the intake's frame writer at its
-    sites, the host's connection writes at today's site, and the
-    connection type named at today's sites alone.
-  - *The road, whole.* The decision's road is pinned as it is, flattened,
-    in every scan copy: the verifier (`enum DecisionVerifier`: every check,
-    the message, the diagnostic), the intake's `apply` and `perform`, and
-    the slot's `read()`. A line added on it fails, also beside a pinned
-    copy kept in a literal or an inactive block; whitespace and `//`
-    comments are free. Each pin has canaries (the byte-copy forge in each
-    shape found so far among them) and over-match controls. The pins cover
-    the sites and bodies they name: a forge reaching none of them stays
-    the accepted residual (#163), and raw-memory writes into a live object
-    stay the pairing locks' accepted residual.
+    sites, the host's connection writes at today's site, the connection
+    type named at today's sites alone, and the host's words for its
+    connections and its peer reader and the seam file's send, write and
+    descriptor at today's lines, so no new line of either file reaches a
+    connection's writer. Every `extension` header and every operator
+    implementation in the four targets is today's, so no extension member
+    or operator overload added elsewhere takes over a pinned line.
+  - *The road, whole.* The decision's road is pinned as it is, flattened
+    by scalars on the compiler's whitespace alone, in every scan copy: the
+    verifier (`enum DecisionVerifier`: every check, the message, the
+    diagnostic), the intake's `apply` and `perform`, and the slot's
+    `read()`. A line added on it fails unless the stripper reads it as
+    whitespace or a `//` comment, also beside a pinned copy kept in a
+    literal or an inactive block. A raw-text lock over the four targets
+    and the phone app keeps out the scalars a text reading drops or
+    matches to another: control and format characters, zero-width and
+    other invisible scalars, a scalar joined to the whitespace before it,
+    and one that compares equal to another. Each pin has canaries (the
+    byte-copy forge in each shape found so far among them) and over-match
+    controls. The pins cover the sites and bodies they name: a forge
+    reaching none of them stays the accepted residual (#163), and
+    raw-memory writes into a live object stay the pairing locks' accepted
+    residual.
   - *The pairing guard's refusal (#180).* The live pairing database's own
     check refuses with `invalidArguments`, which the record path's batch
     reading calls unconfirmed. No Mac consumer tells the two apart: a
