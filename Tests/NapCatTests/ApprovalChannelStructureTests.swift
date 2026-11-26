@@ -280,17 +280,44 @@ struct ApprovalChannelStructureTests {
     /// duplicate, capacity and prompt-ID checks.
     static let heldChecks: String = "        prune()\n        guard !prompts.values.contains(where:"
 
+    /// The lifecycle's open (#198), read on the flattened code of every scan
+    /// copy, so a line break or a comment between its parts reads as at
+    /// most one space and a backtick as nothing: in the intake, any member
+    /// named `open`, qualified, implicit or unapplied; in every other file
+    /// but the state machine (the open's own), the call's shape — an `open`
+    /// whose first argument label is `id`, qualified by any name, implicit
+    /// or bare, applied or named with its labels — and the lifecycle's name
+    /// before `.open`, also inside a longer name, applied or not. Outside
+    /// the intake, a reference written neither way is not read.
+    static let intakeOpenPattern: String = #"\. ?open\b"#
+    static let openShapePattern: String = #"\bopen ?\( ?id ?:"#
+    static let lifecycleOpenPattern: String = #"ApprovalLifecycle ?\. ?open\b|"# + openShapePattern
+
+    /// `pattern`'s count in each scan copy of `text`, flattened.
+    static func flatCounts(_ pattern: String, in text: String) -> [Int] {
+        LidGuardStructureTests.constructorScanCopies(text).map {
+            ApprovalRecordPathStructureTests.matches(pattern, in: MenuPanelStructureTests.flat($0)).count
+        }
+    }
+
     /// The intake reads each frame strictly, checks its server's version and
     /// its client again (#150) before anything is held, classifies it, and
-    /// only then opens its lifecycle with the gate's answer.
+    /// only then opens its lifecycle with the gate's answer: the gate is
+    /// called once, and the lifecycle opened once, there alone (the open
+    /// counted on the flattened code, #198).
     static func gateOrderFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         let classify = "ApprovalGate.classify("
-        let open = "ApprovalLifecycle.open("
-        for (name, text) in sources where !["ApprovalClassification.swift", "ApprovalStateMachine.swift"].contains(name) {
-            for token in [classify, open] {
-                let found = count(token, in: text)
-                if name == intakeFile ? found != 1 : found != 0 { failures.append("\(found) '\(token)' in \(name)") }
+        // The gate's own file is read for the open, not for `classify`.
+        for (name, text) in sources where name != "ApprovalStateMachine.swift" {
+            let found: Int = count(classify, in: text)
+            if name != "ApprovalClassification.swift" && (name == intakeFile ? found != 1 : found != 0) {
+                failures.append("\(found) '\(classify)' in \(name)")
+            }
+            let wanted: Int = name == intakeFile ? 1 : 0
+            let pattern: String = name == intakeFile ? intakeOpenPattern : lifecycleOpenPattern
+            for opens in flatCounts(pattern, in: text) where opens != wanted {
+                failures.append("\(opens) lifecycle open(s) in \(name), read on the flattened code")
             }
         }
         let intake = text(intakeFile, in: sources)
@@ -335,6 +362,21 @@ struct ApprovalChannelStructureTests {
             #expect(Self.count(anchor, in: intake) == 1, "vacuity: '\(anchor.prefix(50))' is in the intake once")
         }
         let without: (String) -> Sources = { kept in Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: rechecks, with: kept) } }
+        let openLine: String = "        let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())\n"
+        #expect(Self.count(openLine, in: intake) == 1, "vacuity: the lifecycle's one open is in the intake once")
+        let intakeShapes: [Int] = Self.flatCounts(Self.openShapePattern, in: intake)
+        let declaredShapes: [Int] = Self.flatCounts(Self.openShapePattern, in: Self.text("ApprovalStateMachine.swift", in: sources))
+        #expect(intakeShapes.allSatisfy { $0 == 1 } && declaredShapes.allSatisfy { $0 == 1 },
+                "vacuity: the call's shape reads the intake's one open and the open's declaration, once each")
+        let newFile: (String) -> Sources = { text in sources + [(name: "ZZOpen.swift", text: text)] }
+        let arguments: String = "(id: i, classification: c, armed: true, now: 0)"
+        let prefixed: String = "typealias ZZApprovalLifecycle = ApprovalLifecycle\n"
+        let short: String = "typealias ZZShort = ApprovalLifecycle\n"
+        let opening: (String) -> Sources = { line in
+            Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: openLine, with: openLine + line) }
+        }
+        let overLines: String = "        let zz = ApprovalLifecycle\n            .open(id: id, classification: classification, armed: armed(), now: now(), timeToLive: 3_600)\n"
+        let behindComment: String = "        let zz = ApprovalLifecycle./* x */open(id: id, classification: classification, armed: true, now: 0)\n"
         let dropped: Sources = without("")
         let mutants: [(String, Sources)] = [
             ("the gate bypassed", Self.mutate(sources, Self.intakeFile) {
@@ -354,17 +396,58 @@ struct ApprovalChannelStructureTests {
             ("the client checked first", without(clientFirst)),
             ("a refusal that keeps the connection", Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: closing, with: keeping) }),
             ("a client confirmed by anything", Self.mutate(sources, Self.intakeFile) { $0.replacingOccurrences(of: confirmed, with: anything) }),
+            // #198: a second open, however it is spelled — over a line break
+            // (the second re-check's shape), behind a block comment,
+            // backticked, unapplied, as an implicit member — in the intake,
+            // and the lifecycle's open over a line break or unapplied
+            // elsewhere.
+            ("a second open over a line break", opening(overLines)),
+            ("a second open behind a block comment", opening(behindComment)),
+            ("a second open, backticked", opening("        let zz = ApprovalLifecycle.`open`(id: id, classification: classification, armed: true, now: 0)\n")),
+            ("the open taken unapplied", opening("        let zz = ApprovalLifecycle.open\n")),
+            ("an implicit open", opening("        let zz: ApprovalLifecycle = .open(id: id, classification: classification, armed: true, now: 0).lifecycle\n")),
+            ("a lifecycle opened over a line break elsewhere", Self.mutate(sources, Self.hostFile) {
+                $0 + "\nlet l = ApprovalLifecycle\n    .open(id: i, classification: c, armed: true, now: 0)" }),
+            ("a lifecycle's open taken unapplied elsewhere", Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet zz = ApprovalLifecycle . open" }),
+            // Outside the intake, in a new file: the call's shape as an
+            // implicit member, through a short alias or one whose name ends
+            // in the lifecycle's, over lines, named with its labels, and bare
+            // in an extension; the longer name's open unapplied; and an open
+            // in the gate's own file.
+            ("an implicit open in a new file", newFile("enum ZZ { static let zz: ApprovalLifecycle = .open" + arguments + ".lifecycle }")),
+            ("a short alias's open in a new file", newFile(short + "enum ZZ { static let zz = ZZShort.open" + arguments + " }")),
+            ("a longer name's open in a new file", newFile(prefixed + "enum ZZ { static let zz = ZZApprovalLifecycle.open" + arguments + " }")),
+            ("an alias's open over lines in a new file", newFile(short + "enum ZZ { static let zz = ZZShort\n    .open(\n        id: i, classification: c, armed: true, now: 0) }")),
+            ("an alias's open named with its labels", newFile(short + "enum ZZ { static let zz = ZZShort.open(id:classification:armed:now:timeToLive:) }")),
+            ("a bare open in an extension", newFile("extension ApprovalLifecycle { static func zz() -> ApprovalLifecycle { open" + arguments + ".lifecycle } }")),
+            ("a longer name's open taken unapplied", newFile(prefixed + "enum ZZ { static let zz = ZZApprovalLifecycle.open }")),
+            ("a lifecycle opened in the gate's file", Self.mutate(sources, "ApprovalClassification.swift") {
+                $0 + "\nlet l = ApprovalLifecycle.open" + arguments }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.gateOrderFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
-        // Over-match control: a blank line and a line the stripper empties
-        // (a comment, read as spaces) between the two checks.
+        // The line break is what the raw count missed.
+        let broken: String = "ApprovalLifecycle\n            .open(id: id"
+        #expect(Self.count("ApprovalLifecycle.open(", in: broken) == 0 && Self.flatCounts(Self.intakeOpenPattern, in: broken) == [1],
+                "vacuity: the line break hides the call from a raw count and not from the flattened one")
+        // Over-match controls: a blank line and a line the stripper empties
+        // (a comment, read as spaces) between the two checks; and words that
+        // only contain the open's, a member of another name, and another
+        // type's open outside the intake; and, in a new file, opens of other
+        // shapes: another first label, one that only starts like `id`, names
+        // that only contain `open`, and the longer name before another member.
         let gap: String = "\n" + String(repeating: " ", count: 20) + "\n"
         let spaced: Sources = without(serverOnly + gap + clientOnly)
-        #expect(spaced.map { $0.text } != sources.map { $0.text }, "the control applied")
-        #expect(Self.gateOrderFailures(spaced).isEmpty, "over-match: \(Self.gateOrderFailures(spaced))")
+        let words: Sources = Self.mutate(opening("        let zzReopened = opened.lifecycle.isTerminalOpen, zzOpenCount = opened.transition\n"),
+                                         Self.hostFile) { $0 + "\nfunc zz(_ u: URL) { _ = NSWorkspace.shared.open(u); _ = ZZLifecycle.open }" }
+        let shapes: Sources = newFile("enum ZZ { static func zz(_ d: ZZDoor, _ u: URL) { d.open(url: u); _ = d.open(identifier: 3); d.reopen(id: 1); "
+                                      + "_ = d.opened(id: 2); _ = ZZApprovalLifecycle.opening } }")
+        for (name, control) in [("the checks spaced", spaced), ("words like open", words), ("opens of other shapes", shapes)] {
+            #expect(control.map { $0.text } != sources.map { $0.text }, "the control '\(name)' applied")
+            #expect(Self.gateOrderFailures(control).isEmpty, "over-match '\(name)': \(Self.gateOrderFailures(control))")
+        }
     }
 
     // MARK: - Only the gate's copy of a preview is ever saved

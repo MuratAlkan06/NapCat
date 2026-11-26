@@ -346,7 +346,12 @@ napcat-channel-version: 2
   process, registers a channel or touches a real home, socket or system
   path. Structure locks keep the socket calls in one file, the peer check on
   every connection, one verdict site on each side, the gate ahead of every
-  lifecycle (since #150, the server and client re-check ahead of the gate),
+  lifecycle (since #150, the server and client re-check ahead of the gate;
+  since #198, the lifecycle's one open counted however it is spelled in the
+  intake, and elsewhere, the state machine that declares it aside, by its
+  call's shape (an `open` whose first label is `id`) and by the lifecycle's
+  name before `.open`, also inside a longer name; a reference written
+  neither way is not read),
   the strict reader as the only parser, and the seam and probe
   unwired (slice S2 replaced that last lock with one that allows them only
   behind the toggle). The refusal catalogue the gate and the seam are tested against is
@@ -1025,15 +1030,24 @@ arms anything.
     `intake`/`apply`/`perform` lines, the intake's frame writer at its
     sites, the host's connection writes at today's site, the connection
     type named at today's sites alone, and the host's words for its
-    connections and its peer reader, the seam file's send, write and
+    connections and its peer reader, the seam file's send, write, read and
     descriptor and the relay's writer to Claude Code (`emit`) at today's
-    lines, so a new line of those files that names one of them fails (a
-    line reaching the socket by another name is not read); and the four
-    targets call a C write (`write`, `send` and their kin), and declare a
-    function so named, at today's sites alone, and the channel server
-    names `write` on its one standard-output line alone. Every `extension`
-    header and every operator implementation in the four targets is
-    today's, and each of today's extensions declares today's members, so
+    lines, so a new line of those files that names one of them fails; the
+    seam connection's writer and reader, the intake's `receive`, the channel
+    server's stream type and the relay's two receives are pinned whole
+    (below); the four targets call a C write (`write`, `send` and their
+    kin), and declare a function so named, at today's sites alone, and the
+    channel server names `write` on its one standard-output line alone; and
+    no other descriptor writer is named in the four targets at all (a stdio
+    stream, a copied descriptor, a positional write, a file handle on a
+    descriptor or for writing, the standard handles, Dispatch's channel, the
+    printers): a tripwire with no site today, not a wall. It and the C-write
+    pin read the names they list as spelled, so a line reaching the socket
+    by another name is caught only when it writes with one of them so
+    spelled; one writing through an implicit-member or aliased spelling, a
+    writer neither lists, or a file API and a path is not. Every
+    `extension` header and every operator implementation in the four targets
+    is today's, and each of today's extensions declares today's members, so
     no extension member or operator overload added elsewhere or inside one
     takes over a pinned line; no function or value there is declared with
     a capital name by `func`, `let` or `var`, in the tuple pattern of a
@@ -1052,16 +1066,21 @@ arms anything.
     by scalars on the compiler's whitespace alone, in every scan copy: the
     verifier (`enum DecisionVerifier`: every check, the message, the
     diagnostic), the intake's `apply` and `perform`, and the slot's
-    `read()`. A line added on it fails unless the stripper reads it as
-    whitespace or a `//` comment, also beside a pinned copy kept in a
-    literal or an inactive block. A raw-text lock over the four targets
-    and the phone app keeps out the scalars a text reading drops or
-    matches to another: control and format characters, zero-width and
-    other invisible scalars, a scalar joined to the whitespace before it,
-    and one that compares equal to another. Each pin has canaries (the
-    byte-copy forge in each shape found so far among them) and over-match
-    controls. The pins cover the sites and bodies they name: a forge
-    reaching none of them stays the accepted residual (#163), and
+    `read()`; and so are the bodies around it that fix a prompt's window and
+    carry the last writes (#197–#199): the intake's `receive`, from the
+    strict read to the entry a verdict goes back through (the gate's answer,
+    the armed flag and the lifecycle's one open, with its default window),
+    the seam connection's `send` and `drain`, the channel server's stream
+    type, and the relay's two receives. A line added on any of them fails
+    unless the stripper reads it as whitespace or a `//` comment, also
+    beside a pinned copy kept in a literal or an inactive block. A raw-text
+    lock over the four targets and the phone app keeps out the scalars a
+    text reading drops or matches to another: control and format characters,
+    zero-width and other invisible scalars, a scalar joined to the
+    whitespace before it, and one that compares equal to another. Each pin
+    has canaries (the byte-copy forge in each shape found so far among them)
+    and over-match controls. The pins cover the sites and bodies they name:
+    a forge reaching none of them stays the accepted residual (#163), and
     raw-memory writes into a live object stay the pairing locks' accepted
     residual.
   - *The pairing guard's refusal (#180).* The live pairing database's own
