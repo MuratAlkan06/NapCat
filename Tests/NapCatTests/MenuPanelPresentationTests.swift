@@ -1314,7 +1314,7 @@ struct MenuPanelPresentationTests {
         let approvals = try ApprovalsWorld()
         let pairing = PairingWorld()
         let off = PanelLine(text: "Off", severity: .nominal)
-        let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings first", severity: .info)
+        let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings › Claude", severity: .info)
         let localOnly = PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
         try withModel(remoteApprovals: approvals.controller, pairing: pairing.controller) { model, _, _ in
             #expect(model.remoteApprovalsStatus == off)

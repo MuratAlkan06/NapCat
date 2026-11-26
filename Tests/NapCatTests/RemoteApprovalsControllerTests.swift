@@ -100,8 +100,8 @@ final class ApprovalsWorld {
     /// What the app's own domain holds (the toggle writes here).
     var stored: Any?
     /// What the defaults search list holds above the app's own domain (a
-    /// launch argument, a managed setting) and below it (the global domain,
-    /// a registered default); nil: nothing there (#205).
+    /// launch argument, a managed setting, a per-host value) and below it
+    /// (the global domain, a registered default); nil: nothing there (#205).
     var outranking: Any?
     var below: Any?
     /// What the search list reads: the first of the three that holds a value.
@@ -306,7 +306,8 @@ struct RemoteApprovalsControllerTests {
     /// after the off is written. Before, off wrote the store and read it
     /// back, and that read kept everything running. Now the switch goes
     /// off, the session's server is disconnected, the socket goes, the
-    /// stop is audited once, and nothing listens again; the off is still
+    /// stop is audited once, and nothing listens again before the store is
+    /// next read (such a store would read on then); the off is still
     /// written, and a late decision is ignored and logged.
     @Test func offAppliesInProcessEvenWhenTheStoreReadIgnoresWrites() throws {
         let world = try ApprovalsWorld()
@@ -430,9 +431,9 @@ struct RemoteApprovalsControllerTests {
     }
 
     /// #205: a `true` anywhere but the app's own domain — above it (a launch
-    /// argument, a managed setting) or below it (the global domain, a
-    /// registered default) — never turns the toggle on, however often the
-    /// menu opens: zero footprint.
+    /// argument, a managed setting, a per-host value) or below it (the
+    /// global domain, a registered default) — never turns the toggle on,
+    /// however often the menu opens: zero footprint.
     @Test(arguments: [true, false])
     func anOutsideTrueNeverTurnsItOn(_ outranks: Bool) throws {
         let world = try ApprovalsWorld()
@@ -449,9 +450,10 @@ struct RemoteApprovalsControllerTests {
 
     /// #205: a value that outranks the app's own and disagrees is the kill
     /// switch at the next refresh, and keeps a switch-on off (written, read
-    /// back, vetoed). With an outranking `true` the owner's own on and off
-    /// both hold, and an off stays off across refreshes: it was written to
-    /// the app's own domain, which is read for on.
+    /// back, vetoed, and written back off). With an outranking `true` the
+    /// owner's own on and off both hold, and an off stays off across
+    /// refreshes: it was written to the app's own domain, which is read for
+    /// on.
     @Test func anOutrankingValueVetoesAndTheOwnersOffStaysOff() throws {
         let world = try ApprovalsWorld()
         world.controller.setEnabled(true)
@@ -461,16 +463,41 @@ struct RemoteApprovalsControllerTests {
         #expect(world.controller.phase == .off, "an outranking false is the kill switch")
         #expect(!world.socketExists)
         world.controller.setEnabled(true)
-        #expect(world.stored as? Bool == true && world.controller.phase == .off, "a switch-on is written, then vetoed")
+        #expect(world.stored as? Bool == false && world.controller.phase == .off,
+                "a switch-on is written, vetoed, then written back off")
+        #expect(world.writes == [true, true, false])
 
         world.outranking = true
         world.controller.refresh()
-        #expect(world.controller.phase == .listening, "the app's own true, and nothing disagrees")
+        #expect(world.controller.phase == .off, "the vetoed switch-on was not left stored")
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .listening, "the owner's own true, and nothing disagrees")
         world.controller.setEnabled(false)
         world.controller.refresh()
         world.controller.refresh()
         #expect(world.controller.phase == .off, "the owner's off stays off: the outranking true cannot turn it back on")
         #expect(world.stored as? Bool == false && !world.socketExists)
+    }
+
+    /// #205: a switch-on that an outranking value vetoes is written back
+    /// off, so the app's own domain holds what the switch shows. Before, the
+    /// stored `true` stayed: the switch read off and could not clear it, and
+    /// once the outranking value was gone the next refresh (or launch) came
+    /// up on with no gesture. Now it stays off, with zero footprint.
+    @Test func aVetoedSwitchOnIsWrittenBackOff() throws {
+        let world = try ApprovalsWorld()
+        world.outranking = "YES"
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .off)
+        #expect(world.writes == [true, false], "the switch-on is written, then written back off")
+        #expect(world.stored as? Bool == false, "what is stored matches what the switch shows")
+        world.outranking = nil
+        world.controller.refresh()
+        #expect(world.controller.phase == .off)
+        #expect(world.builtHosts.isEmpty && world.probes == 0, "no host, no probe")
+        #expect(!world.scratch.exists(world.scratch.directoryPath), "not even the socket's directory exists")
+        world.controller.setEnabled(false)
+        #expect(world.writes == [true, false, false], "the off is written as ever")
     }
 
     /// The toggle's own audit lines join the S1 vocabulary: closed codes, a

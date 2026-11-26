@@ -88,8 +88,8 @@ final class RemoteApprovalsController {
     /// guard (it holds the alert topic, a secret the gate keeps on the Mac —
     /// or, when the topic could not be read, the fail-closed nil)
     /// or without a home directory to put the socket in. Construction does
-    /// no I/O: nothing listens until `reconcile()` reads a switched-on
-    /// toggle. The socket path comes from the user database, like the
+    /// no I/O: nothing listens until a read of the stored toggle finds
+    /// it on. The socket path comes from the user database, like the
     /// channel server's, so both land on the same socket. The toggle is
     /// read from the app's own domain (`storedToggle`).
     static func makeIfEnabled(debugBattery: Bool, lidGuard: LidGuardController?,
@@ -107,10 +107,11 @@ final class RemoteApprovalsController {
     /// The stored toggle as NapCat reads it (#205): what the app's OWN
     /// persistent domain (`domain`: its name) holds, and what the defaults
     /// search list reads — ON only when both are a Bool `true`
-    /// (`RemoteApprovalsPolicy.enabled`). A launch argument, the global
-    /// domain or a registered default can never turn it on, since only the
-    /// app's own domain is read for that; one that outranks the app's
-    /// domain (a launch argument, a managed setting) can turn it off.
+    /// (`RemoteApprovalsPolicy.enabled`). A launch argument, a per-host
+    /// value, the global domain or a registered default can never turn it
+    /// on, since only the app's own domain is read for that; one that
+    /// outranks the app's domain (a launch argument, a managed setting, a
+    /// per-host value written with `defaults -currentHost`) can turn it off.
     nonisolated static func storedToggle(_ defaults: UserDefaults, domain: String) -> Bool {
         RemoteApprovalsPolicy.enabled(stored: defaults.persistentDomain(forName: domain)?[DefaultsKey.remoteApprovalsEnabled],
                                       searched: defaults.object(forKey: DefaultsKey.remoteApprovalsEnabled))
@@ -166,10 +167,13 @@ final class RemoteApprovalsController {
 
     /// The user flipped the toggle (the menu, Settings, or Unpair's kill
     /// switch). Off is the kill switch, run in process at once and never
-    /// read back (#205): whatever the store reads afterwards — a write it did
-    /// not take, or a value that outranks it — cannot keep the feature on.
-    /// The off is still written, for the next launch. On is written, then
-    /// read back, so a stored value that disagrees keeps it off.
+    /// read back (#205): within this call, and until the store is next read
+    /// (`reconcile()`), nothing the store holds can keep the feature on. The
+    /// off is still written, for the next launch; a store that never kept
+    /// that write can read on again at the next read. On is written, then
+    /// read back, so a stored value that disagrees keeps it off; a vetoed
+    /// on is written back off, so what is stored matches what the switch
+    /// shows.
     func setEnabled(_ enabled: Bool) {
         guard enabled else {
             run(.toggle(false))
@@ -177,7 +181,9 @@ final class RemoteApprovalsController {
             return
         }
         writeStored(true)
-        reconcile()
+        let readBack = readStored()
+        run(.toggle(readBack))
+        if !readBack { writeStored(false) }
     }
 
     /// NapCat is quitting: a hard stop — the kill switch, final.

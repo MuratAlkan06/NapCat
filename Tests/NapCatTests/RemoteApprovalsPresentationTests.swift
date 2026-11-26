@@ -14,7 +14,7 @@ struct RemoteApprovalsPresentationTests {
     static let localOnly = PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
     static let notListening = PanelLine(text: "Not listening — could not start; reopen the menu to retry", severity: .warning)
     /// #205: on, with no iPhone paired.
-    static let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings first", severity: .info)
+    static let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings › Claude", severity: .info)
     /// Every answer `RemoteApprovalsPolicy.hold` can give.
     static let holds: [RemoteApprovalsHold?] = [nil, .off, .notPaired, .noRecordPath]
 

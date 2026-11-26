@@ -373,17 +373,22 @@ It builds controls only: nothing can be forwarded yet.
   turns it on, so a missing or junk value never arms anything. Since #205 it
   is read from NapCat's own defaults domain: on only when that domain holds
   a Bool `true` and the defaults search list reads one too. A value anywhere
-  else (a launch argument, the global domain, a registered default) never
-  turns it on; one that outranks NapCat's own (a launch argument, a managed
-  setting) and disagrees turns it off. It shows as a
+  else (a launch argument, a per-host value, the global domain, a registered
+  default) never turns it on; one that outranks NapCat's own (a launch
+  argument, a managed setting, a per-host value written with
+  `defaults -currentHost`) and disagrees turns it off, and a switch-on it
+  vetoes is written back off, so what is stored matches what the switch
+  shows. It shows as a
   Remote approvals row in the menu's Alerts card, under Session alerts, and as
   a group in Settings › Claude (the same action; the switch there is named for
   what it does today, "Mac-only preview", and promises no iPhone answering).
   Off is the kill switch, applied in process at once and never read back
-  (#205), so a store that does not take the write cannot keep it on: every
-  open prompt is withdrawn, every channel server disconnected and the socket
-  removed, and a later decision for a withdrawn prompt is ignored and
-  logged. Quitting NapCat is the same stop, final.
+  (#205): every open prompt is withdrawn, every channel server disconnected
+  and the socket removed, and a later decision for a withdrawn prompt is
+  ignored and logged. The off holds within that call and until the toggle
+  is next read (when the menu or Settings next opens, or at the next
+  launch); a store that never kept the write can read on again then.
+  Quitting NapCat is the same stop, final.
 - **Behind the toggle only.** Until the first switch-on nothing exists: no
   host, no socket or socket directory, no listener, no probe, no timer. Once
   off completes, no socket, listener, connection, probe or timer remains; the
@@ -400,8 +405,8 @@ It builds controls only: nothing can be forwarded yet.
 - **Fail-dark.** On, NapCat hears a wired session's prompts, classifies and
   audits them, and keeps every one on the Mac; the row says so ("Local only —
   the iPhone app cannot answer prompts yet"), and while no iPhone is paired
-  it says to pair one first ("Not paired — pair your iPhone in Settings
-  first", #205). No CloudKit record operation
+  it says to pair one first ("Not paired — pair your iPhone in Settings ›
+  Claude", #205). No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
   apply: a pre-arming revision of the category gate (done: S-GATE, #145) and
   an owner-run live test.

@@ -1531,7 +1531,7 @@ final class MenuStateModel: ObservableObject {
         case .off:
             return PanelLine(text: "Off", severity: .nominal)
         case .listening where hold == .notPaired:
-            return PanelLine(text: "Not paired — pair your iPhone in Settings first", severity: .info)
+            return PanelLine(text: "Not paired — pair your iPhone in Settings › Claude", severity: .info)
         case .listening:
             return PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
         case .unavailable:
