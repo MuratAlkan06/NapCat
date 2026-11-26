@@ -101,6 +101,179 @@ struct ApprovalStateMachineTests {
         #expect(both.lifecycle.phase == .suppressed(.notArmed), "the feature being off comes first")
     }
 
+    // MARK: - Opening with a window
+
+    typealias Opened = (lifecycle: ApprovalLifecycle, transition: ApprovalTransition)
+
+    /// Left out, the window is what it always was: every opening (forwarded,
+    /// not armed, gated; at any moment) has the same phase, transition,
+    /// creation time and a 600-second window as before the parameter
+    /// existed, equals an opening given the wire's TTL, and moves the same
+    /// way under every event at every moment.
+    @Test func openingWithoutAWindowIsUnchanged() {
+        let classifications: [ApprovalClassification] = [
+            .forward(.bash), .forward(.write), .suppress(.localOnlyMCP), .suppress(.forbidden(.secretAccess)),
+        ]
+        let starts: [Int] = [-5, 0, Self.t0, 1_000_000]
+        var checked: Int = 0
+        for classification in classifications {
+            for armed in [true, false] {
+                for now in starts {
+                    let plain: Opened = ApprovalLifecycle.open(id: Self.idA, classification: classification, armed: armed,
+                                                               now: now)
+                    let given: Opened = ApprovalLifecycle.open(id: Self.idA, classification: classification, armed: armed,
+                                                               now: now, timeToLive: ApprovalWire.promptTimeToLiveSeconds)
+                    let expiry: Int = now + 600
+                    #expect(plain.lifecycle.createdAt == now && plain.lifecycle.id == Self.idA)
+                    #expect(plain.lifecycle.expiresAt == expiry, "the 600-second window from before")
+                    #expect(plain.lifecycle == given.lifecycle && plain.transition == given.transition)
+                    // The old results, spelled out.
+                    let phase: ApprovalPhase
+                    let effects: [ApprovalEffect]
+                    let audit: [ApprovalAudit]
+                    switch (armed, classification) {
+                    case (true, .forward):
+                        (phase, effects, audit) = (.saving, [.saveRecord], [])
+                    case (false, _):
+                        (phase, effects, audit) = (.suppressed(.notArmed), [], [.suppressed(.notArmed)])
+                    case (true, .suppress(let suppression)):
+                        (phase, effects, audit) = (.suppressed(.gate(suppression)), [], [.suppressed(.gate(suppression))])
+                    }
+                    let transition: ApprovalTransition = ApprovalTransition(effects: effects, audit: audit)
+                    #expect(plain.lifecycle.phase == phase && plain.transition == transition)
+                    let (before, after): (Int, Int) = (now - 1, now + 1)
+                    let (lastSecond, pastEnd): (Int, Int) = (expiry - 1, expiry + 1)
+                    let moments: [Int] = [before, now, after, lastSecond, expiry, pastEnd]
+                    for event in Self.everyEvent {
+                        for moment in moments {
+                            var plainLifecycle: ApprovalLifecycle = plain.lifecycle
+                            var givenLifecycle: ApprovalLifecycle = given.lifecycle
+                            let plainStep: ApprovalTransition = plainLifecycle.apply(event, now: moment)
+                            let givenStep: ApprovalTransition = givenLifecycle.apply(event, now: moment)
+                            #expect(plainStep == givenStep && plainLifecycle == givenLifecycle, "\(event) at \(moment)")
+                            checked += 1
+                        }
+                    }
+                }
+            }
+        }
+        let grid: Int = classifications.count * 2 * starts.count * Self.everyEvent.count * 6
+        #expect(checked == grid, "vacuity: the grid ran")
+    }
+
+    /// One requested window and the window the prompt gets.
+    struct WindowRow: Sendable, CustomTestStringConvertible {
+        let note: String
+        let requested: Int
+        let window: Int
+        var testDescription: String { note }
+    }
+
+    static let windowRows: [WindowRow] = [
+        WindowRow(note: "the lowest Int", requested: .min, window: 300),
+        WindowRow(note: "negative", requested: -600, window: 300),
+        WindowRow(note: "zero", requested: 0, window: 300),
+        WindowRow(note: "one second", requested: 1, window: 300),
+        WindowRow(note: "just below the minimum", requested: 299, window: 300),
+        WindowRow(note: "the minimum", requested: 300, window: 300),
+        WindowRow(note: "just above the minimum", requested: 301, window: 301),
+        WindowRow(note: "the default", requested: 600, window: 600),
+        WindowRow(note: "half an hour", requested: 1_800, window: 1_800),
+        WindowRow(note: "just below the maximum", requested: 3_599, window: 3_599),
+        WindowRow(note: "the maximum", requested: 3_600, window: 3_600),
+        WindowRow(note: "just above the maximum", requested: 3_601, window: 3_600),
+        WindowRow(note: "a day", requested: 86_400, window: 3_600),
+        WindowRow(note: "the highest Int", requested: .max, window: 3_600),
+    ]
+
+    /// A window outside the wire's bounds is clamped to them; inside, it is
+    /// kept. The window then rules every timed transition: a decision and a
+    /// tick in its last second, at its end, and a save accepted at its end.
+    @Test(arguments: windowRows)
+    func theWindowIsClampedAndRulesEveryTimedTransition(_ row: WindowRow) {
+        let opened: Opened = ApprovalLifecycle.open(id: Self.idA, classification: .forward(.bash), armed: true,
+                                                    now: Self.t0, timeToLive: row.requested)
+        let end: Int = Self.t0 + row.window
+        let last: Int = end - 1
+        let accepted: Int = Self.t0 + 1
+        let allow: ApprovalEvent = Self.decision(.allow)
+        let saved: ApprovalTransition = ApprovalTransition(effects: [.saveRecord], audit: [])
+        let superseded: [ApprovalEffect] = [.supersedeWaitingAlert]
+        let answered: [ApprovalEffect] = [.deliverVerdict(.allow), .retractRecord]
+        let withdrawn: [ApprovalEffect] = [.retractRecord]
+        let lateAnswer: ApprovalTransition = ApprovalTransition(effects: withdrawn, audit: [.expired, .ignored(.expired)])
+        let lateSave: ApprovalTransition = ApprovalTransition(effects: withdrawn, audit: [.expired])
+        #expect(opened.lifecycle.expiresAt == end)
+        #expect(opened.lifecycle.createdAt == Self.t0 && opened.lifecycle.phase == ApprovalPhase.saving)
+        #expect(opened.transition == saved)
+
+        var forwarded: ApprovalLifecycle = opened.lifecycle
+        let acceptedStep: ApprovalTransition = forwarded.apply(.saveAccepted, now: accepted)
+        #expect(acceptedStep.effects == superseded)
+        var inTime: ApprovalLifecycle = forwarded
+        let inTimeStep: ApprovalTransition = inTime.apply(allow, now: last)
+        #expect(inTimeStep.effects == answered)
+        var late: ApprovalLifecycle = forwarded
+        let lateStep: ApprovalTransition = late.apply(allow, now: end)
+        #expect(lateStep == lateAnswer)
+        let lastTick: ApprovalTransition = forwarded.apply(.tick, now: last)
+        #expect(lastTick == ApprovalTransition.none)
+        let endTick: ApprovalTransition = forwarded.apply(.tick, now: end)
+        #expect(endTick.effects == withdrawn)
+        #expect(forwarded.phase == ApprovalPhase.expired)
+
+        var saving: ApprovalLifecycle = opened.lifecycle
+        let savedLate: ApprovalTransition = saving.apply(.saveAccepted, now: end)
+        #expect(savedLate == lateSave)
+
+        let unarmed: Opened = ApprovalLifecycle.open(id: Self.idA, classification: .forward(.bash), armed: false,
+                                                     now: Self.t0, timeToLive: row.requested)
+        let notArmed: ApprovalPhase = .suppressed(.notArmed)
+        #expect(unarmed.lifecycle.expiresAt == end && unarmed.lifecycle.phase == notArmed)
+    }
+
+    @Test func theWindowTableCoversBothBoundsAndTheDefault() {
+        let windows: Set<Int> = Set(Self.windowRows.map(\.window))
+        #expect(windows.contains(ApprovalWire.minPromptTimeToLiveSeconds))
+        #expect(windows.contains(ApprovalWire.maxPromptTimeToLiveSeconds))
+        #expect(windows.contains(ApprovalWire.promptTimeToLiveSeconds))
+        #expect(Self.windowRows.allSatisfy {
+            $0.window >= ApprovalWire.minPromptTimeToLiveSeconds && $0.window <= ApprovalWire.maxPromptTimeToLiveSeconds
+        })
+    }
+
+    /// The safety sweep again, at both bounds: only a valid remote decision
+    /// before the window's end delivers a verdict.
+    @Test(arguments: [ApprovalWire.minPromptTimeToLiveSeconds, ApprovalWire.maxPromptTimeToLiveSeconds])
+    func onlyAValidRemoteDecisionInsideTheWindowDeliversAVerdict(_ window: Int) {
+        let accepted: Int = Self.t0 + 1
+        var start: ApprovalLifecycle = ApprovalLifecycle.open(id: Self.idA, classification: .forward(.bash), armed: true,
+                                                              now: Self.t0, timeToLive: window).lifecycle
+        _ = start.apply(.saveAccepted, now: accepted)
+        let end: Int = Self.t0 + window
+        let (lastSecond, pastEnd): (Int, Int) = (end - 1, end + 1)
+        let moments: [Int] = [accepted, lastSecond, end, pastEnd]
+        var sweeps: Int = 0
+        for event in Self.everyEvent {
+            for now in moments {
+                var lifecycle: ApprovalLifecycle = start
+                let effects: [ApprovalEffect] = lifecycle.apply(event, now: now).effects
+                let delivered: [ApprovalWire.Verdict] = effects.compactMap { effect -> ApprovalWire.Verdict? in
+                    if case .deliverVerdict(let verdict) = effect { return verdict }
+                    return nil
+                }
+                var expected: [ApprovalWire.Verdict] = []
+                if case .remoteDecision(let decision) = event, now < end, decision.promptID == Self.idA,
+                   decision.wireVersion == ApprovalWire.wireVersion, decision.signatureVerified {
+                    expected = [decision.verdict]
+                }
+                #expect(delivered == expected, "\(event) at \(now)")
+                sweeps += 1
+            }
+        }
+        #expect(sweeps == Self.everyEvent.count * moments.count, "vacuity: the sweep ran")
+    }
+
     // MARK: - Every transition
 
     static let steps: [Step] = [
@@ -344,12 +517,16 @@ struct ApprovalStateMachineTests {
             failures.append("'\(token)' in the state machine")
         }
         if !code.contains("ApprovalWire.promptTimeToLiveSeconds") { failures.append("the TTL is not the wire's") }
+        for bound in ["ApprovalWire.minPromptTimeToLiveSeconds", "ApprovalWire.maxPromptTimeToLiveSeconds"]
+        where !code.contains(bound) {
+            failures.append("the window is not clamped to '\(bound)'")
+        }
         return failures
     }
 
     /// One verdict site; exhaustive switches (a new phase or event must be
-    /// decided everywhere, never caught by a catch-all); the TTL comes from
-    /// the wire contract, never a literal.
+    /// decided everywhere, never caught by a catch-all); the TTL and the
+    /// window's bounds come from the wire contract, never a literal.
     @Test func theStateMachineHasOneVerdictSiteAndNoCatchAll() throws {
         let failures = Self.structureFailures(try Self.machineCode())
         #expect(failures.isEmpty, "\(failures)")
@@ -362,7 +539,9 @@ struct ApprovalStateMachineTests {
                                       with: "phase = .expired\n            return ApprovalTransition(effects: [.deliverVerdict(.deny)], audit: [.expired])\n        case .suppressed"),
             code.replacingOccurrences(of: "        case .saving, .suppressed, .forwardFailed: return Self.ignored(.notForwarded)",
                                       with: "        default: return Self.ignored(.notForwarded)"),
-            code.replacingOccurrences(of: "ApprovalWire.promptTimeToLiveSeconds }", with: "600 }"),
+            code.replacingOccurrences(of: "timeToLive: Int = ApprovalWire.promptTimeToLiveSeconds)", with: "timeToLive: Int = 600)"),
+            code.replacingOccurrences(of: "max(timeToLive, ApprovalWire.minPromptTimeToLiveSeconds)", with: "max(timeToLive, 1)"),
+            code.replacingOccurrences(of: "ApprovalWire.maxPromptTimeToLiveSeconds)", with: "Int.max)"),
         ]
         for mutant in mutants {
             #expect(mutant != code, "the mutant applies")

@@ -211,30 +211,38 @@ public struct ApprovalLifecycle: Equatable, Sendable {
     public let createdAt: Int
     public private(set) var phase: ApprovalPhase
 
-    /// The end of the remote window: `createdAt` + the wire's TTL.
-    public var expiresAt: Int { createdAt + ApprovalWire.promptTimeToLiveSeconds }
+    /// The end of the remote window: `createdAt` + the window `open` was
+    /// given (the wire's TTL unless another was), fixed when it opens.
+    public let expiresAt: Int
 
-    private init(id: PromptID, createdAt: Int, phase: ApprovalPhase) {
+    private init(id: PromptID, createdAt: Int, expiresAt: Int, phase: ApprovalPhase) {
         self.id = id
         self.createdAt = createdAt
+        self.expiresAt = expiresAt
         self.phase = phase
     }
 
     /// A prompt opens with the gate's answer. It is forwarded only when the
-    /// gate forwards it AND the feature is armed on both devices.
-    public static func open(id: PromptID, classification: ApprovalClassification, armed: Bool, now: Int)
+    /// gate forwards it AND the feature is armed on both devices. Its remote
+    /// window is `timeToLive` seconds, clamped to the wire's bounds; left
+    /// out, it is the wire's TTL.
+    public static func open(id: PromptID, classification: ApprovalClassification, armed: Bool, now: Int,
+                            timeToLive: Int = ApprovalWire.promptTimeToLiveSeconds)
         -> (lifecycle: ApprovalLifecycle, transition: ApprovalTransition) {
+        let window: Int = min(max(timeToLive, ApprovalWire.minPromptTimeToLiveSeconds),
+                              ApprovalWire.maxPromptTimeToLiveSeconds)
+        let expiresAt: Int = now + window
         let hold: ApprovalHold
         switch (armed, classification) {
         case (true, .forward):
-            return (ApprovalLifecycle(id: id, createdAt: now, phase: .saving),
+            return (ApprovalLifecycle(id: id, createdAt: now, expiresAt: expiresAt, phase: .saving),
                     ApprovalTransition(effects: [.saveRecord], audit: []))
         case (false, _):
             hold = .notArmed
         case (true, .suppress(let suppression)):
             hold = .gate(suppression)
         }
-        return (ApprovalLifecycle(id: id, createdAt: now, phase: .suppressed(hold)),
+        return (ApprovalLifecycle(id: id, createdAt: now, expiresAt: expiresAt, phase: .suppressed(hold)),
                 ApprovalTransition(effects: [], audit: [.suppressed(hold)]))
     }
 
