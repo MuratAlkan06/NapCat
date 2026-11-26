@@ -43,9 +43,17 @@ enum RequestAnswer: Equatable, Sendable {
 /// window and this phone's answer.
 ///
 /// A request is answerable only while it is pending: until the Mac's expiry,
-/// and never longer than the TTL after this phone first saw it (a Mac clock
-/// running ahead cannot stretch it). Expired and withdrawn are terminal:
-/// once a request is either, nothing makes it pending again.
+/// and never longer than its own window after this phone first saw it (a
+/// Mac clock running ahead cannot stretch it; no window is longer than the
+/// wire's maximum, `PendingRequest.longestWindow`). Expired and withdrawn
+/// are terminal: once a request is either, nothing makes it pending again.
+///
+/// Live prompts (F4, #194) come from one snapshot read of every prompt
+/// the Mac offers, at launch, on foreground, on a pull, as Settings or the
+/// launch's pairing sheet closes and on a prompt push, never on a timer,
+/// and only while the owner's switch is on with a committed key
+/// (`ApprovalsSwitch`); off, nothing is read and the inbox is empty. A
+/// failed read changes nothing.
 ///
 /// Allow and Deny alike ask for a biometric match first, every time (CL-3,
 /// and the owner's uniform-signing ruling: every answer is signed, and the
@@ -79,9 +87,10 @@ final class RequestInbox {
         /// time: a resend asks for a match of its own and is signed afresh.
         var mayHaveLanded: ApprovalWire.Verdict?
 
-        /// The last moment this phone may answer.
+        /// The last moment this phone may answer: the Mac's expiry, or the
+        /// record's own window from first sight, whichever comes first.
         var answerableUntil: Date {
-            min(request.expiresAt, firstSeen.addingTimeInterval(PendingRequest.timeToLive))
+            min(request.expiresAt, firstSeen.addingTimeInterval(request.window))
         }
     }
 
@@ -110,6 +119,12 @@ final class RequestInbox {
     /// Where this phone's pairing stands, as last read (with no prompt).
     private(set) var keyHealth: PhoneKeyring.Health
     @ObservationIgnored private let writer: any DecisionWriter
+    /// Whether answers from here go nowhere: the writer is the unsent one
+    /// (the live inbox's until the answer path is armed). One fact, the
+    /// writer's own type, so it cannot drift from what an answer would do:
+    /// the prompt screen offers no answer while it holds, and Allow and Deny
+    /// refuse (#194).
+    var isReadOnly: Bool { writer is UnsentDecisionWriter }
     @ObservationIgnored private let biometrics: any BiometricGate
     @ObservationIgnored private let keyring: PhoneKeyring
     @ObservationIgnored private let clock: () -> Date
@@ -118,14 +133,34 @@ final class RequestInbox {
     /// is the key this inbox signs with. nil for a fixture inbox, whose key
     /// is software, and in tests.
     let pairing: LivePairing?
+    /// Where live prompts come from (F4, #194): nil for a fixture inbox,
+    /// in a build that cannot reach iCloud, and in tests that give none.
+    @ObservationIgnored private let prompts: (any PromptSource)?
+    /// The owner's switch as last handed in (`syncPrompts`); nil until the
+    /// root first hands it in, at launch. A push that wakes the app before
+    /// then reads nothing and clears nothing (`refreshPrompts`): a tapped
+    /// one's prompt stays awaited for that first sync (#194).
+    @ObservationIgnored private var switchedOn: Bool?
+    /// Whether the prompt subscription is known to exist (made or found).
+    @ObservationIgnored private var subscribed = false
+    /// Whether this launch may have left a prompt subscription on the
+    /// server: set as the switch takes effect, cleared once it is removed.
+    @ObservationIgnored private var mayHoldSubscription = false
+    @ObservationIgnored private var syncing = false
+    @ObservationIgnored private var syncAgain = false
+    /// A prompt whose push the owner tapped, until the inbox holds it.
+    @ObservationIgnored private var awaited: PromptID?
+    /// The request the main screen opens next, once (`opened()` clears it).
+    private(set) var opening: PromptID?
 
     /// `clock` is this phone's wall clock (a test seam, like the others).
     init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring, pairing: LivePairing? = nil,
-         clock: @escaping () -> Date = Date.init) {
+         prompts: (any PromptSource)? = nil, clock: @escaping () -> Date = Date.init) {
         self.writer = writer
         self.biometrics = biometrics
         self.keyring = keyring
         self.pairing = pairing
+        self.prompts = prompts
         self.clock = clock
         self.biometry = biometrics.availability()
         self.keyHealth = keyring.health()
@@ -137,13 +172,18 @@ final class RequestInbox {
     /// (the Secure Enclave, the keychain) and writes nothing (no record path
     /// reaches the Mac yet), and the live pairing (S-PAIR-C1.6) is made over
     /// that same key. Both ask the real biometric gate before every answer.
+    /// The live approvals database is built here once, for a build that can
+    /// hold the iCloud entitlement, and shared by the live pairing and the
+    /// live prompt source (#194); every answer still goes to the unsent writer.
     static func make(options: LaunchOptions, now: Date) -> RequestInbox {
         let biometrics = LocalAuthenticationGate()
         guard let state = options.request else {
             let keyring = PhoneKeyring(store: KeychainSigningKeyStore.phoneKeychain, enclave: SecureEnclaveSigner(),
                                        enrollment: LocalAuthenticationEnrollment())
+            let database = CloudKitAlertSource.makeLiveApprovalDatabase()
             return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring,
-                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))
+                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database),
+                                prompts: database.map { LivePromptSource(database: $0) })
         }
         return FixtureRequests.inbox(state, now: now, biometrics: biometrics)
     }
@@ -195,6 +235,89 @@ final class RequestInbox {
             entries[id]?.withdrawn = true
         }
         prune()
+        offerAwaited()
+    }
+
+    /// The requests still pending here, newest first: the main screen's
+    /// waiting list.
+    var pendingRequests: [PendingRequest] {
+        let now = clock()
+        return requests.filter { phase(of: $0.id, at: now)?.isPending == true }
+    }
+
+    // MARK: Live prompts (F4, #194)
+
+    /// Brings the live prompts in line with the owner's switch, as handed in
+    /// (`ApprovalsSwitch.effective`, with the pairing read afresh). On: the
+    /// prompt subscription is made sure of (looked up first, created only
+    /// when missing, once per launch), then one snapshot read is received
+    /// (`receive`); a failed read changes nothing, and a switch turned off
+    /// meanwhile stops the pass before its read and drops a read that
+    /// lands after it. Off: nothing is read, the inbox is emptied (a tapped
+    /// push's prompt is no longer awaited), and a subscription this launch
+    /// may have left is deleted (until that is done, each sync tries
+    /// again). A call made while one runs makes the running one go round
+    /// once more. With no live source, nothing.
+    func syncPrompts(switchedOn stored: Bool) async {
+        switchedOn = stored
+        guard let prompts else { return }
+        if syncing {
+            syncAgain = true
+            return
+        }
+        syncing = true
+        repeat {
+            syncAgain = false
+            await syncOnce(prompts)
+        } while syncAgain
+        syncing = false
+    }
+
+    /// A sync with the switch as last handed in (a prompt push's); nothing
+    /// while it is not known yet (a cold launch from a push, before the
+    /// root's first sync).
+    func refreshPrompts() async {
+        guard let switchedOn else { return }
+        await syncPrompts(switchedOn: switchedOn)
+    }
+
+    private func syncOnce(_ prompts: any PromptSource) async {
+        refreshKeyHealth()
+        guard ApprovalsSwitch.effective(stored: switchedOn == true, keyHealth: keyHealth) else {
+            awaited = nil
+            if !entries.isEmpty { entries.removeAll() }
+            guard mayHoldSubscription else { return }
+            if await prompts.removeSubscription() {
+                mayHoldSubscription = false
+                subscribed = false
+            }
+            return
+        }
+        mayHoldSubscription = true
+        if !subscribed { subscribed = await prompts.ensureSubscription() }
+        // Switched off while the subscription was made sure of: nothing
+        // more this pass (the call that switched it goes round next, off).
+        guard switchedOn == true else { return }
+        guard let offered = await prompts.snapshot(), switchedOn == true else { return }
+        receive(offered)
+    }
+
+    /// The owner tapped `id`'s push: the main screen opens it once the inbox
+    /// holds it (now, or after the read the push starts).
+    func open(_ id: PromptID) {
+        awaited = id
+        offerAwaited()
+    }
+
+    /// The main screen opened `opening`.
+    func opened() {
+        if opening != nil { opening = nil }
+    }
+
+    private func offerAwaited() {
+        guard let id = awaited, entries[id] != nil else { return }
+        awaited = nil
+        opening = id
     }
 
     /// One request taken back (its record is gone). Terminal.
@@ -259,7 +382,11 @@ final class RequestInbox {
     /// Pending, no answer under way or done, `verdict` on offer (once iCloud
     /// left an answer unconfirmed, only that one is: #154), and a key to
     /// sign with: an unpaired phone asks for no match it could not use.
+    /// Never while the inbox is read only (#194): its screen offers no
+    /// answer, and the inbox itself refuses one before asking for a match,
+    /// so nothing is signed and nothing is written.
     private func isAnswerable(_ id: PromptID, with verdict: ApprovalWire.Verdict) -> Bool {
+        if isReadOnly { return false }
         tick()
         refreshKeyHealth()
         if case .unpaired = keyHealth { return false }

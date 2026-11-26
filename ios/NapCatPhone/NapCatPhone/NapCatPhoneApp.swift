@@ -30,7 +30,15 @@ struct NapCatPhoneApp: App {
 ///
 /// A forwarded permission prompt opens over it as a sheet too (F4, slice
 /// S3), drawn in the same palette: a `-NapCatRequest` launch opens on its
-/// fixture prompt. Nothing else opens one in this slice.
+/// fixture prompt; since #194, a row of the main screen's waiting list, or a
+/// tapped prompt push, opens that prompt.
+///
+/// Remote approvals (F4, #194): the owner's switch is kept in the app's
+/// own defaults, set in Settings, and handed to the inbox at launch, on
+/// every return to the foreground, on a pull, whenever it changes, and as
+/// Settings or the launch's pairing sheet closes (a pairing made there can
+/// make a stored on take effect, read at once); the inbox reads the prompts
+/// then (`RequestInbox.syncPrompts`), never on a timer.
 ///
 /// The pairing screen (F4, slice S-PAIR-B) opens the same way for a
 /// `-NapCatPairing` launch: its fixture ceremony scans the launch's code, if
@@ -45,6 +53,8 @@ struct ReceiverRoot: View {
     /// The chosen palette, kept in the app's own defaults across launches.
     /// A missing or unknown stored value reads as the default.
     @AppStorage(PaletteID.storageKey) private var palette = PaletteID.fallback
+    /// The owner's remote-approvals switch (`ApprovalsSwitch`), off unless set.
+    @AppStorage(ApprovalsSwitch.storageKey) private var approvals = false
     @State private var showsSettings: Bool
     /// The permission prompt shown as a sheet, if any.
     @State private var shownRequest: PendingRequest?
@@ -62,21 +72,26 @@ struct ReceiverRoot: View {
 
     var body: some View {
         NavigationStack {
-            ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)
-                .refreshable { await feed.pullToRefresh() }
+            ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch,
+                           requests: inbox.pendingRequests, open: { shownRequest = $0 })
+                .refreshable {
+                    await feed.pullToRefresh()
+                    await inbox.syncPrompts(switchedOn: approvals)
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         SettingsGearButton { showsSettings = true }
                     }
                 }
         }
-        .sheet(isPresented: $showsSettings) {
-            SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing)
+        .sheet(isPresented: $showsSettings, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {
+            SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing,
+                           approvals: $approvals)
         }
         .sheet(item: $shownRequest) { request in
             PendingRequestSheet(inbox: inbox, id: request.id)
         }
-        .sheet(isPresented: $showsPairing) {
+        .sheet(isPresented: $showsPairing, onDismiss: { Task { await inbox.syncPrompts(switchedOn: approvals) } }) {
             if let pairing {
                 PairingSheet(ceremony: pairing.ceremony, camera: pairing.camera)
             }
@@ -86,9 +101,19 @@ struct ReceiverRoot: View {
         .task {
             if let pairing, let scan = pairing.scan { await pairing.ceremony.scanned(scan) }
         }
+        .task { await inbox.syncPrompts(switchedOn: approvals) }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task { await feed.refresh() }
+            Task { await inbox.syncPrompts(switchedOn: approvals) }
+        }
+        .onChange(of: approvals) { _, on in
+            Task { await inbox.syncPrompts(switchedOn: on) }
+        }
+        .onChange(of: inbox.opening, initial: true) { _, id in
+            guard let id else { return }
+            if let request = inbox.entries[id]?.request { shownRequest = request }
+            inbox.opened()
         }
     }
 }

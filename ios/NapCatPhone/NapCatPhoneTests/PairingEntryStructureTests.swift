@@ -23,6 +23,12 @@ import Testing
 ///    file, a photo or the launch options, and the app declares no URL
 ///    scheme and no associated domain.
 ///
+/// AMENDED (#194): the live pairing's factory is handed the live approvals
+/// database (built once by the live inbox's factory and shared with the
+/// live prompt source), on its pinned lines; and Settings' Remote approvals
+/// switch sits under the Pairing row, shown with it, handed the phone's
+/// pairing as the live pairing reads it.
+///
 /// Each lock is a pure function over comment-stripped sources and catches
 /// planted canaries, so none can pass vacuously.
 @Suite struct PairingEntryStructureTests {
@@ -53,11 +59,12 @@ import Testing
         + "pairing: LivePairing? = nil,"
     static let livePairingSites = CloudKitStructureTests.appSites([
         "Live/LivePairing.swift": ["struct LivePairing {": 1,
-                                   "static func make(keyring: PhoneKeyring, biometrics: any BiometricGate) -> LivePairing {": 1,
+                                   "static func make(keyring: PhoneKeyring, biometrics: any BiometricGate, "
+                                       + "database: (any CloudKitApprovalDatabase)?) -> LivePairing {": 1,
                                    "return LivePairing(camera: LiveCameraAccess(), keyring: keyring, biometrics: biometrics, writer: writer)": 1],
         "Model/RequestInbox.swift": ["let pairing: LivePairing?": 1,
                                      inboxInit: 1,
-                                     "pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))": 1],
+                                     "pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database),": 1],
         "Settings/SettingsScreen.swift": ["var pairing: LivePairing?": 1,
                                           "private func pairingSection(_ pairing: LivePairing) -> some View {": 1],
     ])
@@ -65,8 +72,10 @@ import Testing
         "Live/LivePairing.swift": ["func makeCeremony() -> PairingCeremony {": 1],
         "Settings/SettingsScreen.swift": [pairAction: 1],
     ])
+    /// AMENDED (#194 polish): the launch's pairing sheet reads the prompts
+    /// once as it closes, on its own line (`PushWiringTests`).
     static let sheetFlagSites = CloudKitStructureTests.appSites([
-        "NapCatPhoneApp.swift": ["@State private var showsPairing: Bool": 1, ".sheet(isPresented: $showsPairing) {": 1],
+        "NapCatPhoneApp.swift": ["@State private var showsPairing: Bool": 1, PushWiringTests.pairingDismissSync: 1],
     ])
     /// AMENDED (#178, a blank first sheet): Settings' sheet is presented BY
     /// its ceremony (`.sheet(item:)`), no longer by a flag raised beside it,
@@ -88,7 +97,7 @@ import Testing
     /// with a live pairing; its action makes the ceremony, which raises the
     /// sheet; the sheet runs that ceremony on the live camera and lets it go
     /// when it closes.
-    static let rowShape: String = "if let pairing { pairingSection(pairing) }"
+    static let rowShape: String = "if let pairing { pairingSection(pairing) approvalsSection(pairing.health()) }"
     static let actionShape: String = "Button(Self.pairTitle) { " + pairAction + " }"
     static let sheetShape: String = itemSheet + " " + settingsSheet + " }"
     static let settingsShapes: [String] = [rowShape, actionShape, sheetShape]
@@ -145,8 +154,15 @@ import Testing
             ("the live pairing held elsewhere", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
                 $0 + "\nenum Spare { @MainActor static var held: LivePairing? }" }),
             ("the row shown with no live pairing", Self.mutate(app, settings) {
-                $0.replacingOccurrences(of: "                if let pairing {\n                    pairingSection(pairing)\n                }\n",
-                                        with: "                pairingSection(pairing!)\n") }),
+                $0.replacingOccurrences(of: "                if let pairing {\n                    pairingSection(pairing)\n",
+                                        with: "                pairingSection(pairing!)\n                if let pairing {\n") }),
+            // #194: the switch shown with no live pairing.
+            ("the approvals switch shown with no live pairing", Self.mutate(app, settings) {
+                $0.replacingOccurrences(of: "                    pairingSection(pairing)\n                    approvalsSection(pairing.health())\n                }\n",
+                                        with: "                    pairingSection(pairing)\n                }\n                approvalsSection(.paired)\n") }),
+            // #194 design review: the switch told the phone is paired.
+            ("the approvals switch told the phone is paired", Self.mutate(app, settings) {
+                $0.replacingOccurrences(of: "approvalsSection(pairing.health())", with: "approvalsSection(.paired)") }),
             ("the sheet over a fixture camera", Self.mutate(app, settings) {
                 $0.replacingOccurrences(of: "PairingSheet(ceremony: ceremony, camera: pairing.camera)",
                                         with: "PairingSheet(ceremony: ceremony, camera: FixtureCamera(answer: .ready))") }),

@@ -10,6 +10,10 @@ import Testing
 /// 1. The wire's identifiers are spelled once, in NapCatWire: no other Swift
 ///    file in either app (or in these tests) holds the subscription ID or
 ///    the container ID, and no receiver source spells a record key itself.
+///    AMENDED (#194): nor the prompt subscription's ID (spelled in
+///    `ApprovalWire`), now that the phone saves that subscription, and no
+///    receiver source spells the decision record's name itself
+///    (`ApprovalWire.decisionRecordName`).
 /// 2. CloudKit lives in ONE receiver file (no other file imports it in any
 ///    form, a scoped `import class CloudKit.X` included), and a container is
 ///    built at ONE site, `makeLive()`, whose first statement is the
@@ -24,6 +28,10 @@ import Testing
 ///    database write is named. AMENDED (S-PAIR-C1.6, #172): beside it, the
 ///    live approvals database's read and `add` lines, and the approvals
 ///    zone's one lookup and one creation (never a deletion), are pinned.
+///    AMENDED (#194): and the live approvals database's three new `add`
+///    lines (the prompts' snapshot, the prompt subscription's lookup and
+///    change), the three operation types on the allow-list, and the prompt
+///    subscription, reached by its one save alone.
 @Suite struct CloudKitStructureTests {
     typealias Source = (path: String, text: String)
 
@@ -636,7 +644,16 @@ import Testing
 
     // MARK: Rule 1: the wire is spelled once
 
-    static let wireIdentifiers = [AlertWire.subscriptionID, AlertWire.containerIdentifier]
+    /// AMENDED (#194): each identifier with the one file that spells it; the
+    /// prompt subscription's ID joins, spelled in `ApprovalWire`.
+    static let approvalWireFile = "Sources/NapCatWire/ApprovalWire.swift"
+    static let wireIdentifiers: [(identifier: String, file: String)] = [
+        (AlertWire.subscriptionID, wireFile), (AlertWire.containerIdentifier, wireFile),
+        (ApprovalWire.promptSubscriptionID, approvalWireFile),
+    ]
+    /// #194: the decision record's name's suffix as a literal's end: only the
+    /// wire spells it (`ApprovalWire.decisionRecordName`).
+    static let decisionSuffix = "-decision\""
     /// The record keys and lane values as quoted literals.
     static let wireKeys = ([AlertWire.recordType] + AlertWire.Field.allCases.map(\.rawValue)
         + AlertWire.Lane.allCases.map(\.rawValue)).map { "\"\($0)\"" }
@@ -645,15 +662,18 @@ import Testing
     /// receiver app's sources only.
     static func wireFailures(scanned: [Source], receiver: [Source]) -> [String] {
         var failures: [String] = []
-        for identifier in wireIdentifiers {
+        for (identifier, file) in wireIdentifiers {
             let holders = scanned.filter { $0.text.contains(identifier) }.map(\.path)
-            if holders != [wireFile] {
-                failures.append("'\(identifier)' is spelled in \(holders), expected only \(wireFile)")
+            if holders != [file] {
+                failures.append("'\(identifier)' is spelled in \(holders), expected only \(file)")
             }
         }
         for (path, text) in receiver {
             for key in wireKeys where codeOnly(text).contains(key) {
                 failures.append("\(path) spells the wire key \(key); use AlertWire")
+            }
+            if codeOnly(text).contains(decisionSuffix) {
+                failures.append("\(path) spells the decision record's name; use ApprovalWire.decisionRecordName")
             }
         }
         return failures
@@ -666,6 +686,7 @@ import Testing
     @Test func theScanSeesTheRepository() throws {
         let paths = try Self.scannedSources().map(\.path)
         #expect(paths.contains(Self.wireFile))
+        #expect(paths.contains(Self.approvalWireFile))
         #expect(paths.contains(Self.cloudKitFile))
         #expect(paths.contains("\(Self.testsDir)/CloudKitStructureTests.swift"))
         #expect(paths.contains("Sources/NapCat/CloudKitMessageSender.swift"))
@@ -680,13 +701,32 @@ import Testing
         let receiver = try Self.swiftFiles(under: Self.appDir)
         let pasted = receiver.map { source -> Source in
             source.path == Self.cloudKitFile
-                ? (source.path, source.text + "\nlet id = \"\(AlertWire.subscriptionID)\"\nlet key = \"\(AlertWire.Field.firedAt.rawValue)\"\n")
+                ? (source.path, source.text + "\nlet id = \"\(AlertWire.subscriptionID)\"\nlet key = \"\(AlertWire.Field.firedAt.rawValue)\"\n"
+                    + "let promptID = \"\(ApprovalWire.promptSubscriptionID)\"\n")
                 : source
         }
         let failures = Self.wireFailures(scanned: try Self.scannedSources().filter { $0.path != Self.cloudKitFile }
             + pasted.filter { $0.path == Self.cloudKitFile }, receiver: pasted)
         #expect(failures.contains { $0.contains(AlertWire.subscriptionID) })
         #expect(failures.contains { $0.contains("\"\(AlertWire.Field.firedAt.rawValue)\"") })
+        #expect(failures.contains { $0.contains(ApprovalWire.promptSubscriptionID) }, "canary 'the prompt subscription's ID pasted' was NOT caught")
+    }
+
+    /// #194: the decision record's name is the wire's alone. The phone's own
+    /// old spelling, and an interpolated one, in any receiver file, are
+    /// caught; a doc comment may name the suffix.
+    @Test func theDecisionNameIsSpelledOnlyByTheWire() throws {
+        let receiver = try Self.swiftFiles(under: Self.appDir)
+        let scanned = try Self.scannedSources()
+        #expect(Self.wireFailures(scanned: scanned, receiver: receiver).isEmpty)
+        let feed = "\(Self.appDir)/Model/AlertFeed.swift"
+        for (path, plant) in [(Self.cloudKitFile, "\nfunc spare(p: PromptID) -> String { p.hex + \"-decision\" }"),
+                              (feed, "\nfunc spare(p: PromptID) -> String { \"\\(p.hex)-decision\" }")] {
+            let planted = receiver.map { $0.path == path ? ($0.path, $0.text + plant) : $0 }
+            #expect(!Self.wireFailures(scanned: scanned, receiver: planted).isEmpty, "canary '\(plant)' was NOT caught")
+        }
+        let noted = receiver.map { $0.path == feed ? ($0.path, $0.text + "\n/// named <prompt>-decision, by the wire\n") : $0 }
+        #expect(Self.wireFailures(scanned: scanned, receiver: noted).isEmpty)
     }
 
     // MARK: Rule 2: one CloudKit file, one container site, behind the gate
@@ -847,10 +887,16 @@ import Testing
     /// save); the approvals zone's lookup and its one creation join the
     /// allow-list, each pinned to its lines, saving one zone and deleting
     /// none.
+    ///
+    /// AMENDED (#194): the prompts' snapshot and the prompt subscription's
+    /// lookup and change join the allow-list, each added by the live
+    /// approvals database on its pinned line, past its check; the prompt
+    /// subscription goes only to its one save, and no other file reaches it.
     static let cloudKitIdentifiers: Set<String> = [
-        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKFetchRecordZonesOperation",
-        "CKModifyRecordZonesOperation", "CKModifyRecordsOperation", "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey",
-        "CKQuery", "CKQueryNotification", "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
+        "CKAccountStatus", "CKContainer", "CKCurrentUserDefaultName", "CKError", "CKErrorDomain", "CKFetchRecordZoneChangesOperation",
+        "CKFetchRecordZonesOperation", "CKFetchSubscriptionsOperation", "CKModifyRecordZonesOperation", "CKModifyRecordsOperation",
+        "CKModifySubscriptionsOperation", "CKNotification", "CKOperation", "CKPartialErrorsByItemIDKey", "CKQuery",
+        "CKQueryNotification", "CKQuerySubscription", "CKRecord", "CKRecordValue", "CKRecordZone", "CKSubscription",
     ]
 
     static let configuredDatabase = "try await container.privateCloudDatabase.configuredWith(configuration: configuration) { database in"
@@ -865,7 +911,15 @@ import Testing
         "database.add(CloudKitAlertSource.makeApprovalsZoneLookup { missing in": 1,
         "database.add(CloudKitAlertSource.makeApprovalsZoneCreation { database.add(operation) })": 2,
         "database.add(operation)": 1,
+        promptReadAdd: 1, promptLookupAdd: 1, promptChangeAdd: 1,
     ]
+    /// #194: the live approvals database's three prompt-path adds, each past
+    /// its own check (`RecordPathStructureTests` lock 6c pins the body).
+    static let promptReadAdd = "container.privateCloudDatabase.add(snapshot)"
+    static let promptLookupAdd = "container.privateCloudDatabase.add(lookup)"
+    static let promptChangeAdd = "container.privateCloudDatabase.add(change)"
+    static let promptSubscriptionSave =
+        "let change = CKModifySubscriptionsOperation(subscriptionsToSave: [makePromptSubscription()], subscriptionIDsToDelete: nil)"
     /// The approvals zone's lookup and its one creation, each built on its
     /// line; the creation saves the one zone and deletes none.
     static let zoneCreationLine = "let creation = CKModifyRecordZonesOperation(recordZonesToSave: [CKRecordZone(zoneID: approvalsZoneID)],"
@@ -884,13 +938,17 @@ import Testing
         (#"\bsave\b"#, [subscriptionSave: 1, "func save(_ subscription: CKSubscription) async throws": 1,
                         "func save(_ subscription: CKSubscription) async throws {": 1, "try await database.save(subscription)": 1],
          "the one save is the subscription's"),
-        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1, approvalsDatabaseRead: 1],
-         "the private database is reached only by the live databases: the alerts' configured requests, the approvals' one read"),
+        (#"\bprivateCloudDatabase\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1, approvalsDatabaseRead: 1,
+                                        promptReadAdd: 1, promptLookupAdd: 1, promptChangeAdd: 1],
+         "the private database is reached only by the live databases: the alerts' configured requests, the approvals' one read "
+            + "and its three prompt-path adds"),
         (#"\badd\b"#, approvalsAddSites, "only the live approvals database adds an operation, on its pinned lines"),
         (#"\bconfiguredWith\b"#, [configuredDatabase: 3, "_ = " + configuredDatabase: 1],
          "a configured database comes only from the private one"),
         (#"\bmakeSubscription\b"#, ["static func makeSubscription() -> CKQuerySubscription {": 1, subscriptionSave: 1],
          "the subscription goes only to the one save"),
+        (#"\bmakePromptSubscription\b"#, ["static func makePromptSubscription() -> CKQuerySubscription {": 1, promptSubscriptionSave: 1],
+         "the prompt subscription goes only to its one save"),
     ]
 
     /// Named nowhere in the CloudKit file: every other database write, the
@@ -918,8 +976,9 @@ import Testing
             failures += siteFailures(pattern, in: file, file: cloudKitFile, allowed: sites,
                                      rule: "the approvals zone is looked up and created at its one site each, and never deleted")
         }
-        for (path, text) in receiver where path != cloudKitFile && hits(#"\bmakeSubscription\b"#, in: wholeLineCommentsRemoved(text)) {
-            failures.append("\(path) reaches the push subscription — only the CloudKit file saves it")
+        for (path, text) in receiver where path != cloudKitFile
+            && hits(#"\bmake(?:Prompt)?Subscription\b"#, in: wholeLineCommentsRemoved(text)) {
+            failures.append("\(path) reaches a push subscription — only the CloudKit file saves it")
         }
         for pattern in alertLaneBans where hits(pattern, in: file) {
             failures.append("'\(pattern)' in \(cloudKitFile) — the alert lane's one write is the subscription save")
@@ -982,6 +1041,23 @@ import Testing
             ("a second lookup", mutated { $0 + "\nlet spare = CKFetchRecordZonesOperation(recordZoneIDs: [z])" }),
             ("an allow-listed identifier dropped", mutated {
                 $0.replacingOccurrences(of: "ownerName: CKCurrentUserDefaultName", with: "ownerName: \"__defaultOwner__\"") }),
+            // #194: the prompt path's doors — a second prompt subscription
+            // saved, the prompt subscription built elsewhere, a prompt-path
+            // add outside its submit, the private database held for a read,
+            // and an operation type off the allow-list.
+            ("a second prompt subscription saved", mutated {
+                $0 + "\nlet spare = CKModifySubscriptionsOperation(subscriptionsToSave: [makePromptSubscription()], "
+                    + "subscriptionIDsToDelete: nil)\nlet spare2 = CKModifySubscriptionsOperation(subscriptionsToSave: "
+                    + "[makePromptSubscription()], subscriptionIDsToDelete: nil)" }),
+            ("the prompt subscription built elsewhere", receiver.map {
+                $0.path.hasSuffix("AlertFeed.swift") ? ($0.path, $0.text + "\nlet s = CloudKitAlertSource.makePromptSubscription()") : $0 }),
+            ("a prompt read added twice", mutated {
+                $0.replacingOccurrences(of: "        " + Self.promptReadAdd + "\n",
+                                        with: "        " + Self.promptReadAdd + "\n        " + Self.promptReadAdd + "\n") }),
+            ("a lookup added in the alerts' live database", mutated {
+                $0 + "\nextension LiveCloudKitAlertDatabase {\n    func spare(_ lookup: CKFetchSubscriptionsOperation) {\n"
+                    + "        container.privateCloudDatabase.add(lookup)\n    }\n}" }),
+            ("a query operation", mutated { $0 + "\nlet spare = CKQueryOperation(query: CloudKitAlertSource.makeQuery())" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != receiver.map { $0.text }, "canary '\(name)' did not apply")

@@ -23,7 +23,9 @@ import Testing
 /// alert lane's two predicates and its one sort descriptor, in the CloudKit
 /// file — the subscription's and the fetch query's, the F3 spike's proven
 /// shapes, each a constant handed to CloudKit (`NSPredicate(value: true)`
-/// evaluates no key path; the sort key is the wire's own field). The phone
+/// evaluates no key path; the sort key is the wire's own field). AMENDED
+/// (#194): the prompt subscription's predicate is the alert subscription's
+/// line, word for word, so that line counts twice. The phone
 /// has no other site: no notification observer, no setter by name. Before
 /// this lock the only phone ban on any of these words was the CloudKit
 /// file's own setter list (`RecordPathStructureTests` lock 5), which reads
@@ -52,13 +54,14 @@ import Testing
                                                  "NSSortDescriptor(key: k, ascending: true)", "c.removeObserver(o, forKeyPath: k)",
                                                  "#keyPath(C.p)", "c.addObserver(o, forKeyPath: k, context: nil)"]
 
-    /// The alert lane's three pinned lines: the subscription's predicate, and
-    /// the fetch query's predicate and sort descriptor.
+    /// The three pinned lines: the subscriptions' predicate (the alert
+    /// one's and, since #194, the prompt one's: the same line twice), and the
+    /// fetch query's predicate and sort descriptor.
     static let subscriptionPredicate: String = "predicate: NSPredicate(value: true),"
     static let queryLine: String = "let query = CKQuery(recordType: AlertWire.recordType, predicate: NSPredicate(value: true))"
     static let sortLine: String = "query.sortDescriptors = [NSSortDescriptor(key: AlertWire.Field.firedAt.rawValue, ascending: false)]"
     static let predicateSites: [String: Int] = CloudKitStructureTests.appSites([
-        "Live/CloudKitAlertSource.swift": [subscriptionPredicate: 1, queryLine: 1],
+        "Live/CloudKitAlertSource.swift": [subscriptionPredicate: 2, queryLine: 1],
     ])
     static let sortDescriptorSites: [String: Int] = CloudKitStructureTests.appSites([
         "Live/CloudKitAlertSource.swift": [sortLine: 1],
@@ -89,6 +92,7 @@ import Testing
         #expect(Self.keyValueCodingFailures(app).isEmpty, "\(Self.keyValueCodingFailures(app))")
         let pinned: Int = Self.predicateSites.count + Self.sortDescriptorSites.count
         #expect(pinned == 3, "vacuity: two predicate lines and one sort line are pinned")
+        #expect(Self.predicateSites.values.reduce(0, +) == 3, "vacuity: three predicates, the subscriptions' line twice")
         let ck: String = Self.cloudKitFile
         let file: String = app.first { $0.path == ck }?.text ?? ""
         let pinnedLines: [String] = [Self.subscriptionPredicate, Self.queryLine, Self.sortLine]
@@ -117,6 +121,7 @@ import Testing
             ("an observer by key path", Lookup.appended(app, Self.pairingFile, keyPathObserver)),
             ("a notification observer, in the app delegate", Lookup.appended(app, Lookup.delegateFile, notificationObserver)),
             ("a third predicate, in the CloudKit file", Lookup.appended(app, ck, thirdPredicate)),
+            ("a third subscription predicate on the pinned line", Lookup.appended(app, ck, "\n        " + Self.subscriptionPredicate + "\n")),
             ("the subscription's predicate changed", Lookup.mutate(app, ck) {
                 $0.replacingOccurrences(of: Self.subscriptionPredicate, with: changedPredicate) }),
             ("a second sort descriptor on the pinned line", Lookup.mutate(app, ck) {

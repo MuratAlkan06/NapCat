@@ -21,11 +21,13 @@ struct LivePairing {
 
     /// THE live wiring site: the one place the CloudKit pairing writer is
     /// built, once per launch, over the live approvals database, which only a
-    /// build that can hold the iCloud entitlement gets. Any other build
-    /// writes nothing (`UnsentPairingWriter`): its pairing fails dark.
-    static func make(keyring: PhoneKeyring, biometrics: any BiometricGate) -> LivePairing {
+    /// build that can hold the iCloud entitlement gets (built by the live
+    /// inbox's factory and shared with the live prompt source since #194). Any
+    /// other build writes nothing (`UnsentPairingWriter`): its pairing fails
+    /// dark.
+    static func make(keyring: PhoneKeyring, biometrics: any BiometricGate, database: (any CloudKitApprovalDatabase)?) -> LivePairing {
         let writer: any PairingResponseWriter
-        if let database = CloudKitAlertSource.makeLiveApprovalDatabase() {
+        if let database {
             writer = CloudKitPairingResponseWriter(database: database)
         } else {
             writer = UnsentPairingWriter()
@@ -43,5 +45,13 @@ struct LivePairing {
     /// ask for (#175); nil on a phone with none.
     func biometric() -> BiometryKind? {
         biometrics.availability().kind
+    }
+
+    /// Where this phone's pairing stands, read from the keyring its
+    /// ceremonies commit to (asking for nothing), so Settings' remote-
+    /// approvals switch follows it (#194): read as Settings draws, it is
+    /// current again as a pairing's sheet closes.
+    func health() -> PhoneKeyring.Health {
+        keyring.health()
     }
 }

@@ -423,7 +423,10 @@ import UIKit
             failures.append("the live scanner is drawn in one place")
         }
         let rootFlat = SettingsReachabilityTests.flat(root)
-        let sheet = ".sheet(isPresented: $showsPairing) { if let pairing { PairingSheet(ceremony: pairing.ceremony, camera: pairing.camera) } }"
+        // AMENDED (#194 polish): the sheet reads the prompts once as it
+        // closes (`PushWiringTests`).
+        let sheet: String = PushWiringTests.pairingDismissSync
+            + " if let pairing { PairingSheet(ceremony: pairing.ceremony, camera: pairing.camera) } }"
         if let sheetRange = rootFlat.range(of: sheet), let palette = rootFlat.range(of: SettingsReachabilityTests.palette) {
             if palette.lowerBound < sheetRange.upperBound { failures.append("the pairing sheet must be drawn in the palette") }
         } else {
@@ -475,8 +478,8 @@ import UIKit
                                                            with: ""), root),
             ("the pairing sheet outside the palette", screen, root.replacingOccurrences(
                 of: "        .environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n", with: "")
-                .replacingOccurrences(of: "        .sheet(isPresented: $showsPairing) {",
-                                      with: "        .environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n        .sheet(isPresented: $showsPairing) {")),
+                .replacingOccurrences(of: "        .sheet(isPresented: $showsPairing,",
+                                      with: "        .environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n        .sheet(isPresented: $showsPairing,")),
             ("a pairing for every launch", screen, root.replacingOccurrences(of: "_showsPairing = State(initialValue: pairing != nil && !opensSettings)",
                                                                             with: "_showsPairing = State(initialValue: true)")),
         ]

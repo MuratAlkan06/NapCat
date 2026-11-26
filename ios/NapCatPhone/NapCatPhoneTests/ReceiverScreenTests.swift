@@ -1,6 +1,7 @@
 import Foundation
 import NapCatWire
 @testable import NapCatPhone
+import SwiftUI
 import Testing
 import UIKit
 
@@ -83,8 +84,12 @@ import UIKit
 
     // MARK: Pull to refresh
 
-    static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch) "
-        + ".refreshable { await feed.pullToRefresh() }"
+    /// AMENDED (#194): the screen is handed the prompts waiting here and the
+    /// way to open one, and the pull reads the prompts too, after the feed's
+    /// pass, with the owner's switch.
+    static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch, "
+        + "requests: inbox.pendingRequests, open: { shownRequest = $0 }) "
+        + ".refreshable { await feed.pullToRefresh() await inbox.syncPrompts(switchedOn: approvals) }"
 
     /// The list pulls down to refresh, through the feed's waiting pull (a
     /// plain refresh can return before anything is checked, ending the
@@ -94,12 +99,122 @@ import UIKit
         let root = try SettingsReachabilityTests.rootCode()
         #expect(SettingsReachabilityTests.flat(root).contains(Self.pull))
         let mutants = [
-            root.replacingOccurrences(of: "                .refreshable { await feed.pullToRefresh() }\n", with: ""),
+            root.replacingOccurrences(of: "                .refreshable {\n", with: "                .task {\n"),
             root.replacingOccurrences(of: "await feed.pullToRefresh()", with: "await feed.refresh()"),
+            root.replacingOccurrences(of: "                    await inbox.syncPrompts(switchedOn: approvals)\n                }\n",
+                                      with: "                }\n"),
+            root.replacingOccurrences(of: "requests: inbox.pendingRequests,", with: "requests: inbox.requests,"),
         ]
         for mutant in mutants {
             #expect(mutant != root, "a mutation did not apply")
             #expect(!SettingsReachabilityTests.flat(mutant).contains(Self.pull))
+        }
+    }
+
+    // MARK: Waiting rows (F4, #194)
+
+    static let ageStart = Date(timeIntervalSince1970: 1_800_000_000)
+
+    static func waiting(_ tool: String, project: String, minutesAgo: Double) -> PendingRequest {
+        let created: Date = ageStart.addingTimeInterval(-minutesAgo * 60)
+        return PendingRequest(id: RequestFixtures.id(UInt64(tool.count) + 1), toolName: tool, inputPreview: "{}", projectLabel: project,
+                              createdAt: created, expiresAt: created.addingTimeInterval(PendingRequest.timeToLive))!
+    }
+
+    /// #194 design review: a waiting row says how long ago its prompt came,
+    /// in the alert rows' words, and VoiceOver hears it after the tool and
+    /// the project ("Bash permission prompt, project napcat, 2 minutes ago");
+    /// a Mac clock running ahead reads as now, never in the future.
+    @Test func aWaitingRowSaysHowLongAgoItsPromptCame() {
+        let now: Date = Self.ageStart
+        let bash: PendingRequest = Self.waiting("Bash", project: "napcat", minutesAgo: 2)
+        let read: PendingRequest = Self.waiting("Read", project: "", minutesAgo: 2)
+        let full: String = AlertRow.relative(bash.createdAt, to: now, style: .full)
+        #expect(ReceiverScreen.age(of: bash, at: now, style: .short) == AlertRow.relative(bash.createdAt, to: now, style: .short))
+        #expect(ReceiverScreen.age(of: bash, at: now, style: .full) == full)
+        #expect(ReceiverScreen.spoken(bash, at: now) == "Bash permission prompt, project napcat, \(full)")
+        #expect(ReceiverScreen.spoken(read, at: now) == "Read permission prompt, \(full)")
+        if Locale.current.language.languageCode == .english {
+            #expect(ReceiverScreen.spoken(bash, at: now) == "Bash permission prompt, project napcat, 2 minutes ago")
+        }
+        let ahead: PendingRequest = Self.waiting("Edit", project: "napcat", minutesAgo: -3)
+        #expect(ReceiverScreen.age(of: ahead, at: now, style: .full) == AlertRow.relative(now, to: now, style: .full))
+        #expect(!ReceiverScreen.spoken(bash, at: now).contains(bash.inputPreview), "nothing of the input")
+    }
+
+    /// The whole card is the tap target: at least the theme's touch target
+    /// tall in every theme, with a project line or without one.
+    @MainActor
+    @Test(arguments: ThemeID.allCases)
+    func aWaitingCardIsAtLeastATouchTargetTall(_ id: ThemeID) throws {
+        let theme: Theme = id.theme
+        for project in ["napcat", ""] {
+            let card = WaitingCard(request: Self.waiting("Bash", project: project, minutesAgo: 2), now: Self.ageStart)
+                .environment(\.theme, theme)
+            let renderer = ImageRenderer(content: card)
+            renderer.proposedSize = ProposedViewSize(width: 343, height: nil)
+            renderer.scale = 1
+            let image: UIImage = try #require(renderer.uiImage)
+            #expect(image.size.height >= theme.minTouchTarget, "\(id), project '\(project)': \(image.size.height)")
+        }
+    }
+
+    /// The waiting row's composition (#194 design review), as its source
+    /// says it: the card is its button's whole label (so all of it is the
+    /// tap target and all of it dims as pressed), its own touch target tall;
+    /// the age sits on the tool name's line in the alert rows' timestamp
+    /// type; the chevron is centred on the card; VoiceOver hears the row
+    /// with its age, under the minute's redraw the alert rows use.
+    static let waitingShapes: [String] = [
+        "TimelineView(.periodic(from: .now, by: 60)) { context in Button { open(request) } label: { "
+            + "WaitingCard(request: request, now: context.date) } .buttonStyle(.plain) .accessibilityElement(children: .ignore) "
+            + ".accessibilityLabel(Self.spoken(request, at: context.date)) .accessibilityHint(Self.openHint) "
+            + ".accessibilityAddTraits(.isButton) }",
+        "var body: some View { HStack(alignment: .center, spacing: theme.innerGap * 2) { "
+            + "HStack(alignment: .firstTextBaseline, spacing: theme.innerGap * 2) {",
+        "Text(verbatim: request.toolName) .font(theme.metaFont) .foregroundStyle(theme.ink) Spacer(minLength: theme.innerGap) "
+            + "Text(ReceiverScreen.age(of: request, at: now, style: .short)) .font(theme.timestampFont) .foregroundStyle(theme.inkSecondary) }",
+        "} } } Image(systemName: ReceiverScreen.openSymbol) .font(theme.detailFont) .foregroundStyle(theme.inkSecondary) } "
+            + ".themedCard() .frame(minHeight: theme.minTouchTarget) .contentShape(Rectangle()) }",
+    ]
+
+    static func waitingFailures(_ screen: String) -> [String] {
+        let code: String = SettingsReachabilityTests.flat(screen)
+        var failures: [String] = waitingShapes.filter { !code.contains($0) }.map { "the waiting row lost '\($0)'" }
+        if CloudKitStructureTests.occurrences(of: ".themedCard()", in: code) != 3 {
+            failures.append("three cards: the permission row, an alert and a waiting prompt (inside its button)")
+        }
+        return failures
+    }
+
+    @Test func theWholeWaitingCardOpensItsPrompt() throws {
+        let app: [CloudKitStructureTests.Source] = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
+        let screen: String = try #require(app.first { $0.path == ListStateTests.screenFile }).text
+        #expect(Self.waitingFailures(screen).isEmpty, "\(Self.waitingFailures(screen))")
+        #expect(UIImage(systemName: ReceiverScreen.openSymbol) != nil)
+        let mutants: [(String, String)] = [
+            ("the card outside the label", screen
+                .replacingOccurrences(of: "                                .buttonStyle(.plain)\n",
+                                      with: "                                .buttonStyle(.plain)\n                                .themedCard()\n")
+                .replacingOccurrences(of: "        .themedCard()\n        .frame(minHeight: theme.minTouchTarget)\n",
+                                      with: "        .frame(minHeight: theme.minTouchTarget)\n")),
+            ("a second card around the button", screen.replacingOccurrences(
+                of: "                                .accessibilityAddTraits(.isButton)\n",
+                with: "                                .accessibilityAddTraits(.isButton)\n                                .themedCard()\n")),
+            ("no touch-target floor", screen.replacingOccurrences(of: "        .frame(minHeight: theme.minTouchTarget)\n", with: "")),
+            ("the chevron on the first line", screen.replacingOccurrences(
+                of: "HStack(alignment: .center, spacing: theme.innerGap * 2) {\n            HStack(alignment: .firstTextBaseline",
+                with: "HStack(alignment: .firstTextBaseline, spacing: theme.innerGap * 2) {\n            HStack(alignment: .firstTextBaseline")),
+            ("no age", screen.replacingOccurrences(
+                of: "                        Text(ReceiverScreen.age(of: request, at: now, style: .short))\n", with: "")),
+            ("VoiceOver without the age", screen.replacingOccurrences(
+                of: ".accessibilityLabel(Self.spoken(request, at: context.date))", with: ".accessibilityLabel(request.toolName)")),
+            ("the age frozen at launch", screen.replacingOccurrences(
+                of: "TimelineView(.periodic(from: .now, by: 60)) { context in", with: "Group {")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != screen, "canary '\(name)' did not apply")
+            #expect(!Self.waitingFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 

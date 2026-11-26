@@ -56,9 +56,12 @@ protocol DecisionWriter: Sendable {
     func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome
 }
 
-/// A live launch's writer in this slice: there is no record path to the Mac
-/// yet (its iCloud schema is not deployed), so nothing is written and every
-/// answer reads as unsent. A live launch has no requests to answer anyway.
+/// The live inbox's writer until the answer path is armed: nothing is
+/// written, and every answer would read as unsent. A live launch does
+/// receive prompts (#194), so while this is its writer the inbox is read
+/// only (`RequestInbox.isReadOnly`, the writer's type and nothing else): the
+/// prompt screen offers no answer, saying to answer on the Mac, and the
+/// inbox refuses one before asking for a match.
 struct UnsentDecisionWriter: DecisionWriter {
     func write(_ decision: PhoneDecision) async -> DecisionWriteOutcome { .failed }
 }

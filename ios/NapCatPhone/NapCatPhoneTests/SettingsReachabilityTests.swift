@@ -20,12 +20,18 @@ import UIKit
         return try #require(app.first { $0.path == rootFile }).text
     }
 
-    static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)"
+    /// AMENDED (#194): the main screen is handed the prompts waiting here and
+    /// the way to open one.
+    static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch, "
+        + "requests: inbox.pendingRequests, open: { shownRequest = $0 })"
     static let gear = ".toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsGearButton { showsSettings = true } } }"
     /// AMENDED (S-PAIR-C1.6, #172): Settings is handed the live inbox's
-    /// pairing, for its Pair with Mac row.
-    static let sheet = ".sheet(isPresented: $showsSettings) { "
-        + "SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing) }"
+    /// pairing, for its Pair with Mac row. AMENDED (#194): and the root's
+    /// remote-approvals switch, bound, for its row. AMENDED (#194 polish):
+    /// and the prompts are read once as it closes (`PushWiringTests`).
+    static let sheet: String = PushWiringTests.settingsDismissSync + " "
+        + "SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing, "
+        + "approvals: $approvals) }"
     static let palette = ".environment(\\.theme, ThemeID.fallback.theme(palette: palette))"
 
     /// The main screen sits in a navigation stack whose toolbar's trailing
@@ -63,6 +69,7 @@ import UIKit
             code.replacingOccurrences(of: ".sheet(isPresented:", with: ".fullScreenCover(isPresented:"),
             code.replacingOccurrences(of: "notifications: feed.notificationPermission", with: "notifications: .on"),
             code.replacingOccurrences(of: "pairing: inbox.pairing", with: "pairing: nil"),
+            code.replacingOccurrences(of: "approvals: $approvals)", with: "approvals: .constant(true))"),
             code.replacingOccurrences(of: "NavigationStack {", with: "Group {"),
         ]
         for mutant in mutants {
@@ -73,8 +80,8 @@ import UIKit
         // themed, the main screen would not.
         let moved = code
             .replacingOccurrences(of: "        .environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n", with: "")
-            .replacingOccurrences(of: "pairing: inbox.pairing)\n",
-                                  with: "pairing: inbox.pairing)\n.environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n")
+            .replacingOccurrences(of: "approvals: $approvals)\n",
+                                  with: "approvals: $approvals)\n.environment(\\.theme, ThemeID.fallback.theme(palette: palette))\n")
         #expect(moved != code)
         #expect(!Self.compositionFailures(moved).isEmpty)
         // The palette applied before (inside) the sheet modifier.

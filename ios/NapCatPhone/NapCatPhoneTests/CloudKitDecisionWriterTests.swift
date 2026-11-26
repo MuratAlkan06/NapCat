@@ -23,10 +23,43 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
         script.run(on: operation)
     }
 
+    /// #194's operations are never this fake's: each is refused, as the live
+    /// database refuses what it does not admit, and counted.
+    func submit(_ snapshot: CKFetchRecordZoneChangesOperation) {
+        noteOther()
+        snapshot.fetchRecordZoneChangesResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    func submit(_ lookup: CKFetchSubscriptionsOperation) {
+        noteOther()
+        lookup.fetchSubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    func submit(_ change: CKModifySubscriptionsOperation) {
+        noteOther()
+        change.modifySubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    private var others = 0
+
+    private func noteOther() {
+        lock.lock()
+        others += 1
+        lock.unlock()
+    }
+
     var submitted: [CKModifyRecordsOperation] {
         lock.lock()
         defer { lock.unlock() }
         return operations
+    }
+
+    /// How many operations of another kind it was handed (none, in the
+    /// record suites).
+    var otherSubmissions: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return others
     }
 }
 
@@ -81,6 +114,16 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
                                   signature: Self.signature)!
         #expect(CloudKitAlertSource.makeDecisionRecord(other).recordID != CloudKitAlertSource.makeDecisionRecord(Self.decision).recordID)
         #expect(CloudKitAlertSource.decisionRecordID(for: Self.promptID).recordName != Self.promptID.hex)
+    }
+
+    /// #194: the decision record is named by the wire's one spelling, the one
+    /// the Mac will read it by: the prompt's record name and `-decision`.
+    @Test func theDecisionIsNamedByTheWire() {
+        let id = CloudKitAlertSource.decisionRecordID(for: Self.promptID)
+        #expect(id.recordName == ApprovalWire.decisionRecordName(for: Self.promptID))
+        #expect(id.recordName == Self.promptID.hex + "-decision")
+        #expect(id.zoneID == CloudKitAlertSource.approvalsZoneID)
+        #expect(CloudKitAlertSource.makeDecisionRecord(Self.decision).recordID == id)
     }
 
     /// A new record only: an answer is never overwritten.

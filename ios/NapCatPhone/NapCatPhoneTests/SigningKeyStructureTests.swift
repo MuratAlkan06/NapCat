@@ -503,11 +503,17 @@ import Testing
     /// same local, so the key a pairing commits is the key the inbox signs
     /// with, and no pairing is made over a fixture key. The live pairing is
     /// made there alone (`livePairingMade`), and no fixture names it.
-    static let liveHandOff = NSRegularExpression.escapedPattern(for: "let keyring = \(liveKeyring) return RequestInbox(writer: ")
-        + #"[^;{}]*?"# + NSRegularExpression.escapedPattern(
-            for: ", biometrics: biometrics, keyring: keyring, pairing: LivePairing.make(keyring: keyring, biometrics: biometrics)) }")
+    /// AMENDED (#194): whole. Beside the keyring the live approvals database
+    /// is built, once, and handed to the live pairing and to the live
+    /// prompt source; and the live inbox's writer is the unsent one, named
+    /// (`UnsentDecisionWriter()`): nothing arms (the flip replaces this pin).
+    static let liveHandOff = NSRegularExpression.escapedPattern(
+        for: "let keyring = \(liveKeyring) let database = CloudKitAlertSource.makeLiveApprovalDatabase() "
+            + "return RequestInbox(writer: UnsentDecisionWriter(), biometrics: biometrics, keyring: keyring, "
+            + "pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database), "
+            + "prompts: database.map { LivePromptSource(database: $0) }) }")
     static let livePairingMade = CloudKitStructureTests.appSites([
-        "Model/RequestInbox.swift": ["pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))": 1]])
+        "Model/RequestInbox.swift": ["pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database),": 1]])
     static let liveParts = ["KeychainSigningKeyStore", "phoneKeychain", "SecureEnclaveSigner", "LocalAuthenticationEnrollment",
                             "LivePairing"]
 
@@ -575,8 +581,19 @@ import Testing
                 $0.replacingOccurrences(of: "pairing: LivePairing.make(keyring: keyring,",
                                         with: "pairing: LivePairing.make(keyring: FixtureRequests.keyring(.paired),") }),
             ("the live pairing left out of the live inbox", Self.mutate(app, Self.inboxFile) {
-                $0.replacingOccurrences(of: ", keyring: keyring,\n                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics))",
-                                        with: ", keyring: keyring)") }),
+                $0.replacingOccurrences(of: "                                pairing: LivePairing.make(keyring: keyring, biometrics: biometrics, database: database),\n",
+                                        with: "") }),
+            // #194: the live inbox armed, or its database built twice or not
+            // shared.
+            ("the live inbox armed with a decision writer", Self.mutate(app, Self.inboxFile) {
+                $0.replacingOccurrences(of: "return RequestInbox(writer: UnsentDecisionWriter(),",
+                                        with: "return RequestInbox(writer: FixtureDecisionWriter(),") }),
+            ("the live pairing over a database of its own", Self.mutate(app, Self.inboxFile) {
+                $0.replacingOccurrences(of: "biometrics: biometrics, database: database),",
+                                        with: "biometrics: biometrics, database: CloudKitAlertSource.makeLiveApprovalDatabase()),") }),
+            ("the live prompts left out of the live inbox", Self.mutate(app, Self.inboxFile) {
+                $0.replacingOccurrences(of: "database: database),\n                                prompts: database.map { LivePromptSource(database: $0) })",
+                                        with: "database: database))") }),
             ("a second live pairing", Self.mutate(app, "\(Self.appDir)/Model/PhoneKeyring.swift") {
                 $0 + "\nlet spare = LivePairing.make(keyring: k, biometrics: g)" }),
         ]

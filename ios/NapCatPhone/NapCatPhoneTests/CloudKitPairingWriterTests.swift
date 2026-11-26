@@ -392,9 +392,30 @@ final class RefusingApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
     }
 
     func submit(_ operation: CKModifyRecordsOperation) {
+        noteRefusal()
+        operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    /// #194: the live database refuses the prompt path's operations the same
+    /// way, each told on its own result block.
+    func submit(_ snapshot: CKFetchRecordZoneChangesOperation) {
+        noteRefusal()
+        snapshot.fetchRecordZoneChangesResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    func submit(_ lookup: CKFetchSubscriptionsOperation) {
+        noteRefusal()
+        lookup.fetchSubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    func submit(_ change: CKModifySubscriptionsOperation) {
+        noteRefusal()
+        change.modifySubscriptionsResultBlock?(.failure(CKError(.invalidArguments)))
+    }
+
+    private func noteRefusal() {
         lock.lock()
         count += 1
         lock.unlock()
-        operation.modifyRecordsResultBlock?(.failure(CKError(.invalidArguments)))
     }
 }

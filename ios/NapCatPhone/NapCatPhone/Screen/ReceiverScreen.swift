@@ -2,7 +2,9 @@ import NapCatWire
 import SwiftUI
 
 /// The receiver's one screen: the connection pill, the notification-
-/// permission row (only while notifications are off), and the recent alerts.
+/// permission row (only while notifications are off), the permission prompts
+/// waiting here (F4, #194: only while one is pending; each row, its whole
+/// card, opens its prompt), and the recent alerts.
 /// When there are no alerts, the empty state is the hero, with the sentence
 /// the list state allows; where it says it couldn't get alerts, VoiceOver
 /// can "Check again" (`CheckAgainAction`). A full list ends on its cap,
@@ -13,10 +15,37 @@ import SwiftUI
 struct ReceiverScreen: View {
     nonisolated static let title = "NapCat"
     nonisolated static let recentHeader = "Recent"
+    /// Over the prompts waiting here (#194).
+    nonisolated static let waitingHeader = "Waiting"
+    /// What a waiting row's button does, for VoiceOver.
+    nonisolated static let openHint = "Opens the prompt."
+    /// The waiting row's chevron: the card opens something.
+    nonisolated static let openSymbol = "chevron.right"
+
+    /// What VoiceOver reads for a waiting row: the tool and the project (when
+    /// there is one), as the prompt's own card begins
+    /// (`PendingRequestScreen.spoken`), then how long ago it came, without
+    /// the input, which the prompt shows in full.
+    nonisolated static func spoken(_ request: PendingRequest, at now: Date) -> String {
+        let age: String = Self.age(of: request, at: now, style: .full)
+        guard !request.projectLabel.isEmpty else { return "\(request.toolName) permission prompt, \(age)" }
+        return "\(request.toolName) permission prompt, project \(request.projectLabel), \(age)"
+    }
+
+    /// How long ago the Mac raised the prompt, in the alert rows' words
+    /// (`AlertRow.relative`): never in the future, so a Mac clock running
+    /// ahead reads as now.
+    nonisolated static func age(of request: PendingRequest, at now: Date, style: RelativeDateTimeFormatter.UnitsStyle) -> String {
+        AlertRow.relative(min(request.createdAt, now), to: now, style: style)
+    }
 
     let alerts: [PhoneAlert]
     let connection: ConnectionState
     let fetch: FetchStatus
+    /// The prompts pending here, newest first (#194).
+    var requests: [PendingRequest] = []
+    /// Opens one of them.
+    var open: (PendingRequest) -> Void = { _ in }
 
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -55,6 +84,25 @@ struct ReceiverScreen: View {
                 }
                 if connection.showsPermissionRow {
                     PermissionRow().themedCard()
+                }
+                if !requests.isEmpty {
+                    Text(Self.waitingHeader)
+                        .font(theme.sectionFont)
+                        .textCase(.uppercase)
+                        .foregroundStyle(theme.inkSecondary)
+                        .accessibilityAddTraits(.isHeader)
+                    ForEach(requests) { request in
+                        // Periodic from now, as the alert rows' (their ages
+                        // read the same).
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            Button { open(request) } label: { WaitingCard(request: request, now: context.date) }
+                                .buttonStyle(.plain)
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel(Self.spoken(request, at: context.date))
+                                .accessibilityHint(Self.openHint)
+                                .accessibilityAddTraits(.isButton)
+                        }
+                    }
                 }
                 switch list {
                 case .empty(let hero):
@@ -99,12 +147,68 @@ struct ReceiverScreen: View {
     }
 }
 
+/// One prompt waiting here (#194), as a whole card: the tool's glyph and
+/// name, with how long ago it came on the name's line (as an alert row's
+/// time), the project label, and a chevron, centred on the card, since the
+/// card opens the prompt. It is its button's whole label, so all of it is
+/// the tap target (at least the theme's touch target tall) and all of it
+/// dims as it is pressed. Nothing of the input: the prompt shows it in
+/// full, never cut short.
+struct WaitingCard: View {
+    let request: PendingRequest
+    let now: Date
+
+    @Environment(\.theme) private var theme
+    @ScaledMetric(relativeTo: .subheadline) private var glyphColumn: CGFloat = 24
+
+    var body: some View {
+        HStack(alignment: .center, spacing: theme.innerGap * 2) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.innerGap * 2) {
+                Image(systemName: PendingRequestScreen.toolSymbol(request.toolName))
+                    .symbolVariant(theme.symbolVariant)
+                    .fontWeight(theme.symbolWeight)
+                    .font(theme.metaFont)
+                    .foregroundStyle(theme.accent)
+                    .frame(width: glyphColumn)
+                VStack(alignment: .leading, spacing: theme.innerGap) {
+                    HStack(alignment: .firstTextBaseline, spacing: theme.innerGap) {
+                        Text(verbatim: request.toolName)
+                            .font(theme.metaFont)
+                            .foregroundStyle(theme.ink)
+                        Spacer(minLength: theme.innerGap)
+                        Text(ReceiverScreen.age(of: request, at: now, style: .short))
+                            .font(theme.timestampFont)
+                            .foregroundStyle(theme.inkSecondary)
+                    }
+                    if !request.projectLabel.isEmpty {
+                        Text(verbatim: request.projectLabel)
+                            .font(theme.detailFont)
+                            .foregroundStyle(theme.inkSecondary)
+                    }
+                }
+            }
+            Image(systemName: ReceiverScreen.openSymbol)
+                .font(theme.detailFont)
+                .foregroundStyle(theme.inkSecondary)
+        }
+        .themedCard()
+        .frame(minHeight: theme.minTouchTarget)
+        .contentShape(Rectangle())
+    }
+}
+
 #Preview("Populated, notifications off") {
     ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .notificationsOff, fetch: .fetched)
 }
 
 #Preview("Empty") {
     ReceiverScreen(alerts: [], connection: .connected, fetch: .fetched)
+}
+
+/// A prompt waiting over the alerts (#194).
+#Preview("A prompt waiting") {
+    ReceiverScreen(alerts: FixtureSet.populated.alerts(now: .now), connection: .connected, fetch: .fetched,
+                   requests: [FixtureRequests.request(createdAt: .now.addingTimeInterval(-120))])
 }
 
 /// A live launch's first frame (no fixture launch can show it).
