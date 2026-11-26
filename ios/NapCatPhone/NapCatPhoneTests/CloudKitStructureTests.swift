@@ -125,8 +125,10 @@ import Testing
     /// "In every scan copy" holds for what the copies show: the text given
     /// is most often `codeOnly`'s, and `cleaned` reads through `lexemes`, so
     /// a lock holds it for the lines the stripper reads as the compiler
-    /// does; the Mac's `noSourceHoldsASlashTheStripperCouldReadApart` keeps
-    /// the lines it could read apart out of the app's sources.
+    /// does. The Mac's raw-text locks keep the lines known to be read apart
+    /// out of the app's sources (`noSourceHoldsASlashTheStripperCouldReadApart`,
+    /// `noSourceDeclaresAnOperator`); a line outside the shapes they model
+    /// is not covered.
     static func constructorScanCopies(_ text: String) -> [String] {
         guard mayClean(text) else { return [text] }          // its own cleaned copy
         return [text, text.replacingOccurrences(of: "`", with: ""), cleaned(text)]
@@ -352,9 +354,11 @@ import Testing
     /// the stripper tables and by canaries in the locks that read them; but
     /// this models a context-sensitive lexer and is not the compiler's own,
     /// so a line it does not model can still be read apart from the
-    /// compiler. What keeps such a line out of what the locks read is the
-    /// Mac's `noSourceHoldsASlashTheStripperCouldReadApart`, over the raw
-    /// text of the four targets and the phone app, with no lexer.
+    /// compiler. The Mac's raw-text locks, over the four targets and the
+    /// phone app with no lexer, ban the shapes known to be read apart:
+    /// `noSourceHoldsASlashTheStripperCouldReadApart` (its slash sites) and
+    /// `noSourceDeclaresAnOperator` (custom operators). A shape outside
+    /// both is not covered.
     static func lexemes(_ scalars: [Unicode.Scalar]) -> [Lexeme] {
         enum Mode {
             case code(parens: Int)                       // parens > 0: inside an interpolation
@@ -507,12 +511,49 @@ import Testing
         return kinds
     }
 
+    /// Whether the token ending at `index` is an operator, read by the
+    /// compiler's own scalar classes (its lexer's operator-start and
+    /// operator-continuation sets), not by Unicode's letters: Swift lets
+    /// some scalars Unicode calls alphabetic into an operator. A scalar
+    /// that continues an operator and an identifier alike takes its class
+    /// from the first scalar before its run that does not.
+    static func endsAnOperator(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
+        var head = index
+        while head > 0, continuesEither(scalars[head]) { head -= 1 }
+        return startsAnOperator(scalars[head]) && !continuesEither(scalars[head])
+    }
+
+    /// The scalars an operator can start with (the grammar's operator-head
+    /// set, as the compiler's lexer reads it).
+    static func startsAnOperator(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x21, 0x25, 0x26, 0x2A, 0x2B, 0x2D, 0x2E, 0x2F, 0x3C, 0x3D, 0x3E, 0x3F, 0x5E, 0x7C, 0x7E: return true
+        case 0xA1...0xA7, 0xA9, 0xAB, 0xAC, 0xAE, 0xB0, 0xB1, 0xB6, 0xBB, 0xBF, 0xD7, 0xF7: return true
+        case 0x2016...0x2017, 0x2020...0x2027, 0x2030...0x203E, 0x2041...0x2053, 0x2055...0x205E: return true
+        case 0x2190...0x23FF, 0x2500...0x2775, 0x2794...0x2BFF, 0x2E00...0x2E7F, 0x3001...0x3003, 0x3008...0x3030: return true
+        default: return false
+        }
+    }
+
+    /// The scalars that continue an operator and an identifier alike: the
+    /// combining marks and variation selectors of the grammar's
+    /// operator-character set, and the run of the compiler's operator range
+    /// that is also an identifier's.
+    static func continuesEither(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x300...0x36F, 0x1DC0...0x1DFF, 0x20D0...0x20FF, 0x3021...0x302F: return true
+        case 0xFE00...0xFE0F, 0xFE20...0xFE2F, 0xE0100...0xE01EF: return true
+        default: return false
+        }
+    }
+
     /// Whether the `/` at `index` (not `//` or `/*`) opens a bare regex
     /// literal: an expression can start there (nothing before it on its
     /// line; a space or tab right before it, since with none after it Swift
     /// 6 never reads that `/` as a division (security spot-check H9); or an
     /// operator, an opening bracket, a separator or a keyword that precedes
-    /// an expression, `switch/"/` included), no space follows it, and an
+    /// an expression, `switch/"/` included; an operator ending in a
+    /// non-ASCII scalar by `endsAnOperator`), no space follows it, and an
     /// unescaped `/` closes it on the same line. A division (`a / b`, `n/2`,
     /// `f()/2`) is never one. Two more of the compiler's rules: a `/=` is a
     /// compound assignment only with a space after it (`n /= 2`; `/=a/`
@@ -527,6 +568,7 @@ import Testing
         while before >= 0, scalars[before] == " " || scalars[before] == "\t" { before -= 1 }
         var opens = before < 0 || before < index - 1 || isLineEnd(scalars[before])
             || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
+            || (!scalars[before].isASCII && endsAnOperator(scalars, at: before))
         if !opens, scalars[before].properties.isAlphabetic {
             var wordStart = before
             while wordStart > 0, scalars[wordStart - 1].properties.isAlphabetic { wordStart -= 1 }
@@ -1002,6 +1044,19 @@ import Testing
              "n /= 2; let b = \"a/\"; let c = \"//\"; tokenAF "),
             ("a division by a parenthesized divisor", "let h = (n)/(2); let q = n / (2); let b = \"a/\"; let c = \"//\"; tokenAG // c",
              "let h = (n)/(2); let q = n / (2); let b = \"a/\"; let c = \"//\"; tokenAG "),
+            // As the Mac's table: an operator is read by the compiler's
+            // scalar classes, not by Unicode's letters; after an
+            // identifier's non-ASCII letter or mark a `/` divides.
+            ("a bare regex after an operator ending in an alphabetic scalar", "let r = \u{2E2F}/a\"/; let c = \"//\"; tokenAI // c",
+             "let r = \u{2E2F}/a\"/; let c = \"//\"; tokenAI "),
+            ("a bare regex after an operator ending in a combining mark", "let r = +\u{345}/a\"/; let c = \"//\"; tokenAJ // c",
+             "let r = +\u{345}/a\"/; let c = \"//\"; tokenAJ "),
+            ("a bare regex after a non-ASCII operator", "let r = \u{AC}/a\"/; let c = \"//\"; tokenAK // c",
+             "let r = \u{AC}/a\"/; let c = \"//\"; tokenAK "),
+            ("a non-ASCII identifier divides", "let h = caf\u{E9}/2 + caf\u{E9} / 2; let b = \"a/\"; let c = \"//\"; tokenAL // c",
+             "let h = caf\u{E9}/2 + caf\u{E9} / 2; let b = \"a/\"; let c = \"//\"; tokenAL "),
+            ("an identifier ending in a combining mark divides", "let h = cafe\u{301}/2 + e\u{345}/2; let b = \"a/\"; let c = \"//\"; tokenAM // c",
+             "let h = cafe\u{301}/2 + e\u{345}/2; let b = \"a/\"; let c = \"//\"; tokenAM "),
         ]
         for (name, text, code) in codeOnlyCases {
             #expect(Self.codeOnly(text) == code, "codeOnly, \(name): \(Self.codeOnly(text).debugDescription)")
@@ -1016,6 +1071,9 @@ import Testing
             ("a multi-line string after an operator reference",
              "let a = [6].reduce(3, /); let b = \"/\"; let s = \"\"\"\n// \\(tokenAH)\n\"\"\"",
              "let a = [6].reduce(3, /); let b = \"/\"; let s = \"\"\"\n// \\(tokenAH)\n\"\"\""),
+            ("a multi-line string after a bare regex behind an operator ending in an alphabetic scalar",
+             "let a = \u{2E2F}/a\"/; let b = \"/\"; let s = \"\"\"\n// \\(tokenAN)\n\"\"\"",
+             "let a = \u{2E2F}/a\"/; let b = \"/\"; let s = \"\"\"\n// \\(tokenAN)\n\"\"\""),
         ]
         for (name, text, uncut) in wholeLineCases {
             #expect(Self.wholeLineCommentsRemoved(text) == uncut,
@@ -1064,6 +1122,23 @@ import Testing
         "    }\n}\n",
     ].joined()
 
+    /// The same code behind a bare regex opened after a custom prefix
+    /// operator that ends in a scalar Unicode calls alphabetic (the stripper
+    /// read that `/` as a division), with the operator's declaration behind
+    /// one too.
+    static let alphabeticOperator: String = "\u{2E2F}"
+    static func customOperatorPrefix(_ n: Int) -> String { "let zzR\(n) = \(alphabeticOperator)/a\"/; let zzC\(n) = \"//\"; " }
+    static let lookupsBehindAHiddenCustomOperator: String = [
+        "\n\(customOperatorPrefix(0))prefix operator \(alphabeticOperator)\nprefix func \(alphabeticOperator) <T>(x: T) -> Int { 0 }",
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(customOperatorPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(customOperatorPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(customOperatorPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(customOperatorPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
     /// Each plant, appended to the app's RAW Settings source, is caught by
     /// the bans that catch the same code written plainly: the runtime
     /// lookup ban and the key-value coding ban, which read the app through
@@ -1078,6 +1153,7 @@ import Testing
             ("lookups behind an operator slash", Self.lookupsBehindAnOperator),
             ("lookups in an interpolation line of a string opened behind one", Self.lookupsInAnInterpolationLine),
             ("lookups behind a regex opening with =", Self.lookupsBehindAnEqualsRegex),
+            ("lookups behind a custom operator declared behind one", Self.lookupsBehindAHiddenCustomOperator),
         ]
         for (name, plant) in plants {
             let planted: [Source] = RuntimeLookupStructureTests.appended(app, settings, plant)
@@ -1090,7 +1166,9 @@ import Testing
             "\nfunc zzLookAlikes(_ n: Int) -> Int {\n",
             "    var m = n; m /= 2; let zzP = \"a/b\" // never NSSelectorFromString(s), never value(forKey:)\n",
             "    let zzQ = (m)/(2) + m / (2); let zzU = \"https://x/\\(zzP)\" // never classNamed(_:)\n",
-            "    return zzQ + zzU.count // see a/b, (c)/(d), ~/.claude/x\n}\n",
+            "    let caf\u{E9} = m; let zzE = caf\u{E9}/2 + caf\u{E9} / 2; let zzG = \"a/\" // never NSSelectorFromString(s)\n",
+            "    let zzF = (zzE > 1 ? -zzE : +zzE) * 3/1 + (zzG.isEmpty ? 0 : 1); let zzH = \"/\" // never value(forKey:)\n",
+            "    return zzQ + zzU.count + zzF + zzH.count // see a/b, (c)/(d), ~/.claude/x\n}\n",
         ].joined()
         let plain: [Source] = RuntimeLookupStructureTests.appended(app, settings, lookAlikes)
         #expect(RuntimeLookupStructureTests.objcLookupFailures(plain).isEmpty, "over-match: \(RuntimeLookupStructureTests.objcLookupFailures(plain))")
