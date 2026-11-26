@@ -30,9 +30,12 @@ import Observation
 /// locked out, or none at all): the ceremony stays at its start, makes and
 /// asks for nothing, and the screen says why (`biometry`), so a phone with
 /// no Face ID never reaches a match it cannot pass.
+///
+/// Identifiable by the object itself (#178): Settings' pairing sheet is
+/// presented by its ceremony, so each new ceremony opens it afresh.
 @MainActor
 @Observable
-final class PairingCeremony {
+final class PairingCeremony: Identifiable {
     enum Phase: Equatable, Sendable {
         /// Waiting for the one scan.
         case scanning
