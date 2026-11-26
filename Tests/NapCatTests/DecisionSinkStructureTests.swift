@@ -1915,7 +1915,7 @@ struct DecisionSinkStructureTests {
         "public static func pingResult(id: ChannelMessageID) -> String {": 1,
         "public static func errorResponse(id: ChannelMessageID, code: ChannelErrorCode) -> String {": 1,
         "public static func verdictNotification(requestID: ChannelRequestID, verdict: ApprovalWire.Verdict) -> String {": 1,
-        "public static func promptFrame(_ request: ChannelPermissionRequest) -> String? {": 1,
+        "public static func promptFrame(_ request: ChannelPermissionRequest, client: ChannelClient) -> String? {": 1,
         "public static func verdictFrame(_ requestID: ChannelRequestID, _ verdict: ApprovalWire.Verdict) -> String {": 1,
         "static func response(_ id: ChannelMessageID, result: String) -> String {": 1, "static func json(_ id: ChannelMessageID) -> String {": 1,
         "static func quoted(_ text: String) -> String {": 1,
@@ -2672,10 +2672,10 @@ struct DecisionSinkStructureTests {
     }
     /// The S1 locks' anchors on the same road, as they spell them
     /// (`ApprovalChannelStructureTests`: the intake reads a frame strictly,
-    /// classifies it, then opens its lifecycle; each side of the seam has
-    /// one verdict site).
+    /// checks its server and client again (#150), classifies it, then opens
+    /// its lifecycle; each side of the seam has one verdict site).
     static let s1Anchors: [String] = [
-        "guard case .prompt(let request)? = ApprovalChannel.frame(line) else {",
+        ApprovalChannelStructureTests.frameRead, ApprovalChannelStructureTests.serverRecheck, ApprovalChannelStructureTests.clientRecheck,
         "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,",
         "ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())",
         "ApprovalChannel.verdictNotification(", "ApprovalChannel.verdictFrame(",

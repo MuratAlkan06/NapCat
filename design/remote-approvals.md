@@ -268,7 +268,7 @@ inbound line on every path is read by the S0 strict reader and by nothing
 else. The server's version stamp, which must match
 `ApprovalChannel.serverVersion` (parity-locked, like the busy hook's):
 
-napcat-channel-version: 1
+napcat-channel-version: 2
 
 - **The server** (`Sources/NapCatChannel`, the wire in
   `NapCatWire/ApprovalChannel.swift`). MCP over stdio, one message per line,
@@ -283,7 +283,8 @@ napcat-channel-version: 1
   a request ID of five letters from a to z without l. The description is
   checked for type and dropped right there; it never crosses the seam. A
   prompt is relayed only after the handshake (since slice S-GATE, only when
-  the handshake named a confirmed Claude Code build), once per request ID
+  the handshake named a confirmed Claude Code build; since #150 its frame
+  names that build and the server's own version), once per request ID
   (Claude Code drops any verdict for a repeated ID), and at most 32 wait at
   once. A verdict goes back only for a request the server relayed and still
   holds open, and only once. The server never sends a channel message into the
@@ -302,13 +303,22 @@ napcat-channel-version: 1
   a directory nobody else can enter. A frame must be written within 2
   seconds (since slice S2 a deadline per frame, over non-blocking writes), so
   a stuck or slow-reading peer cannot hold either side. Frames are one JSON object per line, at
-  most 256 KiB, frame version 1: `prompt` (frame, v, request, tool, preview)
-  from the server, `verdict` (frame, v, request, verdict) from NapCat, each
-  with exactly those members. Each side refuses the other's kind, and any
-  refused frame closes the connection.
+  most 256 KiB, frame version 2 (since #150; a version-1 frame is refused):
+  `prompt` (frame, v, request, tool, preview, server, client,
+  clientVersion) from the server, `verdict` (frame, v, request, verdict)
+  from NapCat, each with exactly those members. Each side refuses the
+  other's kind, and any refused frame closes the connection.
 - **The intake** (`ApprovalIntake`, behind `ApprovalSeamHost`). For every
-  prompt frame: the strict read, then the gate (with the alert topic as a
-  secret), then the lifecycle opens with the gate's answer. A record is saved
+  prompt frame: the strict read, then (since #150) the frame's server
+  version and client checked again against NapCat's own version and its
+  confirmed builds, then the gate (with the alert topic as a secret), then
+  the lifecycle opens with the gate's answer. A frame from a server of
+  another version, or for a client that is not exactly a confirmed build, is
+  refused before anything is held (`seam.serverVersionRefused`,
+  `seam.clientRefused`) and closes the connection, as a refused frame does.
+  The re-check reads what the frame says, not who wrote it: a binary that
+  writes NapCat's version and a confirmed client passes it until the seam
+  checks the server's code identity (a later slice). A record is saved
   only when the gate forwards the prompt and the feature is armed. The one
   verdict frame is the lifecycle's acceptance of a valid signed decision
   inside the TTL, sent to the server the prompt came from. A server going
@@ -336,7 +346,8 @@ napcat-channel-version: 1
   process, registers a channel or touches a real home, socket or system
   path. Structure locks keep the socket calls in one file, the peer check on
   every connection, one verdict site on each side, the gate ahead of every
-  lifecycle, the strict reader as the only parser, and the seam and probe
+  lifecycle (since #150, the server and client re-check ahead of the gate),
+  the strict reader as the only parser, and the seam and probe
   unwired (slice S2 replaced that last lock with one that allows them only
   behind the toggle). The refusal catalogue the gate and the seam are tested against is
   in [remote-approvals-catalogue.md](remote-approvals-catalogue.md).
@@ -481,7 +492,7 @@ this section points at them.
   - The project label passes the gate's filters before it is ever written.
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
-    re-check), #153 (the alert lane's CloudKit structure locks and the
+    re-check; done, see slice S1's seam and intake), #153 (the alert lane's CloudKit structure locks and the
     construction-count pins), #154 (the unconfirmed-Allow re-offer), #159
     (a forwarded path may hold quote and brace characters, so the phone's
     raw preview can look like more fields than it has: restrict them in

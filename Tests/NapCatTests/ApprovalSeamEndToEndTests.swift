@@ -212,11 +212,61 @@ struct ApprovalSeamEndToEndTests {
         let queue = DispatchQueue(label: "test.e2e.raw")
         let client = try #require(queue.sync { SeamClient.connect(socketPath: world.fixture.socketPath, queue: queue) })
         let frame = ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Bash",
-                                                                         inputPreview: #"{"command":"make test"}"#))!
+                                                                         inputPreview: #"{"command":"make test"}"#),
+                                                client: ApprovalChannel.confirmedClients[0])!
         #expect(queue.sync { client.send(frame) })
         let saved = try #require(world.sink.saved.next())
         queue.sync { client.close() }
         #expect(world.sink.retracted.next(within: ApprovalSeamTests.closeObservationSeconds) == saved.id)
         #expect(world.audits.all.last == "prompt=\(saved.id.hex) retracted.sessionEnded")
+    }
+
+    /// A frame a stale or foreign server could write.
+    struct StaleFrame: Sendable, CustomTestStringConvertible {
+        let name: String
+        let line: String
+        let code: String
+        var testDescription: String { name }
+    }
+
+    /// #150: a version-1 frame exactly as the server wrote one before #150,
+    /// a frame from a server of another version, and one for a client
+    /// NapCat has not confirmed.
+    static let staleFrames: [StaleFrame] = [
+        StaleFrame(name: "a version-1 frame",
+                   line: #"{"frame":"prompt","v":1,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}"}"#,
+                   code: "seam.frameRefused"),
+        StaleFrame(name: "another server version",
+                   line: #"{"frame":"prompt","v":2,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}","server":1,"client":"claude-code","clientVersion":"2.1.326"}"#,
+                   code: "seam.serverVersionRefused"),
+        StaleFrame(name: "an unconfirmed client",
+                   line: #"{"frame":"prompt","v":2,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}","server":2,"client":"claude-code","clientVersion":"2.1.327"}"#,
+                   code: "seam.clientRefused"),
+    ]
+
+    /// Over the real socket, after an honest prompt on the same connection:
+    /// the stale frame is refused with its closed code, the connection is
+    /// closed (so the honest prompt is withdrawn), and no lifecycle opens for
+    /// it and nothing of it is saved, though the gate would forward it and
+    /// the host is armed.
+    @Test(arguments: staleFrames)
+    func aFrameFromAStaleOrForeignServerIsRefusedOverTheSocket(_ row: StaleFrame) throws {
+        let world = try SeamWorld()
+        #expect(world.host.start())
+        defer { world.host.stop() }
+        let client = ApprovalSeamTests.Client(world.fixture)
+        let request = ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Bash", inputPreview: #"{"command":"git status"}"#)
+        let honest: String = try #require(ApprovalChannel.promptFrame(request, client: ApprovalChannel.confirmedClients[0]))
+        #expect(client.send(honest))
+        let saved = try #require(world.sink.saved.next(), "the honest frame is heard")
+        world.host.withIntake { $0.apply(.saveAccepted, to: saved.id) }
+        #expect(client.send(row.line))
+        #expect(client.closes.next(within: ApprovalSeamTests.closeObservationSeconds) != nil, "the connection is closed")
+        #expect(world.sink.retracted.next(within: ApprovalSeamTests.closeObservationSeconds) == saved.id, "its open prompt is withdrawn")
+        #expect(world.sink.saved.next(within: 0.2) == nil, "the refused frame saved nothing")
+        let id: String = saved.id.hex
+        let expected: [String] = ["prompt=\(id) forwarded", row.code, "prompt=\(id) retracted.sessionEnded"]
+        #expect(world.audits.all == expected)
+        #expect(world.host.withIntake { $0.prompts.count } == 1, "no lifecycle opened for the refused frame")
     }
 }

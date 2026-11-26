@@ -41,7 +41,8 @@ struct ApprovalSeamHostLifetimeTests {
         #expect(host?.start() == true)
         let link = Link(scratch.socketPath)
         #expect(link.send(ApprovalChannel.promptFrame(ChannelPermissionRequest(
-            requestID: ChannelRequestID("abcde")!, toolName: "Bash", inputPreview: #"{"command":"ls"}"#))!))
+            requestID: ChannelRequestID("abcde")!, toolName: "Bash", inputPreview: #"{"command":"ls"}"#),
+            client: ApprovalChannel.confirmedClients[0])!))
         #expect(audits.next(where: { $0.hasSuffix("suppressed.notArmed") }) != nil, "the link is live")
         // A barrier: the frame's handler has finished on the host's queue, so
         // nothing there holds the host for a moment longer.

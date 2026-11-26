@@ -37,9 +37,15 @@ final class IntakeHarness {
     var frames: [(ApprovalIntake.ConnectionKey, String)] = []
     var closed: [ApprovalIntake.ConnectionKey] = []
     var audits: [ApprovalAuditEvent] = []
+    /// How many times the intake read the secrets: once for each prompt the
+    /// gate classifies.
+    var secretReads = 0
 
     lazy var intake = ApprovalIntake(
-        armed: { [unowned self] in armed }, secrets: { [unowned self] in secrets },
+        armed: { [unowned self] in armed }, secrets: { [unowned self] in
+            secretReads += 1
+            return secrets
+        },
         newPromptID: { [unowned self] in nextIDs.isEmpty ? nil : nextIDs.removeFirst() },
         now: { [unowned self] in now }, records: sink,
         sendFrame: { [unowned self] in frames.append(($0, $1)) },
@@ -48,9 +54,12 @@ final class IntakeHarness {
 
     static func id(_ n: UInt64) -> PromptID { PromptID(high: 0xA0, low: n)! }
 
+    /// The session's client as an honest server names it: the confirmed one.
+    static let client: ChannelClient = ApprovalChannel.confirmedClients[0]
+
     static func prompt(_ request: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#) -> [UInt8] {
         Array(ApprovalChannel.promptFrame(ChannelPermissionRequest(requestID: ChannelRequestID(request)!, toolName: tool,
-                                                                   inputPreview: preview))!.utf8)
+                                                                   inputPreview: preview), client: client)!.utf8)
     }
 
     func receive(_ request: String, tool: String = "Bash", preview: String = #"{"command":"git status"}"#, from connection: Int = 1) {
@@ -324,9 +333,11 @@ struct ApprovalIntakeTests {
     static let refusedFrames: [String] = [
         ApprovalChannel.verdictFrame(ChannelRequestID("abcde")!, .allow),
         "not json",
-        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{}","description":"x"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}","description":"x","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
         #"{"frame":"prompt","v":2,"request":"abcde","tool":"Bash","preview":"{}"}"#,
-        #"{"frame":"prompt","v":1,"request":"abcdl","tool":"Bash","preview":"{}"}"#,
+        #"{"frame":"prompt","v":2,"request":"abcdl","tool":"Bash","preview":"{}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+        // A version-1 frame, as the server wrote one before #150.
+        #"{"frame":"prompt","v":1,"request":"abcde","tool":"Bash","preview":"{\"command\":\"git status\"}"}"#,
     ]
 
     /// A verdict frame from a server, or anything the strict reader refuses,
@@ -339,6 +350,101 @@ struct ApprovalIntakeTests {
         #expect(harness.codes == ["seam.frameRefused"])
         #expect(harness.intake.prompts.isEmpty)
         #expect(harness.sink.saved.isEmpty)
+        #expect(harness.secretReads == 0 && harness.nextIDs.count == 600, "nothing was classified or drawn")
+    }
+
+    // MARK: - The server and its client, checked again (#150)
+
+    /// A prompt frame the gate would forward, as a server of `server`'s
+    /// version would write it for this client: every member but the three
+    /// the relay's own frame spells (`IntakeHarness.prompt`).
+    struct OriginRow: Sendable, CustomTestStringConvertible {
+        let server: String
+        let client: String
+        let version: String
+        let code: String
+        var testDescription: String { "server \(server), client '\(client)' '\(version)': \(code)" }
+
+        var frame: String {
+            let honest: String = String(decoding: IntakeHarness.prompt("abcde"), as: UTF8.self)
+            let head: String = honest.components(separatedBy: #","server":"#)[0]
+            let origin: String = #","server":"# + server + #","client":"# + ApprovalChannel.quoted(client)
+                + #","clientVersion":"# + ApprovalChannel.quoted(version)
+            return head + origin + "}"
+        }
+    }
+
+    static let server: String = "seam.serverVersionRefused"
+    static let client: String = "seam.clientRefused"
+    /// NapCat's own server version, the one before it and the one after.
+    static let own: String = String(ApprovalChannel.serverVersion)
+    static let before: String = String(ApprovalChannel.serverVersion - 1)
+    static let after: String = String(ApprovalChannel.serverVersion + 1)
+    /// Another server version (one before, one after, none and negatives);
+    /// then a client other than the confirmed build, byte for byte; a frame
+    /// wrong in both is refused for its server first.
+    static let otherOrigins: [OriginRow] = [
+        OriginRow(server: before, client: "claude-code", version: "2.1.326", code: server),
+        OriginRow(server: after, client: "claude-code", version: "2.1.326", code: server),
+        OriginRow(server: "0", client: "claude-code", version: "2.1.326", code: server),
+        OriginRow(server: "-2", client: "claude-code", version: "2.1.326", code: server),
+        OriginRow(server: "20", client: "claude-code", version: "2.1.326", code: server),
+        OriginRow(server: own, client: "claude-code", version: "2.1.327", code: client),
+        OriginRow(server: own, client: "claude-code", version: "2.1.325", code: client),
+        OriginRow(server: own, client: "claude-code", version: "2.1.3260", code: client),
+        OriginRow(server: own, client: "claude-code", version: "2.1.32", code: client),
+        OriginRow(server: own, client: "claude-code", version: "v2.1.326", code: client),
+        OriginRow(server: own, client: "claude-code", version: "2.1.326 ", code: client),
+        OriginRow(server: own, client: "claude-code", version: "2.1.326\n", code: client),
+        OriginRow(server: own, client: "claude-code", version: "\u{FF12}.1.326", code: client),
+        OriginRow(server: own, client: "claude-code", version: "", code: client),
+        OriginRow(server: own, client: "Claude-Code", version: "2.1.326", code: client),
+        OriginRow(server: own, client: "claude", version: "2.1.326", code: client),
+        OriginRow(server: own, client: "claude-code ", version: "2.1.326", code: client),
+        OriginRow(server: own, client: "other-client", version: "2.1.326", code: client),
+        OriginRow(server: own, client: "", version: "", code: client),
+        OriginRow(server: own, client: "2.1.326", version: "claude-code", code: client),
+        OriginRow(server: before, client: "other-client", version: "9.9.9", code: server),
+    ]
+
+    /// The frame the relay writes for a confirmed client is exactly what the
+    /// rows rewrite, and with its own values it opens a lifecycle.
+    @Test func theRowsRewriteOnlyTheRelaysOrigin() throws {
+        let confirmed = IntakeHarness.client
+        let honest = OriginRow(server: String(ApprovalChannel.serverVersion), client: confirmed.name, version: confirmed.version,
+                               code: "")
+        #expect(honest.frame == String(decoding: IntakeHarness.prompt("abcde"), as: UTF8.self))
+        let harness = IntakeHarness()
+        harness.intake.receive(Array(honest.frame.utf8), from: 7)
+        #expect(harness.sink.saved.count == 1 && harness.closed.isEmpty && harness.secretReads == 1)
+    }
+
+    /// A frame from a server of another version, or for a client NapCat has
+    /// not confirmed, is refused BEFORE the gate: its closed code, the
+    /// connection closed, the secrets never read, no prompt ID drawn, no
+    /// lifecycle, nothing saved and nothing answered, though the gate would
+    /// forward the prompt and the intake is armed.
+    @Test(arguments: otherOrigins)
+    func aFrameFromAnotherServerOrClientIsRefusedBeforeTheGate(_ row: OriginRow) {
+        let harness = IntakeHarness()
+        harness.intake.receive(Array(row.frame.utf8), from: 7)
+        #expect(harness.codes == [row.code])
+        #expect(harness.closed == [7])
+        #expect(harness.secretReads == 0, "refused before the gate: the secrets it looks for were never read")
+        #expect(harness.nextIDs.count == 600, "no prompt ID was drawn")
+        #expect(harness.intake.prompts.isEmpty && harness.sink.saved.isEmpty && harness.frames.isEmpty)
+    }
+
+    /// The refusal is the frame's, not the connection's: one server's skewed
+    /// frame leaves another server's prompt open, and the intake keeps
+    /// reading that server's frames.
+    @Test func aRefusedOriginLeavesOtherServersAlone() throws {
+        let harness = IntakeHarness()
+        let other = try #require(harness.forward("abcde", from: 2))
+        harness.intake.receive(Array(Self.otherOrigins[0].frame.utf8), from: 7)
+        #expect(harness.closed == [7])
+        #expect(harness.intake.prompts[other]?.lifecycle.phase == .forwarded)
+        #expect(harness.forward("bcdef", from: 2) != nil)
     }
 
     @Test func aDuplicateRequestFromOneServerIsRefusedButAnotherServersIsItsOwn() {
@@ -376,8 +482,8 @@ struct ApprovalIntakeTests {
         let audits: [ApprovalAudit] = suppressions.map { .suppressed(.gate($0)) } + [.suppressed(.notArmed), .forwarded, .forwardFailed]
             + ApprovalWire.Verdict.allCases.map { .decided(.remote($0)) } + [.decided(.local), .expired]
             + ApprovalIgnoreReason.allCases.map { .ignored($0) } + ApprovalRetraction.allCases.map { .retracted($0) }
-        let seam: [ApprovalAuditEvent] = [.frameRefused, .duplicateRequest, .capacityReached, .connectionPromptLimit,
-                                          .promptIDUnavailable, .unknownPrompt, .peerRefused]
+        let seam: [ApprovalAuditEvent] = [.frameRefused, .serverVersionRefused, .clientRefused, .duplicateRequest, .capacityReached,
+                                          .connectionPromptLimit, .promptIDUnavailable, .unknownPrompt, .peerRefused]
         return Set(audits.map(ApprovalAuditEvent.code) + seam.map(\.code))
     }
 
@@ -393,7 +499,10 @@ struct ApprovalIntakeTests {
         harness.intake.decide(IntakeHarness.decision(id))
         harness.intake.decide(IntakeHarness.decision(id))
         harness.intake.receive(Array("garbage".utf8), from: 3)
-        #expect(harness.codes.count == Self.keptLocal.count + 4)
+        harness.intake.receive(Array(Self.otherOrigins[0].frame.utf8), from: 4)
+        harness.intake.receive(Array(Self.otherOrigins[5].frame.utf8), from: 5)
+        #expect(harness.codes.count == Self.keptLocal.count + 6)
+        #expect(harness.codes.suffix(2) == [Self.server, Self.client])
         for code in harness.codes {
             var words = Substring(code)
             if words.hasPrefix("prompt=") {
@@ -403,6 +512,6 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 18 + 3 + 4 + 7 + 2 + 7, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 18 + 3 + 4 + 7 + 2 + 9, "vacuity: the whole vocabulary")
     }
 }

@@ -23,10 +23,13 @@
 /// The channel server's constants.
 public enum ApprovalChannel {
     /// The server's behaviour version. Bump it with every behaviour change;
-    /// the design doc carries the same value on its stamp line (parity-locked,
-    /// like the busy hook's version stamp). Claude Code sees it as the
-    /// server's `serverInfo.version`.
-    public static let serverVersion = 1
+    /// the design doc carries the same value on its stamp line, and the app
+    /// bundle's Info.plist as `NapCatChannelVersion` (both parity-locked, like
+    /// the busy hook's version stamp). Claude Code sees it as the server's
+    /// `serverInfo.version`; every prompt frame names it too (frame version
+    /// 2), and NapCat refuses a frame from a server of another version
+    /// (#150).
+    public static let serverVersion = 2
 
     /// The design doc's stamp line starts with this, followed by the version.
     public static let serverVersionStampPrefix = "napcat-channel-version: "
@@ -72,15 +75,17 @@ public enum ApprovalChannel {
     static let maxMessageIDBytes = 128
 
     /// The seam's frame version: every frame carries it as `v`, and a frame
-    /// with any other value is refused.
-    public static let frameVersion = 1
+    /// with any other value is refused. Since version 2 (#150) a prompt frame
+    /// also names the server's version and the confirmed client it relays
+    /// for, which NapCat checks again before the gate.
+    public static let frameVersion = 2
     /// The longest seam frame either side sends or reads.
     public static let maxFrameBytes = 262_144
     /// At most this many relayed requests wait for a verdict per server; a
     /// prompt beyond them stays local.
     public static let maxOpenRequests = 32
     /// A prompt frame's members, exactly.
-    static let promptFrameKeys = ["frame", "v", "request", "tool", "preview"]
+    static let promptFrameKeys = ["frame", "v", "request", "tool", "preview", "server", "client", "clientVersion"]
     /// A verdict frame's members, exactly.
     static let verdictFrameKeys = ["frame", "v", "request", "verdict"]
 }
@@ -88,8 +93,10 @@ public enum ApprovalChannel {
 /// One seam frame. The server only ever reads `verdict` and NapCat only ever
 /// reads `prompt`; each side refuses the other kind.
 public enum SeamFrame: Equatable, Sendable {
-    /// Server → NapCat: a relayed permission prompt.
-    case prompt(ChannelPermissionRequest)
+    /// Server → NapCat: a relayed permission prompt, with the version of the
+    /// server that relayed it and the client that server confirmed. The
+    /// reader only reads them; NapCat's intake judges them (#150).
+    case prompt(ChannelPermissionRequest, server: Int, client: ChannelClient)
     /// NapCat → server: the verdict for one relayed request.
     case verdict(ChannelRequestID, ApprovalWire.Verdict)
 }
@@ -260,8 +267,10 @@ extension ApprovalChannel {
     }
 
     /// Reads one seam frame (without its newline): exactly the members of its
-    /// kind, the current frame version, a well-formed request ID and, for a
-    /// verdict, exactly `allow` or `deny`. Anything else is nil.
+    /// kind, the current frame version, a well-formed request ID, for a
+    /// prompt an integer server version and the client's name and version as
+    /// strings, and, for a verdict, exactly `allow` or `deny`. Anything else
+    /// is nil.
     public static func frame(_ line: [UInt8]) -> SeamFrame? {
         guard line.count <= maxFrameBytes, let members = object(line),
               value("v", in: members) == .number(String(frameVersion)),
@@ -274,8 +283,12 @@ extension ApprovalChannel {
         case "prompt":
             guard hasExactly(promptFrameKeys, members),
                   case .string(let toolName)? = value("tool", in: members),
-                  case .string(let inputPreview)? = value("preview", in: members) else { return nil }
-            return .prompt(ChannelPermissionRequest(requestID: requestID, toolName: toolName, inputPreview: inputPreview))
+                  case .string(let inputPreview)? = value("preview", in: members),
+                  case .number(let serverText)? = value("server", in: members), let server = Int(serverText),
+                  case .string(let clientName)? = value("client", in: members),
+                  case .string(let clientVersion)? = value("clientVersion", in: members) else { return nil }
+            let request = ChannelPermissionRequest(requestID: requestID, toolName: toolName, inputPreview: inputPreview)
+            return .prompt(request, server: server, client: ChannelClient(name: clientName, version: clientVersion))
         case "verdict":
             guard hasExactly(verdictFrameKeys, members),
                   case .string(let rawVerdict)? = value("verdict", in: members),
@@ -334,11 +347,15 @@ extension ApprovalChannel {
             + ",\"behavior\":" + quoted(verdict.rawValue) + "}}"
     }
 
-    /// The prompt frame for one relayed request, or nil when it would be
-    /// longer than `maxFrameBytes` (the prompt then stays local).
-    public static func promptFrame(_ request: ChannelPermissionRequest) -> String? {
-        let line = "{\"frame\":\"prompt\",\"v\":" + String(frameVersion) + ",\"request\":" + quoted(request.requestID.text)
-            + ",\"tool\":" + quoted(request.toolName) + ",\"preview\":" + quoted(request.inputPreview) + "}"
+    /// The prompt frame for one relayed request, naming this server's version
+    /// and the session's confirmed `client`, or nil when it would be longer
+    /// than `maxFrameBytes` (the prompt then stays local).
+    public static func promptFrame(_ request: ChannelPermissionRequest, client: ChannelClient) -> String? {
+        let prompt: String = "{\"frame\":\"prompt\",\"v\":" + String(frameVersion) + ",\"request\":" + quoted(request.requestID.text)
+            + ",\"tool\":" + quoted(request.toolName) + ",\"preview\":" + quoted(request.inputPreview)
+        let origin: String = ",\"server\":" + String(serverVersion) + ",\"client\":" + quoted(client.name)
+            + ",\"clientVersion\":" + quoted(client.version) + "}"
+        let line: String = prompt + origin
         return line.utf8.count <= maxFrameBytes ? line : nil
     }
 
