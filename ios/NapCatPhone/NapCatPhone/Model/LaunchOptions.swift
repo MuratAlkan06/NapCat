@@ -17,8 +17,8 @@ import Foundation
 /// last two since S-PAIR-B: the phone unpaired, or its biometrics changed
 /// since pairing), answered by a fixture writer and signed by a fixture
 /// key; it leaves the alert list's source alone.
-/// `-NapCatPairing scan|camera|cameraOff|code|stray|taken` opens the launch on
-/// the pairing screen (F4, slice S-PAIR-B) over a fixture ceremony: a
+/// `-NapCatPairing scan|camera|cameraOff|code|stray|taken|noCamera` opens the
+/// launch on the pairing screen (F4, slice S-PAIR-B) over a fixture ceremony: a
 /// software key in memory, a fixture writer, a fixture camera (the
 /// simulator has none) and the real biometric gate; nothing leaves the
 /// phone. It is the pairing screen's only way in until the pairing record

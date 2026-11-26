@@ -366,6 +366,10 @@ final class RecordingPairingWriter: PairingResponseWriter {
         case .code: if case .waiting = phase {} else { Issue.record("\(phase)") }
         case .stray: #expect(phase == .refused)
         case .taken: #expect(phase == .failed(.alreadyAnswered))
+        case .noCamera:
+            #expect(phase == .failed(.noCamera) && fixture.scan == nil && fixture.camera.state() == .ready)
+            #expect(PairingScreen.line(for: phase, camera: .ready, biometry: fixture.ceremony.biometry) == PairingScreen.failureLine(.noCamera))
+            #expect(PairingScreen.offer(for: phase, camera: .ready, biometry: fixture.ceremony.biometry) == .again)
         }
     }
 

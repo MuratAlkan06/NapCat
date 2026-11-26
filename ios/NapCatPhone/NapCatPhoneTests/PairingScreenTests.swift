@@ -367,6 +367,7 @@ import UIKit
         }
         #expect(LaunchOptions { $0 == LaunchOptions.pairingKey ? "paired" : nil } == LaunchOptions())
         #expect(LaunchOptions().pairing == nil)
+        #expect(LaunchOptions { $0 == LaunchOptions.pairingKey ? "noCamera" : nil }.pairing == .noCamera, "the README's spelling (#175)")
         for state in [FixtureRequestState.unpaired, .changed] {
             #expect(LaunchOptions { $0 == LaunchOptions.requestKey ? state.rawValue : nil }.request == state)
         }
@@ -494,9 +495,13 @@ import UIKit
     static let startBody: String = "guard !context.coordinator.handedOn, !scanner.isScanning else { return } "
         + "do { try scanner.startScanning() } catch { Task { failed() } }"
     static let scannerHandOn = "if liveCamera { QRScannerView(scanned: scanned, failed: scanFailed) } else {"
+    /// AMENDED (#175): and the `noCamera` fixture launch, which opens on
+    /// that ending: its own fixture ceremony, on its one line.
+    static let fixtureEnding: String = "if state == .noCamera { ceremony.scannerFailed() }"
     static let scanFailureSites = CloudKitStructureTests.appSites([
         "Model/PairingCeremony.swift": ["func scannerFailed() {": 1],
         "Screen/PairingScreen.swift": ["scanFailed: { ceremony.scannerFailed() },": 1],
+        "Fixtures/FixturePairing.swift": [fixtureEnding: 1],
     ])
     /// AMENDED (#175, the C1.6 design review's ledger): VisionKit stopping
     /// the scanner mid-scan is reported by the same closure, the same way
@@ -536,7 +541,8 @@ import UIKit
         }
         let stripped: [CloudKitStructureTests.Source] = app.map { ($0.path, CloudKitStructureTests.codeOnly($0.text)) }
         failures += CloudKitStructureTests.appSiteFailures(#"\bscannerFailed\b"#, in: stripped, allowed: scanFailureSites,
-                                                           rule: "a scanner that won't start ends the ceremony from the sheet alone")
+                                                           rule: "a scanner that won't start ends the ceremony from the sheet alone "
+                                                               + "(and the fixture that opens on that ending)")
         return failures
     }
 
@@ -573,6 +579,9 @@ import UIKit
                 $0.replacingOccurrences(of: PairingEntryStructureTests.coordinatorBuilt, with: "Coordinator(scanned: scanned, failed: {})") }),
             ("the coordinator keeps another failure", PairingEntryStructureTests.mutate(app, scanner) {
                 $0.replacingOccurrences(of: "            self.failed = failed\n", with: "            self.failed = {}\n") }),
+            // #175: the fixture's ending, for its own value only.
+            ("the fixture's ending on every fixture launch", PairingEntryStructureTests.mutate(app, "\(Self.appDir)/Fixtures/FixturePairing.swift") {
+                $0.replacingOccurrences(of: Self.fixtureEnding, with: "ceremony.scannerFailed()") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")

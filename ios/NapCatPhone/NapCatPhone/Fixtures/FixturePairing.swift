@@ -21,6 +21,10 @@ enum FixturePairingState: String, CaseIterable, Sendable {
     /// The fixture code is scanned at launch, and a response for it is
     /// saved already: the ceremony fails, loudly.
     case taken
+    /// The camera's scanner would not start (#175): the ceremony has ended
+    /// at its closed no-camera ending before any scan, as the live
+    /// scanner's report ends one.
+    case noCamera
 }
 
 /// The fixture launch's pairing: its ceremony, its camera, and what it
@@ -48,9 +52,12 @@ struct FixturePairing {
                                    enrollment: FixedEnrollment(hash: FixtureRequests.enrolledAtPairing))
         let writer = FixturePairingResponseWriter(outcome: state == .taken ? .alreadyAnswered : .saved)
         let ceremony = PairingCeremony(keyring: keyring, biometrics: biometrics, writer: writer)
+        // The scanner's failure, reported as the live one reports it: the
+        // sheet opens on that ending.
+        if state == .noCamera { ceremony.scannerFailed() }
         let camera = FixtureCamera(answer: state == .camera ? .notAsked : state == .cameraOff ? .off : .ready)
         let scan: ScannedCode? = switch state {
-        case .scan, .camera, .cameraOff: nil
+        case .scan, .camera, .cameraOff, .noCamera: nil
         case .code, .taken: ApprovalSigning.pairingPayload(nonce: nonce).map { ScannedCode(payload: $0) }
         case .stray: ScannedCode(payload: strayCode)
         }
