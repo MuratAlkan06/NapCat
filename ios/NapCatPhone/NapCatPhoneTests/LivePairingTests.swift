@@ -8,6 +8,8 @@ import Testing
 /// There it gets no approvals database, so its pairing writes nothing and
 /// fails dark on the screen's own line; and each opening of the pairing
 /// screen gets a new ceremony. A scripted gate and software keys only.
+/// Every test that builds the live wiring is gated on `LiveCapability`, so a
+/// run on an entitled device never builds a container.
 @MainActor
 @Suite struct LivePairingTests {
     /// The test host is a simulator build: no approvals database, ever.
@@ -34,7 +36,10 @@ import Testing
     }
 
     /// Each opening is a new ceremony over the same key: one scan each.
-    @Test func eachOpeningIsANewCeremony() async {
+    /// (Gated: it builds the live pairing, which an entitled device would
+    /// build over a real container.)
+    @Test(.enabled(if: !LiveCapability.isAvailable))
+    func eachOpeningIsANewCeremony() async {
         let keys = PhoneKeyringTests.World()
         let pairing = LivePairing.make(keyring: keys.keyring, biometrics: ScriptedBiometricGate())
         let first = pairing.makeCeremony()
