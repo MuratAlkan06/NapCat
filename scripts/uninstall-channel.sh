@@ -1,0 +1,128 @@
+#!/bin/bash
+# NapCat remote approvals: reverses scripts/install-channel.sh (F4, slice I1a).
+#
+# USER-RUN, as yourself (never as root):
+#     ./scripts/uninstall-channel.sh
+# Agents must NEVER run this.
+#
+# Undoes exactly what the installer created:
+#   1. the Claude Code registration named "napcat", at user scope, removed
+#      through Claude Code's own command line
+#          claude mcp remove napcat --scope user
+#      ONLY when it runs a NapCat bundle's channel server
+#      (<bundle>.app/Contents/MacOS/napcat-channel); any other server named
+#      "napcat" is left alone;
+#   2. the receipt, ~/Library/Application Support/NapCat/approvals/
+#      channel-registration (a symlink there is reported, never followed).
+# The approvals folder itself stays: it is NapCat's seam folder too.
+#
+# Idempotent and error-collecting: every step is attempted, and it is safe to
+# run when nothing was installed. It never edits Claude Code's configuration
+# files or a shell profile by hand, never prints another server's settings,
+# and needs no administrator rights.
+
+set -euo pipefail
+# Your own PATH, kept only to find and run Claude Code, your own tool (an npm
+# install of it needs `node` from your PATH). Every other command here runs on
+# the pinned PATH below.
+CALLER_PATH="$PATH"
+PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
+umask 022
+unset CDPATH
+
+# The registration's name: the server's own MCP name, ApprovalChannel.serverName.
+SERVER_NAME="napcat"
+HELPER_IN_BUNDLE="Contents/MacOS/napcat-channel"
+# The app's seam folder (SeamPaths.directoryRelativePath); the receipt sits in it.
+APPROVALS_DIR="$HOME/Library/Application Support/NapCat/approvals"
+RECEIPT="$APPROVALS_DIR/channel-registration"
+FAILURES=()
+
+if [ "$#" -ne 0 ]; then
+    echo "usage: $0" >&2
+    exit 1
+fi
+if [ "$(id -u)" -eq 0 ]; then
+    echo "error: run this as yourself, not as root: Claude Code keeps one configuration per user." >&2
+    exit 1
+fi
+
+# --- 1. The registration ---
+CLAUDE_BIN="$(/usr/bin/env PATH="$CALLER_PATH" /usr/bin/which claude 2> /dev/null)" || CLAUDE_BIN=""
+case "$CLAUDE_BIN" in
+    /*) [ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="" ;;
+    *) CLAUDE_BIN="" ;;
+esac
+
+# Claude Code on your own PATH, run from / so that no project- or local-scope
+# "napcat" entry of the folder you ran this from can stand in for the
+# user-scope one the installer made.
+claude_cli() {
+    (cd / && /usr/bin/env PATH="$CALLER_PATH" "$CLAUDE_BIN" "$@")
+}
+
+# The command of the server registered as "napcat": the one "Command:" line
+# `claude mcp get napcat` prints for a stdio server. That output is written
+# for people, not scripts, so anything else (no such line, or more than one)
+# reads as unknown (status 1), and nothing is removed. The output itself is
+# never printed: it may hold another server's environment.
+registered_command() {
+    local output found
+    output="$(claude_cli mcp get "$SERVER_NAME" 2> /dev/null)" || return 1
+    found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
+    case "$found" in
+        "" | *$'\n'*) return 1 ;;
+    esac
+    printf '%s\n' "$found"
+}
+
+# Whether $1 is the path of a NapCat bundle's channel server.
+is_napcat_helper() {
+    case "$1" in
+        /*.app/"$HELPER_IN_BUNDLE") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if [ -z "$CLAUDE_BIN" ]; then
+    FAILURES+=("cannot find the claude command on your PATH; if 'claude mcp get $SERVER_NAME' shows a NapCat helper, remove it with: claude mcp remove $SERVER_NAME --scope user")
+else
+    CURRENT="$(registered_command)" || CURRENT=""
+    if [ -z "$CURRENT" ]; then
+        echo "ok: no \"$SERVER_NAME\" registration with a command to read; nothing to remove"
+        echo "    (if 'claude mcp list' still shows $SERVER_NAME, inspect it with: claude mcp get $SERVER_NAME)"
+    elif ! is_napcat_helper "$CURRENT"; then
+        echo "left alone: the server registered as \"$SERVER_NAME\" does not run a NapCat helper"
+    elif claude_cli mcp remove "$SERVER_NAME" --scope user > /dev/null; then
+        echo "removed: the \"$SERVER_NAME\" registration (user scope) for $CURRENT"
+    else
+        FAILURES+=("could not remove the \"$SERVER_NAME\" registration for $CURRENT (its message is above); is it outside user scope? Inspect it with: claude mcp get $SERVER_NAME")
+    fi
+fi
+
+# --- 2. The receipt ---
+if [ -L "$RECEIPT" ]; then
+    FAILURES+=("$RECEIPT is a symlink, which the installer never writes; left alone, check it and remove it by hand")
+elif [ -f "$RECEIPT" ]; then
+    if rm -f "$RECEIPT"; then
+        echo "removed: $RECEIPT"
+    else
+        FAILURES+=("could not remove $RECEIPT")
+    fi
+elif [ -e "$RECEIPT" ]; then
+    FAILURES+=("$RECEIPT is not a regular file, which the installer never writes; left alone")
+else
+    echo "ok: $RECEIPT not present; nothing to remove"
+fi
+
+if [ "${#FAILURES[@]}" -gt 0 ]; then
+    echo "" >&2
+    echo "uninstall-channel finished WITH ERRORS:" >&2
+    for failure in "${FAILURES[@]}"; do
+        echo "  - $failure" >&2
+    done
+    exit 1
+fi
+
+echo "Done. Start new Claude Code sessions without --dangerously-load-development-channels server:$SERVER_NAME."
+exit 0

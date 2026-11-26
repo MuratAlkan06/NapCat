@@ -458,6 +458,10 @@ It deletes `~/.claude/hooks/napcat-busy-hook.sh` and the marker directory, then
 prints the six NapCat entries to delete from `~/.claude/settings.json` by hand
 (`UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`,
 `Notification` — it never edits that file); restart Claude Code afterwards.
+If you registered the remote approvals channel server, run
+`./scripts/uninstall-channel.sh` as yourself too: it removes the `napcat`
+registration from Claude Code, but only if it runs a NapCat channel server,
+and deletes the receipt.
 Finally, once NapCat has quit, you can delete its state folder
 `~/Library/Application Support/NapCat` if you want nothing left behind.
 
@@ -825,6 +829,63 @@ It is a **beta** and it is **off by default**:
   the last phone alert under History; a failed or unconfirmed one also shows
   in the menu, below the cards.
 - **The records stay in your iCloud database.** This beta never deletes them.
+
+### Remote approvals: register the channel server (preview)
+
+Remote approvals are a preview, and **nothing is armed**: NapCat keeps every
+permission prompt on the Mac, and you still answer every dialog in Claude
+Code. Registering the channel server only connects Claude Code sessions to
+NapCat, so that the **Mac-only preview** in **Settings › Claude** can see
+their prompts.
+
+The server is built into the app, at
+`NapCat.app/Contents/MacOS/napcat-channel`, and signed with it. Register it
+with Claude Code once, from a clone of this repository (the disk image does
+not include the scripts), as yourself, with no `sudo`:
+
+```sh
+./scripts/install-channel.sh                    # /Applications/NapCat.app
+./scripts/install-channel.sh dist/NapCat.app    # or a bundle you built with make
+```
+
+The script:
+
+- **verifies the server's code signature, and the app's, before doing
+  anything else**, and stops if either check fails;
+- **registers the server through Claude Code's own CLI**, at user scope and
+  under the name `napcat`:
+  `claude mcp add --scope user --transport stdio napcat -- <NapCat.app>/Contents/MacOS/napcat-channel`.
+  Running it again leaves a matching entry as it is. If the entry points at
+  another copy of NapCat (for example, after you moved the app), the script
+  points it at this one. It stops without changing anything if a different
+  server is already registered as `napcat`;
+- **writes a small receipt**, mode 0600, holding the server's version and
+  path, to `~/Library/Application Support/NapCat/approvals/channel-registration`;
+- **prints the flag** to start each session with. It never edits Claude
+  Code's configuration files or your shell profile itself.
+
+Claude Code loads the channel only in sessions started with this flag, and
+asks you to confirm it when the session starts:
+
+```sh
+claude --dangerously-load-development-channels server:napcat
+```
+
+Add the flag to the command you start Claude Code with. Because the entry is
+at user scope, Claude Code starts the server in every session. Without the
+flag the server stays idle: it offers no tools, and no prompt reaches it.
+The server passes prompts on only from Claude Code builds NapCat has
+checked; in a session from any other build, NapCat does not see them.
+
+**If you move or rename NapCat.app, run the script again**, because the
+registration names the server's path. To undo it:
+
+```sh
+./scripts/uninstall-channel.sh
+```
+
+That removes the `napcat` registration, but only if it runs a NapCat
+channel server, and deletes the receipt.
 
 ### Honest limitations
 

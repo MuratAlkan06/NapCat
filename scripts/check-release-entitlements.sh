@@ -15,6 +15,15 @@
 #       <app>'s signature verifies, and it carries no entitlements and no
 #       embedded provisioning profile (what a plain ad-hoc `make` produces).
 #
+# In both modes the bundled channel server, Contents/MacOS/napcat-channel, is
+# checked too: a regular file whose own signature verifies, signed under
+# CHANNEL_IDENTIFIER (the Makefile's), with no entitlements, and with the
+# app's team identifier and hardened-runtime flag. So a Developer ID app
+# carries a Developer ID helper with the hardened runtime, and an ad-hoc app
+# an ad-hoc helper. The helper check prints nothing unless it fails (the
+# release dry run compares a refusal's whole output) and runs before the
+# ad-hoc refusal, which stays last; the closing summary names it.
+#
 # Read-only: it signs, installs and changes nothing. It prints entitlement key
 # names, the plist's own application identifier and the profile's expiry date,
 # never the profile's contents. Exits non-zero on the first failed check.
@@ -48,6 +57,10 @@ if [ ! -d "$APP" ] || [ -L "$APP" ]; then
     die "$APP is not a bundle directory."
 fi
 PROFILE="$APP/Contents/embedded.provisionprofile"
+# The channel server's signing identifier: byte-identical to CHANNEL_IDENTIFIER
+# in the Makefile (ChannelInstallStructureTests).
+CHANNEL_IDENTIFIER="com.muratalkan.napcat.channel"
+HELPER="$APP/Contents/MacOS/napcat-channel"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/napcat-entitlements.XXXXXXXX")"
 cleanup() {
@@ -60,6 +73,52 @@ codesign --verify --strict "$APP" || die "$APP fails codesign --verify --strict.
 codesign -d --entitlements - --xml "$APP" > "$WORK/signed.plist" 2> /dev/null \
     || die "codesign cannot read the entitlements of $APP."
 
+# One field of codesign's description of a signature ($1, the output of
+# `codesign -d --verbose=2`): the value after "$2=", or nothing.
+signature_field() {
+    sed -n "s/^$2=//p" <<< "$1"
+}
+
+# "runtime" when the description $1 shows the hardened-runtime flag on its
+# CodeDirectory line, otherwise "no runtime".
+runtime_flag() {
+    local flags
+    flags="$(sed -n 's/^CodeDirectory .* flags=0x[0-9a-f]*(\([^)]*\)).*$/\1/p' <<< "$1")"
+    case ",$flags," in
+        *,runtime,*) echo "runtime" ;;
+        *) echo "no runtime" ;;
+    esac
+}
+
+# The bundled channel server (see the header). Prints nothing when it passes.
+check_channel_helper() {
+    local app_info helper_info app_team helper_team
+    if [ ! -f "$HELPER" ] || [ -L "$HELPER" ]; then
+        die "$APP has no channel server at Contents/MacOS/napcat-channel."
+    fi
+    codesign --verify --strict "$HELPER" || die "$HELPER fails codesign --verify --strict."
+    helper_info="$(codesign -d --verbose=2 "$HELPER" 2>&1)" || die "codesign cannot describe the signature of $HELPER."
+    app_info="$(codesign -d --verbose=2 "$APP" 2>&1)" || die "codesign cannot describe the signature of $APP."
+    [ "$(signature_field "$helper_info" Identifier)" = "$CHANNEL_IDENTIFIER" ] \
+        || die "$HELPER is not signed as $CHANNEL_IDENTIFIER."
+    codesign -d --entitlements - --xml "$HELPER" > "$WORK/helper.plist" 2> /dev/null \
+        || die "codesign cannot read the entitlements of $HELPER."
+    if [ -s "$WORK/helper.plist" ] \
+        && [ "$(plutil -convert json -o - "$WORK/helper.plist" | jq -c .)" != "{}" ]; then
+        die "$HELPER carries entitlements: $(plutil -convert json -o - "$WORK/helper.plist" | jq -r 'keys | join(", ")')."
+    fi
+    app_team="$(signature_field "$app_info" TeamIdentifier)"
+    helper_team="$(signature_field "$helper_info" TeamIdentifier)"
+    if [ -z "$app_team" ] || [ -z "$helper_team" ]; then
+        die "codesign names no team identifier for $APP or $HELPER."
+    fi
+    [ "$helper_team" = "$app_team" ] \
+        || die "$HELPER is signed for team $helper_team, but $APP for team $app_team."
+    [ "$(runtime_flag "$helper_info")" = "$(runtime_flag "$app_info")" ] \
+        || die "$HELPER is signed with $(runtime_flag "$helper_info"), but $APP with $(runtime_flag "$app_info")."
+}
+check_channel_helper
+
 if [ "$MODE" = "unentitled" ]; then
     if [ -s "$WORK/signed.plist" ] \
         && [ "$(plutil -convert json -o - "$WORK/signed.plist" | jq -c .)" != "{}" ]; then
@@ -69,6 +128,7 @@ if [ "$MODE" = "unentitled" ]; then
         die "$APP embeds a provisioning profile."
     fi
     echo "check-release-entitlements: $APP carries no entitlements and embeds no provisioning profile."
+    echo "check-release-entitlements: its channel server is signed as $CHANNEL_IDENTIFIER, with no entitlements and the app's team and runtime flag."
     exit 0
 fi
 
@@ -143,3 +203,4 @@ fi
 echo "check-release-entitlements: $APP is signed with exactly the entitlements in $EXPECTED:"
 jq -r 'keys[] | "  " + .' "$WORK/expected.json"
 echo "check-release-entitlements: its embedded provisioning profile is for $APP_ID, expires $EXPIRES, and grants every one of them."
+echo "check-release-entitlements: its channel server is signed as $CHANNEL_IDENTIFIER, with no entitlements and the app's team and runtime flag."

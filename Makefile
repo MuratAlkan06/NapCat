@@ -3,6 +3,17 @@ DIST     := dist
 APP      := $(DIST)/$(APP_NAME).app
 BINARY   := .build/release/$(APP_NAME)
 
+# F4 remote approvals: the channel server Claude Code spawns (the
+# napcat-channel product) ships inside the bundle as a helper tool,
+# Contents/MacOS/napcat-channel. It is signed BEFORE the app (nested code
+# first), with the same CODESIGN command (so the same identity, and the
+# hardened runtime with a real one), under its own identifier and with no
+# entitlements, ever. ChannelInstallStructureTests keeps every copy of the
+# identifier byte-identical to this one.
+CHANNEL            := napcat-channel
+CHANNEL_BINARY     := .build/release/$(CHANNEL)
+CHANNEL_IDENTIFIER := com.muratalkan.napcat.channel
+
 # Code-signing identity for the bundle. The default `-` is the ad-hoc signature
 # a plain `make` has always produced: no certificate, no network. The release
 # workflow passes a Developer ID identity instead (make SIGN_IDENTITY="...");
@@ -48,10 +59,12 @@ all: smc
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources/frames
 	cp $(BINARY) $(APP)/Contents/MacOS/$(APP_NAME)
+	install -m 0755 $(CHANNEL_BINARY) $(APP)/Contents/MacOS/$(CHANNEL)
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
 	install -m 0755 Resources/napcat-watchdog.sh $(APP)/Contents/Resources/napcat-watchdog.sh
 	install -m 0644 Resources/frames/*.png $(APP)/Contents/Resources/frames/
 	iconutil -c icns Resources/AppIcon.iconset -o $(APP)/Contents/Resources/AppIcon.icns
+	$(CODESIGN) --identifier $(CHANNEL_IDENTIFIER) $(APP)/Contents/MacOS/$(CHANNEL)
 	$(if $(strip $(PROVISIONING_PROFILE)),install -m 0644 "$(strip $(PROVISIONING_PROFILE))" $(APP)/Contents/embedded.provisionprofile)
 	$(CODESIGN)$(if $(strip $(ENTITLEMENTS)), --entitlements "$(strip $(ENTITLEMENTS))") $(APP)
 
