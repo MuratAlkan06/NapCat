@@ -182,6 +182,75 @@ struct PersistenceTests {
         #expect(PairingController.rememberedName(in: nil) == nil, "no domain, no name")
     }
 
+    /// #205: the remote-approvals toggle reads ON only when the app's OWN
+    /// persistent domain holds a Bool `true` and the defaults search list
+    /// agrees — the toggle factory's own reader (`storedToggle`), on an
+    /// isolated suite. A `true` only elsewhere in the search list — a launch
+    /// argument, another persistent domain (standing in for the global one,
+    /// which no test writes), a registered default — reads OFF; an
+    /// outranking `false` (a launch argument) vetoes the app's own `true`,
+    /// and a lower one (a registered default) is shadowed by it. The
+    /// argument and registration domains are the whole process's: only this
+    /// key is added to them, and removed again.
+    @Test func theRemoteApprovalsToggleReadsOnOnlyFromTheAppsOwnDomain() {
+        let suite: String = "com.muratalkan.napcat.tests.\(UUID().uuidString)"
+        let other: String = "com.muratalkan.napcat.tests.other.\(UUID().uuidString)"
+        let defaults: UserDefaults = UserDefaults(suiteName: suite)!
+        let outside: UserDefaults = UserDefaults(suiteName: other)!
+        let key: String = DefaultsKey.remoteApprovalsEnabled
+        let arguments: String = UserDefaults.argumentDomain
+        let registration: String = UserDefaults.registrationDomain
+        func place(_ value: Any?, in domain: String) {
+            var contents: [String: Any] = defaults.volatileDomain(forName: domain)
+            contents[key] = value
+            defaults.setVolatileDomain(contents, forName: domain)
+        }
+        func reads() -> Bool { RemoteApprovalsController.storedToggle(defaults, domain: suite) }
+        defer {
+            place(nil, in: arguments)
+            place(nil, in: registration)
+            defaults.removeSuite(named: other)
+            outside.removePersistentDomain(forName: other)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        #expect(!reads(), "unset")
+
+        // A true only elsewhere: OFF.
+        place(true, in: arguments)
+        #expect(defaults.object(forKey: key) as? Bool == true, "vacuity: the search list sees the argument")
+        #expect(!reads(), "a launch argument never turns it on")
+        place(nil, in: arguments)
+        outside.set(true, forKey: key)
+        defaults.addSuite(named: other)
+        #expect(defaults.object(forKey: key) as? Bool == true, "vacuity: the search list sees the other domain")
+        #expect(!reads(), "another persistent domain never turns it on")
+        defaults.removeSuite(named: other)
+        place(true, in: registration)
+        #expect(defaults.object(forKey: key) as? Bool == true, "vacuity: the search list sees the registered default")
+        #expect(!reads(), "a registered default never turns it on")
+
+        // The app's own true: ON, unless a value that outranks it disagrees.
+        defaults.set(true, forKey: key)
+        #expect(reads())
+        place(false, in: arguments)
+        #expect(!reads(), "an outranking false vetoes it")
+        place("YES", in: arguments)
+        #expect(!reads(), "so does any outranking value but a Bool true, even YES")
+        place(nil, in: arguments)
+        place(false, in: registration)
+        #expect(reads(), "a registered false sits below the app's own true")
+
+        // Only a Bool true in the app's own domain.
+        defaults.set("YES", forKey: key)
+        #expect(!reads(), "only a Bool")
+        defaults.set(false, forKey: key)
+        #expect(!reads())
+        defaults.set(true, forKey: key)
+        #expect(!RemoteApprovalsController.storedToggle(defaults, domain: ""), "no bundle identifier, no domain: off")
+        defaults.removeObject(forKey: key)
+        #expect(!reads())
+    }
+
     /// Fresh isolated defaults per test; the suite file is removed again.
     private func withDefaults(_ body: (UserDefaults) -> Void) {
         let suite = "com.muratalkan.napcat.tests.\(UUID().uuidString)"

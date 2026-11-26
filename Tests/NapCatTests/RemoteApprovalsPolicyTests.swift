@@ -48,9 +48,45 @@ struct RemoteApprovalsPolicyTests {
         StoredRow(note: "an array is junk", stored: .array, enabled: false),
     ]
 
+    /// With nothing outranking it, the search list reads the app's own value.
     @Test(arguments: storedRows)
     func onlyAStoredTrueTurnsItOn(_ row: StoredRow) {
-        #expect(RemoteApprovalsPolicy.enabled(stored: row.stored.value) == row.enabled)
+        #expect(RemoteApprovalsPolicy.enabled(stored: row.stored.value, searched: row.stored.value) == row.enabled)
+    }
+
+    struct SearchRow: Sendable, CustomTestStringConvertible {
+        let note: String
+        /// What the app's own persistent domain holds.
+        let stored: StoredValue
+        /// What the defaults search list reads.
+        let searched: StoredValue
+        let enabled: Bool
+        var testDescription: String { note }
+    }
+
+    /// #205: the app's own domain must hold a Bool `true`, and the search
+    /// list must read one too. A `true` only elsewhere (a launch argument,
+    /// the global domain, a registered default: all read through the search
+    /// list) never turns it on; a value that outranks the app's own and is
+    /// anything but a Bool `true` turns it off.
+    static let searchRows: [SearchRow] = [
+        SearchRow(note: "the app's own true, read through the search list", stored: .bool(true), searched: .bool(true),
+                  enabled: true),
+        SearchRow(note: "a true elsewhere, the app's own unset", stored: .absent, searched: .bool(true), enabled: false),
+        SearchRow(note: "a true elsewhere, the app's own false", stored: .bool(false), searched: .bool(true), enabled: false),
+        SearchRow(note: "a true elsewhere, the app's own junk", stored: .string("YES"), searched: .bool(true), enabled: false),
+        SearchRow(note: "an outranking false vetoes the app's own true", stored: .bool(true), searched: .bool(false),
+                  enabled: false),
+        SearchRow(note: "an outranking string disagrees, even YES", stored: .bool(true), searched: .string("YES"),
+                  enabled: false),
+        SearchRow(note: "an outranking junk number disagrees", stored: .bool(true), searched: .int(2), enabled: false),
+        SearchRow(note: "an outranking 1 is the Bool it bridges to", stored: .bool(true), searched: .int(1), enabled: true),
+        SearchRow(note: "a search list that reads nothing disagrees", stored: .bool(true), searched: .absent, enabled: false),
+    ]
+
+    @Test(arguments: searchRows)
+    func anOutsideValueCanTurnItOffButNeverOn(_ row: SearchRow) {
+        #expect(RemoteApprovalsPolicy.enabled(stored: row.stored.value, searched: row.searched.value) == row.enabled)
     }
 
     @Test func theKeyIsItsOwn() {

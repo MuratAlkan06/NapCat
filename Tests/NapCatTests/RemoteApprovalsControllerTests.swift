@@ -97,7 +97,15 @@ final class ApprovalsRecordingSink: ApprovalRecordSink, @unchecked Sendable {
 @MainActor
 final class ApprovalsWorld {
     let scratch: ApprovalsScratch
+    /// What the app's own domain holds (the toggle writes here).
     var stored: Any?
+    /// What the defaults search list holds above the app's own domain (a
+    /// launch argument, a managed setting) and below it (the global domain,
+    /// a registered default); nil: nothing there (#205).
+    var outranking: Any?
+    var below: Any?
+    /// What the search list reads: the first of the three that holds a value.
+    var searched: Any? { outranking ?? stored ?? below }
     /// Every value the toggle wrote, in order.
     private(set) var writes: [Bool] = []
     /// While true the store keeps reading what it held: a write it does not
@@ -132,7 +140,7 @@ final class ApprovalsWorld {
         }
         controller = RemoteApprovalsController(
             socketPath: scratch.socketPath,
-            readStored: { [unowned self] in stored },
+            readStored: { [unowned self] in RemoteApprovalsPolicy.enabled(stored: stored, searched: searched) },
             writeStored: { [unowned self] in
                 writes.append($0)
                 if !readIgnoresWrites { stored = $0 }
@@ -407,8 +415,8 @@ struct RemoteApprovalsControllerTests {
         world.controller.setEnabled(false)
     }
 
-    /// A value written outside NapCat (`defaults write`) takes effect at the
-    /// next menu or Settings open.
+    /// A value written outside NapCat (`defaults write`) into NapCat's own
+    /// domain takes effect at the next menu or Settings open.
     @Test func anOutsideWriteTakesEffectOnTheNextRefresh() throws {
         let world = try ApprovalsWorld()
         world.stored = true
@@ -419,6 +427,50 @@ struct RemoteApprovalsControllerTests {
         world.controller.refresh()
         #expect(world.controller.phase == .off, "junk reads as off: the kill switch")
         #expect(!world.socketExists)
+    }
+
+    /// #205: a `true` anywhere but the app's own domain — above it (a launch
+    /// argument, a managed setting) or below it (the global domain, a
+    /// registered default) — never turns the toggle on, however often the
+    /// menu opens: zero footprint.
+    @Test(arguments: [true, false])
+    func anOutsideTrueNeverTurnsItOn(_ outranks: Bool) throws {
+        let world = try ApprovalsWorld()
+        if outranks { world.outranking = true } else { world.below = true }
+        #expect(world.searched as? Bool == true, "vacuity: the search list reads on")
+        world.controller.reconcile()
+        world.controller.refresh()
+        world.controller.refresh()
+        #expect(world.controller.phase == .off)
+        #expect(world.builtHosts.isEmpty && world.probes == 0, "no host, no probe")
+        #expect(!world.scratch.exists(world.scratch.directoryPath), "not even the socket's directory exists")
+        #expect(world.changes == 0)
+    }
+
+    /// #205: a value that outranks the app's own and disagrees is the kill
+    /// switch at the next refresh, and keeps a switch-on off (written, read
+    /// back, vetoed). With an outranking `true` the owner's own on and off
+    /// both hold, and an off stays off across refreshes: it was written to
+    /// the app's own domain, which is read for on.
+    @Test func anOutrankingValueVetoesAndTheOwnersOffStaysOff() throws {
+        let world = try ApprovalsWorld()
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .listening)
+        world.outranking = false
+        world.controller.refresh()
+        #expect(world.controller.phase == .off, "an outranking false is the kill switch")
+        #expect(!world.socketExists)
+        world.controller.setEnabled(true)
+        #expect(world.stored as? Bool == true && world.controller.phase == .off, "a switch-on is written, then vetoed")
+
+        world.outranking = true
+        world.controller.refresh()
+        #expect(world.controller.phase == .listening, "the app's own true, and nothing disagrees")
+        world.controller.setEnabled(false)
+        world.controller.refresh()
+        world.controller.refresh()
+        #expect(world.controller.phase == .off, "the owner's off stays off: the outranking true cannot turn it back on")
+        #expect(world.stored as? Bool == false && !world.socketExists)
     }
 
     /// The toggle's own audit lines join the S1 vocabulary: closed codes, a

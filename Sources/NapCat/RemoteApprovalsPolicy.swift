@@ -144,11 +144,17 @@ enum RemoteApprovalsPolicy {
         return nil
     }
 
-    /// `remoteApprovalsEnabled` as stored. Only a stored Bool `true` is on;
-    /// unset, `false`, or anything else — a hand-written string, a number
-    /// other than 0/1 — reads as OFF: a junk value must never arm a
-    /// remote-control feature.
-    static func enabled(stored: Any?) -> Bool {
-        (stored as? Bool) == true
+    /// `remoteApprovalsEnabled` as stored, read twice (#205): `stored` is
+    /// what the app's OWN persistent domain holds, `searched` what the
+    /// defaults search list reads — where a launch argument or a managed
+    /// setting outranks the app's domain, and the global domain and the
+    /// registered defaults sit below it. ON only when both are a Bool
+    /// `true`: unset, `false`, or anything else — a hand-written string, a
+    /// number other than 0/1 — reads as OFF, so a junk value never arms a
+    /// remote-control feature. A value outside the app's own domain can turn
+    /// it off (one that outranks it disagrees) but never on (the app's own
+    /// domain does not hold it).
+    static func enabled(stored: Any?, searched: Any?) -> Bool {
+        (stored as? Bool) == true && (searched as? Bool) == true
     }
 }
