@@ -317,6 +317,63 @@ struct PhoneTransportStructureTests {
         }).isEmpty)
     }
 
+    // MARK: - The entitlement probe, named at its sites alone (#184)
+
+    /// The probe's name, as a word, in every scan copy, sits on its
+    /// declaration, the two factory guards and the two default arguments
+    /// that read it (the sender's and the composite's), and nowhere else in
+    /// the four targets. Each of those lines finds the probe by its name, so
+    /// a member of the sender or of the composite spelled the same and
+    /// declared in another file would be the one they read.
+    static let probeDeclaration: String = "enum CloudKitEntitlementProbe {"
+    static let probeDefault: String = "isEntitled: @escaping @Sendable () -> Bool = { CloudKitEntitlementProbe.isEntitled },"
+    static let probeWordSites: [String: [String: Int]] = [
+        cloudKitFile: [probeDeclaration: 1, probeGuard: 2, probeDefault: 1],
+        "CompositeMessageSender.swift": [probeDefault: 1],
+    ]
+
+    static func probeWordFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        PairingStructureTests.appSiteFailures(#"\bCloudKitEntitlementProbe\b"#, in: sources, allowed: probeWordSites,
+                                              rule: "the entitlement probe is named by its declaration, the two factory guards and "
+                                                  + "the two default arguments alone, in the four targets")
+    }
+
+    @Test func theEntitlementProbeIsNamedAtItsSitesAlone() throws {
+        let sources: [(name: String, text: String)] = try ApprovalChannelStructureTests.sources()
+        #expect(Self.probeWordFailures(sources).isEmpty, "\(Self.probeWordFailures(sources))")
+        let sender: String = ApprovalChannelStructureTests.text(Self.cloudKitFile, in: sources)
+        #expect(sender.components(separatedBy: Self.probeGuard).count == 3, "vacuity: both factories open on the probe's guard")
+        let model: String = "MenuStateModel.swift"
+        let nested: String = "\nextension CloudKitMessageSender {\n    enum CloudKitEntitlementProbe { static let isEntitled = true }\n}\n"
+        let marked: String = "\nextension CloudKitMessageSender {\n    @available(*, deprecated, message: \"ZZ-SHADOW-SELECTED\")\n"
+            + "    enum CloudKitEntitlementProbe { static let isEntitled = true }\n}\n"
+        let canaries: [(String, [(name: String, text: String)])] = [
+            ("the probe's name taken by a nested type of the sender, in another file", Self.mutate(sources, model) { $0 + nested }),
+            ("… marked deprecated", Self.mutate(sources, model) { $0 + marked }),
+            ("a backticked nested type", Self.mutate(sources, model) {
+                $0 + "\nextension CloudKitMessageSender {\n    enum `CloudKitEntitlementProbe` { static let isEntitled = true }\n}\n" }),
+            ("an alias in an extension of the composite", Self.mutate(sources, "SettingsWindowController.swift") {
+                $0 + "\nextension CompositeMessageSender {\n    typealias CloudKitEntitlementProbe = ZZEntitled\n}\n"
+                    + "enum ZZEntitled { static let isEntitled = true }\n" }),
+            ("a static var of the sender", Self.mutate(sources, model) {
+                $0 + "\nstruct ZZYes { let isEntitled = true }\nextension CloudKitMessageSender {\n"
+                    + "    static var CloudKitEntitlementProbe: ZZYes { ZZYes() }\n}\n" }),
+            ("the probe read elsewhere", Self.mutate(sources, "NapCatApp.swift") { $0 + "\nlet zzEntitled = CloudKitEntitlementProbe.isEntitled\n" }),
+            ("a guard dropped", Self.mutate(sources, Self.cloudKitFile) {
+                $0.replacingOccurrences(of: Self.pairingFactoryHead + "\n        " + Self.probeGuard,
+                                        with: Self.pairingFactoryHead + "\n        guard true else { return nil }") }),
+        ]
+        for (name, mutant) in canaries {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.probeWordFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: words that only contain the probe's name, and
+        // a whole-line comment naming it.
+        let near: String = "\nlet zzCloudKitEntitlementProbe = 1, CloudKitEntitlementProbes = 2, isCloudKitEntitlementProbe = 3"
+            + LidGuardStructureTests.codeOnly("\n/// never a second CloudKitEntitlementProbe, never CloudKitEntitlementProbe.isEntitled here")
+        #expect(Self.probeWordFailures(Self.mutate(sources, model) { $0 + near }).isEmpty)
+    }
+
     // MARK: - The live classes, named by their heads and factories alone (round 3, F-E)
 
     /// The re-check's round-3 plants (its shadow.py), verbatim. Each appends

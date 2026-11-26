@@ -91,7 +91,14 @@ struct LidGuardStructureTests {
     /// text with its backticks removed and nothing else (no lexer involved,
     /// so nothing the lexer misreads can hide a backticked name), and
     /// `cleaned`. A ban must hold in all three — the cleaned copies are
-    /// read IN ADDITION to the raw text, never instead of it.
+    /// read IN ADDITION to the raw text, never instead of it. "In every scan
+    /// copy" holds for what the copies show: the text given is most often
+    /// `codeOnly`'s or `wholeLineCommentsRemoved`'s, and `cleaned` reads
+    /// through `lexemes`, so a lock holds it for the lines the stripper
+    /// reads as the compiler does. The raw-text locks keep out the lines
+    /// known to be read apart (`noSourceHoldsASlashTheStripperCouldReadApart`,
+    /// `noSourceDeclaresAnOperator`); a line outside the shapes they model
+    /// is not covered.
     static func constructorScanCopies(_ text: String) -> [String] {
         guard mayClean(text) else { return [text] }          // its own cleaned copy
         return [text, text.replacingOccurrences(of: "`", with: ""), cleaned(text)]
@@ -134,8 +141,15 @@ struct LidGuardStructureTests {
     /// line, or from a misread `"""` to the next one), so a token behind a
     /// URL, a `//`-led interpolation line or a block-comment-split name can
     /// vanish from every form a lock reads (security spot-check H9, a bare
-    /// regex after `switch`). So every opener shape is pinned by the
-    /// stripper tables and by a canary in a lock that reads it.
+    /// regex after `switch`). The opener shapes modelled here are pinned by
+    /// the stripper tables and by canaries in the locks that read them; but
+    /// this models a context-sensitive lexer and is not the compiler's own,
+    /// so a line it does not model can still be read apart from the
+    /// compiler. The Mac's raw-text locks, over the four targets and the
+    /// phone app with no lexer, ban the shapes known to be read apart:
+    /// `noSourceHoldsASlashTheStripperCouldReadApart` (its slash sites) and
+    /// `noSourceDeclaresAnOperator` (custom operators). A shape outside
+    /// both is not covered.
     static func lexemes(_ scalars: [Unicode.Scalar]) -> [Lexeme] {
         enum Mode {
             case code(parens: Int)                       // parens > 0: inside an interpolation
@@ -288,21 +302,64 @@ struct LidGuardStructureTests {
         return kinds
     }
 
+    /// Whether the token ending at `index` is an operator, read by the
+    /// compiler's own scalar classes (its lexer's operator-start and
+    /// operator-continuation sets), not by Unicode's letters: Swift lets
+    /// some scalars Unicode calls alphabetic into an operator. A scalar
+    /// that continues an operator and an identifier alike takes its class
+    /// from the first scalar before its run that does not.
+    static func endsAnOperator(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
+        var head = index
+        while head > 0, continuesEither(scalars[head]) { head -= 1 }
+        return startsAnOperator(scalars[head]) && !continuesEither(scalars[head])
+    }
+
+    /// The scalars an operator can start with (the grammar's operator-head
+    /// set, as the compiler's lexer reads it).
+    static func startsAnOperator(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x21, 0x25, 0x26, 0x2A, 0x2B, 0x2D, 0x2E, 0x2F, 0x3C, 0x3D, 0x3E, 0x3F, 0x5E, 0x7C, 0x7E: return true
+        case 0xA1...0xA7, 0xA9, 0xAB, 0xAC, 0xAE, 0xB0, 0xB1, 0xB6, 0xBB, 0xBF, 0xD7, 0xF7: return true
+        case 0x2016...0x2017, 0x2020...0x2027, 0x2030...0x203E, 0x2041...0x2053, 0x2055...0x205E: return true
+        case 0x2190...0x23FF, 0x2500...0x2775, 0x2794...0x2BFF, 0x2E00...0x2E7F, 0x3001...0x3003, 0x3008...0x3030: return true
+        default: return false
+        }
+    }
+
+    /// The scalars that continue an operator and an identifier alike: the
+    /// combining marks and variation selectors of the grammar's
+    /// operator-character set, and the run of the compiler's operator range
+    /// that is also an identifier's.
+    static func continuesEither(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x300...0x36F, 0x1DC0...0x1DFF, 0x20D0...0x20FF, 0x3021...0x302F: return true
+        case 0xFE00...0xFE0F, 0xFE20...0xFE2F, 0xE0100...0xE01EF: return true
+        default: return false
+        }
+    }
+
     /// Whether the `/` at `index` (not `//` or `/*`) opens a bare regex
     /// literal: an expression can start there (nothing before it on its
     /// line; a space or tab right before it, since with none after it Swift
     /// 6 never reads that `/` as a division (security spot-check H9); or an
     /// operator, an opening bracket, a separator or a keyword that precedes
-    /// an expression, `switch/"/` included), no space follows it, and an
+    /// an expression, `switch/"/` included; an operator ending in a
+    /// non-ASCII scalar by `endsAnOperator`), no space follows it, and an
     /// unescaped `/` closes it on the same line. A division (`a / b`, `n/2`,
-    /// `f()/2`) is never one.
+    /// `f()/2`) is never one. Two more of the compiler's rules: a `/=` is a
+    /// compound assignment only with a space after it (`n /= 2`; `/=a/`
+    /// opens a regex), and a candidate holding a `)` that closes no `(` of
+    /// its own (escapes skipped, a character class's brackets ignored) is no
+    /// regex, so its `/` is an operator (`f(/)`, `reduce(3, /)`, `g(/2)`).
     static func bareRegexOpens(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
         let next = index + 1
-        guard next < scalars.count, !scalars[next].properties.isWhitespace, scalars[next] != "=" else { return false }
+        guard next < scalars.count, !scalars[next].properties.isWhitespace else { return false }
+        if scalars[next] == "=", next + 1 == scalars.count || scalars[next + 1].properties.isWhitespace { return false }
         var before = index - 1
         while before >= 0, scalars[before] == " " || scalars[before] == "\t" { before -= 1 }
         var opens = before < 0 || before < index - 1 || isLineEnd(scalars[before])
             || "([{,:;=!&|?^~<>+-*%".unicodeScalars.contains(scalars[before])
+            || (!scalars[before].isASCII && endsAnOperator(scalars, at: before))
         if !opens, scalars[before].properties.isAlphabetic {
             var wordStart = before
             while wordStart > 0, scalars[wordStart - 1].properties.isAlphabetic { wordStart -= 1 }
@@ -313,12 +370,25 @@ struct LidGuardStructureTests {
         }
         guard opens else { return false }
         var cursor = next
+        var groups = 0
+        var classes = 0
         while cursor < scalars.count, !isLineEnd(scalars[cursor]) {
-            if scalars[cursor] == "\\" {
+            let scalar = scalars[cursor]
+            if scalar == "\\" {
                 cursor += 2
                 continue
             }
-            if scalars[cursor] == "/" { return true }
+            if scalar == "/" { return true }
+            if scalar == "[" {
+                classes += 1
+            } else if scalar == "]", classes > 0 {
+                classes -= 1
+            } else if scalar == "(", classes == 0 {
+                groups += 1
+            } else if scalar == ")", classes == 0 {
+                if groups == 0 { return false }                  // closes no `(` of its own: an operator
+                groups -= 1
+            }
             cursor += 1
         }
         return false
@@ -362,6 +432,39 @@ struct LidGuardStructureTests {
         // Swift 6 compiler reads `copy/2` as the parameter `copy`, halved).
         ("a name spelled like a contextual keyword divides", "let h = copy/2; let s = \"a/b // x\"; tokenW // c",
          "let h = copy/2; let s = \"a/b // x\"; tokenW "),
+        // A `/` the compiler reads as an operator: a candidate holding a `)`
+        // that closes no `(` of its own is no regex, so a `/` in the string
+        // after it closes nothing.
+        ("an operator reference is no regex", "let a = [6].reduce(3, /); let b = \"a/\"; let c = \"//\"; tokenAA // c",
+         "let a = [6].reduce(3, /); let b = \"a/\"; let c = \"//\"; tokenAA "),
+        ("an unspaced operator reference", "let a = f(/); let b = \"a/\"; let c = \"//\"; tokenAB // c",
+         "let a = f(/); let b = \"a/\"; let c = \"//\"; tokenAB "),
+        ("a prefix operator's argument", "let a = g(/2); let b = \"a/\"; let c = \"//\"; tokenAC // c",
+         "let a = g(/2); let b = \"a/\"; let c = \"//\"; tokenAC "),
+        ("a group, an escaped and a bracketed parenthesis stay in a regex", "let r = /(a)\\)[)]\"/; let c = \"//\"; tokenAD // c",
+         "let r = /(a)\\)[)]\"/; let c = \"//\"; tokenAD "),
+        // A `/=` with no space after it opens a regex as any `/` does; with
+        // one it is a compound assignment.
+        ("a bare regex opening with =", "let r = /=a\"/; let c = \"//\"; tokenAE // c", "let r = /=a\"/; let c = \"//\"; tokenAE "),
+        ("a compound assignment is no regex", "n /= 2; let b = \"a/\"; let c = \"//\"; tokenAF // c",
+         "n /= 2; let b = \"a/\"; let c = \"//\"; tokenAF "),
+        ("a division by a parenthesized divisor", "let h = (n)/(2); let q = n / (2); let b = \"a/\"; let c = \"//\"; tokenAG // c",
+         "let h = (n)/(2); let q = n / (2); let b = \"a/\"; let c = \"//\"; tokenAG "),
+        // An operator is read by the compiler's scalar classes, not by
+        // Unicode's letters: after one ending in a scalar Unicode calls
+        // alphabetic, or in a combining mark, a `/` opens a regex as after
+        // any operator. After an identifier's non-ASCII letter or mark it
+        // divides.
+        ("a bare regex after an operator ending in an alphabetic scalar", "let r = \u{2E2F}/a\"/; let c = \"//\"; tokenAI // c",
+         "let r = \u{2E2F}/a\"/; let c = \"//\"; tokenAI "),
+        ("a bare regex after an operator ending in a combining mark", "let r = +\u{345}/a\"/; let c = \"//\"; tokenAJ // c",
+         "let r = +\u{345}/a\"/; let c = \"//\"; tokenAJ "),
+        ("a bare regex after a non-ASCII operator", "let r = \u{AC}/a\"/; let c = \"//\"; tokenAK // c",
+         "let r = \u{AC}/a\"/; let c = \"//\"; tokenAK "),
+        ("a non-ASCII identifier divides", "let h = caf\u{E9}/2 + caf\u{E9} / 2; let b = \"a/\"; let c = \"//\"; tokenAL // c",
+         "let h = caf\u{E9}/2 + caf\u{E9} / 2; let b = \"a/\"; let c = \"//\"; tokenAL "),
+        ("an identifier ending in a combining mark divides", "let h = cafe\u{301}/2 + e\u{345}/2; let b = \"a/\"; let c = \"//\"; tokenAM // c",
+         "let h = cafe\u{301}/2 + e\u{345}/2; let b = \"a/\"; let c = \"//\"; tokenAM "),
         ("CRLF line ends", "// c\r\nlet x = tokenN // c\r\nlet y = 1", "\r\nlet x = tokenN \r\nlet y = 1"),
         ("a CR line end", "x // c\ry", "x \ry"),
         ("an unterminated string ends with its line", "let s = \"abc\nlet t = 1 // c", "let s = \"abc\nlet t = 1 "),
@@ -379,6 +482,12 @@ struct LidGuardStructureTests {
         ("H9: a multi-line string after a bare regex holding \"\"\"",
          "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }",
          "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }"),
+        ("a multi-line string after an operator reference",
+         "let a = [6].reduce(3, /); let b = \"/\"; let s = \"\"\"\n// \\(tokenAH)\n\"\"\"",
+         "let a = [6].reduce(3, /); let b = \"/\"; let s = \"\"\"\n// \\(tokenAH)\n\"\"\""),
+        ("a multi-line string after a bare regex behind an operator ending in an alphabetic scalar",
+         "let a = \u{2E2F}/a\"/; let b = \"/\"; let s = \"\"\"\n// \\(tokenAN)\n\"\"\"",
+         "let a = \u{2E2F}/a\"/; let b = \"/\"; let s = \"\"\"\n// \\(tokenAN)\n\"\"\""),
     ]
 
     /// The words a space before a `/` covers (H9): with a space or tab right
@@ -421,6 +530,8 @@ struct LidGuardStructureTests {
             ("H9: a bare regex holding \"\"\" before a commented extension",
              "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n\"\"\"\nextension /* x */ T {}",
              "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n\"\"\"\nextension   T {}"),
+            ("an operator reference before a commented extension", "let a = f(/); let b = \"a/\"; extension /* x */ T {}",
+             "let a = f(/); let b = \"a/\"; extension   T {}"),
         ]
         for (name, text, cleaned) in cases {
             #expect(Self.cleaned(text) == cleaned, "cleaned, \(name): \(Self.cleaned(text).debugDescription)")
@@ -505,6 +616,448 @@ struct LidGuardStructureTests {
             let text = try String(contentsOf: Self.repoRoot().appendingPathComponent(path), encoding: .utf8)
             #expect(text.contains(mayClean), "mayClean drifted in \(path)")
         }
+    }
+
+    // MARK: The raw-text precondition (no lexer)
+
+    /// What the raw-text precondition reads: every Swift file under the four
+    /// Mac targets and the phone app.
+    static let rawScanDirectories: [String] = ApprovalChannelStructureTests.directories + ["ios/NapCatPhone/NapCatPhone"]
+
+    /// The words that, touching a `/`, can start an expression: a superset
+    /// of `bareRegexOpens`'s list and of `spacedRegexWords`.
+    static let regexLeadWords: Set<String> = [
+        "return", "in", "throw", "try", "await", "case", "where", "if", "guard", "while", "else", "is", "as", "repeat", "some",
+        "any", "switch", "yield", "then", "unsafe", "consume", "copy", "discard", "each", "do", "catch", "for", "let", "var",
+        "default", "defer", "inout", "borrowing", "consuming", "throws", "rethrows", "async", "borrow",
+    ]
+
+    /// Whether `scalar` can end an operand before a `/`, for the raw-text
+    /// rule: an ASCII letter, digit or underscore, and nothing else. Swift
+    /// lets some scalars Unicode calls alphabetic into an operator, so any
+    /// other scalar counts as one an expression may follow. Conservative by
+    /// design: a non-ASCII identifier touching a `/` counts too.
+    static func isOperandScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.isASCII && (scalar == "_" || scalar.properties.isAlphabetic || scalar.properties.numericType != nil)
+    }
+
+    /// Whether the `/` at `index` of `line` (one line's scalars) may open a
+    /// bare regex literal, to the compiler or to `lexemes`, whose reading
+    /// moves a string or comment boundary — decided from the raw text alone.
+    /// A `/` counts unless a space, a tab, a `/` or a `*` follows it, or what
+    /// touches it ends an operand (an ASCII word, `isOperandScalar`, other
+    /// than a `regexLeadWords` word; a closing bracket, a quote, a backtick,
+    /// a `#`) or it is the second `/` of a `//`. It is a site when the next
+    /// `/` on its line closes a span holding a quote, a `#`, a backslash or a
+    /// parenthesis, or is followed by `/` or `*`: read as a regex, that span
+    /// is a literal, read as code it is not, and either reading can then open
+    /// a string or a comment the other does not.
+    static func regexShapeSite(_ line: [Unicode.Scalar], at index: Int) -> Bool {
+        guard line[index] == "/", index + 1 < line.count, !" \t/*".unicodeScalars.contains(line[index + 1]) else { return false }
+        if index > 0 {
+            let before: Unicode.Scalar = line[index - 1]
+            if isOperandScalar(before) {
+                var start = index - 1
+                while start > 0, line[start - 1].isASCII, line[start - 1].properties.isAlphabetic { start -= 1 }
+                let word = String(String.UnicodeScalarView(line[start..<index]))
+                guard regexLeadWords.contains(word), start == 0 || !isOperandScalar(line[start - 1]) else { return false }
+            } else if ")]}\"`#".unicodeScalars.contains(before) || (before == "/" && (index < 2 || line[index - 2] != "*")) {
+                return false
+            }
+        }
+        guard let close = line[(index + 1)...].firstIndex(of: "/") else { return false }
+        let significant: [Unicode.Scalar] = ["\"", "#", "\\", "(", ")"]
+        if line[(index + 1)..<close].contains(where: { significant.contains($0) }) { return true }
+        return close + 1 < line.count && (line[close + 1] == "/" || line[close + 1] == "*")
+    }
+
+    /// Each line of `text` holding a `regexShapeSite`, trimmed.
+    static func regexShapeLines(in text: String) -> [String] {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" })
+        return lines.filter { line in
+            let scalars: [Unicode.Scalar] = Array(line.unicodeScalars)
+            return scalars.indices.contains { regexShapeSite(scalars, at: $0) }
+        }.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// `regexShapeLines` of each RAW source, as failures.
+    static func regexShapeFailures(_ sources: [(name: String, text: String)]) -> [String] {
+        sources.flatMap { source in
+            regexShapeLines(in: source.text).map {
+                "\(source.name): '\($0)' — a `/` the stripper can read apart from the compiler; spell the line otherwise"
+            }
+        }
+    }
+
+    /// Every Swift file under `rawScanDirectories`, RAW, by its repository path.
+    static func rawScanSources() throws -> [(name: String, text: String)] {
+        var sources: [(name: String, text: String)] = []
+        for directory in rawScanDirectories {
+            let base = repoRoot().appendingPathComponent(directory).resolvingSymlinksInPath()
+            guard let walker = FileManager.default.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
+            for case let url as URL in walker where url.pathExtension == "swift" {
+                let components: [String] = url.resolvingSymlinksInPath().pathComponents
+                let name: String = components.starts(with: base.pathComponents)
+                    ? ([directory] + components.dropFirst(base.pathComponents.count)).joined(separator: "/") : url.path
+                sources.append((name, try String(contentsOf: url, encoding: .utf8)))
+            }
+        }
+        return sources.sorted { $0.name < $1.name }
+    }
+
+    /// A precondition the strippers' readings rest on, read from the RAW
+    /// text with no lexer: the four Mac targets and the phone app hold no
+    /// `regexShapeSite` (none today). `lexemes` mimics a context-sensitive
+    /// lexer, and a line it reads apart from the compiler can hide a token
+    /// from every form a lock reads. This bans the slash shapes known to be
+    /// read apart, whatever the stripper does with them; a shape it does
+    /// not model is not covered (`noSourceDeclaresAnOperator` bans custom
+    /// operators beside it). The rule reads comments and string literals
+    /// too: it over-matches by design (a `/=` or a division followed on its
+    /// line by a quoted `/` is a site, as is a `/` touching a non-ASCII
+    /// identifier before such a span; split such a line).
+    @Test func noSourceHoldsASlashTheStripperCouldReadApart() throws {
+        let sources: [(name: String, text: String)] = try Self.rawScanSources()
+        #expect(Self.regexShapeFailures(sources).isEmpty, "\(Self.regexShapeFailures(sources))")
+        #expect(sources.count > 120, "vacuity: only \(sources.count) files read")
+        for directory in Self.rawScanDirectories {
+            #expect(sources.contains { $0.name.hasPrefix(directory + "/") }, "vacuity: \(directory) is read")
+        }
+        // The plants below, each flagged on exactly its planted lines.
+        let plants: [(name: String, text: String, lines: Int)] = [
+            ("lookups behind an operator slash", Self.lookupsBehindAnOperator, 4),
+            ("lookups in an interpolation line", Self.lookupsInAnInterpolationLine, 1),
+            ("a factory's class shadowed behind an operator slash", Self.shadowBehindAnOperator, 3),
+            ("lookups behind a regex opening with =", Self.lookupsBehindAnEqualsRegex, 4),
+            ("the record path's member", Self.recordPathMember, 1),
+            ("lookups behind a custom operator ending in an alphabetic scalar", Self.lookupsBehindACustomOperator(Self.alphabeticOperator), 4),
+            ("lookups behind a custom operator ending in a combining mark", Self.lookupsBehindACustomOperator(Self.markedOperator), 4),
+            ("lookups behind a custom operator declared behind one", Self.lookupsBehindAHiddenCustomOperator, 5),
+            ("the record path's member behind a custom operator", Self.recordPathMemberBehindACustomOperator, 1),
+        ]
+        for (name, text, lines) in plants {
+            let flagged: [String] = Self.regexShapeLines(in: text)
+            #expect(flagged.count == lines, "canary '\(name)': \(flagged.count) lines flagged, want \(lines)")
+            #expect(flagged.allSatisfy { $0.contains("reduce(3, /)") || $0.contains("/=a\"/") || $0.contains("/a\"/;") },
+                    "canary '\(name)': \(flagged)")
+        }
+        // More lines the ban holds out, whatever the stripper makes of them.
+        let shapes: [String] = [
+            "let r = /= a\"/; let v = \"//\"; _ = zzHidden()",
+            "let q = 8 /- \"a/\"; let v = \"//\"; _ = zzHidden()",
+            "let r = /* c *//a\"/; let v = \"//\"; _ = zzHidden()",
+            "let r =\u{A0}/a\"/; let v = \"//\"; _ = zzHidden()",
+            "let q = zzF(/a,\" /\"); let v = \"//\"; _ = zzHidden()",
+            "let q = zzId(/a/* \" */); let v = \"//\"; _ = zzHidden()",
+            "let q = zzOp(/); let u = \"/\"; let v = \"//\"; _ = zzHidden()",
+            "let q = zzId(/2); let u = \"/\"; let v = \"//\"; _ = zzHidden()",
+            "switch/a\\/b/ { default: break }",
+            "let r = \u{2E2F}/a\"/; let v = \"//\"; _ = zzHidden()",
+            "let r = +\u{345}/a\"/; let v = \"//\"; _ = zzHidden()",
+            "let r = \u{AC}/a\"/; let v = \"//\"; _ = zzHidden()",
+            "let r = \u{2E2F}return/a\"/; let v = \"//\"; _ = zzHidden()",
+            // By design: only an ASCII word ends an operand here.
+            "let h = caf\u{E9}/2; let v = \"a/\"; _ = zzHidden()",
+        ]
+        for line in shapes {
+            #expect(Self.regexShapeLines(in: line).count == 1, "canary '\(line)' was NOT caught")
+        }
+        // … in any of the five directories.
+        let seam: String = "Sources/NapCatSeam/SeamSocket.swift"
+        let settings: String = "ios/NapCatPhone/NapCatPhone/Settings/SettingsScreen.swift"
+        for path in [seam, settings] {
+            #expect(sources.contains { $0.name == path }, "vacuity: \(path) is read")
+            let planted = sources.map { $0.name == path ? ($0.name, $0.text + Self.lookupsBehindAnOperator) : $0 }
+            #expect(Self.regexShapeFailures(planted).count == 4, "canary 'lookups behind an operator slash, in \(path)' was NOT caught")
+            let custom = sources.map { $0.name == path ? ($0.name, $0.text + Self.lookupsBehindAHiddenCustomOperator) : $0 }
+            #expect(Self.regexShapeFailures(custom).count == 5,
+                    "canary 'lookups behind a custom operator declared behind one, in \(path)' was NOT caught")
+        }
+        // Over-match controls: divisions, a compound assignment, paths and
+        // URLs in strings and comments, and today's shapes beside them.
+        let near: [String] = [
+            "let q = a / b; let h = n/2; let f = g()/2; let p = (a)/(b); let s = \"a/b\"",
+            "n /= 2",
+            "let path = \"/usr/bin:/bin:/usr/sbin:/sbin\"",
+            "let u = \"https://\\(host):\\(port)/x\" // see a/b, (c)/(d)",
+            "/// never touches ~/.claude/settings.json (`GET /repos/…/releases/latest`), art/idle/ (see a/b)",
+            "let p = \"a/b\" + \"/c\"; let w = [8].map { $0 / 2 }; let r = #/a\"/#",
+            "// /usr/local/napcat/smc does not exist until setup; POST <server>/<topic>",
+            "let s = \"a/b\"; let h = caf\u{E9} / 2 + caf\u{E9}/2 + \u{3C0}/2",
+            "let q = a + b - c * d % e; let t = !f && g || h ?? i; let w = x == y ? -z : ~z",
+        ]
+        for line in near {
+            #expect(Self.regexShapeLines(in: line).isEmpty, "over-match: '\(line)' was flagged")
+        }
+    }
+
+    /// The standard library's operators: a type may implement one
+    /// (`static func < (…)`), and no source declares another.
+    static let standardOperators: Set<String> = [
+        "==", "!=", "<", "<=", ">", ">=", "~=", "===", "!==", "+", "-", "*", "/", "%", "+=", "-=", "*=", "/=", "%=",
+        "&", "|", "^", "~", "!", "<<", ">>", "&=", "|=", "^=", "<<=", ">>=", "&&", "||", "??", "...", "..<",
+        "&+", "&-", "&*", "&<<", "&>>", "&+=", "&-=", "&*=", "&<<=", "&>>=",
+    ]
+
+    /// Each line of `text` that declares an operator or implements one the
+    /// standard library does not declare, trimmed — from the RAW text, with
+    /// no lexer. Every operator declaration spells the word `operator`
+    /// (only its fixity, whitespace and comments may precede it), so the
+    /// word is banned outright, comments and string literals included; an
+    /// implementation is a `func` named by anything but an ASCII identifier
+    /// or a `standardOperators` spelling.
+    static func operatorDeclarationLines(in text: String) -> [String] {
+        let whole: NSRange = NSRange(text.startIndex..., in: text)
+        guard let word = try? NSRegularExpression(pattern: "(?<![A-Za-z0-9_])operator(?![A-Za-z0-9_])"),
+              let named = try? NSRegularExpression(pattern: "(?<![A-Za-z0-9_])func\\s*([^\\sA-Za-z_`(][^\\s(]*)")
+        else { return ["<bad pattern>"] }
+        var sites: [Int] = word.matches(in: text, range: whole).map { $0.range.location }
+        for match in named.matches(in: text, range: whole) {
+            guard let name = Range(match.range(at: 1), in: text), !standardOperators.contains(String(text[name])) else { continue }
+            sites.append(match.range.location)
+        }
+        let lines: NSString = text as NSString
+        var seen: Set<Int> = []
+        var found: [String] = []
+        for site in sites.sorted() {
+            let line: NSRange = lines.lineRange(for: NSRange(location: site, length: 0))
+            if seen.insert(line.location).inserted {
+                found.append(lines.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        return found
+    }
+
+    /// No source declares a custom operator, read from the RAW text with no
+    /// lexer: the four Mac targets and the phone app hold no
+    /// `operatorDeclarationLines` (none today). A custom operator can end in
+    /// a scalar Unicode calls alphabetic, and the strippers have read a
+    /// bare regex behind one as a division; with no custom operator, every
+    /// operator a source can use is one the standard library or an SDK
+    /// declares. Over-matches by design: the word `operator` is banned in
+    /// comments and strings too.
+    @Test func noSourceDeclaresAnOperator() throws {
+        let sources: [(name: String, text: String)] = try Self.rawScanSources()
+        let failures: [String] = sources.flatMap { source in
+            Self.operatorDeclarationLines(in: source.text).map { "\(source.name): '\($0)' — a custom operator; the sources declare none" }
+        }
+        #expect(failures.isEmpty, "\(failures)")
+        #expect(sources.count > 120, "vacuity: only \(sources.count) files read")
+        let implementations: Int = sources.filter { $0.text.contains("static func < (") }.count
+        #expect(implementations > 0, "vacuity: a standard operator's implementation is read and allowed")
+        // The plants, each flagged on exactly its operator's two lines.
+        let recordTail: String = Self.recordPathTail + Self.customOperatorTail
+        let plants: [(name: String, text: String)] = [
+            ("lookups behind a custom operator ending in an alphabetic scalar", Self.lookupsBehindACustomOperator(Self.alphabeticOperator)),
+            ("lookups behind a custom operator ending in a combining mark", Self.lookupsBehindACustomOperator(Self.markedOperator)),
+            ("lookups behind a custom operator declared behind one", Self.lookupsBehindAHiddenCustomOperator),
+            ("the record path's custom operator", recordTail),
+        ]
+        for (name, text) in plants {
+            let flagged: [String] = Self.operatorDeclarationLines(in: text)
+            #expect(flagged.count == 2, "canary '\(name)': \(flagged)")
+        }
+        // More spellings the ban holds out.
+        let shapes: [String] = [
+            "infix operator <~> : AdditionPrecedence",
+            "postfix operator \u{2E2F}",
+            "prefix /* c */ operator \u{2E2F}",
+            "prefix // c\noperator \u{2E2F}",
+            "let s = \"prefix operator \u{2E2F}\"",
+            "static func <~> (l: S, r: S) -> S { l }",
+            "prefix func /* c */ \u{2E2F} (x: Int) -> Int { x }",
+            "prefix func\n\u{2E2F} (x: Int) -> Int { x }",
+            "struct S { static prefix func +\u{345}(x: S) -> S { x } }",
+        ]
+        for text in shapes {
+            #expect(Self.operatorDeclarationLines(in: text).count == 1, "canary '\(text)' was NOT caught")
+        }
+        // … in any of the five directories.
+        for path in ["Sources/NapCatSeam/SeamSocket.swift", "ios/NapCatPhone/NapCatPhone/Settings/SettingsScreen.swift"] {
+            #expect(sources.contains { $0.name == path }, "vacuity: \(path) is read")
+            let planted: [(name: String, text: String)] = sources.map { $0.name == path ? ($0.name, $0.text + Self.customOperatorTail) : $0 }
+            #expect(planted.flatMap { Self.operatorDeclarationLines(in: $0.text) }.count == 2, "canary 'a custom operator, in \(path)' was NOT caught")
+        }
+        // Over-match controls: the standard operators, implemented and used,
+        // and words that hold or sit beside the banned ones.
+        let near: [String] = [
+            "static func < (lhs: V, rhs: V) -> Bool { lhs.rawValue < rhs.rawValue }",
+            "nonisolated static func == (lhs: V, rhs: V) -> Bool { true }\nstatic func +=(l: inout V, r: V) {}",
+            "func reduce(_ x: Int) -> Int { x }; func `default`() {}; func _f() {}",
+            "let prefix = \"napcat-\"; let p = s.hasPrefix(prefix); let o = operatorName + cooperator",
+            "/// the func below takes a prefix, postfix or infix",
+            "let q = a + b - c * d / e % f; let t = !g && h || i ?? j; n /= 2",
+            "let h = caf\u{E9} / 2 + \u{3C0}/2",
+        ]
+        for text in near {
+            #expect(Self.operatorDeclarationLines(in: text).isEmpty, "over-match: '\(text)' was flagged")
+        }
+    }
+
+    // MARK: What the compiler builds, the locks read (#184)
+
+    /// Lines the compiler builds and the stripper read apart from it before
+    /// the fix above, each with code behind it that every lock reading its
+    /// file missed. As the locks read the disk, each plant goes into the RAW
+    /// sources and through the stripper.
+    static func operatorPrefix(_ n: Int) -> String { "let zzA\(n) = [6].reduce(3, /); let zzB\(n) = \"a/\"; let zzC\(n) = \"//\"; " }
+    static func equalsPrefix(_ n: Int) -> String { "let zzR\(n) = /=a\"/; let zzC\(n) = \"//\"; " }
+
+    static let lookupsBehindAnOperator: String = [
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(operatorPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(operatorPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(operatorPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(operatorPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
+    static let lookupsInAnInterpolationLine: String = [
+        "\nfunc zzDo(_ f: () -> Void) -> String { f(); return \"\" }\n",
+        "enum ZZDyn {\n    static func zz() -> String {\n",
+        "        let zzA = [6].reduce(3, /); let zzB = \"/\"; let zzS = \"\"\"\n",
+        "        // \\(zzDo { guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }; ",
+        "let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject; ",
+        "let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject; ",
+        "let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }; ",
+        "_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject) })\n",
+        "        \"\"\" // \"\"\"\n",
+        "        return zzS + \"\\(zzA)\" + zzB\n    }\n}\n",
+    ].joined()
+
+    static let shadowBehindAnOperator: String = [
+        "\nextension CloudKitMessageSender {\n",
+        "    static let zzA = [6].reduce(3, /); static let zzB = \"a/\"; static let zzC = \"//\"; static func LiveCloudKitAlertStore<C: NSObject, R>(container: C) -> R? {\n",
+        "        \(operatorPrefix(1))let db = container.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(operatorPrefix(2))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "        return nil\n    }\n}\n",
+    ].joined()
+
+    static let lookupsBehindAnEqualsRegex: String = [
+        "\nenum ZZDyn {\n    static func zz() {\n",
+        "        \(equalsPrefix(1))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+        "        \(equalsPrefix(2))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+        "        \(equalsPrefix(3))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+        "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+        "        \(equalsPrefix(4))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+        "    }\n}\n",
+    ].joined()
+
+    /// The record path's plant: a member of the pairing source, before its
+    /// database accessor, and two top-level helpers after the file.
+    static let recordPathAnchor: String = "    private func resolvedDatabase() -> (any PairingRecordDatabase)? {"
+    static let recordPathMember: String = [
+        "    func zzNote() -> String {\n",
+        "        let zzA = [6].reduce(3, /); let zzB = \"/\"; let zzS = \"\"\"\n",
+        "        // \\(zzDo { let op = Self.makeFetchOperation(recordName: String(repeating: \"a\", count: 64)) { _ in }; ",
+        "resolvedDatabase()?.submit(op); ZZHeld.database = op.database })\n",
+        "        \"\"\" // \"\"\"\n",
+        "        return zzS + \"\\(zzA)\" + zzB\n    }\n\n",
+    ].joined()
+    static let recordPathTail: String =
+        "\nenum ZZHeld { nonisolated(unsafe) static var database: AnyObject? }\nfunc zzDo(_ f: () -> Void) -> String { f(); return \"\" }\n"
+
+    /// The same code behind a bare regex opened after a custom prefix
+    /// operator that ends in a scalar Unicode calls alphabetic, or in a
+    /// combining mark: the stripper read that `/` as a division, and the
+    /// raw-text slash lock took the scalar for an operand's.
+    static let alphabeticOperator: String = "\u{2E2F}"
+    static let markedOperator: String = "+\u{345}"
+    static func customOperatorPrefix(_ n: Int, _ op: String) -> String { "let zzR\(n) = \(op)/a\"/; let zzC\(n) = \"//\"; " }
+    static func lookupsBehind(_ op: String, declared declaration: String) -> String {
+        [
+            declaration,
+            "\nenum ZZDyn {\n    static func zz() {\n",
+            "        \(customOperatorPrefix(1, op))guard let cls = Bundle(identifier: \"com.apple.\" + \"CloudKit\")?.classNamed(\"CK\" + \"Container\") as AnyObject? else { return }\n",
+            "        \(customOperatorPrefix(2, op))let c = cls.perform(NSSelectorFromString(\"containerWith\" + \"Identifier:\"), with: \"iCloud.zz\")?.takeUnretainedValue() as? NSObject\n",
+            "        \(customOperatorPrefix(3, op))let db = c?.value(forKey: \"private\" + \"CloudDatabase\") as? NSObject\n",
+            "        let done: @convention(block) (AnyObject?, AnyObject?) -> Void = { _, _ in }\n",
+            "        \(customOperatorPrefix(4, op))_ = db?.perform(NSSelectorFromString(\"fetchAllRecordZones\" + \"WithCompletionHandler:\"), with: done as AnyObject)\n",
+            "    }\n}\n",
+        ].joined()
+    }
+    static func lookupsBehindACustomOperator(_ op: String) -> String {
+        lookupsBehind(op, declared: "\nprefix operator \(op)\nprefix func \(op) <T>(x: T) -> T { x }")
+    }
+    /// … with the operator's declaration itself behind such a regex.
+    static let lookupsBehindAHiddenCustomOperator: String = lookupsBehind(alphabeticOperator, declared:
+        "\n\(customOperatorPrefix(0, alphabeticOperator))prefix operator \(alphabeticOperator)\nprefix func \(alphabeticOperator) <T>(x: T) -> Int { 0 }")
+    static let recordPathMemberBehindACustomOperator: String =
+        recordPathMember.replacingOccurrences(of: "let zzA = [6].reduce(3, /); ", with: "let zzA = \(alphabeticOperator)/a\"/; ")
+    static let customOperatorTail: String = "prefix operator \(alphabeticOperator)\nprefix func \(alphabeticOperator) <T>(x: T) -> Int { 0 }\n"
+
+    /// Each plant above, as the disk would hold it, is caught by the locks
+    /// that catch the same code written plainly: the lookup and key-value
+    /// coding bans, the live classes' word pins, the record path's seam-flow
+    /// and iCloud locks. And look-alikes — a division, a compound
+    /// assignment, slashes in strings and in comments — stay plain code, so
+    /// a banned word in a trailing comment beside them stays out.
+    @Test func theLocksReadWhatTheCompilerBuilds() throws {
+        let raw: ApprovalChannelStructureTests.Sources = try ApprovalChannelStructureTests.sources { $0 }
+        let model: String = "MenuStateModel.swift"
+        let record: String = ApprovalRecordPathStructureTests.recordPathFile
+        func read(_ sources: ApprovalChannelStructureTests.Sources, _ strip: (String) -> String) -> ApprovalChannelStructureTests.Sources {
+            sources.map { ($0.name, strip($0.text)) }
+        }
+        func appended(_ text: String) -> ApprovalChannelStructureTests.Sources {
+            ApprovalChannelStructureTests.mutate(raw, model) { $0 + text }
+        }
+        let lookups: [(String, ApprovalChannelStructureTests.Sources)] = [
+            ("lookups behind an operator slash", appended(Self.lookupsBehindAnOperator)),
+            ("lookups in an interpolation line of a string opened behind one", appended(Self.lookupsInAnInterpolationLine)),
+            ("lookups behind a regex opening with =", appended(Self.lookupsBehindAnEqualsRegex)),
+            ("a factory's class shadowed behind an operator slash", appended(Self.shadowBehindAnOperator)),
+            ("lookups behind a custom operator ending in an alphabetic scalar", appended(Self.lookupsBehindACustomOperator(Self.alphabeticOperator))),
+            ("lookups behind a custom operator ending in a combining mark", appended(Self.lookupsBehindACustomOperator(Self.markedOperator))),
+            ("lookups behind a custom operator declared behind one", appended(Self.lookupsBehindAHiddenCustomOperator)),
+        ]
+        for (name, planted) in lookups {
+            #expect(planted.map { $0.text } != raw.map { $0.text }, "canary '\(name)' did not apply")
+            let code: ApprovalChannelStructureTests.Sources = read(planted, Self.codeOnly)
+            #expect(!PairingStructureTests.objcLookupFailures(code).isEmpty, "canary '\(name)' was NOT caught by the lookup ban")
+            #expect(!PhoneTransportStructureTests.appKeyValueCodingFailures(code).isEmpty,
+                    "canary '\(name)' was NOT caught by the key-value coding ban")
+        }
+        let shadow: ApprovalChannelStructureTests.Sources = read(appended(Self.shadowBehindAnOperator), Self.codeOnly)
+        #expect(!PhoneTransportStructureTests.liveClassWordFailures(shadow).isEmpty,
+                "canary 'a factory's class shadowed behind an operator slash' was NOT caught by the live classes' word pin")
+        #expect(ApprovalChannelStructureTests.text(record, in: raw).components(separatedBy: Self.recordPathAnchor).count == 2,
+                "vacuity: the record path's plant has its one anchor")
+        let recordPlanted: ApprovalChannelStructureTests.Sources = ApprovalChannelStructureTests.mutate(raw, record) {
+            $0.replacingOccurrences(of: Self.recordPathAnchor, with: Self.recordPathMember + Self.recordPathAnchor) + Self.recordPathTail
+        }
+        let uncut: ApprovalChannelStructureTests.Sources = read(recordPlanted, Self.wholeLineCommentsRemoved)
+        #expect(!ApprovalRecordPathStructureTests.seamFlowFailures(uncut).isEmpty,
+                "canary 'the record path's fetch kept from an interpolation line' was NOT caught by the seam-flow lock")
+        #expect(!ApprovalRecordPathStructureTests.iCloudFailures(uncut).isEmpty,
+                "canary 'the record path's fetch kept from an interpolation line' was NOT caught by the iCloud lock")
+        #expect(Self.recordPathMemberBehindACustomOperator != Self.recordPathMember, "vacuity: the custom operator's member differs")
+        let customMember: String = Self.recordPathMemberBehindACustomOperator + Self.recordPathAnchor
+        let customTail: String = Self.recordPathTail + Self.customOperatorTail
+        let customPlanted: ApprovalChannelStructureTests.Sources = ApprovalChannelStructureTests.mutate(raw, record) {
+            $0.replacingOccurrences(of: Self.recordPathAnchor, with: customMember) + customTail
+        }
+        let customUncut: ApprovalChannelStructureTests.Sources = read(customPlanted, Self.wholeLineCommentsRemoved)
+        #expect(!ApprovalRecordPathStructureTests.seamFlowFailures(customUncut).isEmpty,
+                "canary 'the record path's fetch behind a custom operator' was NOT caught by the seam-flow lock")
+        #expect(!ApprovalRecordPathStructureTests.iCloudFailures(customUncut).isEmpty,
+                "canary 'the record path's fetch behind a custom operator' was NOT caught by the iCloud lock")
+        // Over-match controls: look-alikes, then a banned word in a trailing
+        // comment that must stay stripped.
+        let lookAlikes: String = [
+            "\nfunc zzLookAlikes(_ n: Int) -> Int {\n",
+            "    var m = n; m /= 2; let zzP = \"a/b\" // never NSSelectorFromString(s), never value(forKey:)\n",
+            "    let zzQ = (m)/(2) + m / (2); let zzU = \"https://x/\\(zzP)\" // never classNamed(_:)\n",
+            "    let caf\u{E9} = m; let zzE = caf\u{E9}/2 + caf\u{E9} / 2; let zzG = \"a/\" // never NSSelectorFromString(s)\n",
+            "    let zzF = (zzE > 1 ? -zzE : +zzE) * 3/1 + (zzG.isEmpty ? 0 : 1); let zzH = \"/\" // never value(forKey:)\n",
+            "    return zzQ + zzU.count + zzF + zzH.count // see a/b, (c)/(d), ~/.claude/x\n}\n",
+        ].joined()
+        let plain: ApprovalChannelStructureTests.Sources = read(appended(lookAlikes), Self.codeOnly)
+        #expect(PairingStructureTests.objcLookupFailures(plain).isEmpty, "over-match: \(PairingStructureTests.objcLookupFailures(plain))")
+        #expect(PhoneTransportStructureTests.appKeyValueCodingFailures(plain).isEmpty,
+                "over-match: \(PhoneTransportStructureTests.appKeyValueCodingFailures(plain))")
     }
 
     static func swiftSources(_ strip: (String) -> String = codeOnly) throws -> [(name: String, text: String)] {
