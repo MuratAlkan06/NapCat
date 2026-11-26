@@ -23,6 +23,9 @@ import Testing
 ///    file, a photo or the launch options, and the app declares no URL
 ///    scheme and no associated domain.
 ///
+/// AMENDED (#194): Settings' Remote approvals switch sits under the Pairing
+/// row, shown with it.
+///
 /// Each lock is a pure function over comment-stripped sources and catches
 /// planted canaries, so none can pass vacuously.
 @Suite struct PairingEntryStructureTests {
@@ -88,7 +91,7 @@ import Testing
     /// with a live pairing; its action makes the ceremony, which raises the
     /// sheet; the sheet runs that ceremony on the live camera and lets it go
     /// when it closes.
-    static let rowShape: String = "if let pairing { pairingSection(pairing) }"
+    static let rowShape: String = "if let pairing { pairingSection(pairing) approvalsSection }"
     static let actionShape: String = "Button(Self.pairTitle) { " + pairAction + " }"
     static let sheetShape: String = itemSheet + " " + settingsSheet + " }"
     static let settingsShapes: [String] = [rowShape, actionShape, sheetShape]
@@ -145,8 +148,12 @@ import Testing
             ("the live pairing held elsewhere", Self.mutate(app, "\(Self.appDir)/Model/AlertFeed.swift") {
                 $0 + "\nenum Spare { @MainActor static var held: LivePairing? }" }),
             ("the row shown with no live pairing", Self.mutate(app, settings) {
-                $0.replacingOccurrences(of: "                if let pairing {\n                    pairingSection(pairing)\n                }\n",
-                                        with: "                pairingSection(pairing!)\n") }),
+                $0.replacingOccurrences(of: "                if let pairing {\n                    pairingSection(pairing)\n",
+                                        with: "                pairingSection(pairing!)\n                if let pairing {\n") }),
+            // #194: the switch shown with no live pairing.
+            ("the approvals switch shown with no live pairing", Self.mutate(app, settings) {
+                $0.replacingOccurrences(of: "                    pairingSection(pairing)\n                    approvalsSection\n                }\n",
+                                        with: "                    pairingSection(pairing)\n                }\n                approvalsSection\n") }),
             ("the sheet over a fixture camera", Self.mutate(app, settings) {
                 $0.replacingOccurrences(of: "PairingSheet(ceremony: ceremony, camera: pairing.camera)",
                                         with: "PairingSheet(ceremony: ceremony, camera: FixtureCamera(answer: .ready))") }),

@@ -10,6 +10,10 @@ import SwiftUI
 ///   screen as a sheet over Settings, a new ceremony each time, and only on
 ///   the owner's tap. Shown only when the launch has a live pairing (a
 ///   request fixture launch, and previews, have none).
+/// - Remote approvals (F4, #194), under Pairing and shown with it: the
+///   phone's own switch (`ApprovalsSwitch`), off by default. It sets the
+///   stored choice it is handed and nothing else; the root hands it to the
+///   inbox, and nothing tells the Mac.
 /// - About shows the running build, read from the bundle, and the project
 ///   site.
 ///
@@ -36,6 +40,12 @@ struct SettingsScreen: View {
         return "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
             + "then scan the code it shows and confirm with \(name)."
     }
+    nonisolated static let approvalsHeader = "Remote approvals"
+    nonisolated static let approvalsLabel = "Prompts on this iPhone"
+    /// What the switch does today: the prompts are listed and announced
+    /// here; answering from here is not on yet; pairing comes first.
+    nonisolated static let approvalsFooter = "Lists the permission prompts your paired Mac forwards, with a push "
+        + "when one is waiting. Answers from this iPhone don't reach your Mac yet; answer there."
     nonisolated static let aboutHeader = "About"
     nonisolated static let versionLabel = "Version"
     nonisolated static let siteLabel = "Website"
@@ -45,6 +55,8 @@ struct SettingsScreen: View {
     let notifications: NotificationPermission
     /// The launch's live pairing, if it has one.
     var pairing: LivePairing?
+    /// The owner's remote-approvals switch, as the root keeps it.
+    @Binding var approvals: Bool
     var version = AppVersion(bundle: .main)
 
     @Environment(\.theme) private var theme
@@ -61,6 +73,7 @@ struct SettingsScreen: View {
                 notificationsSection
                 if let pairing {
                     pairingSection(pairing)
+                    approvalsSection
                 }
                 about
             }
@@ -147,6 +160,21 @@ struct SettingsScreen: View {
         .listRowBackground(theme.surface)
     }
 
+    /// One switch: the phone's own (#194), under Pairing.
+    private var approvalsSection: some View {
+        Section {
+            Toggle(isOn: $approvals) {
+                Text(Self.approvalsLabel)
+                    .foregroundStyle(theme.ink)
+            }
+        } header: {
+            header(Self.approvalsHeader)
+        } footer: {
+            footer(Self.approvalsFooter)
+        }
+        .listRowBackground(theme.surface)
+    }
+
     private var about: some View {
         Section {
             LabeledContent {
@@ -191,12 +219,12 @@ struct SettingsScreen: View {
 
 #Preview("Night Groom, notifications on") {
     @Previewable @State var palette = PaletteID.nightGroom
-    SettingsScreen(palette: $palette, notifications: .on)
+    SettingsScreen(palette: $palette, notifications: .on, approvals: .constant(false))
         .environment(\.theme, ThemeID.fallback.theme(palette: palette))
 }
 
 #Preview("Deep Cream, notifications off") {
     @Previewable @State var palette = PaletteID.deepCream
-    SettingsScreen(palette: $palette, notifications: .off)
+    SettingsScreen(palette: $palette, notifications: .off, approvals: .constant(false))
         .environment(\.theme, ThemeID.fallback.theme(palette: palette))
 }

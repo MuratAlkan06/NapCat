@@ -32,6 +32,9 @@ struct NapCatPhoneApp: App {
 /// S3), drawn in the same palette: a `-NapCatRequest` launch opens on its
 /// fixture prompt. Nothing else opens one in this slice.
 ///
+/// Remote approvals (F4, #194): the owner's switch is kept in the app's
+/// own defaults and set in Settings.
+///
 /// The pairing screen (F4, slice S-PAIR-B) opens the same way for a
 /// `-NapCatPairing` launch: its fixture ceremony scans the launch's code, if
 /// it has one, as the sheet opens. The live pairing (slice S-PAIR-C1.6)
@@ -45,6 +48,8 @@ struct ReceiverRoot: View {
     /// The chosen palette, kept in the app's own defaults across launches.
     /// A missing or unknown stored value reads as the default.
     @AppStorage(PaletteID.storageKey) private var palette = PaletteID.fallback
+    /// The owner's remote-approvals switch (`ApprovalsSwitch`), off unless set.
+    @AppStorage(ApprovalsSwitch.storageKey) private var approvals = false
     @State private var showsSettings: Bool
     /// The permission prompt shown as a sheet, if any.
     @State private var shownRequest: PendingRequest?
@@ -71,7 +76,8 @@ struct ReceiverRoot: View {
                 }
         }
         .sheet(isPresented: $showsSettings) {
-            SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing)
+            SettingsScreen(palette: $palette, notifications: feed.notificationPermission, pairing: inbox.pairing,
+                           approvals: $approvals)
         }
         .sheet(item: $shownRequest) { request in
             PendingRequestSheet(inbox: inbox, id: request.id)

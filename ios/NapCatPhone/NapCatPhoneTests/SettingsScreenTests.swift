@@ -1,5 +1,6 @@
 import Foundation
 @testable import NapCatPhone
+import SwiftUI
 import Testing
 import UIKit
 
@@ -93,6 +94,105 @@ import UIKit
             #expect(mutant != screen, "canary '\(name)' did not apply")
             #expect(!Self.footerFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+    }
+
+    // MARK: Remote approvals (F4, #194)
+
+    /// The switch's row: its group named as the Mac names its own, a label
+    /// that says where the prompts go, and a footer that says what it does
+    /// today and what it does not do yet. Lock-safe words: none of the
+    /// words the answer path's locks count.
+    @Test func theApprovalsRowSaysExactlyThis() {
+        #expect(SettingsScreen.approvalsHeader == "Remote approvals")
+        #expect(SettingsScreen.approvalsLabel == "Prompts on this iPhone")
+        #expect(SettingsScreen.approvalsFooter == "Lists the permission prompts your paired Mac forwards, with a push "
+            + "when one is waiting. Answers from this iPhone don't reach your Mac yet; answer there.")
+        for word in ["match", "sign", "signed", "confirm", "confirmed"] {
+            #expect(!SettingsScreen.approvalsFooter.split(whereSeparator: { !$0.isLetter }).contains { $0.lowercased() == word },
+                    "'\(word)' in the footer")
+        }
+    }
+
+    /// Only a stored true with a committed key (paired, or paired under
+    /// biometrics changed since) takes effect; off, or unpaired, nothing.
+    @Test func theSwitchTakesEffectOnlyOnWithACommittedKey() {
+        let healths: [PhoneKeyring.Health] = [.paired, .enrollmentChanged, .unpaired(.neverPaired), .unpaired(.enrollmentChanged),
+                                              .unpaired(.unreadable)]
+        for health in healths {
+            #expect(!ApprovalsSwitch.effective(stored: false, keyHealth: health), "off, \(health)")
+            let committed: Bool = health == .paired || health == .enrollmentChanged
+            #expect(ApprovalsSwitch.effective(stored: true, keyHealth: health) == committed, "on, \(health)")
+        }
+    }
+
+    /// The switch is the phone's own: kept under `ApprovalsSwitch.storageKey`
+    /// (a throwaway suite here), off unless set, and reading it writes
+    /// nothing.
+    @MainActor
+    @Test func theSwitchIsOffUnlessSet() {
+        #expect(ApprovalsSwitch.storageKey == "remoteApprovalsEnabled")
+        PalettePersistenceTests.withSuite { suite in
+            let stored = AppStorage(wrappedValue: false, ApprovalsSwitch.storageKey, store: suite)
+            #expect(stored.wrappedValue == false)
+            #expect(suite.object(forKey: ApprovalsSwitch.storageKey) == nil, "reading writes nothing")
+            stored.wrappedValue = true
+            #expect(AppStorage(wrappedValue: false, ApprovalsSwitch.storageKey, store: suite).wrappedValue)
+        }
+    }
+
+    /// Settings sets the root's switch and nothing else: one toggle bound to
+    /// it, under Pairing and shown with it; and the root keeps the one
+    /// stored choice (`@AppStorage`), handed to Settings bound.
+    static let toggleShape: String = "Toggle(isOn: $approvals) { Text(Self.approvalsLabel) .foregroundStyle(theme.ink) }"
+    static let approvalsSites: [String: Int] = CloudKitStructureTests.appSites([
+        "Settings/SettingsScreen.swift": ["@Binding var approvals: Bool": 1, "Toggle(isOn: $approvals) {": 1,
+                                          "SettingsScreen(palette: $palette, notifications: .on, approvals: .constant(false))": 1,
+                                          "SettingsScreen(palette: $palette, notifications: .off, approvals: .constant(false))": 1],
+        "NapCatPhoneApp.swift": ["@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1, "approvals: $approvals)": 2],
+    ])
+
+    static func approvalsFailures(_ app: [Source]) -> [String] {
+        var failures: [String] = []
+        let screen: String = SettingsReachabilityTests.flat(app.first { $0.path.hasSuffix("/Settings/SettingsScreen.swift") }?.text ?? "")
+        if !screen.contains(toggleShape) { failures.append("Settings lost '\(toggleShape)'") }
+        if CloudKitStructureTests.occurrences(of: "Toggle(", in: screen) != 1 { failures.append("Settings holds one toggle, the switch") }
+        let stripped: [Source] = app.map { ($0.path, RecordPathStructureTests.literalsEmptied(CloudKitStructureTests.codeOnly($0.text))) }
+        failures += CloudKitStructureTests.appSiteFailures(#"\bapprovals\b"#, in: stripped, allowed: approvalsSites,
+                                                           rule: "the switch is kept by the root and set by Settings alone")
+        failures += CloudKitStructureTests.appSiteFailures(#"\bApprovalsSwitch\s*\.\s*storageKey\b"#, in: stripped,
+                                                           allowed: CloudKitStructureTests.appSites(["NapCatPhoneApp.swift": [
+                                                               "@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1]]),
+                                                           rule: "one place keeps the switch")
+        return failures
+    }
+
+    @Test func settingsSetsTheRootsSwitchAlone() throws {
+        let app: [Source] = try CloudKitStructureTests.swiftFiles(under: CloudKitStructureTests.appDir)
+        #expect(Self.approvalsFailures(app).isEmpty, "\(Self.approvalsFailures(app))")
+        let settings: String = "\(Self.settingsDir)/SettingsScreen.swift"
+        let root: String = SettingsReachabilityTests.rootFile
+        func mutate(_ path: String, _ transform: (String) -> String) -> [Source] {
+            app.map { $0.path == path ? ($0.path, transform($0.text)) : $0 }
+        }
+        let mutants: [(String, [Source])] = [
+            ("the toggle bound to a constant", mutate(settings) {
+                $0.replacingOccurrences(of: "Toggle(isOn: $approvals)", with: "Toggle(isOn: .constant(true))") }),
+            ("Settings switches it on as it appears", mutate(settings) {
+                $0.replacingOccurrences(of: "        .tint(theme.accent)\n        .sheet(item: $ceremony)",
+                                        with: "        .tint(theme.accent)\n        .onAppear { approvals = true }\n        .sheet(item: $ceremony)") }),
+            ("a second toggle", mutate(settings) {
+                $0.replacingOccurrences(of: "            NotificationSettingsButton(title: notifications.action)\n",
+                                        with: "            NotificationSettingsButton(title: notifications.action)\n            Toggle(isOn: $approvals) { Text(\"x\") }\n") }),
+            ("a second keeper", mutate("\(CloudKitStructureTests.appDir)/Model/AlertFeed.swift") {
+                $0 + "\nenum Spare { static let key = ApprovalsSwitch.storageKey }" }),
+            ("the root's switch on by default", mutate(root) {
+                $0.replacingOccurrences(of: "private var approvals = false", with: "private var approvals = true") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.approvalsFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        #expect(Self.approvalsFailures(mutate(settings) { $0 + "\n/// never approvals = true here\nlet spareApprovalsCount = 1" }).isEmpty)
     }
 
     // MARK: About
