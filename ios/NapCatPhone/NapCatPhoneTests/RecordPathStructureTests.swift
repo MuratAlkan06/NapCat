@@ -369,21 +369,38 @@ import Testing
     /// design review: the answer waiting for its match names its own
     /// verdict, `.confirming(verdict)`, so the screen says which answer the
     /// match will sign.)
+    ///
+    /// AMENDED (#154): the answerable check names the answer, and is pinned
+    /// whole: it asks the request's status whether THAT answer is on offer,
+    /// with the answer iCloud left unconfirmed folded in, so once one is,
+    /// the other answer asks for no match. That answer is set in one place,
+    /// after the write, and never cleared; the signed decision is named only
+    /// where the signer hands it over and where it is written, so no
+    /// signature outlives its write (a resend is signed afresh).
+    /// AMENDED (the #154 security spot-check): and so is the signer's
+    /// outcome that holds it (`signing`): bound, unwrapped, and read for
+    /// the unsigned note, nothing else, so neither can be kept across the
+    /// unconfirmed state without a new site.
     static func allowPathFailures(_ inbox: String) -> [String] {
         let code = CloudKitStructureTests.codeOnly(inbox)
         var failures: [String] = []
         guard let allow = CloudKitStructureTests.body(after: "func allow(_ id: PromptID) async {", in: code),
               let deny = CloudKitStructureTests.body(after: "func deny(_ id: PromptID) async {", in: code),
+              let answerable = CloudKitStructureTests.body(after: answerableHead, in: code),
               let confirm = CloudKitStructureTests.body(
                 after: "private func confirmAndSend(_ verdict: ApprovalWire.Verdict, for id: PromptID) async {", in: code),
               let send = CloudKitStructureTests.body(
                 after: "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {",
                 in: code) else {
-            return ["allow, deny, confirmAndSend or send moved (the lock would be vacuous)"]
+            return ["allow, deny, isAnswerable, confirmAndSend or send moved (the lock would be vacuous)"]
         }
         for (name, body, verdict) in [("Allow", allow, "allow"), ("Deny", deny, "deny")]
-        where SettingsReachabilityTests.flat(body) != "guard isAnswerable(id) else { return } await confirmAndSend(.\(verdict), for: id)" {
-            failures.append("\(name) must open on the answerable check, then ask for its match (confirmAndSend), nothing else")
+        where SettingsReachabilityTests.flat(body)
+            != "guard isAnswerable(id, with: .\(verdict)) else { return } await confirmAndSend(.\(verdict), for: id)" {
+            failures.append("\(name) must open on the answerable check for itself, then ask for its match (confirmAndSend), nothing else")
+        }
+        if SettingsReachabilityTests.flat(answerable) != answerableBody {
+            failures.append("isAnswerable must ask the status, with the unconfirmed answer folded in, whether that answer is on offer")
         }
         let confirmBody = "entries[id]?.answer = .confirming(verdict) "
             + "guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else { "
@@ -419,13 +436,35 @@ import Testing
         code.replacingOccurrences(of: ##"#"(?:[^"\n]|"(?!#))*"#|"(?:[^"\\\n]|\\.)*""##, with: "\"\"", options: .regularExpression)
     }
 
+    /// The answerable check (#154), whole.
+    static let answerableHead: String = "private func isAnswerable(_ id: PromptID, with verdict: ApprovalWire.Verdict) -> Bool {"
+    static let answerableBody: String = "tick() refreshKeyHealth() if case .unpaired = keyHealth { return false } "
+        + "guard let entry = entries[id], phase(of: id)?.isPending == true else { return false } "
+        + "let status: RequestStatus = RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer, "
+        + "mayHaveLanded: entry.mayHaveLanded) return status.answers.contains(verdict)"
+
     /// Every line of the inbox naming `send`, `write` or `confirm` (string
     /// literals emptied: the reasons' words are copy, not calls).
+    /// AMENDED (#154): and `mayHaveLanded` (declared, read by the status and
+    /// the answerable check, set once after an unconfirmed write, never
+    /// cleared) and `decision` (bound from the signer, written, nothing
+    /// else: no decision is kept for a resend).
+    /// AMENDED (the #154 security spot-check): and `signing`, the signer's
+    /// outcome holding that decision (bound once, unwrapped once, read once
+    /// for the unsigned note): kept anywhere, it names no `decision`.
     static let inboxNameSites: [(String, [String: Int])] = [
         ("send", ["await send(verdict, for: id, match: match)": 1,
                   "private func send(_ verdict: ApprovalWire.Verdict, for id: PromptID, match: any BiometricMatch) async {": 1]),
         ("write", ["let outcome = await writer.write(decision)": 1]),
         ("confirm", ["guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {": 1]),
+        ("mayHaveLanded", ["var mayHaveLanded: ApprovalWire.Verdict?": 1,
+                           "return RequestStatus(phase: phase, answer: entry.answer, mayHaveLanded: entry.mayHaveLanded)": 2,
+                           "mayHaveLanded: entry.mayHaveLanded)": 2,
+                           "if outcome == .unconfirmed { entries[id]?.mayHaveLanded = verdict }": 1]),
+        ("decision", ["guard case .signed(let decision) = signing else {": 1, "let outcome = await writer.write(decision)": 1]),
+        ("signing", ["let signing = DecisionSigner.sign(verdict, for: request, at: clock(), with: keyring, match: match)": 1,
+                     "guard case .signed(let decision) = signing else {": 1,
+                     "entries[id]?.answer = signing == .notSigned ? .unsigned : .none": 1]),
     ]
 
     /// Every `confirmed` in the app (#168, (b)): the result's case, the
@@ -508,8 +547,8 @@ import Testing
         let ask = "        guard case .confirmed(let match) = await biometrics.confirm(reason: Self.reason(for: verdict)) else {\n"
         let mutants: [(String, String)] = [
             ("Deny skips the match", inbox.replacingOccurrences(
-                of: "        guard isAnswerable(id) else { return }\n        await confirmAndSend(.deny, for: id)\n",
-                with: "        guard isAnswerable(id) else { return }\n        await send(.deny, for: id, match: Spare())\n")),
+                of: "        guard isAnswerable(id, with: .deny) else { return }\n        await confirmAndSend(.deny, for: id)\n",
+                with: "        guard isAnswerable(id, with: .deny) else { return }\n        await send(.deny, for: id, match: Spare())\n")),
             ("Allow skips the match", inbox.replacingOccurrences(
                 of: "await confirmAndSend(.allow, for: id)", with: "await send(.allow, for: id, match: Spare())")),
             ("the match ignored", inbox.replacingOccurrences(of: ask, with: "        _ = await biometrics.confirm(reason: Self.reason(for: verdict))\n"
@@ -521,18 +560,50 @@ import Testing
                 of: "entries[id]?.answer = .confirming(verdict)", with: "entries[id]?.answer = .confirming(.allow)")),
             ("Deny asks in Allow's words", inbox.replacingOccurrences(of: "Self.reason(for: verdict)", with: "Self.allowReason")),
             ("Deny skips the check", inbox.replacingOccurrences(
-                of: "    func deny(_ id: PromptID) async {\n        guard isAnswerable(id) else { return }\n",
+                of: "    func deny(_ id: PromptID) async {\n        guard isAnswerable(id, with: .deny) else { return }\n",
                 with: "    func deny(_ id: PromptID) async {\n")),
             ("send skips the re-check", inbox.replacingOccurrences(
                 of: "        tick()\n        guard phase(of: id)?.isPending == true, let request = entries[id]?.request else {\n",
                 with: "        guard let request = entries[id]?.request else {\n")),
             ("the match outlives its answer", inbox.replacingOccurrences(of: "        defer { match.invalidate() }\n", with: "")),
             ("a second write site", inbox + "\nextension RequestInbox { func f() async { _ = await writer.write(d) } }"),
+            // #154: the answerable check names its answer and asks the status
+            // with the unconfirmed answer folded in; that answer is set once
+            // and never cleared; no signed decision is kept.
+            ("Deny checked as Allow", inbox.replacingOccurrences(
+                of: "guard isAnswerable(id, with: .deny)", with: "guard isAnswerable(id, with: .allow)")),
+            ("the check ignores the answer", inbox.replacingOccurrences(
+                of: "return status.answers.contains(verdict)", with: "return status.isAnswerable")),
+            ("the check forgets the unconfirmed answer", inbox.replacingOccurrences(
+                of: "mayHaveLanded: entry.mayHaveLanded)\n        return status.answers.contains(verdict)",
+                with: "mayHaveLanded: nil)\n        return status.answers.contains(verdict)")),
+            ("an unpaired phone asks for a match", inbox.replacingOccurrences(
+                of: "        refreshKeyHealth()\n        if case .unpaired = keyHealth { return false }\n        guard let entry",
+                with: "        refreshKeyHealth()\n        guard let entry")),
+            ("the unconfirmed answer never kept", inbox.replacingOccurrences(
+                of: "        if outcome == .unconfirmed { entries[id]?.mayHaveLanded = verdict }\n", with: "")),
+            ("the restriction lifted after a failed resend", inbox.replacingOccurrences(
+                of: "        case .failed: .unsent(verdict)\n",
+                with: "        case .failed: .unsent(verdict); entries[id]?.mayHaveLanded = nil\n")),
+            ("the signed decision kept for a resend", inbox.replacingOccurrences(
+                of: "        entries[id]?.answer = .sending(verdict)\n",
+                with: "        entries[id]?.answer = .sending(verdict)\n        entries[id]?.lastSigned = decision\n")),
         ]
         for (name, mutant) in mutants {
             #expect(mutant != inbox, "canary '\(name)' did not apply")
             #expect(!Self.allowPathFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // The #154 security spot-check: the signer's outcome kept in the
+        // entry names no `decision`, so the `signing` pin alone sees it.
+        let kept: String = inbox.replacingOccurrences(
+            of: "        entries[id]?.answer = .sending(verdict)\n",
+            with: "        entries[id]?.answer = .sending(verdict)\n        entries[id]?.kept = signing\n")
+        let caught: [String] = Self.allowPathFailures(kept)
+        #expect(kept != inbox, "canary 'the signed outcome kept in the entry' did not apply")
+        #expect(caught.count == 1 && caught.allSatisfy { $0.hasPrefix(#"'\bsigning\b' in "#) },
+                "canary 'the signed outcome kept in the entry' must be caught by the signing pin alone: \(caught)")
+        // Over-match control: words that only contain it, and its copy.
+        #expect(Self.allowPathFailures(inbox + "\nlet signings = 1, cosigning = 2, copy = \"signing\"").isEmpty)
     }
 
     // MARK: 5. The decision record is written only through the wire

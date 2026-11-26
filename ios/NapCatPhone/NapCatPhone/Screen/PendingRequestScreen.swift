@@ -5,14 +5,18 @@ import SwiftUI
 /// the tool and project, the input exactly as the Mac's gate read it, the
 /// request's state in words and, only while it is answerable, Allow and Deny,
 /// each after a biometric match (CL-3, and the owner's uniform-signing
-/// ruling: every answer is signed). An expired or withdrawn request says why
-/// and offers no answer. Everything visual comes from the environment's
-/// `Theme`; nothing on it moves.
+/// ruling: every answer is signed); after iCloud left an answer unconfirmed,
+/// that answer alone, sent again (#154). An expired or withdrawn request
+/// says why and offers no answer. Everything visual comes from the
+/// environment's `Theme`; nothing on it moves.
 struct PendingRequestScreen: View {
     nonisolated static let title = "Permission prompt"
     nonisolated static let inputHeader = "Input"
     nonisolated static let closeTitle = "Close"
     nonisolated static let footnote = "The dialog on your Mac stays open, and you can answer it there instead."
+    /// The footnote once iCloud left an answer unconfirmed (#154): that
+    /// answer may have reached the Mac, whose dialog then closed.
+    nonisolated static let unconfirmedFootnote = "If the dialog on your Mac is still open, you can answer it there instead."
     /// Under the input when it is taller than its box.
     nonisolated static let longInput = PhoneLine(text: "Long — the input scrolls inside its box", severity: .nominal)
     /// Beside the Sent line: the answer went out, nothing more.
@@ -56,6 +60,21 @@ struct PendingRequestScreen: View {
     nonisolated static func allowTitle(_ kind: BiometryKind) -> String { "Allow with \(kind.name)" }
     nonisolated static func denyTitle(_ kind: BiometryKind) -> String { "Deny with \(kind.name)" }
     nonisolated static func answerHint(_ kind: BiometryKind) -> String { "Asks for \(kind.name) first." }
+    /// The one answer on offer after iCloud left it unconfirmed (#154): the
+    /// same answer, sent again, asking for the biometric again.
+    nonisolated static func againTitle(_ verdict: ApprovalWire.Verdict, _ kind: BiometryKind) -> String {
+        "Send \(RequestStatus.name(verdict)) again with \(kind.name)"
+    }
+
+    /// What `verdict`'s answer says in `offer`: sent again when it is the
+    /// one answer offered again, otherwise its own title.
+    nonisolated static func title(_ verdict: ApprovalWire.Verdict, _ kind: BiometryKind, in offer: Offer) -> String {
+        if offer.again == verdict { return againTitle(verdict, kind) }
+        switch verdict {
+        case .allow: return allowTitle(kind)
+        case .deny: return denyTitle(kind)
+        }
+    }
 
     /// The tool's glyph: one per tool the Mac's gate can forward, and a
     /// neutral tool mark for a name it does not know. Each has the filled
@@ -110,34 +129,55 @@ struct PendingRequestScreen: View {
     }
 
     /// What VoiceOver announces as the state changes: the Sent line, once,
-    /// as an answer goes out; nothing otherwise.
+    /// as an answer goes out; the unconfirmed note, once, as it first
+    /// appears, so the owner learns only one answer is left to send (#154;
+    /// back from a resend under way it is not announced again); nothing
+    /// otherwise.
     nonisolated static func announcement(from old: RequestStatus, to new: RequestStatus, at now: Date) -> String? {
-        guard case .sent = new, old != new else { return nil }
-        return new.line(at: now).spoken
+        guard old != new else { return nil }
+        if case .sent = new { return new.line(at: now).spoken }
+        guard case .pending(_, .unconfirmed?) = new, !old.afterUnconfirmed else { return nil }
+        return new.note?.spoken
     }
 
-    /// Which answers the screen offers: both or neither, since both ask for
-    /// the same match.
+    /// Which answers the screen offers: both, or after iCloud left an
+    /// answer unconfirmed that one alone, sent again (#154), or neither.
+    /// Each asks for the same match.
     struct Offer: Equatable, Sendable {
-        /// Allow and Deny, with the biometric they ask for; nil when neither
-        /// is on offer.
+        /// The biometric the answers on offer ask for; nil when none is on
+        /// offer.
         let answers: BiometryKind?
+        /// The one answer on offer, to send again, after iCloud left it
+        /// unconfirmed; nil when both are on offer, or neither.
+        let again: ApprovalWire.Verdict?
         /// Said where the answers go: why there are none.
         let caption: PhoneLine?
 
+        init(answers: BiometryKind?, again: ApprovalWire.Verdict? = nil, caption: PhoneLine?) {
+            self.answers = answers
+            self.again = again
+            self.caption = caption
+        }
+
         static let none = Offer(answers: nil, caption: nil)
+
+        /// Whether `verdict`'s answer is on offer.
+        func offers(_ verdict: ApprovalWire.Verdict) -> Bool {
+            answers != nil && (again == nil || again == verdict)
+        }
     }
 
     /// Nothing unless the request is answerable; then nothing but the
-    /// reason on an unpaired phone (no key signs), both answers where a
-    /// biometric match is possible, and otherwise the reason there are none.
-    /// A changed enrollment keeps the answers and says so over them.
+    /// reason on an unpaired phone (no key signs), the answers on offer
+    /// (both, or the one sent again) where a biometric match is possible,
+    /// and otherwise the reason there are none. A changed enrollment keeps
+    /// the answers and says so over them.
     nonisolated static func offer(for status: RequestStatus, biometry: BiometricAvailability,
                                   key: PhoneKeyring.Health) -> Offer {
         guard status.isAnswerable else { return .none }
         if case .unpaired(let reason) = key { return Offer(answers: nil, caption: unpaired(reason, biometry.kind)) }
         guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }
-        return Offer(answers: kind, caption: key == .enrollmentChanged ? enrollmentChanged(kind) : nil)
+        return Offer(answers: kind, again: status.resend, caption: key == .enrollmentChanged ? enrollmentChanged(kind) : nil)
     }
 
     /// The footnote is true only while an answer from here can still go
@@ -148,6 +188,13 @@ struct PendingRequestScreen: View {
         case .pending, .confirming, .sending: return true
         case .sent, .answered, .expired, .withdrawn: return false
         }
+    }
+
+    /// The footnote's words: once iCloud left an answer unconfirmed, and
+    /// through any resend under way, it no longer says the dialog stays
+    /// open (#154).
+    nonisolated static func footnoteText(_ status: RequestStatus) -> String {
+        status.afterUnconfirmed ? unconfirmedFootnote : footnote
     }
 
     /// What VoiceOver reads for the prompt card.
@@ -180,7 +227,7 @@ struct PendingRequestScreen: View {
                 stateLine
                 answers
                 if Self.showsFootnote(status) {
-                    Text(Self.footnote)
+                    Text(Self.footnoteText(status))
                         .font(theme.detailFont)
                         .foregroundStyle(theme.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -277,23 +324,29 @@ struct PendingRequestScreen: View {
     }
 
     /// Allow in the accent, Deny in the ink, each with the biometric's
-    /// glyph and words; or the reason there are none.
+    /// glyph and words, each only while on offer (after iCloud left an
+    /// answer unconfirmed, that one alone, sent again); or the reason there
+    /// are none.
     @ViewBuilder private var answers: some View {
         let offer = Self.offer(for: status, biometry: biometry, key: key)
         if let caption = offer.caption {
             CaptionLine(line: caption)
         }
         if let kind = offer.answers {
-            Button(action: allow) {
-                Label(Self.allowTitle(kind), systemImage: kind.symbol)
+            if offer.offers(.allow) {
+                Button(action: allow) {
+                    Label(Self.title(.allow, kind, in: offer), systemImage: kind.symbol)
+                }
+                .buttonStyle(RequestButtonStyle(emphasis: .accent))
+                .accessibilityHint(Self.answerHint(kind))
             }
-            .buttonStyle(RequestButtonStyle(emphasis: .accent))
-            .accessibilityHint(Self.answerHint(kind))
-            Button(action: deny) {
-                Label(Self.denyTitle(kind), systemImage: kind.symbol)
+            if offer.offers(.deny) {
+                Button(action: deny) {
+                    Label(Self.title(.deny, kind, in: offer), systemImage: kind.symbol)
+                }
+                .buttonStyle(RequestButtonStyle(emphasis: .ink))
+                .accessibilityHint(Self.answerHint(kind))
             }
-            .buttonStyle(RequestButtonStyle(emphasis: .ink))
-            .accessibilityHint(Self.answerHint(kind))
         }
     }
 }
@@ -346,6 +399,13 @@ struct InputDrawing: View, Equatable {
     let now = Date.now
     PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-120)),
                          status: .withdrawn, now: now, biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
+}
+
+#Preview("Unconfirmed") {
+    let now: Date = Date.now
+    PendingRequestScreen(request: FixtureRequests.request(createdAt: now.addingTimeInterval(-60)),
+                         status: .pending(until: now.addingTimeInterval(540), note: .unconfirmed(.allow)), now: now,
+                         biometry: .available(.faceID), key: .paired, allow: {}, deny: {})
 }
 
 #Preview("Unpaired") {

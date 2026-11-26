@@ -52,6 +52,10 @@ enum RequestAnswer: Equatable, Sendable {
 /// key signs only after a match). Both re-check the window right before
 /// anything is written, and each answer touches only its own request.
 ///
+/// An answer iCloud left unconfirmed may have reached the Mac, which counts
+/// the first answer saved: from then on it is the only answer offered, and
+/// each resend asks for a match of its own and is signed afresh (#154).
+///
 /// Every answer is signed by the phone's committed key (`PhoneKeyring`,
 /// `DecisionSigner`) between the window's re-check and the write: an
 /// unpaired phone offers no answer, and a phone whose key stopped signing
@@ -68,6 +72,12 @@ final class RequestInbox {
         /// Its window was seen closed (terminal, whatever the clock does next).
         var expired = false
         var answer = RequestAnswer.none
+        /// An answer iCloud left unconfirmed (#154): it may have been saved,
+        /// and the Mac counts the first answer saved, so from then on it is
+        /// the only answer offered, to send again, whatever a later try
+        /// comes to. Only its verdict is kept, never its signature or its
+        /// time: a resend asks for a match of its own and is signed afresh.
+        var mayHaveLanded: ApprovalWire.Verdict?
 
         /// The last moment this phone may answer.
         var answerableUntil: Date {
@@ -160,7 +170,7 @@ final class RequestInbox {
     /// never held.
     func status(of id: PromptID, at now: Date) -> RequestStatus? {
         guard let entry = entries[id], let phase = phase(of: id, at: now) else { return nil }
-        return RequestStatus(phase: phase, answer: entry.answer)
+        return RequestStatus(phase: phase, answer: entry.answer, mayHaveLanded: entry.mayHaveLanded)
     }
 
     /// What the request screen shows for `id` now.
@@ -219,17 +229,18 @@ final class RequestInbox {
 
     // MARK: Answering
 
-    /// Allow: only for an answerable request, and only after a biometric
-    /// match, asked for now (CL-3).
+    /// Allow: only while Allow is on offer, and only after a biometric
+    /// match, asked for now (CL-3). Sent again after iCloud left it
+    /// unconfirmed, it asks for a new match and is signed afresh.
     func allow(_ id: PromptID) async {
-        guard isAnswerable(id) else { return }
+        guard isAnswerable(id, with: .allow) else { return }
         await confirmAndSend(.allow, for: id)
     }
 
     /// Deny: exactly as Allow (the owner's uniform-signing ruling: a Deny is
     /// signed like an Allow, so it asks for the same match).
     func deny(_ id: PromptID) async {
-        guard isAnswerable(id) else { return }
+        guard isAnswerable(id, with: .deny) else { return }
         await confirmAndSend(.deny, for: id)
     }
 
@@ -245,14 +256,17 @@ final class RequestInbox {
         await send(verdict, for: id, match: match)
     }
 
-    /// Pending, no answer under way or done, and a key to sign with: an
-    /// unpaired phone asks for no match it could not use.
-    private func isAnswerable(_ id: PromptID) -> Bool {
+    /// Pending, no answer under way or done, `verdict` on offer (once iCloud
+    /// left an answer unconfirmed, only that one is: #154), and a key to
+    /// sign with: an unpaired phone asks for no match it could not use.
+    private func isAnswerable(_ id: PromptID, with verdict: ApprovalWire.Verdict) -> Bool {
         tick()
         refreshKeyHealth()
         if case .unpaired = keyHealth { return false }
         guard let entry = entries[id], phase(of: id)?.isPending == true else { return false }
-        return RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer).isAnswerable
+        let status: RequestStatus = RequestStatus(phase: .pending(until: entry.answerableUntil), answer: entry.answer,
+                                                  mayHaveLanded: entry.mayHaveLanded)
+        return status.answers.contains(verdict)
     }
 
     /// Signs and writes the decision, if the request is still pending right
@@ -279,6 +293,7 @@ final class RequestInbox {
         case .failed: .unsent(verdict)
         case .unconfirmed: .unconfirmed(verdict)
         }
+        if outcome == .unconfirmed { entries[id]?.mayHaveLanded = verdict }
     }
 
     /// Past `capacity`, finished requests go first, oldest first; a pending
