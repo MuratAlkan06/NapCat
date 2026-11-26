@@ -370,13 +370,20 @@ S2 adds the Mac's switch for the feature and wires the S1 pieces behind it.
 It builds controls only: nothing can be forwarded yet.
 
 - **The toggle.** One stored setting, off by default; only a stored `true`
-  turns it on, so a missing or junk value never arms anything. It shows as a
+  turns it on, so a missing or junk value never arms anything. Since #205 it
+  is read from NapCat's own defaults domain: on only when that domain holds
+  a Bool `true` and the defaults search list reads one too. A value anywhere
+  else (a launch argument, the global domain, a registered default) never
+  turns it on; one that outranks NapCat's own (a launch argument, a managed
+  setting) and disagrees turns it off. It shows as a
   Remote approvals row in the menu's Alerts card, under Session alerts, and as
   a group in Settings › Claude (the same action; the switch there is named for
   what it does today, "Mac-only preview", and promises no iPhone answering).
-  Off is the kill switch: every open prompt is withdrawn, every channel server
-  disconnected and the socket removed, and a later decision for a withdrawn
-  prompt is ignored and logged. Quitting NapCat is the same stop, final.
+  Off is the kill switch, applied in process at once and never read back
+  (#205), so a store that does not take the write cannot keep it on: every
+  open prompt is withdrawn, every channel server disconnected and the socket
+  removed, and a later decision for a withdrawn prompt is ignored and
+  logged. Quitting NapCat is the same stop, final.
 - **Behind the toggle only.** Until the first switch-on nothing exists: no
   host, no socket or socket directory, no listener, no probe, no timer. Once
   off completes, no socket, listener, connection, probe or timer remains; the
@@ -392,7 +399,9 @@ It builds controls only: nothing can be forwarded yet.
   machine starts it or runs the probe.
 - **Fail-dark.** On, NapCat hears a wired session's prompts, classifies and
   audits them, and keeps every one on the Mac; the row says so ("Local only —
-  the iPhone app cannot answer prompts yet"). No CloudKit record operation
+  the iPhone app cannot answer prompts yet"), and while no iPhone is paired
+  it says to pair one first ("Not paired — pair your iPhone in Settings
+  first", #205). No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
   apply: a pre-arming revision of the category gate (done: S-GATE, #145) and
   an owner-run live test.
@@ -413,7 +422,10 @@ It builds controls only: nothing can be forwarded yet.
   socket, link or timer behind.
 - **Tests.** Real sockets in scratch directories, injected clocks and short
   limits, the toggle over an in-memory setting: no test reads the real
-  defaults, keychain or home, registers a channel or starts a process.
+  defaults, keychain or home, registers a channel or starts a process. The
+  toggle's reader alone runs on an isolated defaults suite, adding only its
+  own key to the test process's launch-argument and registered domains and
+  removing it again (#205).
 
 ## Slice S3: the record path and the phone
 
@@ -1095,8 +1107,12 @@ arms anything.
     CloudKit's with records built in memory, over the real store, verifier
     and intake, and an in-memory slot: no test touches the keychain, the
     defaults or iCloud.
-- **Next.** The live read path for decision records, "paired" as a
-  precondition for arming, and the arming gates above. Owed live drill: a
+- **Next.** The live read path for decision records, and the arming gates
+  above with "paired" among them. The pure form of "paired" landed with
+  #205: remote answers are held unless the toggle is on, an iPhone is
+  paired and a live record path exists, all three; the row says to pair
+  first, from the slot as last read at each menu or Settings open. Nothing
+  is handed to the host yet, which stays unarmed. Owed live drill: a
   forwarded prompt with an NFD file name and non-ASCII text verifies end
   to end on real CloudKit, which also proves the whole-second time's round
   trip.
