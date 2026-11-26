@@ -258,6 +258,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
         // attempt is 24 h old (UpdateCadence). It never blocks the menu: the
         // answer republishes through the change handler.
         updateCheck?.checkIfDue()
+        // #205: the paired-key slot again (a keychain read, never
+        // iCloud), so the Remote approvals row can say to pair first.
+        pairing?.refreshPaired()
         model.refresh()
         // Section visibility (charge limit, debug) and the surfaced lines can
         // change the height — pre-size before the menu lays out. If SwiftUI has not applied this refresh yet, the hosting view's

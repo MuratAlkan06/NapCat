@@ -57,6 +57,42 @@ struct RemoteApprovalsPolicyTests {
         #expect(DefaultsKey.remoteApprovalsEnabled == "remoteApprovalsEnabled")
     }
 
+    // MARK: - What holds remote answers (#205)
+
+    struct HoldRow: Sendable, CustomTestStringConvertible {
+        let enabled: Bool
+        let paired: Bool
+        let recordPath: Bool
+        let hold: RemoteApprovalsHold?
+        var testDescription: String { "enabled \(enabled), paired \(paired), record path \(recordPath)" }
+    }
+
+    /// The whole truth table: nothing holds only when all three do;
+    /// otherwise the first that fails, in order — the toggle, the pairing,
+    /// the record path.
+    static let holdRows: [HoldRow] = [
+        HoldRow(enabled: false, paired: false, recordPath: false, hold: .off),
+        HoldRow(enabled: false, paired: false, recordPath: true, hold: .off),
+        HoldRow(enabled: false, paired: true, recordPath: false, hold: .off),
+        HoldRow(enabled: false, paired: true, recordPath: true, hold: .off),
+        HoldRow(enabled: true, paired: false, recordPath: false, hold: .notPaired),
+        HoldRow(enabled: true, paired: false, recordPath: true, hold: .notPaired),
+        HoldRow(enabled: true, paired: true, recordPath: false, hold: .noRecordPath),
+        HoldRow(enabled: true, paired: true, recordPath: true, hold: nil),
+    ]
+
+    @Test(arguments: holdRows)
+    func remoteAnswersAreHeldUnlessAllThreeHold(_ row: HoldRow) {
+        #expect(RemoteApprovalsPolicy.hold(enabled: row.enabled, paired: row.paired, recordPath: row.recordPath) == row.hold)
+    }
+
+    /// Vacuity: eight rows, each combination once, and exactly one holds nothing.
+    @Test func theHoldTableIsTheWholeTruthTable() {
+        let combinations: Set<String> = Set(Self.holdRows.map { "\($0.enabled) \($0.paired) \($0.recordPath)" })
+        #expect(Self.holdRows.count == 8 && combinations.count == 8)
+        #expect(Self.holdRows.filter { $0.hold == nil }.count == 1)
+    }
+
     // MARK: - The state machine
 
     @Test func theDefaultIsOffWithNothingRunning() {

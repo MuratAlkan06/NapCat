@@ -256,6 +256,11 @@ final class MenuStateModel: ObservableObject {
     // (debugBattery mode) ⇒ off, no row, no line.
     @Published private(set) var remoteApprovalsPhase: RemoteApprovalsPhase = .off
     @Published private(set) var remoteApprovalsFinding: ChannelPolicyFinding?
+    /// The pairing mirror (#205): whether an iPhone is paired, as the
+    /// pairing controller last read its slot (re-read at every menu and
+    /// Settings open). No pairing controller, or a slot that could not be
+    /// read, is not paired.
+    @Published private(set) var remoteApprovalsPaired = false
     /// F4 slice S-PAIR-C1 mirror — what Settings › Claude shows for the
     /// pairing. No controller (debugBattery mode) ⇒ nil, no rows.
     @Published private(set) var pairingPane: PairingPaneState?
@@ -427,8 +432,10 @@ final class MenuStateModel: ObservableObject {
         remoteApprovalsPhase = remoteApprovals?.phase ?? .off
         remoteApprovalsFinding = remoteApprovals?.finding
         // S-PAIR-C1 mirror: the controller's last read of the slot (it is
-        // re-read as Settings opens, never here).
+        // re-read as the menu or Settings opens, never here).
         pairingPane = pairing?.paneState
+        // #205: the same read, for the Remote approvals row's caption.
+        remoteApprovalsPaired = if case .paired? = pairing?.paired { true } else { false }
     }
 
     // MARK: Actions (forwarded)
@@ -617,8 +624,13 @@ final class MenuStateModel: ObservableObject {
     var remoteApprovalsEnabled: Bool { remoteApprovalsPhase != .off }
 
     /// The Remote approvals row's caption (shown in the card while not
-    /// nominal; in full in Settings › Claude).
-    var remoteApprovalsStatus: PanelLine { Self.remoteApprovalsStatus(phase: remoteApprovalsPhase) }
+    /// nominal; in full in Settings › Claude). #205: on with no
+    /// iPhone paired, it says to pair one first. No live record path exists
+    /// in this build (the seam host's record sink writes nothing).
+    var remoteApprovalsStatus: PanelLine {
+        Self.remoteApprovalsStatus(phase: remoteApprovalsPhase, hold: RemoteApprovalsPolicy.hold(
+            enabled: remoteApprovalsEnabled, paired: remoteApprovalsPaired, recordPath: false))
+    }
 
     /// Settings › Claude's channel-policy line, while the toggle is on (the
     /// probe runs only then).
@@ -1511,10 +1523,15 @@ final class MenuStateModel: ObservableObject {
     /// shows under the row while on. A socket that could not be opened is a
     /// warning: switched on, but not even listening — said in user words,
     /// with the next step (every menu or Settings open tries again).
-    nonisolated static func remoteApprovalsStatus(phase: RemoteApprovalsPhase) -> PanelLine {
+    /// #205: listening with no iPhone paired (`hold`), the row says to
+    /// pair one first, and where — calm info like local only, since nothing
+    /// is wrong; a socket that could not be opened still shows first.
+    nonisolated static func remoteApprovalsStatus(phase: RemoteApprovalsPhase, hold: RemoteApprovalsHold?) -> PanelLine {
         switch phase {
         case .off:
             return PanelLine(text: "Off", severity: .nominal)
+        case .listening where hold == .notPaired:
+            return PanelLine(text: "Not paired — pair your iPhone in Settings first", severity: .info)
         case .listening:
             return PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
         case .unavailable:

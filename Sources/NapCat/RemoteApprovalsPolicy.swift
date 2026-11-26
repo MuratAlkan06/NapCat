@@ -112,11 +112,36 @@ struct RemoteApprovalsState: Equatable, Sendable {
     }
 }
 
+/// What keeps the answer to a prompt on this Mac instead of letting the
+/// paired iPhone give it: the first of the three conditions that fails
+/// (`RemoteApprovalsPolicy.hold`).
+enum RemoteApprovalsHold: Equatable, Sendable {
+    /// The toggle is off.
+    case off
+    /// The toggle is on, but no iPhone is paired.
+    case notPaired
+    /// On and paired, but no live record path reaches the iPhone (none
+    /// exists in this build).
+    case noRecordPath
+}
+
 enum RemoteApprovalsPolicy {
     /// In debugBattery mode the feature is STRUCTURALLY absent (the shape of
     /// `LidGuardPolicy.lidGuardMayBeConstructed`): no toggle, no socket.
     static func remoteApprovalsMayBeConstructed(debugBattery: Bool) -> Bool {
         !debugBattery
+    }
+
+    /// Whether remote answers are held, and why: nil only when the toggle is
+    /// on, an iPhone is paired and the live record path exists; otherwise the
+    /// first of those that fails, in that order. The caller reads each fact.
+    /// In this build the answer only shapes what the toggle row says: nothing
+    /// is handed to the seam host, which stays unarmed.
+    static func hold(enabled: Bool, paired: Bool, recordPath: Bool) -> RemoteApprovalsHold? {
+        guard enabled else { return .off }
+        guard paired else { return .notPaired }
+        guard recordPath else { return .noRecordPath }
+        return nil
     }
 
     /// `remoteApprovalsEnabled` as stored. Only a stored Bool `true` is on;
