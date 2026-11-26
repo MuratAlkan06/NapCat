@@ -23,13 +23,16 @@ import os
 //   (deletes it and the decision records read for it). Every verdict on an
 //   operation honours each record's own result (issue #139).
 // - The READER parses, validates and logs PromptDecision records in a
-//   closed vocabulary, and does nothing else. A decision is UNSIGNED until
-//   pairing (CL-1) exists, so a reading is a claim, never a verdict.
+//   closed vocabulary, and does nothing else. A reading is a claim, never a
+//   verdict: since S-PAIR-C2 (#181) the store hands a claim's evidence, with
+//   its own copy of the prompt, on to the decision verifier, and only the
+//   verifier's result reaches the intake.
 // - The RECORD STORE (`CloudKitApprovalRecords`, routed through the revised
 //   gate, #145) is the intake's record sink over the writer: it writes the
 //   gate's forward answer as it is handed (the tool and the gate's own copy
-//   of the preview), and every withdrawal retracts the record together with
-//   the decisions read for it.
+//   of the preview), keeps its own copy of what it wrote (S-PAIR-C2), and
+//   every withdrawal retracts the record together with the decisions read
+//   for it.
 // - The PAIRING RESPONSE READER (S-PAIR-C1, #168) reads a PairingResponse
 //   record strictly, field by field, into its bytes or a closed fault. It
 //   holds no key and checks no MAC or proof (the ceremony does, with its
@@ -258,6 +261,10 @@ final class CloudKitApprovalRecords: ApprovalRecordSink {
     /// Every prompt written and not yet retracted, with the names of the
     /// decision records read for it.
     private var pending: [PromptID: Set<String>] = [:]
+    /// S-PAIR-C2: the Mac's own copy of each of those prompts, the three
+    /// fields exactly as written — what the verifier rebuilds the phone's
+    /// `shown` digest from.
+    private var copies: [PromptID: ForwardedCopy] = [:]
 
     /// `now`: the wall clock a record states its window in.
     init(writer: ApprovalRecordWriter, now: @escaping () -> Date = Date.init) {
@@ -276,10 +283,13 @@ final class CloudKitApprovalRecords: ApprovalRecordSink {
         let prompt = ForwardedPrompt(promptID: id, toolName: tool.rawValue, inputPreview: inputPreview, createdAt: createdAt,
                                      expiresAt: createdAt.addingTimeInterval(TimeInterval(ApprovalWire.promptTimeToLiveSeconds)))
         pending[id] = []
+        copies[id] = ForwardedCopy(promptID: id, toolName: prompt.toolName, inputPreview: prompt.inputPreview,
+                                   projectLabel: prompt.projectLabel)
         writer.write(prompt) { _ in }
     }
 
     func retract(_ id: PromptID) {
+        copies[id] = nil
         let decisions = pending.removeValue(forKey: id) ?? []
         writer.retract(id, decisions: decisions.sorted()) { _ in }
     }
@@ -292,6 +302,18 @@ final class CloudKitApprovalRecords: ApprovalRecordSink {
     /// for any other prompt is dropped.
     func noteRead(_ claim: DecisionClaim) {
         pending[claim.promptID]?.insert(claim.recordName)
+    }
+
+    /// S-PAIR-C2 (#181): a decision record, read strictly and audited. A
+    /// claim joins its prompt's retraction (`noteRead`) and goes on, for the
+    /// verifier, as its evidence with this store's own copy of that prompt —
+    /// none once the prompt is retracted, or for one it never wrote. A
+    /// record that is not even a claim goes nowhere.
+    func read(_ record: CKRecord, audit: (ApprovalRecordAudit) -> Void = ApprovalRecordLog.record)
+        -> (evidence: DecisionEvidence, copy: ForwardedCopy?)? {
+        guard case .claim(let claim) = DecisionRecordReader.read(record, audit: audit) else { return nil }
+        noteRead(claim)
+        return (claim.evidence, copies[claim.promptID])
     }
 }
 
@@ -343,9 +365,10 @@ private final class RecordResults: @unchecked Sendable {
 // MARK: - The reader
 
 /// A decision record as the Mac read it: a CLAIM about one prompt, or why
-/// the record is malformed. There is no verified reading: nothing on this
-/// Mac can verify a decision before pairing (CL-1), and no reading is handed
-/// to anything that answers a dialog (lint-locked).
+/// the record is malformed. There is no verified reading: no reading is
+/// handed to anything that answers a dialog — a claim's evidence goes to the
+/// decision verifier, whose result alone reaches the intake (S-PAIR-C2,
+/// lint-locked).
 enum DecisionRecordReading: Equatable, Sendable {
     case claim(DecisionClaim)
     case malformed(DecisionRecordFault)
@@ -359,15 +382,17 @@ struct DecisionClaim: Equatable, Sendable {
     let claimedVerdict: ApprovalWire.Verdict
     /// The phone's clock: audit only (freshness is judged on the Mac's).
     let decidedAt: Date
-    let signature: DecisionSignature
-}
+    /// The signature field's bytes as read, unchecked (the verifier checks
+    /// them); empty when the record carries none. Never "verified".
+    let signature: Data
 
-/// What a decision record carries in its signature field. Never "verified".
-enum DecisionSignature: String, CaseIterable, Sendable {
-    /// No signature at all: the phone's decisions before pairing.
-    case absent
-    /// Bytes nothing on this Mac can check yet (no paired key before CL-1).
-    case unverifiable
+    /// What the claim hands the verifier (S-PAIR-C2): its fields as the
+    /// record held them — the reader accepts each in one spelling only —
+    /// every one of which the verifier checks again.
+    var evidence: DecisionEvidence {
+        DecisionEvidence(wireVersion: ApprovalWire.wireVersion, promptID: promptID.hex, verdict: claimedVerdict.rawValue,
+                         decidedAt: decidedAt, signature: signature)
+    }
 }
 
 /// Why a decision record is not even a claim.
@@ -419,12 +444,12 @@ enum DecisionRecordReader {
         guard let raw = record.encryptedValues[Field.verdict.rawValue] as? String,
               let verdict = ApprovalWire.Verdict(rawValue: raw) else { return .malformed(.unknownVerdict) }
         guard let decidedAt = record[Field.decidedAt.rawValue] as? Date else { return .malformed(.missingDecidedAt) }
-        let signature: DecisionSignature
+        let signature: Data
         switch record.encryptedValues[Field.signature.rawValue] {
         case nil:
-            signature = .absent
+            signature = Data()
         case let bytes as Data where !bytes.isEmpty:
-            signature = .unverifiable
+            signature = bytes
         default:
             return .malformed(.malformedSignature)
         }
@@ -667,7 +692,7 @@ enum ApprovalRecordAudit: Equatable, Sendable {
         case .prompt(let id, let action, let outcome):
             return "prompt=\(id.hex) record.\(action.rawValue).\(Self.code(outcome))"
         case .decision(.claim(let claim)):
-            let state = claim.signature == .absent ? "unsigned" : "unverifiable"
+            let state = claim.signature.isEmpty ? "unsigned" : "signed"
             return "prompt=\(claim.promptID.hex) decision.\(state) claim=\(claim.claimedVerdict.rawValue)"
         case .decision(.malformed(let fault)):
             return "decision.malformed.\(fault.rawValue)"

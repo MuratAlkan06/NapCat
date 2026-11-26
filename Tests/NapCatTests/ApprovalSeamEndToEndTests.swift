@@ -93,8 +93,8 @@ struct ApprovalSeamEndToEndTests {
         #expect(world.emitted.next(within: 0.2) == nil, "nothing is answered while the prompt waits")
         world.host.withIntake { intake in
             intake.apply(.saveAccepted, to: saved.id)
-            intake.decide(ApprovalDecision(promptID: saved.id, verdict: verdict, wireVersion: ApprovalWire.wireVersion,
-                                           signatureVerified: true))
+            intake.decide(.verified(ApprovalDecision(promptID: saved.id, verdict: verdict, wireVersion: ApprovalWire.wireVersion,
+                                                     signatureVerified: true)))
         }
         #expect(world.emitted.next() == RelayHarness.verdictLine("abcde", verdict))
         #expect(world.sink.superseded.next() == saved.id)
@@ -127,7 +127,9 @@ struct ApprovalSeamEndToEndTests {
         let id = PromptID(high: 0xE2E, low: 1)!
         #expect(world.audits.next() == "prompt=\(id.hex) suppressed.gate.forbidden.privilegeEscalation")
         #expect(world.sink.saved.next(within: 0.2) == nil)
-        world.host.withIntake { $0.decide(ApprovalDecision(promptID: id, verdict: .allow, wireVersion: 1, signatureVerified: true)) }
+        world.host.withIntake {
+            $0.decide(.verified(ApprovalDecision(promptID: id, verdict: .allow, wireVersion: 1, signatureVerified: true)))
+        }
         #expect(world.audits.next() == "prompt=\(id.hex) ignored.notForwarded")
         #expect(world.emitted.next(within: 0.2) == nil, "no verdict for a prompt that never left")
     }
@@ -195,7 +197,7 @@ struct ApprovalSeamEndToEndTests {
         #expect(world.waitForNote(.seamClosed, within: ApprovalSeamTests.closeObservationSeconds))
         #expect(!FileManager.default.fileExists(atPath: world.fixture.socketPath))
         world.host.withIntake {
-            $0.decide(ApprovalDecision(promptID: saved.id, verdict: .allow, wireVersion: 1, signatureVerified: true))
+            $0.decide(.verified(ApprovalDecision(promptID: saved.id, verdict: .allow, wireVersion: 1, signatureVerified: true)))
         }
         #expect(world.emitted.next(within: 0.2) == nil)
         #expect(world.audits.all.contains("prompt=\(saved.id.hex) retracted.killSwitch"))

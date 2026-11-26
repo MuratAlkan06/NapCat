@@ -3,6 +3,7 @@
 // CLT frameworks dir does not ship (see PLAN.md decision log 2026-07-09).
 import AppKit
 import CloudKit
+import CryptoKit
 import Testing
 @testable import NapCat
 @testable import NapCatWire
@@ -21,6 +22,12 @@ final class RoutedIntake {
     let database = ScriptedApprovalDatabase()
     var frames: [(ApprovalIntake.ConnectionKey, String)] = []
     var audits: [ApprovalAuditEvent] = []
+    /// S-PAIR-C2: the paired-phone slot over an in-memory item (never the
+    /// keychain), the record reader's lines and the verifier's refusals.
+    let items = FakeTopicStore()
+    lazy var keys = PairedKeyStore(items: items)
+    var readings: [String] = []
+    var refusals: [String] = []
 
     lazy var store = CloudKitApprovalRecords(writer: ApprovalRecordWriter(database: database, audit: { _ in }),
                                              now: { Self.wallClock })
@@ -43,6 +50,24 @@ final class RoutedIntake {
 
     /// What each submitted operation deletes, by record name, in order.
     var deletions: [[String]] { database.submitted.map { ($0.recordIDsToDelete ?? []).map(\.recordName) } }
+
+    /// The phone `key` becomes the paired one, as Codes Match commits it.
+    func pair(_ key: P256.Signing.PrivateKey) throws {
+        let phone: PairedPhone = try #require(PairedPhone(publicKey: Array(key.publicKey.x963Representation), pairedAt: Self.wallClock))
+        #expect(keys.commit(phone))
+    }
+
+    /// S-PAIR-C2: a decision record arrives — the store reads it, and the
+    /// verifier judges it against the slot as it is now.
+    func arrive(_ record: CKRecord) {
+        guard let read = store.read(record, audit: { self.readings.append($0.code) }) else { return }
+        intake.receiveDecision(read.evidence, copy: read.copy, keys: keys) { self.refusals.append($0.code) }
+    }
+
+    /// The prompt record the store wrote for `id`.
+    func written(_ id: PromptID) -> CKRecord? {
+        database.submitted.lazy.compactMap { $0.recordsToSave?.first }.first { $0.recordID.recordName == id.hex }
+    }
 }
 
 /// F4 slice S3, its last commit (#146): the Mac's record path routed through
@@ -206,5 +231,166 @@ struct ApprovalRecordRoutingTests {
         routed.intake.apply(.saveAccepted, to: second)
         #expect(routed.deletions.last == [second.hex])
         #expect(routed.frames.isEmpty)
+    }
+
+    // MARK: - S-PAIR-C2: a decision counts only through the verifier
+
+    static let phone = P256.Signing.PrivateKey()
+
+    /// The phone's half, as S-PAIR-B plays it: the three fields exactly as
+    /// decoded from the prompt record the Mac wrote (or `shown`), the six
+    /// signed lines, the signature's raw bytes, in a decision record as the
+    /// phone writes one.
+    static func phoneDecision(for prompt: CKRecord, _ verdict: ApprovalWire.Verdict = .allow, claiming claimed: ApprovalWire.Verdict? = nil,
+                              by key: P256.Signing.PrivateKey = phone, shown: (String, String, String)? = nil) throws -> CKRecord {
+        let id: PromptID = try #require(PromptID(hex: prompt.recordID.recordName))
+        let fields: (String, String, String)
+        if let shown {
+            fields = shown
+        } else {
+            let tool: String = try #require(prompt.encryptedValues[Field.toolName.rawValue] as? String)
+            let preview: String = try #require(prompt.encryptedValues[Field.inputPreview.rawValue] as? String)
+            let label: String = try #require(prompt.encryptedValues[Field.projectLabel.rawValue] as? String)
+            fields = (tool, preview, label)
+        }
+        let digest = SHA256.hash(data: ApprovalSigning.shownDigestInput(toolName: fields.0, inputPreview: fields.1, projectLabel: fields.2))
+        let decidedAt = 1_800_000_100
+        let message: [UInt8] = try #require(ApprovalSigning.decisionMessage(wireVersion: ApprovalWire.wireVersion, promptID: id,
+                                                                            verdict: verdict, decidedAt: decidedAt, shownDigest: Array(digest)))
+        let signature: Data = try key.signature(for: message).rawRepresentation
+        return DecisionRecordReaderTests.phoneRecord(name: id.hex + "-decision", promptID: id.hex as NSString,
+                                                     verdict: (claimed ?? verdict).rawValue as NSString,
+                                                     decidedAt: Date(timeIntervalSince1970: TimeInterval(decidedAt)) as NSDate,
+                                                     signature: signature as NSData)
+    }
+
+    /// A forwarded prompt, out on the phone, and its record as written.
+    static func forwarded(_ routed: RoutedIntake, _ request: String = "abcde", id n: UInt64 = 1) throws -> (PromptID, CKRecord) {
+        routed.receive(request)
+        let id = RoutedIntake.id(n)
+        routed.intake.apply(.saveAccepted, to: id)
+        return (id, try #require(routed.written(id)))
+    }
+
+    /// The paired phone signed exactly what the Mac wrote: its verdict is
+    /// the one answer, sent to the session the prompt came from, and the
+    /// decision record joins the prompt's retraction.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func aDecisionThePairedPhoneSignedCountsThroughTheVerifier(_ verdict: ApprovalWire.Verdict) throws {
+        let routed = RoutedIntake()
+        try routed.pair(Self.phone)
+        let (id, prompt) = try Self.forwarded(routed)
+        routed.arrive(try Self.phoneDecision(for: prompt, verdict))
+        #expect(routed.frames.map(\.1) == [ApprovalChannel.verdictFrame(ChannelRequestID("abcde")!, verdict)])
+        #expect(routed.codes.last == "prompt=\(id.hex) decided.remote.\(verdict.rawValue)")
+        #expect(routed.readings == ["prompt=\(id.hex) decision.signed claim=\(verdict.rawValue)"])
+        #expect(routed.refusals.isEmpty)
+        #expect(routed.deletions.last == [id.hex, id.hex + "-decision"], "the decision is retracted with its prompt")
+    }
+
+    /// What the verifier refuses, each with its closed code.
+    enum Refusal: String, CaseIterable, Sendable {
+        case unsigned, anotherKey, aVerdictThePhoneDidNotSign, signedOverAnotherCopy, noPhonePaired, aPromptTheMacNeverWrote
+
+        var code: String {
+            switch self {
+            case .unsigned: return "signatureLength"
+            case .anotherKey, .aVerdictThePhoneDidNotSign, .signedOverAnotherCopy: return "signatureInvalid"
+            case .noPhonePaired: return "noPairedKey"
+            case .aPromptTheMacNeverWrote: return "noForwardedCopy"
+            }
+        }
+    }
+
+    /// Unsigned, wrong-key, altered or unbound decisions are refused by the
+    /// verifier's closed code and never counted: nothing answers the
+    /// session, the lifecycle sees nothing, and the prompt stays open.
+    @Test(arguments: Refusal.allCases)
+    func whatTheVerifierRefusesNeverCounts(_ refusal: Refusal) throws {
+        let routed = RoutedIntake()
+        if refusal != .noPhonePaired { try routed.pair(Self.phone) }
+        let (id, prompt) = try Self.forwarded(routed)
+        let record: CKRecord
+        switch refusal {
+        case .unsigned:
+            record = DecisionRecordReaderTests.phoneRecord(name: id.hex + "-decision", promptID: id.hex as NSString)
+        case .anotherKey:
+            record = try Self.phoneDecision(for: prompt, by: P256.Signing.PrivateKey())
+        case .aVerdictThePhoneDidNotSign:
+            record = try Self.phoneDecision(for: prompt, .deny, claiming: .allow)
+        case .signedOverAnotherCopy:
+            record = try Self.phoneDecision(for: prompt, shown: ("Bash", #"{"command":"git status","description":"x"}"#, ""))
+        case .noPhonePaired:
+            record = try Self.phoneDecision(for: prompt)
+        case .aPromptTheMacNeverWrote:
+            let stray = CKRecord(recordType: ApprovalWire.RecordType.prompt.rawValue,
+                                 recordID: ApprovalRecordWriter.promptRecordID(RoutedIntake.id(7)))
+            record = try Self.phoneDecision(for: stray, shown: ("Bash", #"{"command":"git status"}"#, ""))
+        }
+        let before = routed.codes
+        routed.arrive(record)
+        #expect(routed.frames.isEmpty, "nothing answers the session")
+        #expect(routed.codes == before, "the lifecycle sees nothing")
+        #expect(routed.intake.prompts[id]?.lifecycle.phase == .forwarded, "the prompt stays open")
+        #expect(routed.refusals.count == 1 && routed.refusals.first?.hasSuffix("decision.unverified." + refusal.code) == true,
+                "\(routed.refusals)")
+    }
+
+    /// A record that is not even a claim never reaches the verifier.
+    @Test func aMalformedDecisionRecordGoesNowhere() throws {
+        let routed = RoutedIntake()
+        try routed.pair(Self.phone)
+        let (id, _) = try Self.forwarded(routed)
+        routed.arrive(DecisionRecordReaderTests.phoneRecord(promptID: id.hex as NSString, verdict: "approve" as NSString))
+        #expect(routed.readings == ["decision.malformed.unknownVerdict"])
+        #expect(routed.refusals.isEmpty && routed.frames.isEmpty)
+        #expect(routed.intake.prompts[id]?.lifecycle.phase == .forwarded)
+    }
+
+    /// The key is read from the slot at each verification: an Unpair between
+    /// two decisions makes the second refuse, and after a new pairing only
+    /// the new phone's signature counts.
+    @Test func anUnpairBetweenTwoDecisionsMakesTheSecondRefuse() throws {
+        let routed = RoutedIntake()
+        try routed.pair(Self.phone)
+        let (_, firstPrompt) = try Self.forwarded(routed, "abcde", id: 1)
+        let (second, secondPrompt) = try Self.forwarded(routed, "bcdef", id: 2)
+        routed.arrive(try Self.phoneDecision(for: firstPrompt))
+        #expect(routed.frames.count == 1)
+        #expect(routed.keys.unpair())
+        routed.arrive(try Self.phoneDecision(for: secondPrompt))
+        #expect(routed.frames.count == 1, "the second decision, after the Unpair, answers nothing")
+        #expect(routed.refusals == ["prompt=\(second.hex) decision.unverified.noPairedKey"])
+        #expect(routed.intake.prompts[second]?.lifecycle.phase == .forwarded)
+        let newPhone = P256.Signing.PrivateKey()
+        try routed.pair(newPhone)
+        routed.arrive(try Self.phoneDecision(for: secondPrompt))
+        #expect(routed.refusals.last == "prompt=\(second.hex) decision.unverified.signatureInvalid", "the old key counts no more")
+        routed.arrive(try Self.phoneDecision(for: secondPrompt, .deny, by: newPhone))
+        #expect(routed.frames.map(\.1).last == ApprovalChannel.verdictFrame(ChannelRequestID("bcdef")!, .deny))
+        #expect(routed.codes.last == "prompt=\(second.hex) decided.remote.deny")
+    }
+
+    /// Nothing arms: unarmed (the app's one host), a forwardable prompt is
+    /// never written, so the Mac holds no copy and the paired phone's
+    /// signature counts for nothing; withdrawn, the copy is gone too.
+    @Test func unarmedOrWithdrawnNoDecisionCounts() throws {
+        let unarmed = RoutedIntake()
+        unarmed.armed = false
+        try unarmed.pair(Self.phone)
+        unarmed.receive("abcde")
+        let id = RoutedIntake.id(1)
+        #expect(unarmed.database.submitted.isEmpty && unarmed.written(id) == nil)
+        let shown: (String, String, String) = ("Bash", #"{"command":"git status"}"#, "")
+        let never = CKRecord(recordType: ApprovalWire.RecordType.prompt.rawValue, recordID: ApprovalRecordWriter.promptRecordID(id))
+        unarmed.arrive(try Self.phoneDecision(for: never, shown: shown))
+        #expect(unarmed.frames.isEmpty && unarmed.refusals == ["prompt=\(id.hex) decision.unverified.noForwardedCopy"])
+
+        let withdrawn = RoutedIntake()
+        try withdrawn.pair(Self.phone)
+        let (out, prompt) = try Self.forwarded(withdrawn)
+        withdrawn.intake.killSwitch()
+        withdrawn.arrive(try Self.phoneDecision(for: prompt))
+        #expect(withdrawn.frames.isEmpty && withdrawn.refusals == ["prompt=\(out.hex) decision.unverified.noForwardedCopy"])
     }
 }

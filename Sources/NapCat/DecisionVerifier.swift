@@ -26,11 +26,15 @@ import os
 //
 // SOFTWARE KEYS ONLY: the Mac never holds a private key. This file verifies
 // with CryptoKit's P-256 public key and names nothing of the Secure Enclave,
-// biometrics, the keychain or iCloud (lint-locked). The paired key is
-// injected; storing it is a later slice's.
+// biometrics, the keychain's calls or iCloud (lint-locked): the paired key
+// comes from the slot.
 //
-// FAIL-DARK (lint-locked): nothing outside this file names it in this slice,
-// so no reader, intake or lifecycle hands it a claim yet.
+// WIRED (S-PAIR-C2, #181): `verify` is the one road from a decision record's
+// reading to the intake's `decide` (lint-locked), and it reads the paired
+// key from the slot (`PairedKeyStore.read()`) at each verification, here and
+// nowhere else, keeping nothing: a verification after an Unpair finds no key
+// and refuses. NOTHING ARMS: the approval files' one armed literal is still
+// `armed: { false }`, so no decision reaches a real session.
 // UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
 
 /// A decision record's fields exactly as decoded, before any check: what
@@ -107,17 +111,21 @@ enum DecisionVerifier {
     /// number of seconds (2^53).
     static let latestDecidedAt: TimeInterval = 9_007_199_254_740_992
 
-    /// The S0 decision value for a decision the paired key signed, or nil:
-    /// the claim is dropped and its reason audited, nothing else.
-    static func verify(_ evidence: DecisionEvidence, copy: ForwardedCopy?, pairedKey: P256.Signing.PublicKey?,
-                       audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> ApprovalDecision? {
-        switch verification(of: evidence, copy: copy, pairedKey: pairedKey) {
-        case .verified(let decision):
-            return decision
-        case .unverified(let reason):
-            audit(DecisionVerifierAudit(promptID: PromptID(hex: evidence.promptID), reason: reason))
-            return nil
+    /// THE verification (S-PAIR-C2): the paired key is the one the slot
+    /// holds NOW — read here, at this verification, and never kept — so no
+    /// key outlives an Unpair. A refusal is audited by its code and counts
+    /// for nothing; only a `.verified` result reaches a lifecycle.
+    static func verify(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,
+                       audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> DecisionVerification {
+        let pairedKey: P256.Signing.PublicKey? = switch keys.read() {
+        case .paired(let phone): try? P256.Signing.PublicKey(x963Representation: phone.publicKey)
+        case .notPaired, .unreadable: nil
         }
+        let verification = verification(of: evidence, copy: copy, pairedKey: pairedKey)
+        if case .unverified(let reason) = verification {
+            audit(DecisionVerifierAudit(promptID: PromptID(hex: evidence.promptID), reason: reason))
+        }
+        return verification
     }
 
     /// The checks, in order: the first failure wins.

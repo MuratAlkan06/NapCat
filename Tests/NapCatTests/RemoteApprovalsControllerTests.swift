@@ -171,12 +171,12 @@ final class ApprovalsWorld {
         return PromptID(hex: String(line.dropFirst("prompt=".count).prefix(ApprovalWire.promptIDHexDigits)))
     }
 
-    /// A phone decision reaching the toggle's host, as a later slice will
-    /// deliver one (signature already checked).
+    /// A phone decision reaching the toggle's host as the verifier's result
+    /// (S-PAIR-C2), as a later slice will deliver one.
     func decide(_ id: PromptID, _ verdict: ApprovalWire.Verdict = .allow) {
         host?.withIntake {
-            $0.decide(ApprovalDecision(promptID: id, verdict: verdict, wireVersion: ApprovalWire.wireVersion,
-                                       signatureVerified: true))
+            $0.decide(.verified(ApprovalDecision(promptID: id, verdict: verdict, wireVersion: ApprovalWire.wireVersion,
+                                                 signatureVerified: true)))
         }
     }
 

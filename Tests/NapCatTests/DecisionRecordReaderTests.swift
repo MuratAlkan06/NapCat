@@ -8,8 +8,8 @@ import Testing
 @testable import NapCat
 
 /// F4 slice S3: the Mac's PromptDecision reader. A decision record is
-/// parsed, validated and logged — and that is all: before pairing (CL-1)
-/// every decision is unsigned, so a reading is a claim, never a verdict.
+/// parsed, validated and logged — and that is all: a reading is a claim,
+/// never a verdict (since S-PAIR-C2 its evidence goes to the verifier).
 struct DecisionRecordReaderTests {
     static let promptID = PromptID(high: 0xfeed_face_cafe_beef, low: 0x0000_0000_0000_0042)!
     static let decidedAt = Date(timeIntervalSince1970: 1_800_000_123)
@@ -43,25 +43,29 @@ struct DecisionRecordReaderTests {
     func aPhoneDecisionIsAnUnsignedClaim(_ verdict: ApprovalWire.Verdict) {
         let reading = DecisionRecordReader.reading(of: Self.phoneRecord(verdict: verdict.rawValue as NSString))
         #expect(reading == .claim(DecisionClaim(recordName: "decision-record", promptID: Self.promptID,
-                                                claimedVerdict: verdict, decidedAt: Self.decidedAt, signature: .absent)))
+                                                claimedVerdict: verdict, decidedAt: Self.decidedAt, signature: Data())))
     }
 
-    /// Signature bytes change nothing: no paired key exists to check them.
-    @Test func aSignatureIsUnverifiable() {
-        let reading = DecisionRecordReader.reading(of: Self.phoneRecord(signature: Data([1, 2, 3]) as NSData))
+    /// S-PAIR-C2: the signature's bytes are carried, unchecked, into the
+    /// evidence the verifier is handed, with every other field as read.
+    @Test func aSignatureIsCarriedUncheckedForTheVerifier() {
+        let reading = DecisionRecordReader.reading(of: Self.phoneRecord(verdict: "deny" as NSString,
+                                                                        signature: Data([1, 2, 3]) as NSData))
         guard case .claim(let claim) = reading else {
             Issue.record("not a claim: \(reading)")
             return
         }
-        #expect(claim.signature == .unverifiable)
+        #expect(claim.signature == Data([1, 2, 3]))
+        let evidence = claim.evidence
+        #expect(evidence.wireVersion == ApprovalWire.wireVersion && evidence.promptID == Self.promptID.hex)
+        #expect(evidence.verdict == "deny" && evidence.decidedAt == Self.decidedAt && evidence.signature == Data([1, 2, 3]))
     }
 
-    /// There is no verified reading to reach: the signature is absent or
-    /// unverifiable, and a claim holds no flag that could say otherwise.
+    /// There is no verified reading to reach: the signature is bytes nobody
+    /// checked yet, and a claim holds no flag that could say otherwise.
     @Test func noReadingIsAVerdict() {
-        #expect(DecisionSignature.allCases == [.absent, .unverifiable])
         let claim = DecisionClaim(recordName: "r", promptID: Self.promptID, claimedVerdict: .allow,
-                                  decidedAt: Self.decidedAt, signature: .unverifiable)
+                                  decidedAt: Self.decidedAt, signature: Data([1]))
         let fields = Mirror(reflecting: claim).children.map { $0.label ?? "" }
         #expect(fields == ["recordName", "promptID", "claimedVerdict", "decidedAt", "signature"])
         #expect(!Mirror(reflecting: claim).children.contains { $0.value is Bool }, "no verified flag")
@@ -156,7 +160,7 @@ struct DecisionRecordReaderTests {
         }
         _ = DecisionRecordReader.read(Self.phoneRecord(verdict: "secret-verdict-text" as NSString)) { lines.append($0.code) }
         #expect(lines == ["prompt=\(Self.promptID.hex) decision.unsigned claim=allow",
-                          "prompt=\(Self.promptID.hex) decision.unverifiable claim=deny",
+                          "prompt=\(Self.promptID.hex) decision.signed claim=deny",
                           "decision.malformed.unknownVerdict"])
         for fault in DecisionRecordFault.allCases {
             #expect(ApprovalRecordAudit.decision(.malformed(fault)).code == "decision.malformed.\(fault.rawValue)")
