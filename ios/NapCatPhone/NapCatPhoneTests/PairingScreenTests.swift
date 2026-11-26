@@ -485,7 +485,7 @@ import UIKit
         }
     }
 
-    // MARK: A scanner that won't start
+    // MARK: A scanner that won't start, or stops mid-scan
 
     static let scannerFile = "\(appDir)/Live/QRScanner.swift"
     /// The scanner's start, whole: VisionKit's refusal is reported on the
@@ -498,16 +498,35 @@ import UIKit
         "Model/PairingCeremony.swift": ["func scannerFailed() {": 1],
         "Screen/PairingScreen.swift": ["scanFailed: { ceremony.scannerFailed() },": 1],
     ])
+    /// AMENDED (#175, the C1.6 design review's ledger): VisionKit stopping
+    /// the scanner mid-scan is reported by the same closure, the same way
+    /// (on the next turn, never dropped), and only before the hand-on. The
+    /// coordinator is built with the screen's failure and keeps it as
+    /// handed; its callback is pinned whole.
+    static let coordinatorShape: String = "func makeCoordinator() -> Coordinator { " + PairingEntryStructureTests.coordinatorBuilt + " }"
+    static let coordinatorInitShape: String = PairingEntryStructureTests.coordinatorInit + " self.scanned = scanned self.failed = failed }"
+    static let stoppedHead: String = "func dataScanner(_: DataScannerViewController, becameUnavailableWithError _: "
+        + "DataScannerViewController.ScanningUnavailable) {"
+    static let stoppedBody: String = "guard !handedOn else { return } Task { failed() }"
 
     /// The S-PAIR-C1.6 design review's M2: a scanner VisionKit won't start
     /// ends the ceremony at its start (its failure line, Scan Again, Close),
     /// never a dark viewfinder under "Scanning". The scanner reports it, the
     /// screen hands it on, and the sheet alone routes it to the ceremony.
+    /// AMENDED (#175): and so does a scanner VisionKit stops mid-scan.
     static func scanFailureFailures(_ app: [CloudKitStructureTests.Source]) -> [String] {
         var failures: [String] = []
         let scanner = CloudKitStructureTests.codeOnly(app.first { $0.path == scannerFile }?.text ?? "")
         if CloudKitStructureTests.body(after: startHead, in: scanner).map(SettingsReachabilityTests.flat) != startBody {
             failures.append("the scanner reports a start VisionKit refuses, on the next turn — exactly as pinned")
+        }
+        if CloudKitStructureTests.body(after: stoppedHead, in: scanner).map(SettingsReachabilityTests.flat) != stoppedBody {
+            failures.append("the scanner reports VisionKit stopping it before the hand-on, on the next turn — exactly as pinned")
+        }
+        let scannerFlat: String = SettingsReachabilityTests.flat(scanner)
+        let coordinatorShapes: [String] = [coordinatorShape, coordinatorInitShape]
+        for shape in coordinatorShapes where !scannerFlat.contains(shape) {
+            failures.append("the scanner's coordinator lost '\(shape)'")
         }
         if CloudKitStructureTests.hits(#"\btry\?"#, in: scanner) {
             failures.append("the scanner drops a failure (try?)")
@@ -540,6 +559,20 @@ import UIKit
                 $0.replacingOccurrences(of: "scanFailed: { ceremony.scannerFailed() },", with: "scanFailed: { ceremony.cancel() },") }),
             ("the failure ends a ceremony elsewhere", PairingEntryStructureTests.mutate(app, Self.rootFile) {
                 $0 + "\nfunc spare(c: PairingCeremony) { c.scannerFailed() }" }),
+            // #175: the mid-scan stop, held as the start is.
+            ("the mid-scan stop dropped", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: Self.stopReport, with: "            guard !handedOn else { return }\n") }),
+            ("the mid-scan stop reported inside VisionKit's callback", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: Self.stopReport, with: "            guard !handedOn else { return }\n            failed()\n") }),
+            ("a stop reported after the hand-on", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: Self.stopReport, with: "            Task { failed() }\n") }),
+            ("the stop no longer VisionKit's callback", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "func dataScanner(_: DataScannerViewController, becameUnavailableWithError",
+                                        with: "func spare(_: DataScannerViewController, becameUnavailableWithError") }),
+            ("the coordinator handed no failure", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: PairingEntryStructureTests.coordinatorBuilt, with: "Coordinator(scanned: scanned, failed: {})") }),
+            ("the coordinator keeps another failure", PairingEntryStructureTests.mutate(app, scanner) {
+                $0.replacingOccurrences(of: "            self.failed = failed\n", with: "            self.failed = {}\n") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != app.map { $0.text }, "canary '\(name)' did not apply")
@@ -550,6 +583,11 @@ import UIKit
             $0 + "\n/// never try? scanner.startScanning(), never scannerFailed() elsewhere"
         }).isEmpty)
     }
+
+    /// The mid-scan report's two lines, as written (the canaries' anchor).
+    /// (Its behaviour is run in `LivePairingTests`: this file touches
+    /// nothing live, `PairingCeremonyTests.theTestsTouchNothingLive`.)
+    static let stopReport: String = "            guard !handedOn else { return }\n            Task { failed() }\n"
 
     // MARK: The window's clock
 

@@ -166,13 +166,18 @@ import Testing
 
     /// THE construction: the live scanner hands on what it read.
     static let cameraHandOn = "scanned(ScannedCode(payload: payload))"
+    /// The scanner's coordinator: built with the hand-on and the failure
+    /// (AMENDED, #175: a scanner VisionKit stops mid-scan is reported too;
+    /// `PairingScreenTests.scanFailureFailures` pins where it goes).
+    static let coordinatorInit: String = "init(scanned: @escaping @MainActor (ScannedCode) -> Void, failed: @escaping @MainActor () -> Void) {"
+    static let coordinatorBuilt: String = "Coordinator(scanned: scanned, failed: failed)"
     /// Every line naming the type outside Fixtures/ (its own description is
     /// a string that names it).
     static let scannedCodeSites = CloudKitStructureTests.appSites([
         "Live/QRScanner.swift": ["struct ScannedCode: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {": 1,
                                  "var description: String { \"ScannedCode(redacted)\" }": 1,
                                  "let scanned: @MainActor (ScannedCode) -> Void": 2,
-                                 "init(scanned: @escaping @MainActor (ScannedCode) -> Void) {": 1, cameraHandOn: 1],
+                                 coordinatorInit: 1, cameraHandOn: 1],
         "Screen/PairingScreen.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 1],
         "Model/PairingCeremony.swift": ["func scanned(_ code: ScannedCode) async {": 1],
     ])
@@ -188,8 +193,8 @@ import Testing
     static let previewLine: String = "PairingScreen(phase: .scanning, camera: .ready, biometry: .available(.faceID), liveCamera: false, "
         + "scanned: { _ in },"
     static let scannedSites = CloudKitStructureTests.appSites([
-        "Live/QRScanner.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 2, "Coordinator(scanned: scanned)": 2,
-                                 "init(scanned: @escaping @MainActor (ScannedCode) -> Void) {": 1, "self.scanned = scanned": 2,
+        "Live/QRScanner.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 2, coordinatorBuilt: 2,
+                                 coordinatorInit: 1, "self.scanned = scanned": 2,
                                  cameraHandOn: 1],
         "Screen/PairingScreen.swift": ["let scanned: @MainActor (ScannedCode) -> Void": 1,
                                        "QRScannerView(scanned: scanned, failed: scanFailed)": 2,
