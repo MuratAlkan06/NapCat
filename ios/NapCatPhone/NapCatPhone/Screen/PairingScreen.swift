@@ -98,7 +98,7 @@ struct PairingScreen: View {
         case .unsent: "Unsent — couldn't save to iCloud; start again on your Mac"
         case .unconfirmed: "Unconfirmed — iCloud didn't confirm the save; start again on your Mac"
         case .notKept: "Unsaved — this iPhone couldn't keep its new key; start again on your Mac"
-        case .noCamera: "Unavailable — the camera couldn't start scanning; nothing was saved"
+        case .noCamera: "Unavailable — the camera couldn't scan; nothing was saved"
         }
         return PhoneLine(text: text, severity: .warning)
     }

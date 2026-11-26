@@ -71,7 +71,7 @@ import UIKit
         #expect(text(.refused) == "Refused — that isn't a NapCat pairing code; nothing was saved")
         #expect(text(.failed(.alreadyAnswered)) == "Refused — this code was already answered; start again on your Mac")
         #expect(text(.failed(.notConfirmed)) == "Unverified — pairing wasn't confirmed, so nothing was saved")
-        #expect(text(.failed(.noCamera)) == "Unavailable — the camera couldn't start scanning; nothing was saved")
+        #expect(text(.failed(.noCamera)) == "Unavailable — the camera couldn't scan; nothing was saved")
         #expect(text(.cancelled) == "Cancelled — nothing changed on this iPhone")
         #expect(text(.expired) == "Expired — the code's five minutes ran out; start again on your Mac")
         #expect(PairingScreen.privateNote == "Pair in private: the code on your Mac is a secret while it's on screen.")
