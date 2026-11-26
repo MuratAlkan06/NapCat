@@ -500,10 +500,21 @@ public enum ApprovalGate {
         }
     }
 
+    /// What a file tool's path may not hold, checked after the families so a
+    /// forbidden path holding one is still logged as its family: a space,
+    /// and the double quote (#159). The phone draws the gate's copy of a
+    /// Read verbatim, as JSON, and every member boundary there holds a
+    /// double quote; a path's own quote is drawn as `\"` and could pass for
+    /// the end of the path and the start of another member. Without it (and
+    /// without a backslash, refused first) a path draws no quote at all, so
+    /// its braces, brackets, commas and colons only ever read as part of the
+    /// one quoted path, and they stay allowed: real paths hold them.
+    static let pathBytesRefusedAfterFamilies: [UInt8] = [UInt8(ascii: " "), UInt8(ascii: "\"")]
+
     /// A file tool's path: absolute, printable ASCII without a backslash (so
     /// never a middle dot), no empty, `.` or `..` component, no trailing
-    /// slash — then the families — and, last, no space (so a forbidden path
-    /// with a space is still logged as its family).
+    /// slash — then the families — and, last, no space or double quote
+    /// (`pathBytesRefusedAfterFamilies`).
     static func pathRefusal(_ path: [UInt8]) -> ApprovalSuppression? {
         guard path.count >= 2, path.count <= maxPathBytes, path.first == slash, path.last != slash,
               path.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E && $0 != backslash }) else {
@@ -516,7 +527,7 @@ public enum ApprovalGate {
         if let family = pathFamily(components, rooted: true) {
             return .forbidden(family)
         }
-        return path.contains(space) ? .unclassifiable(.pathNotCanonical) : nil
+        return path.contains { pathBytesRefusedAfterFamilies.contains($0) } ? .unclassifiable(.pathNotCanonical) : nil
     }
 
     /// The first family whose rule matches `components` (lowercased).

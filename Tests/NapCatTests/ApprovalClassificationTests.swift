@@ -712,6 +712,21 @@ struct ApprovalClassificationTests {
         read("/tmp/scratch.txt", .forward(.read)),
         raw("Read", object([("file_path", quote("\(base)/doc.pdf")), ("offset", "1"), ("limit", "200"), ("pages", quote("1-3"))]),
             .forward(.read), "Read with every optional argument"),
+        // The path alphabet (#159): dot, dash, underscore, slash and tilde,
+        // and the punctuation that stays allowed because it draws no quote
+        // in the phone's copy: real paths hold it.
+        read("\(base)/Sources/my_module/file-name.v2.swift", .forward(.read)),
+        read("\(base)/notes~1.txt", .forward(.read)),
+        read("\(base)/~$report.docx", .forward(.read)),
+        read("\(base)/app/[slug]/page.tsx", .forward(.read)),
+        read("\(base)/app/[...slug]/page.tsx", .forward(.read)),
+        read("\(base)/app/(marketing)/page.tsx", .forward(.read)),
+        read("\(base)/{{cookiecutter.project_slug}}/README.md", .forward(.read)),
+        read("\(base)/data/a,b.csv", .forward(.read)),
+        read("\(base)/logs/12:30.log", .forward(.read)),
+        read("\(base)/it's-done.txt", .forward(.read)),
+        read("\(base)/icon#1@2x!.png", .forward(.read)),
+        read("\(base)/{a:[1,2]}.json", .forward(.read)),
     ]
 
     @Test(arguments: forwardableFiles)
@@ -935,6 +950,14 @@ struct ApprovalClassificationTests {
         read("\(base)/ a", unclassifiable(.pathNotCanonical)),
         read("\(base)/\u{00B7}", unclassifiable(.pathNotCanonical)),
         read("\(base)/a\u{00B7}b.txt", unclassifiable(.pathNotCanonical)),
+        // A double quote (#159): it would draw a member boundary in the
+        // phone's copy. Written plainly or as an escape, in Write too.
+        read("\(base)/a\"b.txt", unclassifiable(.pathNotCanonical)),
+        read("\(base)/a\",\"limit\":1", unclassifiable(.pathNotCanonical)),
+        read("\(base)/a.txt\",\"file_path\":\"\(base)/b.txt", unclassifiable(.pathNotCanonical)),
+        raw("Read", object([("file_path", "\"\(base)/a\\u0022b.txt\"")]), unclassifiable(.pathNotCanonical),
+            "an escaped double quote in a path"),
+        write("\(base)/a\"b.txt", unclassifiable(.pathNotCanonical)),
     ]
 
     @Test(arguments: failClosed)
@@ -1063,6 +1086,108 @@ struct ApprovalClassificationTests {
         #expect(Self.classify(Self.read("/Library/Application Support/ClaudeCode/managed-settings.json", .forward(.read)))
             == Self.forbidden(.configurationOrHooks))
         #expect(Self.classify(Self.read("/Users/someone/My Keys/.ssh/id_rsa", .forward(.read))) == Self.forbidden(.secretAccess))
+    }
+
+    // MARK: - The path alphabet (#159)
+
+    static let pathNotCanonical: ApprovalClassification = unclassifiable(.pathNotCanonical)
+
+    /// Where a character can sit in a path: (before it, after it). Joined
+    /// without it, each is a path that forwards.
+    static let pathPositions: [(String, String)] = [
+        ("", "/Users/someone/a.txt"), ("/", "Users/someone/a.txt"), ("\(base)/", "a.txt"), ("\(base)/a", "b.txt"),
+        ("\(base)/dir", "/a.txt"), ("\(base)/a.txt", ""),
+    ]
+
+    /// Each character refused after the families is refused wherever it
+    /// sits: before the root, first after it, first, inside and last in a
+    /// name, and as the path's last character. The same path without it
+    /// forwards.
+    @Test(arguments: ApprovalGate.pathBytesRefusedAfterFamilies)
+    func aCharacterRefusedAfterTheFamiliesIsRefusedAnywhere(_ byte: UInt8) {
+        let character = Character(Unicode.Scalar(byte))
+        for (before, after) in Self.pathPositions {
+            let path = "\(before)\(character)\(after)"
+            let control = "\(before)\(after)"
+            #expect(Self.classify(Self.read(path, Self.pathNotCanonical)) == Self.pathNotCanonical, "Read \(path)")
+            #expect(Self.classify(Self.write(path, Self.pathNotCanonical)) == Self.pathNotCanonical, "Write \(path)")
+            #expect(Self.classify(Self.read(control, Self.forwardRead)) == Self.forwardRead, "control: \(control)")
+        }
+    }
+
+    /// A forbidden path holding one of them is still logged as its family,
+    /// whichever family and wherever the character sits.
+    @Test(arguments: ApprovalGate.pathBytesRefusedAfterFamilies)
+    func aForbiddenPathWithARefusedCharacterKeepsItsFamily(_ byte: UInt8) {
+        let character = Character(Unicode.Scalar(byte))
+        let paths: [(String, ForbiddenFamily)] = [
+            ("/etc/a\(character)b", .privilegeEscalation), ("/etc/sudoers\(character)", .privilegeEscalation),
+            ("/Users/someone/.claude/a\(character)b.json", .configurationOrHooks),
+            ("\(Self.base)/\(character)x/.git/config", .configurationOrHooks),
+            ("/Users/someone/.ssh/id\(character)rsa", .secretAccess), ("\(Self.base)/a\(character)b/.env", .secretAccess),
+        ]
+        for (path, family) in paths {
+            let found = Self.classify(Self.read(path, Self.forbidden(family)))
+            #expect(found == Self.forbidden(family), "\(path)")
+            guard case .suppress(let suppression) = found else { continue }
+            #expect(suppression.auditCode == "forbidden.\(family.rawValue)", "the logged code names the family: \(path)")
+        }
+    }
+
+    /// The whole alphabet, character by character: a path forwards with any
+    /// printable ASCII character from `!` to `~` in a name except the
+    /// double quote and the backslash; those two and the space are
+    /// `pathNotCanonical`, and every other ASCII character is refused too.
+    /// The wire is unchanged.
+    @Test func theForwardedPathAlphabetIsPrintableASCIIWithoutQuoteOrBackslash() {
+        let pinned: [UInt8] = [UInt8(ascii: " "), UInt8(ascii: "\"")]
+        #expect(ApprovalGate.pathBytesRefusedAfterFamilies == pinned)
+        let refused: Set<UInt8> = [UInt8(ascii: " "), UInt8(ascii: "\""), UInt8(ascii: "\\")]
+        var forwarded = 0
+        for byte in UInt8(0)...UInt8(0x7F) {
+            let path = "\(Self.base)/a\(Character(Unicode.Scalar(byte)))b.txt"
+            let found: ApprovalClassification = Self.classify(Self.read(path, Self.forwardRead))
+            let printable: Bool = byte >= 0x20 && byte <= 0x7E
+            if printable && !refused.contains(byte) {
+                #expect(found == Self.forwardRead, "byte \(byte)")
+                forwarded += 1
+            } else if printable {
+                #expect(found == Self.pathNotCanonical, "byte \(byte)")
+            } else {
+                #expect(found != Self.forwardRead, "byte \(byte)")
+            }
+        }
+        #expect(forwarded == 92, "vacuity: 95 printable characters less the space, the quote and the backslash")
+        #expect(ApprovalWire.wireVersion == 1)
+        #expect(ApprovalChannel.frameVersion == 1)
+    }
+
+    /// Why the quote: the phone draws the gate's copy verbatim, and in the
+    /// copy of every forwarded Read the only quotes are its members' own
+    /// (two per key, two per string value) and there is no backslash, so no
+    /// path can draw a member boundary. The canary is the vector #159
+    /// closes: the copy of a path holding a quote draws one, so the count
+    /// catches it, and the gate refuses that path.
+    @Test func aForwardedPathDrawsNoQuoteOfItsOwn() throws {
+        func ownQuotesOnly(_ copy: String) throws -> Bool {
+            let members: [PreviewMember] = try #require(ApprovalPreview.parseObject(copy))
+            let strings: Int = members.filter { if case .string = $0.value { return true } else { return false } }.count
+            let quotes: Int = copy.filter { $0 == "\"" }.count
+            let own: Int = 2 * (members.count + strings)
+            return quotes == own && !copy.contains("\\")
+        }
+        let rows: [Row] = Self.forwardableFiles.filter { $0.tool == "Read" }
+        #expect(rows.count >= 10, "vacuity: the pinned paths are read")
+        for row in rows {
+            #expect(Self.classify(row) == Self.forwardRead, "\(row.note)")
+            let copy = try #require(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview), "\(row.note)")
+            #expect(try ownQuotesOnly(copy), "\(row.note): \(copy)")
+        }
+        let forged = Self.read("\(Self.base)/a\",\"limit\":1", Self.pathNotCanonical)
+        let copy = try #require(ApprovalGate.forwardedPreview(toolName: forged.tool, inputPreview: forged.preview))
+        #expect(copy == #"{"file_path":"/Users/someone/project/a\",\"limit\":1"}"#)
+        #expect(try !ownQuotesOnly(copy), "canary: the count catches the drawn boundary")
+        #expect(Self.classify(forged) == Self.pathNotCanonical)
     }
 
     // MARK: - What leaves the Mac is the gate's copy

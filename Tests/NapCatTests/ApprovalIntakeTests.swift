@@ -153,6 +153,10 @@ struct ApprovalIntakeTests {
                 code: "unclassifiable.previewNotFaithful"),
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/[REDACTED].txt"}"#, code: "forbidden.secretAccess"),
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/my notes.txt"}"#, code: "unclassifiable.pathNotCanonical"),
+        // A double quote in a path (#159), and a forbidden one: its family.
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/a\",\"limit\":1"}"#,
+                code: "unclassifiable.pathNotCanonical"),
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/.ssh/id\"rsa"}"#, code: "forbidden.secretAccess"),
     ]
 
     @Test(arguments: keptLocal)
