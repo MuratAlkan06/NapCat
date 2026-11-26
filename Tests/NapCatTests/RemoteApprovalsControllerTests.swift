@@ -97,7 +97,20 @@ final class ApprovalsRecordingSink: ApprovalRecordSink, @unchecked Sendable {
 @MainActor
 final class ApprovalsWorld {
     let scratch: ApprovalsScratch
+    /// What the app's own domain holds (the toggle writes here).
     var stored: Any?
+    /// What the defaults search list holds above the app's own domain (a
+    /// launch argument, a managed setting, a per-host value) and below it
+    /// (the global domain, a registered default); nil: nothing there (#205).
+    var outranking: Any?
+    var below: Any?
+    /// What the search list reads: the first of the three that holds a value.
+    var searched: Any? { outranking ?? stored ?? below }
+    /// Every value the toggle wrote, in order.
+    private(set) var writes: [Bool] = []
+    /// While true the store keeps reading what it held: a write it does not
+    /// take (#205).
+    var readIgnoresWrites = false
     var probes = 0
     var finding = ChannelPolicyFinding.noFilePolicy
     let audits = ApprovalsInbox<String>()
@@ -127,8 +140,11 @@ final class ApprovalsWorld {
         }
         controller = RemoteApprovalsController(
             socketPath: scratch.socketPath,
-            readStored: { [unowned self] in stored },
-            writeStored: { [unowned self] in stored = $0 },
+            readStored: { [unowned self] in RemoteApprovalsPolicy.enabled(stored: stored, searched: searched) },
+            writeStored: { [unowned self] in
+                writes.append($0)
+                if !readIgnoresWrites { stored = $0 }
+            },
             makeHost: factory,
             probe: { [unowned self] in
                 probes += 1
@@ -285,6 +301,41 @@ struct RemoteApprovalsControllerTests {
         #expect(world.waitForNote(.heldNoSeam), "after the kill switch, a new prompt finds nothing to connect to")
     }
 
+    /// #205: off is the kill switch in process, at once, with no read-back —
+    /// proven over a store whose read ignores writes: it still reads on
+    /// after the off is written. Before, off wrote the store and read it
+    /// back, and that read kept everything running. Now the switch goes
+    /// off, the session's server is disconnected, the socket goes, the
+    /// stop is audited once, and nothing listens again before the store is
+    /// next read (such a store would read on then); the off is still
+    /// written, and a late decision is ignored and logged.
+    @Test func offAppliesInProcessEvenWhenTheStoreReadIgnoresWrites() throws {
+        let world = try ApprovalsWorld()
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .listening)
+        world.prompt("abcde")
+        let id = try #require(world.nextPrompt(endingIn: "suppressed.notArmed"))
+        #expect(world.waitForNote(.relayed), "the server holds the prompt open")
+
+        world.readIgnoresWrites = true
+        let changes: Int = world.changes
+        world.controller.setEnabled(false)
+        #expect(world.stored as? Bool == true, "vacuity: the store still reads on")
+        #expect(world.writes == [true, false], "the off is written all the same")
+        #expect(world.controller.phase == .off, "the kill switch applied")
+        #expect(world.changes > changes, "and the menu was told")
+        #expect(world.waitForNote(.seamClosed), "the session's server is disconnected")
+        #expect(!world.socketExists)
+        #expect(world.audits.next(where: { $0 == "seam.stopped" }) != nil)
+        #expect(world.controller.phase == .off, "it did not snap back")
+        let all: [String] = world.audits.all
+        #expect(all.filter { $0 == "seam.listening" }.count == 1 && all.filter { $0 == "seam.stopped" }.count == 1,
+                "one listen, one stop: \(all)")
+        world.decide(id, .allow)
+        #expect(world.audits.next() == "prompt=\(id.hex) ignored.notForwarded", "a late decision is logged as ignored")
+        #expect(world.emitted.next(within: 0.3) == nil, "and answers nothing")
+    }
+
     /// The same with a FORWARDED prompt (a test-built armed host — the app's
     /// is never armed in this slice): off withdraws its record, disconnects
     /// the server, and the phone's later decision is ignored and logged.
@@ -365,8 +416,8 @@ struct RemoteApprovalsControllerTests {
         world.controller.setEnabled(false)
     }
 
-    /// A value written outside NapCat (`defaults write`) takes effect at the
-    /// next menu or Settings open.
+    /// A value written outside NapCat (`defaults write`) into NapCat's own
+    /// domain takes effect at the next menu or Settings open.
     @Test func anOutsideWriteTakesEffectOnTheNextRefresh() throws {
         let world = try ApprovalsWorld()
         world.stored = true
@@ -377,6 +428,76 @@ struct RemoteApprovalsControllerTests {
         world.controller.refresh()
         #expect(world.controller.phase == .off, "junk reads as off: the kill switch")
         #expect(!world.socketExists)
+    }
+
+    /// #205: a `true` anywhere but the app's own domain — above it (a launch
+    /// argument, a managed setting, a per-host value) or below it (the
+    /// global domain, a registered default) — never turns the toggle on,
+    /// however often the menu opens: zero footprint.
+    @Test(arguments: [true, false])
+    func anOutsideTrueNeverTurnsItOn(_ outranks: Bool) throws {
+        let world = try ApprovalsWorld()
+        if outranks { world.outranking = true } else { world.below = true }
+        #expect(world.searched as? Bool == true, "vacuity: the search list reads on")
+        world.controller.reconcile()
+        world.controller.refresh()
+        world.controller.refresh()
+        #expect(world.controller.phase == .off)
+        #expect(world.builtHosts.isEmpty && world.probes == 0, "no host, no probe")
+        #expect(!world.scratch.exists(world.scratch.directoryPath), "not even the socket's directory exists")
+        #expect(world.changes == 0)
+    }
+
+    /// #205: a value that outranks the app's own and disagrees is the kill
+    /// switch at the next refresh, and keeps a switch-on off (written, read
+    /// back, vetoed, and written back off). With an outranking `true` the
+    /// owner's own on and off both hold, and an off stays off across
+    /// refreshes: it was written to the app's own domain, which is read for
+    /// on.
+    @Test func anOutrankingValueVetoesAndTheOwnersOffStaysOff() throws {
+        let world = try ApprovalsWorld()
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .listening)
+        world.outranking = false
+        world.controller.refresh()
+        #expect(world.controller.phase == .off, "an outranking false is the kill switch")
+        #expect(!world.socketExists)
+        world.controller.setEnabled(true)
+        #expect(world.stored as? Bool == false && world.controller.phase == .off,
+                "a switch-on is written, vetoed, then written back off")
+        #expect(world.writes == [true, true, false])
+
+        world.outranking = true
+        world.controller.refresh()
+        #expect(world.controller.phase == .off, "the vetoed switch-on was not left stored")
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .listening, "the owner's own true, and nothing disagrees")
+        world.controller.setEnabled(false)
+        world.controller.refresh()
+        world.controller.refresh()
+        #expect(world.controller.phase == .off, "the owner's off stays off: the outranking true cannot turn it back on")
+        #expect(world.stored as? Bool == false && !world.socketExists)
+    }
+
+    /// #205: a switch-on that an outranking value vetoes is written back
+    /// off, so the app's own domain holds what the switch shows. Before, the
+    /// stored `true` stayed: the switch read off and could not clear it, and
+    /// once the outranking value was gone the next refresh (or launch) came
+    /// up on with no gesture. Now it stays off, with zero footprint.
+    @Test func aVetoedSwitchOnIsWrittenBackOff() throws {
+        let world = try ApprovalsWorld()
+        world.outranking = "YES"
+        world.controller.setEnabled(true)
+        #expect(world.controller.phase == .off)
+        #expect(world.writes == [true, false], "the switch-on is written, then written back off")
+        #expect(world.stored as? Bool == false, "what is stored matches what the switch shows")
+        world.outranking = nil
+        world.controller.refresh()
+        #expect(world.controller.phase == .off)
+        #expect(world.builtHosts.isEmpty && world.probes == 0, "no host, no probe")
+        #expect(!world.scratch.exists(world.scratch.directoryPath), "not even the socket's directory exists")
+        world.controller.setEnabled(false)
+        #expect(world.writes == [true, false, false], "the off is written as ever")
     }
 
     /// The toggle's own audit lines join the S1 vocabulary: closed codes, a

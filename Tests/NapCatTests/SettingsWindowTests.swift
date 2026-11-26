@@ -696,8 +696,10 @@ struct SettingsWindowTests {
             #expect(model.remoteApprovalsEnabled)
             let policy = try #require(model.remoteApprovalsPolicyLine)
             #expect(policy == MenuStateModel.remoteApprovalsPolicyLine(finding: .unreadable))
+            // No pairing controller in this model: not paired (#205).
             #expect(model.claudePane.sections.last?.rows == [
-                .remoteApprovals(isOn: true, caption: MenuStateModel.remoteApprovalsStatus(phase: .listening), hint: hint),
+                .remoteApprovals(isOn: true, caption: MenuStateModel.remoteApprovalsStatus(phase: .listening, hold: .notPaired),
+                                 hint: hint),
                 .line(policy),
             ])
             #expect(policy.severity == .nominal && !model.settingsResidentSeverities(.claude).contains(.info),
@@ -929,6 +931,8 @@ struct SettingsWindowTests {
     /// flush (a send attempt), the turn-on reset and the panel re-fit. Issue
     /// #111: both also run the opportunistic update check through its cadence
     /// gate (at most once a day, opt-out) — never the manual check.
+    /// #205: both re-read the paired-key slot, for the Remote approvals
+    /// row's pair-first caption.
     @Test func theSettingsRefreshMirrorsTheMenuOpenReads() throws {
         let owner = try Self.code("MenuContentView.swift")
         #expect(owner.contains("settingsWindow.onBecameKey = { [weak self] in self?.settingsWindowBecameKey() }"))
@@ -941,7 +945,8 @@ struct SettingsWindowTests {
         let settings = try body(of: "settingsWindowBecameKey")
         let reads = ["sleep.refreshObservedState()", "power.reprobeChargeControlIfNeeded()", "limiter.evaluate(reason: ",
                      "loginItem.refresh()", "detection?.sample()", "lidGuard?.refreshArming()",
-                     "finishAlert?.reconcile()", "remoteApprovals?.refresh()", "updateCheck?.checkIfDue()", "model.refresh()"]
+                     "finishAlert?.reconcile()", "remoteApprovals?.refresh()", "updateCheck?.checkIfDue()",
+                     "pairing?.refreshPaired()", "model.refresh()"]
         for (name, text) in [("menuWillOpen", menuOpen), ("settingsWindowBecameKey", settings)] {
             let positions = try reads.map { read in
                 try #require(text.range(of: read), "'\(read)' missing from \(name)").lowerBound

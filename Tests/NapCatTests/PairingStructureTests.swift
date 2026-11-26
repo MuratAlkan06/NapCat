@@ -798,6 +798,14 @@ struct PairingStructureTests {
         + " if let name { defaults.set(name, forKey: DefaultsKey.pairingRecordToDelete) }"
         + " else { defaults.removeObject(forKey: DefaultsKey.pairingRecordToDelete) } },"
         + " killSwitch: { [weak remoteApprovals] in remoteApprovals?.setEnabled(false) }) }"
+    /// AMENDED (#205): the remote-approvals toggle is read from the app's own
+    /// persistent domain too — by its one reader, which its factory alone
+    /// calls, on the app's own domain name — so a launch argument, the global
+    /// domain or a registered default can never turn it on.
+    static let toggleReadLine: String =
+        "RemoteApprovalsPolicy.enabled(stored: defaults.persistentDomain(forName: domain)?[DefaultsKey.remoteApprovalsEnabled],"
+    static let toggleReaderHead: String = "nonisolated static func storedToggle(_ defaults: UserDefaults, domain: String) -> Bool {"
+    static let toggleReaderCall: String = "readStored: { Self.storedToggle(defaults, domain: Bundle.main.bundleIdentifier ?? \"\") },"
 
     static let freshSites: [(pattern: String, allowed: [String: [String: Int]], rule: String)] = [
         (#"\bsecureNonce\b"#, [controllerFile: [secureNonceHead: 1, nonceDefaultLine: 1]],
@@ -812,12 +820,17 @@ struct PairingStructureTests {
                                                      readRememberedLine: 1]],
          "every call of the controller's init names readRemembered — makeIfEnabled's is the one"),
         // S-PAIR-C1.5 (#170): the app's own persistent domain is read once,
-        // by the remembered name's one reader.
-        (#"\bpersistentDomain\b"#, [controllerFile: [readRememberedLine: 1]],
-         "the remembered name is read from the app's own persistent domain, by makeIfEnabled alone"),
+        // by the remembered name's one reader — and (#205) once more, by the
+        // remote-approvals toggle's one reader: exactly two sites.
+        (#"\bpersistentDomain\b"#, [controllerFile: [readRememberedLine: 1], ApprovalChannelStructureTests.toggleFile: [toggleReadLine: 1]],
+         "the app's own persistent domain is read by the remembered name's reader and the toggle's, nothing else"),
         (#"\brememberedName\b"#, [controllerFile: [readRememberedLine: 1,
                                                    "nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {": 1]],
          "the remembered name has one reader, called by makeIfEnabled alone"),
+        // #205: the toggle's reader is called by its factory alone, on the
+        // app's own domain name.
+        (#"\bstoredToggle\b"#, [ApprovalChannelStructureTests.toggleFile: [toggleReaderHead: 1, toggleReaderCall: 1]],
+         "the toggle has one reader, called by its factory alone, on the app's own domain"),
     ]
     static let rememberedNameBody = "nonisolated static func rememberedName(in domain: [String: Any]?) -> String? {"
         + " domain?[DefaultsKey.pairingRecordToDelete] as? String }"
@@ -861,6 +874,7 @@ struct PairingStructureTests {
         let sources = try ApprovalChannelStructureTests.sources()
         #expect(Self.freshFailures(sources).isEmpty, "\(Self.freshFailures(sources))")
         let controller = Self.controllerFile
+        let toggle: String = ApprovalChannelStructureTests.toggleFile
         let wiring = "            killSwitch: { [weak remoteApprovals] in"
         let mutants: [(String, Sources)] = [
             // The review's M5 and M6, as planted.
@@ -914,11 +928,34 @@ struct PairingStructureTests {
                 $0 + "\nenum ZZ { nonisolated static func secureNonce(_ n: Int) -> [UInt8]? { [UInt8](repeating: 7, count: n) } }" }),
             ("a backticked second controller", Self.mutate(sources, "MenuStateModel.swift") {
                 $0 + "\nlet zz = `PairingController`(source: s, keys: k, readRemembered: r, writeRemembered: w, killSwitch: {})" }),
+            // #205: the toggle read through the search list alone, from the
+            // global domain, or by a second caller; and a third reader of the
+            // persistent domain beside the two, in the toggle or the model.
+            ("the toggle read through the search list alone", Self.mutate(sources, toggle) {
+                $0.replacingOccurrences(of: "stored: defaults.persistentDomain(forName: domain)?[DefaultsKey.remoteApprovalsEnabled],",
+                                        with: "stored: defaults.object(forKey: DefaultsKey.remoteApprovalsEnabled),") }),
+            ("the toggle read from the global domain", Self.mutate(sources, toggle) {
+                $0.replacingOccurrences(of: "domain: Bundle.main.bundleIdentifier ?? \"\") },", with: "domain: UserDefaults.globalDomain) },") }),
+            ("the toggle's reader called again", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz = RemoteApprovalsController.storedToggle(.standard, domain: \"x\")" }),
+            ("a third reader of the persistent domain, in the toggle", Self.mutate(sources, toggle) {
+                $0 + "\nextension RemoteApprovalsController { static func zz(_ d: UserDefaults) -> Any? { d.persistentDomain(forName: \"x\") } }" }),
+            ("a third reader of the persistent domain, in the model", Self.mutate(sources, "MenuStateModel.swift") {
+                $0 + "\nlet zz = UserDefaults.standard.persistentDomain(forName: \"com.muratalkan.napcat\")" }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.freshFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // #205 vacuity: the toggle's two pinned lines are where the canaries
+        // plant; and an over-match control — words that only contain the
+        // pinned ones.
+        for line in [Self.toggleReadLine, Self.toggleReaderCall] {
+            #expect(ApprovalChannelStructureTests.count(line, in: Self.text(toggle, in: sources)) == 1, "vacuity: '\(line.prefix(40))'")
+        }
+        let wordsOnly: Sources = Self.mutate(sources, "MenuStateModel.swift") { $0 + "\nlet storedToggles = 1, persistentDomains = 2" }
+        #expect(wordsOnly.map { $0.text } != sources.map { $0.text } && Self.freshFailures(wordsOnly).isEmpty,
+                "over-match: \(Self.freshFailures(wordsOnly))")
         // Over-match controls: the controller held, passed and asked for its
         // factory (the app's own uses); words that only contain the pinned
         // ones; and a whole-line comment naming the shapes.

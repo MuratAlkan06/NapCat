@@ -48,13 +48,85 @@ struct RemoteApprovalsPolicyTests {
         StoredRow(note: "an array is junk", stored: .array, enabled: false),
     ]
 
+    /// With nothing outranking it, the search list reads the app's own value.
     @Test(arguments: storedRows)
     func onlyAStoredTrueTurnsItOn(_ row: StoredRow) {
-        #expect(RemoteApprovalsPolicy.enabled(stored: row.stored.value) == row.enabled)
+        #expect(RemoteApprovalsPolicy.enabled(stored: row.stored.value, searched: row.stored.value) == row.enabled)
+    }
+
+    struct SearchRow: Sendable, CustomTestStringConvertible {
+        let note: String
+        /// What the app's own persistent domain holds.
+        let stored: StoredValue
+        /// What the defaults search list reads.
+        let searched: StoredValue
+        let enabled: Bool
+        var testDescription: String { note }
+    }
+
+    /// #205: the app's own domain must hold a Bool `true`, and the search
+    /// list must read one too. A `true` only elsewhere (a launch argument,
+    /// the global domain, a registered default: all read through the search
+    /// list) never turns it on; a value that outranks the app's own and is
+    /// anything but a Bool `true` turns it off.
+    static let searchRows: [SearchRow] = [
+        SearchRow(note: "the app's own true, read through the search list", stored: .bool(true), searched: .bool(true),
+                  enabled: true),
+        SearchRow(note: "a true elsewhere, the app's own unset", stored: .absent, searched: .bool(true), enabled: false),
+        SearchRow(note: "a true elsewhere, the app's own false", stored: .bool(false), searched: .bool(true), enabled: false),
+        SearchRow(note: "a true elsewhere, the app's own junk", stored: .string("YES"), searched: .bool(true), enabled: false),
+        SearchRow(note: "an outranking false vetoes the app's own true", stored: .bool(true), searched: .bool(false),
+                  enabled: false),
+        SearchRow(note: "an outranking string disagrees, even YES", stored: .bool(true), searched: .string("YES"),
+                  enabled: false),
+        SearchRow(note: "an outranking junk number disagrees", stored: .bool(true), searched: .int(2), enabled: false),
+        SearchRow(note: "an outranking 1 is the Bool it bridges to", stored: .bool(true), searched: .int(1), enabled: true),
+        SearchRow(note: "a search list that reads nothing disagrees", stored: .bool(true), searched: .absent, enabled: false),
+    ]
+
+    @Test(arguments: searchRows)
+    func anOutsideValueCanTurnItOffButNeverOn(_ row: SearchRow) {
+        #expect(RemoteApprovalsPolicy.enabled(stored: row.stored.value, searched: row.searched.value) == row.enabled)
     }
 
     @Test func theKeyIsItsOwn() {
         #expect(DefaultsKey.remoteApprovalsEnabled == "remoteApprovalsEnabled")
+    }
+
+    // MARK: - What holds remote answers (#205)
+
+    struct HoldRow: Sendable, CustomTestStringConvertible {
+        let enabled: Bool
+        let paired: Bool
+        let recordPath: Bool
+        let hold: RemoteApprovalsHold?
+        var testDescription: String { "enabled \(enabled), paired \(paired), record path \(recordPath)" }
+    }
+
+    /// The whole truth table: nothing holds only when all three do;
+    /// otherwise the first that fails, in order — the toggle, the pairing,
+    /// the record path.
+    static let holdRows: [HoldRow] = [
+        HoldRow(enabled: false, paired: false, recordPath: false, hold: .off),
+        HoldRow(enabled: false, paired: false, recordPath: true, hold: .off),
+        HoldRow(enabled: false, paired: true, recordPath: false, hold: .off),
+        HoldRow(enabled: false, paired: true, recordPath: true, hold: .off),
+        HoldRow(enabled: true, paired: false, recordPath: false, hold: .notPaired),
+        HoldRow(enabled: true, paired: false, recordPath: true, hold: .notPaired),
+        HoldRow(enabled: true, paired: true, recordPath: false, hold: .noRecordPath),
+        HoldRow(enabled: true, paired: true, recordPath: true, hold: nil),
+    ]
+
+    @Test(arguments: holdRows)
+    func remoteAnswersAreHeldUnlessAllThreeHold(_ row: HoldRow) {
+        #expect(RemoteApprovalsPolicy.hold(enabled: row.enabled, paired: row.paired, recordPath: row.recordPath) == row.hold)
+    }
+
+    /// Vacuity: eight rows, each combination once, and exactly one holds nothing.
+    @Test func theHoldTableIsTheWholeTruthTable() {
+        let combinations: Set<String> = Set(Self.holdRows.map { "\($0.enabled) \($0.paired) \($0.recordPath)" })
+        #expect(Self.holdRows.count == 8 && combinations.count == 8)
+        #expect(Self.holdRows.filter { $0.hold == nil }.count == 1)
     }
 
     // MARK: - The state machine

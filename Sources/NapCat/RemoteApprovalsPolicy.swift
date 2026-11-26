@@ -112,6 +112,19 @@ struct RemoteApprovalsState: Equatable, Sendable {
     }
 }
 
+/// What keeps the answer to a prompt on this Mac instead of letting the
+/// paired iPhone give it: the first of the three conditions that fails
+/// (`RemoteApprovalsPolicy.hold`).
+enum RemoteApprovalsHold: Equatable, Sendable {
+    /// The toggle is off.
+    case off
+    /// The toggle is on, but no iPhone is paired.
+    case notPaired
+    /// On and paired, but no live record path reaches the iPhone (none
+    /// exists in this build).
+    case noRecordPath
+}
+
 enum RemoteApprovalsPolicy {
     /// In debugBattery mode the feature is STRUCTURALLY absent (the shape of
     /// `LidGuardPolicy.lidGuardMayBeConstructed`): no toggle, no socket.
@@ -119,11 +132,29 @@ enum RemoteApprovalsPolicy {
         !debugBattery
     }
 
-    /// `remoteApprovalsEnabled` as stored. Only a stored Bool `true` is on;
-    /// unset, `false`, or anything else — a hand-written string, a number
-    /// other than 0/1 — reads as OFF: a junk value must never arm a
-    /// remote-control feature.
-    static func enabled(stored: Any?) -> Bool {
-        (stored as? Bool) == true
+    /// Whether remote answers are held, and why: nil only when the toggle is
+    /// on, an iPhone is paired and the live record path exists; otherwise the
+    /// first of those that fails, in that order. The caller reads each fact.
+    /// In this build the answer only shapes what the toggle row says: nothing
+    /// is handed to the seam host, which stays unarmed.
+    static func hold(enabled: Bool, paired: Bool, recordPath: Bool) -> RemoteApprovalsHold? {
+        guard enabled else { return .off }
+        guard paired else { return .notPaired }
+        guard recordPath else { return .noRecordPath }
+        return nil
+    }
+
+    /// `remoteApprovalsEnabled` as stored, read twice (#205): `stored` is
+    /// what the app's OWN persistent domain holds, `searched` what the
+    /// defaults search list reads — where a launch argument, a managed
+    /// setting or a per-host value (`defaults -currentHost`) outranks the
+    /// app's domain, and the global domain and the registered defaults sit
+    /// below it. ON only when both are a Bool `true`: unset, `false`, or
+    /// anything else — a hand-written string, a number other than 0/1 —
+    /// reads as OFF, so a junk value never arms a remote-control feature. A
+    /// value outside the app's own domain can turn it off (one that outranks
+    /// it disagrees) but never on (the app's own domain does not hold it).
+    static func enabled(stored: Any?, searched: Any?) -> Bool {
+        (stored as? Bool) == true && (searched as? Bool) == true
     }
 }

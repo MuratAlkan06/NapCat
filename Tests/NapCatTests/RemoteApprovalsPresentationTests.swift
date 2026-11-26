@@ -13,13 +13,17 @@ import Testing
 struct RemoteApprovalsPresentationTests {
     static let localOnly = PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
     static let notListening = PanelLine(text: "Not listening — could not start; reopen the menu to retry", severity: .warning)
+    /// #205: on, with no iPhone paired.
+    static let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings › Claude", severity: .info)
+    /// Every answer `RemoteApprovalsPolicy.hold` can give.
+    static let holds: [RemoteApprovalsHold?] = [nil, .off, .notPaired, .noRecordPath]
 
     // MARK: - The row's caption
 
     @Test func theRowCaptionPerPhase() {
-        #expect(MenuStateModel.remoteApprovalsStatus(phase: .off) == PanelLine(text: "Off", severity: .nominal))
-        #expect(MenuStateModel.remoteApprovalsStatus(phase: .listening) == Self.localOnly)
-        #expect(MenuStateModel.remoteApprovalsStatus(phase: .unavailable) == Self.notListening)
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .off, hold: .off) == PanelLine(text: "Off", severity: .nominal))
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .listening, hold: .noRecordPath) == Self.localOnly)
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .unavailable, hold: .noRecordPath) == Self.notListening)
         // The warning in user words with its next step (a menu or Settings
         // open retries: anUnusableSocketIsUnavailableAndRetriedOnRefresh), as
         // short as the panel's other warnings.
@@ -28,14 +32,32 @@ struct RemoteApprovalsPresentationTests {
         #expect(warning.split(separator: " ").filter { $0 != "—" }.count <= 10, "'\(warning)' is longer than the others")
     }
 
+    /// #205: listening with no iPhone paired, the row says to pair one
+    /// first, and where (the pairing lives in Settings › Claude); paired,
+    /// it is local only as before. A socket that could not be opened is
+    /// still the line to show. Nothing held at all still reads local only:
+    /// the host stays unarmed in this build.
+    @Test func theRowSaysToPairTheIPhoneFirst() {
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .listening, hold: .notPaired) == Self.notPaired)
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .unavailable, hold: .notPaired) == Self.notListening)
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .off, hold: .notPaired) == PanelLine(text: "Off", severity: .nominal))
+        #expect(MenuStateModel.remoteApprovalsStatus(phase: .listening, hold: nil) == Self.localOnly)
+        let words: [Substring] = Self.notPaired.text.split(separator: " ").filter { $0 != "—" }
+        #expect(Self.notPaired.text.hasPrefix("Not paired — ") && Self.notPaired.text.contains("in Settings"))
+        #expect(words.count <= 10, "'\(Self.notPaired.text)' is longer than the others")
+    }
+
     /// Off is a choice, so it stays out of the card; on — in this build
-    /// always local only, or not even listening — shows under the row: the
-    /// switch never sits ON in the panel without saying what it does.
+    /// always local only, waiting for a pairing, or not even listening —
+    /// shows under the row: the switch never sits ON in the panel without
+    /// saying what it does.
     @Test(arguments: [RemoteApprovalsPhase.off, .listening, .unavailable])
     func onIsNeverSilentInThePanel(_ phase: RemoteApprovalsPhase) {
-        let line = MenuStateModel.remoteApprovalsStatus(phase: phase)
-        #expect((line.severity == .nominal) == (phase == .off), "\(phase): \(line)")
-        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == (phase == .off ? .settings : .topLevel))
+        for hold in Self.holds {
+            let line = MenuStateModel.remoteApprovalsStatus(phase: phase, hold: hold)
+            #expect((line.severity == .nominal) == (phase == .off), "\(phase), \(String(describing: hold)): \(line)")
+            #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == (phase == .off ? .settings : .topLevel))
+        }
     }
 
     // MARK: - The channel-policy line
@@ -144,14 +166,15 @@ struct RemoteApprovalsPresentationTests {
             #expect(hint.contains(phrase), "the hint must say '\(phrase)'")
         }
         // The promise must not come back: no present-tense iPhone answering
-        // in the names or the hint.
-        for text in [hint, MenuStateModel.remoteApprovalsAccessibilityLabel, MenuStateModel.remoteApprovalsSettingsToggleTitle] {
+        // in the names, the hint or the pair-first caption.
+        for text in [hint, MenuStateModel.remoteApprovalsAccessibilityLabel, MenuStateModel.remoteApprovalsSettingsToggleTitle,
+                     Self.notPaired.text] {
             for promise in ["from iPhone", "from your iPhone", "Lets the NapCat iPhone app answer", "Answer permission"] {
                 #expect(!text.contains(promise), "'\(text)' promises '\(promise)'")
             }
         }
         let texts = [hint, MenuStateModel.remoteApprovalsAccessibilityLabel, MenuStateModel.remoteApprovalsSettingsToggleTitle,
-                     Self.localOnly.text, Self.notListening.text]
+                     Self.localOnly.text, Self.notListening.text, Self.notPaired.text]
             + Self.policyRows.map(\.text)
         for text in texts {
             #expect(!text.lowercased().contains("ntfy"), "'\(text)' — approvals never ride the ntfy lane")

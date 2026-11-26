@@ -706,7 +706,7 @@ struct MenuPanelPresentationTests {
     /// label — "Busy hook:", "Topic:" — since no row title sits above them.)
     static let rowCaptionStateWords = ["Off", "Armed", "Not armed", "Cannot fire", "Failed", "Held", "Offline",
                                        "Unknown", "Turning on…", "Charging", "Paused", "Setup needed", "Unavailable",
-                                       "Waiting for approval", "Not found", "Local only", "Not listening"]
+                                       "Waiting for approval", "Not found", "Local only", "Not listening", "Not paired"]
 
     static func everyRowCaption() -> [PanelLine] {
         var lines: [PanelLine] = []
@@ -728,9 +728,12 @@ struct MenuPanelPresentationTests {
         for status: SMAppService.Status in [.notRegistered, .enabled, .requiresApproval, .notFound] {
             if let caption = MenuStateModel.launchAtLoginCaption(for: status) { lines.append(caption) }
         }
-        // F4 slice S2: the Remote approvals row, every phase.
+        // F4 slice S2: the Remote approvals row, every phase — and (#205)
+        // every answer of what holds remote answers.
         for phase: RemoteApprovalsPhase in [.off, .listening, .unavailable] {
-            lines.append(MenuStateModel.remoteApprovalsStatus(phase: phase))
+            for hold: RemoteApprovalsHold? in [nil, .off, .notPaired, .noRecordPath] {
+                lines.append(MenuStateModel.remoteApprovalsStatus(phase: phase, hold: hold))
+            }
         }
         return lines
     }
@@ -738,7 +741,7 @@ struct MenuPanelPresentationTests {
     @Test func rowCaptionsAreStateFirstFragments() {
         let lines = Self.everyRowCaption()
         // Charge Limit contributes 4 (#84: `.controlUnavailable` has no caption — its row is hidden).
-        #expect(lines.count == 4 + 4 + 40 + 72 + 2 + 3, "vacuity guard — update when the input set changes")
+        #expect(lines.count == 4 + 4 + 40 + 72 + 2 + 12, "vacuity guard — update when the input set changes")
         for line in lines {
             #expect(Self.rowCaptionStateWords.contains { line.text == $0 || line.text.hasPrefix($0 + " ") },
                     "'\(line.text)' does not open with a state word")
@@ -1123,6 +1126,8 @@ struct MenuPanelPresentationTests {
         detection: ClaudeActivityController? = nil,
         lidGuard: LidGuardController? = nil,
         finishAlert: FinishAlertController? = nil,
+        remoteApprovals: RemoteApprovalsController? = nil,
+        pairing: PairingController? = nil,
         _ body: (MenuStateModel, UserDefaults, String) throws -> Void
     ) rethrows {
         let suite = "com.muratalkan.napcat.tests.menupanel.\(UUID().uuidString)"
@@ -1132,7 +1137,8 @@ struct MenuPanelPresentationTests {
         let limiter = ChargeLimiter(power: power, isAppleSilicon: true, defaults: defaults)
         let model = MenuStateModel(power: power, sleep: SleepStateController(), limiter: limiter,
                                    screenLock: lockAvailable ? ScreenLockController() : nil,
-                                   detection: detection, lidGuard: lidGuard, finishAlert: finishAlert)
+                                   detection: detection, lidGuard: lidGuard, finishAlert: finishAlert,
+                                   remoteApprovals: remoteApprovals, pairing: pairing)
         try body(model, defaults, suite)
     }
 
@@ -1292,6 +1298,47 @@ struct MenuPanelPresentationTests {
             #expect(!model.claudeDetectionVisible && !model.lidGuardVisible)
             try #require(model.lockScreenAvailable, "canary: see lockSymbolResolvesOnThisMachine")
             #expect(model.settingsBadge == .nominal)
+        }
+    }
+
+    /// Issue #205, through the model with the real toggle over a scratch
+    /// socket (ApprovalsWorld) and the real pairing controller over an
+    /// in-memory slot (PairingWorld): on with nothing paired, the row says to
+    /// pair first; it follows the slot as the controller last read it (the
+    /// menu and Settings opens re-read it — SettingsWindowTests'
+    /// `theSettingsRefreshMirrorsTheMenuOpenReads`), so a phone committed
+    /// behind its back changes nothing until that read; an unreadable slot
+    /// is not paired. The host never hears of the pairing: a forwardable
+    /// prompt stays local while paired.
+    @Test @MainActor func theRemoteApprovalsRowSaysToPairFirstWhileNothingIsPaired() throws {
+        let approvals = try ApprovalsWorld()
+        let pairing = PairingWorld()
+        let off = PanelLine(text: "Off", severity: .nominal)
+        let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings › Claude", severity: .info)
+        let localOnly = PanelLine(text: "Local only — the iPhone app cannot answer prompts yet", severity: .info)
+        try withModel(remoteApprovals: approvals.controller, pairing: pairing.controller) { model, _, _ in
+            #expect(model.remoteApprovalsStatus == off)
+            model.setRemoteApprovalsEnabled(true)
+            #expect(model.remoteApprovalsEnabled && !model.remoteApprovalsPaired)
+            #expect(model.remoteApprovalsStatus == notPaired)
+
+            let phone: PairedPhone = try PairedKeyStoreTests.phone()
+            #expect(PairedKeyStore(items: pairing.items).commit(phone))
+            model.refresh()
+            #expect(model.remoteApprovalsStatus == notPaired, "the slot as last read: a model refresh does not read it")
+            pairing.controller.refreshPaired()
+            model.refresh()
+            #expect(model.remoteApprovalsPaired && model.remoteApprovalsStatus == localOnly)
+            approvals.prompt("abcde")
+            #expect(approvals.nextPrompt(endingIn: "suppressed.notArmed") != nil, "paired, the host still stays unarmed")
+
+            pairing.items.replaceValue("not a pairing")
+            pairing.controller.refreshPaired()
+            model.refresh()
+            #expect(!model.remoteApprovalsPaired && model.remoteApprovalsStatus == notPaired, "an unreadable slot is not paired")
+
+            model.setRemoteApprovalsEnabled(false)
+            #expect(model.remoteApprovalsStatus == off)
         }
     }
 
