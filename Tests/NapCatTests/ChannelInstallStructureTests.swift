@@ -18,6 +18,9 @@ struct ChannelInstallStructureTests {
     static let infoPlistPath = "Resources/Info.plist"
     static let packagePath = "Package.swift"
     static let checkPath = "scripts/check-release-entitlements.sh"
+    static let installPath = "scripts/install-channel.sh"
+    static let uninstallPath = "scripts/uninstall-channel.sh"
+    static let scriptPaths = [installPath, uninstallPath]
 
     static func read(_ path: String) throws -> String {
         try String(contentsOf: LidGuardStructureTests.repoRoot().appendingPathComponent(path), encoding: .utf8)
@@ -138,6 +141,7 @@ struct ChannelInstallStructureTests {
     static let identifierDefinitions: [(path: String, prefix: String, suffix: String)] = [
         (makefilePath, "CHANNEL_IDENTIFIER := ", ""),
         (checkPath, "CHANNEL_IDENTIFIER=\"", "\""),
+        (installPath, "CHANNEL_IDENTIFIER=\"", "\""),
     ]
     /// Files that spell the identifier once without defining it: the
     /// server's own dispatch queue label.
@@ -361,6 +365,329 @@ struct ChannelInstallStructureTests {
         for (name, mutant) in mutants {
             #expect(mutant != script, "canary setup '\(name)': target text must exist")
             #expect(!Self.releaseCheckFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    // MARK: - The two scripts keep the house guards
+
+    static let callerPathCapture = "CALLER_PATH=\"$PATH\""
+    /// The only way the caller's PATH is used: in the environment of Claude
+    /// Code's own process, never assigned in this shell.
+    static let callerEnvironment = "/usr/bin/env PATH=\"$CALLER_PATH\" "
+    static let callerUses = [callerEnvironment + "/usr/bin/which claude", callerEnvironment + "\"$CLAUDE_BIN\" \"$@\""]
+    /// Claude Code's configuration files and the shell profiles: never named.
+    static let configNames = [".claude.json", "settings.json", ".claude/", "CLAUDE_CONFIG_DIR", ".zshrc", ".zprofile",
+                              ".zshenv", ".zlogin", ".bashrc", ".bash_profile", ".bash_login", ".profile", "config.fish",
+                              "launchctl setenv", "/etc/paths"]
+    /// Where output may be redirected: nowhere, a standard stream, or the
+    /// receipt's own temporary file.
+    static let redirectTargets: Set<String> = ["/dev/null", "&1", "&2", "\"$RECEIPT_TMP\""]
+    static let redirectPattern = #">+\s*(&[0-9]|"[^"]*"|[^\s;|)&]+)"#
+    /// A command that changes files, at a command position.
+    static let fileChangePattern = #"(^|[\s;&|('])(rm|rmdir|mv|cp|ln|install|chmod|chown|mkdir|mktemp|touch|tee|dd|truncate|ditto|rsync|sed\s+-i|plutil\s+-(replace|insert|remove|convert)|defaults\s+(write|delete|import))\s"#
+    /// The only variables a file-changing line may name.
+    static let fileChangeVariables: Set<String> = ["APPROVALS_DIR", "RECEIPT", "RECEIPT_TMP"]
+    /// The three Claude Code commands the scripts may run, through `claude_cli` only.
+    static let claudeCalls = [
+        "claude_cli mcp get \"$SERVER_NAME\"",
+        "claude_cli mcp remove \"$SERVER_NAME\" --scope user",
+        "claude_cli mcp add --scope user --transport stdio \"$SERVER_NAME\" -- \"$HELPER\"",
+    ]
+
+    /// Every house-style violation in one channel script's text; empty ==
+    /// locked. The first code lines are `set -euo pipefail`, the caller's
+    /// PATH kept aside, the PATH pin and `umask 022`; PATH is assigned only by
+    /// the pin and the caller's PATH only reaches Claude Code; nothing runs
+    /// sudo; nothing names Claude Code's configuration or a shell profile,
+    /// appends, or redirects anywhere but /dev/null, a standard stream or the
+    /// receipt's temporary file; every file-changing line names only the
+    /// receipt and its folder; and Claude Code runs only through `claude_cli`,
+    /// with the three commands above.
+    static func scriptGuardFailures(_ script: String) -> [String] {
+        let code = codeLines(script)
+        guard code.count >= 4 else { return ["fewer than four code lines (the lock would be vacuous)"] }
+        var failures: [String] = []
+        let head = ["set -euo pipefail", callerPathCapture, SetupScriptTests.pinnedPathLine, "umask 022"]
+        if Array(code.prefix(4)) != head {
+            failures.append("the first four code lines must be \(head), got \(Array(code.prefix(4)))")
+        }
+        let assignments = code.filter {
+            matches($0.replacingOccurrences(of: callerEnvironment, with: ""), #"(^|[;&|\s(])(export\s+)?PATH="#)
+        }
+        if assignments != [SetupScriptTests.pinnedPathLine] {
+            failures.append("PATH must be assigned exactly once, by the pin: \(assignments)")
+        }
+        for line in code where line.contains("CALLER_PATH") && line != callerPathCapture
+            && !callerUses.contains(where: { line.contains($0) }) {
+            failures.append("the caller's PATH may only find and run Claude Code: '\(line)'")
+        }
+        for line in code {
+            if matches(line, #"(^|[^A-Za-z0-9_])sudo([^A-Za-z0-9_]|$)"#) { failures.append("sudo: '\(line)'") }
+            for name in configNames where line.contains(name) { failures.append("names \(name): '\(line)'") }
+            if line.contains(">>") { failures.append("appends: '\(line)'") }
+            for target in captures(redirectPattern, in: line) where !redirectTargets.contains(target) {
+                failures.append("redirects to \(target): '\(line)'")
+            }
+            if matches(line, fileChangePattern) {
+                let named = Set(captures(#"\$\{?([A-Za-z_][A-Za-z0-9_]*)"#, in: line))
+                if named.isEmpty || !named.isSubset(of: fileChangeVariables) || line.contains("~") {
+                    failures.append("changes a file other than the receipt and its folder: '\(line)'")
+                }
+            }
+            if matches(line, #"(^|[;&|(]|\bthen|\bdo|\belse)\s*claude\s"#) {
+                failures.append("runs claude outside claude_cli: '\(line)'")
+            }
+            if line.contains("claude_cli "), !claudeCalls.contains(where: { line.contains($0) }) {
+                failures.append("an unexpected Claude Code command: '\(line)'")
+            }
+            if line.contains("add-json") { failures.append("add-json: '\(line)'") }
+        }
+        // A use of "$CLAUDE_BIN" followed by anything but a test's `]` or a
+        // `case … in` runs it: only claude_cli may.
+        let runs = code.filter { line in
+            captures(#""\$CLAUDE_BIN"\s+(\S+)"#, in: line).contains { !$0.hasPrefix("]") && $0 != "in" }
+        }
+        if runs.count != 1 || !runs[0].contains(callerUses[1]) {
+            failures.append("Claude Code's binary runs only inside claude_cli: \(runs)")
+        }
+        return failures
+    }
+
+    @Test func bothChannelScriptsKeepTheHouseGuards() throws {
+        for path in Self.scriptPaths {
+            let failures = Self.scriptGuardFailures(try Self.read(path))
+            #expect(failures.isEmpty, "\(path): \(failures)")
+        }
+    }
+
+    /// Canaries, in BOTH scripts: each guard dropped or weakened, the
+    /// caller's PATH put to other use, sudo, a profile edited, Claude Code's
+    /// configuration edited or written through a variable, output redirected
+    /// to a file, another Claude Code command, and Claude Code run bare or
+    /// by its binary directly.
+    @Test func theGuardLockCatchesRegressionMutants() throws {
+        let anchor = "SERVER_NAME=\"napcat\"\n"
+        let exit = "\nexit 0\n"
+        for path in Self.scriptPaths {
+            let original = try Self.read(path)
+            try #require(Self.scriptGuardFailures(original).isEmpty, "\(path): canary baseline must be clean")
+            let mutants: [(String, String)] = [
+                ("set -e dropped", original.replacingOccurrences(of: "set -euo pipefail\n", with: "set -uo pipefail\n")),
+                ("PATH pin dropped", original.replacingOccurrences(of: SetupScriptTests.pinnedPathLine + "\n", with: "")),
+                ("PATH pin widened", original.replacingOccurrences(of: "PATH=/usr/bin:", with: "PATH=/usr/local/bin:/usr/bin:")),
+                ("caller PATH appended to the pin", original.replacingOccurrences(
+                    of: "/usr/sbin:/sbin; export PATH", with: "/usr/sbin:/sbin:$CALLER_PATH; export PATH")),
+                ("umask dropped", original.replacingOccurrences(of: "\numask 022\n", with: "\n")),
+                ("caller PATH restored", original.replacingOccurrences(of: anchor, with: "export PATH=\"$CALLER_PATH\"\n" + anchor)),
+                ("claude run by a shell PATH assignment", original.replacingOccurrences(
+                    of: "(cd / && /usr/bin/env PATH=\"$CALLER_PATH\" \"$CLAUDE_BIN\" \"$@\")",
+                    with: "(cd / && PATH=\"$CALLER_PATH\" \"$CLAUDE_BIN\" \"$@\")")),
+                ("caller PATH used for another tool", original.replacingOccurrences(
+                    of: anchor, with: "/usr/bin/env PATH=\"$CALLER_PATH\" codesign -dv \"$0\"\n" + anchor)),
+                ("sudo", original.replacingOccurrences(of: anchor, with: "sudo -v\n" + anchor)),
+                ("profile appended", original.replacingOccurrences(
+                    of: exit, with: "\necho \"alias claude='claude --flag'\" >> \"$HOME/.zshrc\"" + exit)),
+                ("Claude config edited", original.replacingOccurrences(
+                    of: exit, with: "\nsed -i '' 's/a/b/' \"$HOME/.claude.json\"" + exit)),
+                ("config written through a variable", original.replacingOccurrences(
+                    of: exit, with: "\ncp \"$RECEIPT\" \"$CONFIG_FILE\"" + exit)),
+                ("output redirected to a file", original.replacingOccurrences(
+                    of: exit, with: "\nprintf '%s' \"$SERVER_NAME\" > \"$OUT\"" + exit)),
+                ("add-json", original.replacingOccurrences(
+                    of: exit, with: "\nclaude_cli mcp add-json \"$SERVER_NAME\" '{}' > /dev/null" + exit)),
+                ("a project-scope registration", original.replacingOccurrences(
+                    of: exit, with: "\nclaude_cli mcp add --scope project \"$SERVER_NAME\" -- \"$HELPER\"" + exit)),
+                ("claude run bare", original.replacingOccurrences(of: exit, with: "\nclaude mcp remove napcat" + exit)),
+                ("claude's binary run directly", original.replacingOccurrences(
+                    of: exit, with: "\n\"$CLAUDE_BIN\" mcp list > /dev/null" + exit)),
+            ]
+            for (name, mutant) in mutants {
+                #expect(mutant != original, "\(path): canary setup '\(name)': target text must exist")
+                #expect(!Self.scriptGuardFailures(mutant).isEmpty, "\(path): canary '\(name)' was NOT caught")
+            }
+        }
+    }
+
+    /// Over-match controls: what the lock must NOT flag.
+    @Test func theGuardLockLetsTheHarmlessFormsThrough() {
+        let base = ["set -euo pipefail", Self.callerPathCapture, SetupScriptTests.pinnedPathLine, "umask 022",
+                    "CLAUDE_BIN=\"$(" + Self.callerUses[0] + " 2> /dev/null)\" || CLAUDE_BIN=\"\"",
+                    "case \"$CLAUDE_BIN\" in", "/*) [ -x \"$CLAUDE_BIN\" ] || CLAUDE_BIN=\"\" ;;",
+                    "if [ -z \"$CLAUDE_BIN\" ]; then", "(cd / && " + Self.callerUses[1] + ")"]
+        let harmless = [
+            "echo \"Undo with ./scripts/uninstall-channel.sh; the installer wrote it.\"",
+            "echo \"    claude --dangerously-load-development-channels server:$SERVER_NAME\"",
+            "die \"inspect it with: claude mcp get $SERVER_NAME\"",
+            "echo \"usage: $0\" >&2",
+            "found=\"$(sed -n 's/^x//p' <<< \"$output\")\"",
+            "codesign -d --verbose=2 \"$HELPER\" 2>&1",
+            "trap 'rm -f \"$RECEIPT_TMP\"' EXIT",
+            "mkdir -p \"${APPROVALS_DIR%/*}\" || die \"cannot create ${APPROVALS_DIR%/*}.\"",
+            "echo \"a .provisionprofile is not a shell profile\"",
+        ]
+        let script = (base + harmless).joined(separator: "\n") + "\n"
+        #expect(Self.scriptGuardFailures(script).isEmpty, "\(Self.scriptGuardFailures(script))")
+    }
+
+    // MARK: - The scripts name what the app and the bundle name
+
+    /// Every name the scripts share with the app or the bundle, and the
+    /// functions both scripts must hold byte for byte.
+    static func parityFailures(install: String, uninstall: String, check: String, makefile: String) -> [String] {
+        var failures: [String] = []
+        let definition = lines(makefile).first(where: { $0.hasPrefix("CHANNEL ") && $0.contains(" := ") })
+        let channel = definition?.components(separatedBy: " := ").last ?? ""
+        let shared = [
+            "SERVER_NAME=\"\(ApprovalChannel.serverName)\"",
+            "HELPER_IN_BUNDLE=\"Contents/MacOS/\(channel)\"",
+            "APPROVALS_DIR=\"$HOME/\(SeamPaths.directoryRelativePath)\"",
+            "RECEIPT=\"$APPROVALS_DIR/channel-registration\"",
+            "/*.app/\"$HELPER_IN_BUNDLE\") return 0 ;;",
+        ]
+        for (name, script) in [("install-channel.sh", install), ("uninstall-channel.sh", uninstall)] {
+            let code = codeLines(script)
+            for line in shared where code.filter({ $0 == line }).count != 1 {
+                failures.append("\(name) must hold exactly one '\(line)'")
+            }
+        }
+        if !codeLines(check).contains("HELPER=\"$APP/Contents/MacOS/\(channel)\"") {
+            failures.append("the release check's helper path is not Contents/MacOS/\(channel)")
+        }
+        for head in ["claude_cli() {", "registered_command() {", "is_napcat_helper() {"] {
+            let installed = functionBody(head, in: install)
+            if installed == nil || installed != functionBody(head, in: uninstall) {
+                failures.append("\(head) must be identical in both scripts")
+            }
+        }
+        return failures
+    }
+
+    @Test func theScriptsNameWhatTheAppAndTheBundleName() throws {
+        let failures = Self.parityFailures(install: try Self.read(Self.installPath), uninstall: try Self.read(Self.uninstallPath),
+                                           check: try Self.read(Self.checkPath), makefile: try Self.read(Self.makefilePath))
+        #expect(failures.isEmpty, "\(failures)")
+        #expect(ApprovalChannel.serverName == "napcat" && SeamPaths.directoryRelativePath.hasSuffix("/approvals"),
+                "vacuity: the values the scripts are held to")
+    }
+
+    @Test func theNameParityCatchesADrift() throws {
+        let install = try Self.read(Self.installPath)
+        let uninstall = try Self.read(Self.uninstallPath)
+        let check = try Self.read(Self.checkPath)
+        let makefile = try Self.read(Self.makefilePath)
+        try #require(Self.parityFailures(install: install, uninstall: uninstall, check: check, makefile: makefile).isEmpty,
+                     "canary baseline must be clean")
+        let mutants: [(String, String, String)] = [
+            ("server renamed in the installer", "SERVER_NAME=\"napcat\"", "SERVER_NAME=\"napcat-approvals\""),
+            ("receipt moved", "RECEIPT=\"$APPROVALS_DIR/channel-registration\"", "RECEIPT=\"$APPROVALS_DIR/registration\""),
+            ("approvals folder moved", "NapCat/approvals\"", "NapCat/channel\""),
+            ("helper test loosened", "/*.app/\"$HELPER_IN_BUNDLE\") return 0 ;;", "*/\"$HELPER_IN_BUNDLE\") return 0 ;;"),
+            ("claude_cli drifted", "(cd / && /usr/bin/env", "(cd \"$HOME\" && /usr/bin/env"),
+        ]
+        for (name, target, replacement) in mutants {
+            let mutant = install.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != install, "canary setup '\(name)': target text must exist")
+            #expect(!Self.parityFailures(install: mutant, uninstall: uninstall, check: check, makefile: makefile).isEmpty,
+                    "canary '\(name)' was NOT caught")
+        }
+        let renamed = makefile.replacingOccurrences(of: Self.channelVariable, with: "CHANNEL            := napcat-relay")
+        #expect(!Self.parityFailures(install: install, uninstall: uninstall, check: check, makefile: renamed).isEmpty,
+                "the bundled helper renamed alone")
+    }
+
+    // MARK: - The installer verifies before anything; the uninstaller removes only NapCat's
+
+    /// The installer's steps, in the order they must appear (and run: no
+    /// step is in a function that runs earlier).
+    static let installOrder = [
+        "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict. Nothing was registered.\"",
+        "grep -qxF \"Identifier=$CHANNEL_IDENTIFIER\" <<< \"$HELPER_SIGNATURE\" \\",
+        "codesign --verify --strict \"$APP\" || die \"$APP fails codesign --verify --strict. Nothing was registered.\"",
+        "FOUND_BUNDLE_IDENTIFIER=\"$(plutil -extract CFBundleIdentifier raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || FOUND_BUNDLE_IDENTIFIER=\"\"",
+        "CHANNEL_VERSION=\"$(plutil -extract NapCatChannelVersion raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || CHANNEL_VERSION=\"\"",
+        "CURRENT=\"$(registered_command)\" || CURRENT=\"\"",
+        "claude_cli mcp add --scope user --transport stdio \"$SERVER_NAME\" -- \"$HELPER\" > /dev/null \\",
+        "[ ! -L \"$APPROVALS_DIR\" ] || die \"$APPROVALS_DIR is a symlink; refusing to write the receipt through it.\"",
+        "if [ -L \"$RECEIPT\" ] || { [ -e \"$RECEIPT\" ] && [ ! -f \"$RECEIPT\" ]; }; then",
+        "RECEIPT_TMP=\"$(mktemp \"$APPROVALS_DIR/.channel-registration.XXXXXXXX\")\"",
+        "printf 'version=%s\\npath=%s\\n' \"$CHANNEL_VERSION\" \"$HELPER\" > \"$RECEIPT_TMP\"",
+        "chmod 600 \"$RECEIPT_TMP\"",
+        "mv -f \"$RECEIPT_TMP\" \"$RECEIPT\"",
+        "echo \"    claude --dangerously-load-development-channels server:$SERVER_NAME\"",
+    ]
+    /// The uninstaller's registration branch: a NapCat helper or nothing.
+    static let uninstallGuard = "elif ! is_napcat_helper \"$CURRENT\"; then"
+    static let uninstallRemove = "elif claude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null; then"
+
+    static func stepFailures(install: String, uninstall: String) -> [String] {
+        var failures: [String] = []
+        let code = codeLines(install)
+        let found = installOrder.map { step in code.indices.filter { code[$0] == step } }
+        for (step, at) in zip(installOrder, found) where at.count != 1 {
+            failures.append("install-channel.sh must hold '\(step)' exactly once, found \(at.count)")
+        }
+        let positions = found.compactMap { $0.count == 1 ? $0[0] : nil }
+        if positions.count == installOrder.count, positions != positions.sorted() {
+            failures.append("install-channel.sh: verify, read, register, then the guarded receipt and the flag: \(positions)")
+        }
+        let removal = codeLines(uninstall)
+        let removes = removal.indices.filter { removal[$0].contains("claude_cli mcp remove") }
+        guard removes.count == 1, let remove = removes.first, removal[remove] == uninstallRemove,
+              let guardLine = removal.firstIndex(of: uninstallGuard), remove == guardLine + 2,
+              removal[guardLine + 1].hasPrefix("echo ") else {
+            return failures + ["uninstall-channel.sh must remove the registration once, only past \(uninstallGuard)"]
+        }
+        if removal.contains(where: { $0.contains("rm -rf") || $0.contains("rmdir") }) {
+            failures.append("uninstall-channel.sh removes only the receipt, never a folder")
+        }
+        guard let link = removal.firstIndex(of: "if [ -L \"$RECEIPT\" ]; then"),
+              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), link < receipt else {
+            return failures + ["uninstall-channel.sh must refuse a symlinked receipt before removing one"]
+        }
+        return failures
+    }
+
+    @Test func theInstallerVerifiesFirstAndTheUninstallerRemovesOnlyNapCats() throws {
+        let failures = Self.stepFailures(install: try Self.read(Self.installPath), uninstall: try Self.read(Self.uninstallPath))
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    /// Canaries: the helper's verification dropped, the Info.plist read
+    /// before the seal is checked, each receipt guard or the receipt's mode
+    /// dropped, the receipt written before the registration, the flag line
+    /// dropped; and an unguarded or a second removal, a folder removed, or
+    /// the receipt's symlink guard dropped.
+    @Test func theStepLockCatchesRegressionMutants() throws {
+        let install = try Self.read(Self.installPath)
+        let uninstall = try Self.read(Self.uninstallPath)
+        try #require(Self.stepFailures(install: install, uninstall: uninstall).isEmpty, "canary baseline must be clean")
+        let verify = Self.installOrder[0] + "\n"
+        let plistRead = Self.installOrder[4] + "\n"
+        let installMutants: [(String, String)] = [
+            ("helper verification dropped", install.replacingOccurrences(of: verify, with: "")),
+            ("Info.plist read before the seal", install.replacingOccurrences(of: plistRead, with: "")
+                .replacingOccurrences(of: verify, with: plistRead + verify)),
+            ("approvals symlink guard dropped", install.replacingOccurrences(of: Self.installOrder[7] + "\n", with: "")),
+            ("receipt symlink guard dropped", install.replacingOccurrences(of: Self.installOrder[8], with: "if false; then")),
+            ("receipt mode dropped", install.replacingOccurrences(of: Self.installOrder[11] + "\n", with: "")),
+            ("receipt written before the registration", install.replacingOccurrences(of: Self.installOrder[9] + "\n", with: "")
+                .replacingOccurrences(of: Self.installOrder[5] + "\n", with: Self.installOrder[9] + "\n" + Self.installOrder[5] + "\n")),
+            ("flag line dropped", install.replacingOccurrences(of: Self.installOrder[13] + "\n", with: "")),
+        ]
+        for (name, mutant) in installMutants {
+            #expect(mutant != install, "canary setup '\(name)': target text must exist")
+            #expect(!Self.stepFailures(install: mutant, uninstall: uninstall).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        let uninstallMutants: [(String, String)] = [
+            ("removal unguarded", uninstall.replacingOccurrences(of: Self.uninstallGuard, with: "elif false; then")),
+            ("a second removal", uninstall.replacingOccurrences(
+                of: "\nexit 0\n", with: "\nclaude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null\nexit 0\n")),
+            ("the folder removed", uninstall.replacingOccurrences(of: "\nexit 0\n", with: "\nrm -rf \"$APPROVALS_DIR\"\nexit 0\n")),
+            ("receipt symlink guard dropped", uninstall.replacingOccurrences(of: "if [ -L \"$RECEIPT\" ]; then", with: "if false; then")),
+        ]
+        for (name, mutant) in uninstallMutants {
+            #expect(mutant != uninstall, "canary setup '\(name)': target text must exist")
+            #expect(!Self.stepFailures(install: install, uninstall: mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 }
