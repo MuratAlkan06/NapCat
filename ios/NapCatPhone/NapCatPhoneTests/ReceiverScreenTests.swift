@@ -83,8 +83,12 @@ import UIKit
 
     // MARK: Pull to refresh
 
-    static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch) "
-        + ".refreshable { await feed.pullToRefresh() }"
+    /// AMENDED (#194): the screen is handed the prompts waiting here and the
+    /// way to open one, and the pull reads the prompts too, after the feed's
+    /// pass, with the owner's switch.
+    static let pull = "ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch, "
+        + "requests: inbox.pendingRequests, open: { shownRequest = $0 }) "
+        + ".refreshable { await feed.pullToRefresh() await inbox.syncPrompts(switchedOn: approvals) }"
 
     /// The list pulls down to refresh, through the feed's waiting pull (a
     /// plain refresh can return before anything is checked, ending the
@@ -94,8 +98,11 @@ import UIKit
         let root = try SettingsReachabilityTests.rootCode()
         #expect(SettingsReachabilityTests.flat(root).contains(Self.pull))
         let mutants = [
-            root.replacingOccurrences(of: "                .refreshable { await feed.pullToRefresh() }\n", with: ""),
+            root.replacingOccurrences(of: "                .refreshable {\n", with: "                .task {\n"),
             root.replacingOccurrences(of: "await feed.pullToRefresh()", with: "await feed.refresh()"),
+            root.replacingOccurrences(of: "                    await inbox.syncPrompts(switchedOn: approvals)\n                }\n",
+                                      with: "                }\n"),
+            root.replacingOccurrences(of: "requests: inbox.pendingRequests,", with: "requests: inbox.requests,"),
         ]
         for mutant in mutants {
             #expect(mutant != root, "a mutation did not apply")

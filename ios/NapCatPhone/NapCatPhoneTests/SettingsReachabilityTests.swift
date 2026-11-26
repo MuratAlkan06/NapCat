@@ -20,7 +20,10 @@ import UIKit
         return try #require(app.first { $0.path == rootFile }).text
     }
 
-    static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)"
+    /// AMENDED (#194): the main screen is handed the prompts waiting here and
+    /// the way to open one.
+    static let stack = "NavigationStack { ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch, "
+        + "requests: inbox.pendingRequests, open: { shownRequest = $0 })"
     static let gear = ".toolbar { ToolbarItem(placement: .topBarTrailing) { SettingsGearButton { showsSettings = true } } }"
     /// AMENDED (S-PAIR-C1.6, #172): Settings is handed the live inbox's
     /// pairing, for its Pair with Mac row. AMENDED (#194): and the root's

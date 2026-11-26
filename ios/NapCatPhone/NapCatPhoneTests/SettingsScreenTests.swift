@@ -150,7 +150,7 @@ import UIKit
                                           "SettingsScreen(palette: $palette, notifications: .on, approvals: .constant(false))": 1,
                                           "SettingsScreen(palette: $palette, notifications: .off, approvals: .constant(false))": 1],
         "NapCatPhoneApp.swift": ["@AppStorage(ApprovalsSwitch.storageKey) private var approvals = false": 1, "approvals: $approvals)": 2,
-                                 ".task { await inbox.syncPrompts(switchedOn: approvals) }": 1,
+                                 "await inbox.syncPrompts(switchedOn: approvals)": 1, ".task { await inbox.syncPrompts(switchedOn: approvals) }": 1,
                                  "Task { await inbox.syncPrompts(switchedOn: approvals) }": 1, ".onChange(of: approvals) { _, on in": 1],
     ])
 

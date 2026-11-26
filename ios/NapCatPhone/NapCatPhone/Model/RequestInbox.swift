@@ -49,8 +49,8 @@ enum RequestAnswer: Equatable, Sendable {
 /// are terminal: once a request is either, nothing makes it pending again.
 ///
 /// Live prompts (F4, #194) come from one snapshot read of every prompt
-/// the Mac offers, at launch, on foreground and as the switch changes,
-/// never on a timer, and only while the owner's switch is on with a
+/// the Mac offers, at launch, on foreground, on a pull and on a prompt
+/// push, never on a timer, and only while the owner's switch is on with a
 /// committed key (`ApprovalsSwitch`); off, nothing is read and the inbox is
 /// empty. A failed read changes nothing.
 ///
@@ -138,6 +138,10 @@ final class RequestInbox {
     @ObservationIgnored private var mayHoldSubscription = false
     @ObservationIgnored private var syncing = false
     @ObservationIgnored private var syncAgain = false
+    /// A prompt whose push the owner tapped, until the inbox holds it.
+    @ObservationIgnored private var awaited: PromptID?
+    /// The request the main screen opens next, once (`opened()` clears it).
+    private(set) var opening: PromptID?
 
     /// `clock` is this phone's wall clock (a test seam, like the others).
     init(writer: any DecisionWriter, biometrics: any BiometricGate, keyring: PhoneKeyring, pairing: LivePairing? = nil,
@@ -221,6 +225,14 @@ final class RequestInbox {
             entries[id]?.withdrawn = true
         }
         prune()
+        offerAwaited()
+    }
+
+    /// The requests still pending here, newest first: the main screen's
+    /// waiting list.
+    var pendingRequests: [PendingRequest] {
+        let now = clock()
+        return requests.filter { phase(of: $0.id, at: now)?.isPending == true }
     }
 
     // MARK: Live prompts (F4, #194)
@@ -249,9 +261,15 @@ final class RequestInbox {
         syncing = false
     }
 
+    /// A sync with the switch as last handed in (a prompt push's).
+    func refreshPrompts() async {
+        await syncPrompts(switchedOn: switchedOn)
+    }
+
     private func syncOnce(_ prompts: any PromptSource) async {
         refreshKeyHealth()
         guard ApprovalsSwitch.effective(stored: switchedOn, keyHealth: keyHealth) else {
+            awaited = nil
             if !entries.isEmpty { entries.removeAll() }
             guard mayHoldSubscription else { return }
             if await prompts.removeSubscription() {
@@ -264,6 +282,24 @@ final class RequestInbox {
         if !subscribed { subscribed = await prompts.ensureSubscription() }
         guard let offered = await prompts.snapshot(), switchedOn else { return }
         receive(offered)
+    }
+
+    /// The owner tapped `id`'s push: the main screen opens it once the inbox
+    /// holds it (now, or after the read the push starts).
+    func open(_ id: PromptID) {
+        awaited = id
+        offerAwaited()
+    }
+
+    /// The main screen opened `opening`.
+    func opened() {
+        if opening != nil { opening = nil }
+    }
+
+    private func offerAwaited() {
+        guard let id = awaited, entries[id] != nil else { return }
+        awaited = nil
+        opening = id
     }
 
     /// One request taken back (its record is gone). Terminal.

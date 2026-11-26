@@ -353,6 +353,7 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         let source = ScriptedPromptSource(snapshots: [[F.request(1, createdAt: TestClock().now)]])
         let inbox = Self.inbox(TestClock(), source)
         for _ in 0..<3 { await inbox.syncPrompts(switchedOn: false) }
+        await inbox.refreshPrompts()
         #expect(source.calls.isEmpty)
         #expect(inbox.requests.isEmpty)
     }
@@ -376,7 +377,7 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         #expect(source.calls == ["ensure", "snapshot"])
         #expect(inbox.requests.map(\.id) == [request.id])
         await inbox.syncPrompts(switchedOn: true)
-        await inbox.syncPrompts(switchedOn: true)
+        await inbox.refreshPrompts()
         #expect(source.calls == ["ensure", "snapshot", "snapshot", "snapshot"], "a second ensure is never asked for")
     }
 
@@ -403,6 +404,7 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         #expect(inbox.phase(of: first.id) == .withdrawn)
         #expect(inbox.status(of: first.id) == .withdrawn)
         #expect(inbox.phase(of: second.id)?.isPending == true)
+        #expect(inbox.pendingRequests.map(\.id) == [second.id])
     }
 
     /// A failed read withdraws nothing and adds nothing.
@@ -427,7 +429,7 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         await inbox.syncPrompts(switchedOn: true)
         #expect(!inbox.requests.isEmpty)
         await inbox.syncPrompts(switchedOn: false)
-        #expect(inbox.requests.isEmpty)
+        #expect(inbox.requests.isEmpty && inbox.pendingRequests.isEmpty)
         #expect(source.calls == ["ensure", "snapshot", "remove"])
         await inbox.syncPrompts(switchedOn: false)
         #expect(source.calls == ["ensure", "snapshot", "remove"], "nothing more once it is gone")
@@ -503,5 +505,53 @@ final class ScriptedPromptSource: PromptSource, @unchecked Sendable {
         #expect(inbox.entries[request.id]?.answer == .unsent(.allow))
         await inbox.deny(request.id)
         #expect(inbox.entries[request.id]?.answer == .unsent(.deny))
+    }
+
+    /// A tapped push opens its prompt once the inbox holds it: at once when
+    /// it does, otherwise after the read; once, then cleared.
+    @Test func aTappedPromptOpensOnceHeld() async {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let source = ScriptedPromptSource(snapshots: [[request]])
+        let inbox = Self.inbox(clock, source)
+        inbox.open(request.id)
+        #expect(inbox.opening == nil, "not held yet")
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.opening == request.id)
+        inbox.opened()
+        #expect(inbox.opening == nil)
+        inbox.open(request.id)
+        #expect(inbox.opening == request.id, "held already: at once")
+        inbox.opened()
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.opening == nil, "opened once")
+    }
+
+    /// A tap while the switch is off opens nothing, then or later.
+    @Test func aTapWhileOffOpensNothing() async {
+        let clock = TestClock()
+        let request = F.request(1, createdAt: clock.now)
+        let source = ScriptedPromptSource(snapshots: [[request]])
+        let inbox = Self.inbox(clock, source)
+        inbox.open(request.id)
+        await inbox.syncPrompts(switchedOn: false)
+        await inbox.syncPrompts(switchedOn: true)
+        #expect(inbox.opening == nil)
+    }
+
+    /// The waiting list holds only what is still pending, newest first.
+    @Test func theWaitingListHoldsOnlyPendingRequests() async {
+        let clock = TestClock()
+        let older = F.request(1, createdAt: clock.now.addingTimeInterval(-30))
+        let newer = F.request(2, createdAt: clock.now)
+        let short = F.request(3, createdAt: clock.now, window: 300)
+        let source = ScriptedPromptSource(snapshots: [[older, newer, short], [newer, short]])
+        let inbox = Self.inbox(clock, source)
+        await inbox.syncPrompts(switchedOn: true)
+        let all: [PromptID] = [short.id, newer.id, older.id]
+        #expect(inbox.pendingRequests.map(\.id) == all, "newest first; a tie by ID")
+        await inbox.syncPrompts(switchedOn: true)
+        clock.advance(300)
+        #expect(inbox.pendingRequests.map(\.id) == [newer.id], "withdrawn and expired ones leave the list")
     }
 }

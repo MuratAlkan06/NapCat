@@ -30,11 +30,12 @@ struct NapCatPhoneApp: App {
 ///
 /// A forwarded permission prompt opens over it as a sheet too (F4, slice
 /// S3), drawn in the same palette: a `-NapCatRequest` launch opens on its
-/// fixture prompt. Nothing else opens one in this slice.
+/// fixture prompt; since #194, a row of the main screen's waiting list, or a
+/// tapped prompt push, opens that prompt.
 ///
 /// Remote approvals (F4, #194): the owner's switch is kept in the app's
 /// own defaults, set in Settings, and handed to the inbox at launch, on
-/// every return to the foreground and whenever it changes; the
+/// every return to the foreground, on a pull and whenever it changes; the
 /// inbox reads the prompts then (`RequestInbox.syncPrompts`), never on a
 /// timer.
 ///
@@ -70,8 +71,12 @@ struct ReceiverRoot: View {
 
     var body: some View {
         NavigationStack {
-            ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch)
-                .refreshable { await feed.pullToRefresh() }
+            ReceiverScreen(alerts: feed.alerts, connection: feed.connection, fetch: feed.fetch,
+                           requests: inbox.pendingRequests, open: { shownRequest = $0 })
+                .refreshable {
+                    await feed.pullToRefresh()
+                    await inbox.syncPrompts(switchedOn: approvals)
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         SettingsGearButton { showsSettings = true }
@@ -103,6 +108,11 @@ struct ReceiverRoot: View {
         }
         .onChange(of: approvals) { _, on in
             Task { await inbox.syncPrompts(switchedOn: on) }
+        }
+        .onChange(of: inbox.opening, initial: true) { _, id in
+            guard let id else { return }
+            if let request = inbox.entries[id]?.request { shownRequest = request }
+            inbox.opened()
         }
     }
 }
