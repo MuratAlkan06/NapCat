@@ -1016,9 +1016,14 @@ arms anything.
     type named at today's sites alone, and the host's words for its
     connections and its peer reader and the seam file's send, write and
     descriptor at today's lines, so no new line of either file reaches a
-    connection's writer. Every `extension` header and every operator
-    implementation in the four targets is today's, so no extension member
-    or operator overload added elsewhere takes over a pinned line.
+    connection's writer; and the four targets call a C write (`write`,
+    `send` and their kin), and declare a function so named, at today's
+    sites alone. Every `extension` header and every operator
+    implementation in the four targets is today's, and each of today's
+    extensions declares today's members, so no extension member or
+    operator overload added elsewhere or inside one takes over a pinned
+    line; and no function or value there is named with a capital letter,
+    so none takes over the call of a type it is named like.
   - *The road, whole.* The decision's road is pinned as it is, flattened
     by scalars on the compiler's whitespace alone, in every scan copy: the
     verifier (`enum DecisionVerifier`: every check, the message, the
