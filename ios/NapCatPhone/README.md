@@ -143,8 +143,8 @@ It is one standard grouped form in the current palette:
   screen over Settings, a new pairing each time, only when you tap it. On
   your Mac, choose **Pair iPhone…** (a Mac never paired) or **Pair a New
   iPhone…** (a Mac already paired) in NapCat's Settings › Claude, then scan
-  the code it shows and confirm with Face ID. A launch with a request
-  fixture has no row.
+  the code it shows and confirm with Face ID or Touch ID (the footer names
+  the one this iPhone has). A launch with a request fixture has no row.
 - **About**: the version and build, read from the app's Info.plist, and a
   link to the [project site](https://muratalkan06.github.io/NapCat/).
 

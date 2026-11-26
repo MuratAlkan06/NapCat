@@ -28,10 +28,14 @@ struct SettingsScreen: View {
     nonisolated static let pairingHeader = "Pairing"
     nonisolated static let pairTitle = PairingScreen.title
     /// Names both of the Mac's buttons (a paired Mac shows Pair a New
-    /// iPhone…), says the pane is NapCat's own, and names the Face ID that
-    /// comes with the scan.
-    nonisolated static let pairingFooter = "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
-        + "then scan the code it shows and confirm with Face ID."
+    /// iPhone…), says the pane is NapCat's own, and names the biometric
+    /// that comes with the scan: this phone's own (#175: a Touch ID phone
+    /// read Face ID), or, on a phone with none, biometrics.
+    nonisolated static func pairingFooter(_ biometric: BiometryKind?) -> String {
+        let name: String = biometric?.name ?? "biometrics"
+        return "On your Mac, choose Pair iPhone… or Pair a New iPhone… in NapCat's Settings › Claude, "
+            + "then scan the code it shows and confirm with \(name)."
+    }
     nonisolated static let aboutHeader = "About"
     nonisolated static let versionLabel = "Version"
     nonisolated static let siteLabel = "Website"
@@ -138,7 +142,7 @@ struct SettingsScreen: View {
         } header: {
             header(Self.pairingHeader)
         } footer: {
-            footer(Self.pairingFooter)
+            footer(Self.pairingFooter(pairing.biometric()))
         }
         .listRowBackground(theme.surface)
     }

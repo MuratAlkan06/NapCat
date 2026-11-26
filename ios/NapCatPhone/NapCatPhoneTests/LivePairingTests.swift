@@ -50,6 +50,25 @@ import Testing
         #expect(second.phase == .scanning && second.deadline == nil)
     }
 
+    /// #175: the live pairing names this phone's biometric through the gate
+    /// its ceremonies ask, asking for nothing: Touch ID, Face ID, a kind with
+    /// none enrolled, or none at all. Settings' footer says that name.
+    /// (Gated: it builds the live pairing.)
+    @Test(.enabled(if: !LiveCapability.isAvailable))
+    func theLivePairingNamesThePhonesBiometric() {
+        let keys: PhoneKeyringTests.World = PhoneKeyringTests.World()
+        let gate: ScriptedBiometricGate = ScriptedBiometricGate(available: .available(.touchID))
+        let pairing: LivePairing = LivePairing.make(keyring: keys.keyring, biometrics: gate)
+        #expect(pairing.biometric() == .touchID)
+        gate.available = .available(.faceID)
+        #expect(pairing.biometric() == .faceID)
+        gate.available = .unavailable(.touchID)
+        #expect(pairing.biometric() == .touchID, "a biometric with none enrolled is still the one this phone has")
+        gate.available = .unavailable(nil)
+        #expect(pairing.biometric() == nil)
+        #expect(gate.requests.isEmpty, "reading it asks for nothing")
+    }
+
     /// The unsent writer writes nothing and says so.
     @Test func theUnsentWriterReadsAsUnsent() async throws {
         let response = try #require(PairingResponse(recordName: String(repeating: "a", count: 64), wireVersion: ApprovalWire.wireVersion,

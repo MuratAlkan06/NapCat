@@ -37,4 +37,11 @@ struct LivePairing {
     func makeCeremony() -> PairingCeremony {
         PairingCeremony(keyring: keyring, biometrics: biometrics, writer: writer)
     }
+
+    /// The biometric this phone has, read through the gate its ceremonies
+    /// ask (asking for nothing), so Settings names the one a pairing will
+    /// ask for (#175); nil on a phone with none.
+    func biometric() -> BiometryKind? {
+        biometrics.availability().kind
+    }
 }
