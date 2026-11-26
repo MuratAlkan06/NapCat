@@ -504,10 +504,15 @@ import Testing
     /// operator, an opening bracket, a separator or a keyword that precedes
     /// an expression, `switch/"/` included), no space follows it, and an
     /// unescaped `/` closes it on the same line. A division (`a / b`, `n/2`,
-    /// `f()/2`) is never one.
+    /// `f()/2`) is never one. Two more of the compiler's rules: a `/=` is a
+    /// compound assignment only with a space after it (`n /= 2`; `/=a/`
+    /// opens a regex), and a candidate holding a `)` that closes no `(` of
+    /// its own (escapes skipped, a character class's brackets ignored) is no
+    /// regex, so its `/` is an operator (`f(/)`, `reduce(3, /)`, `g(/2)`).
     static func bareRegexOpens(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
         let next = index + 1
-        guard next < scalars.count, !scalars[next].properties.isWhitespace, scalars[next] != "=" else { return false }
+        guard next < scalars.count, !scalars[next].properties.isWhitespace else { return false }
+        if scalars[next] == "=", next + 1 == scalars.count || scalars[next + 1].properties.isWhitespace { return false }
         var before = index - 1
         while before >= 0, scalars[before] == " " || scalars[before] == "\t" { before -= 1 }
         var opens = before < 0 || before < index - 1 || isLineEnd(scalars[before])
@@ -522,12 +527,25 @@ import Testing
         }
         guard opens else { return false }
         var cursor = next
+        var groups = 0
+        var classes = 0
         while cursor < scalars.count, !isLineEnd(scalars[cursor]) {
-            if scalars[cursor] == "\\" {
+            let scalar = scalars[cursor]
+            if scalar == "\\" {
                 cursor += 2
                 continue
             }
-            if scalars[cursor] == "/" { return true }
+            if scalar == "/" { return true }
+            if scalar == "[" {
+                classes += 1
+            } else if scalar == "]", classes > 0 {
+                classes -= 1
+            } else if scalar == "(", classes == 0 {
+                groups += 1
+            } else if scalar == ")", classes == 0 {
+                if groups == 0 { return false }                  // closes no `(` of its own: an operator
+                groups -= 1
+            }
             cursor += 1
         }
         return false
@@ -957,6 +975,23 @@ import Testing
              "switch /\"/ { default: let u = \"https://x\"; tokenT } "),
             ("a bare regex right after switch", "switch/\"/ { default: let u = \"https://x\"; tokenU } // c",
              "switch/\"/ { default: let u = \"https://x\"; tokenU } "),
+            // As the Mac's table: a `/` the compiler reads as an operator (a
+            // candidate holding a `)` that closes no `(` of its own) is no
+            // regex; a `/=` with no space after it opens one, with one it is
+            // a compound assignment.
+            ("an operator reference is no regex", "let a = [6].reduce(3, /); let b = \"a/\"; let c = \"//\"; tokenAA // c",
+             "let a = [6].reduce(3, /); let b = \"a/\"; let c = \"//\"; tokenAA "),
+            ("an unspaced operator reference", "let a = f(/); let b = \"a/\"; let c = \"//\"; tokenAB // c",
+             "let a = f(/); let b = \"a/\"; let c = \"//\"; tokenAB "),
+            ("a prefix operator's argument", "let a = g(/2); let b = \"a/\"; let c = \"//\"; tokenAC // c",
+             "let a = g(/2); let b = \"a/\"; let c = \"//\"; tokenAC "),
+            ("a group, an escaped and a bracketed parenthesis stay in a regex", "let r = /(a)\\)[)]\"/; let c = \"//\"; tokenAD // c",
+             "let r = /(a)\\)[)]\"/; let c = \"//\"; tokenAD "),
+            ("a bare regex opening with =", "let r = /=a\"/; let c = \"//\"; tokenAE // c", "let r = /=a\"/; let c = \"//\"; tokenAE "),
+            ("a compound assignment is no regex", "n /= 2; let b = \"a/\"; let c = \"//\"; tokenAF // c",
+             "n /= 2; let b = \"a/\"; let c = \"//\"; tokenAF "),
+            ("a division by a parenthesized divisor", "let h = (n)/(2); let q = n / (2); let b = \"a/\"; let c = \"//\"; tokenAG // c",
+             "let h = (n)/(2); let q = n / (2); let b = \"a/\"; let c = \"//\"; tokenAG "),
         ]
         for (name, text, code) in codeOnlyCases {
             #expect(Self.codeOnly(text) == code, "codeOnly, \(name): \(Self.codeOnly(text).debugDescription)")
@@ -968,6 +1003,9 @@ import Testing
             ("H9: a multi-line string after a bare regex holding \"\"\"",
              "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }",
              "switch /\"\"\"/ { default: break }\nlet s = \"\"\"\n// \\(tokenX)\n\"\"\"\nswitch /\"\"\"/ { default: break }"),
+            ("a multi-line string after an operator reference",
+             "let a = [6].reduce(3, /); let b = \"/\"; let s = \"\"\"\n// \\(tokenAH)\n\"\"\"",
+             "let a = [6].reduce(3, /); let b = \"/\"; let s = \"\"\"\n// \\(tokenAH)\n\"\"\""),
         ]
         for (name, text, uncut) in wholeLineCases {
             #expect(Self.wholeLineCommentsRemoved(text) == uncut,
