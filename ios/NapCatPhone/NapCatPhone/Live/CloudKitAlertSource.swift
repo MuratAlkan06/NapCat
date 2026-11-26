@@ -250,13 +250,14 @@ actor CloudKitAlertSource: AlertSource {
 
     // MARK: - F4 decisions (slice S3; built and tested here, run by nothing yet)
 
-    /// A decision's record: named after its prompt, so there is one decision
-    /// record per prompt. A retry names the same record, and a second answer
-    /// to the same prompt is refused by iCloud as already answered instead of
-    /// being written twice. The Mac does not rely on the name: it reads the
-    /// prompt ID from the record's own (encrypted) field.
+    /// A decision's record: named after its prompt, by the wire's one
+    /// spelling (`ApprovalWire.decisionRecordName`, since #194), so there is one
+    /// decision record per prompt. A retry names the same record, and a
+    /// second answer to the same prompt is refused by iCloud as already
+    /// answered instead of being written twice. The Mac does not rely on the
+    /// name: it reads the prompt ID from the record's own (encrypted) field.
     static func decisionRecordID(for promptID: PromptID) -> CKRecord.ID {
-        CKRecord.ID(recordName: promptID.hex + "-decision", zoneID: approvalsZoneID)
+        CKRecord.ID(recordName: ApprovalWire.decisionRecordName(for: promptID), zoneID: approvalsZoneID)
     }
 
     /// THE one place a PromptDecision record is built: the wire's fields,

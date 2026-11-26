@@ -10,6 +10,10 @@ import Testing
 /// 1. The wire's identifiers are spelled once, in NapCatWire: no other Swift
 ///    file in either app (or in these tests) holds the subscription ID or
 ///    the container ID, and no receiver source spells a record key itself.
+///    AMENDED (#194): nor the prompt subscription's ID (spelled in
+///    `ApprovalWire`), now that the phone saves that subscription, and no
+///    receiver source spells the decision record's name itself
+///    (`ApprovalWire.decisionRecordName`).
 /// 2. CloudKit lives in ONE receiver file (no other file imports it in any
 ///    form, a scoped `import class CloudKit.X` included), and a container is
 ///    built at ONE site, `makeLive()`, whose first statement is the
@@ -636,7 +640,16 @@ import Testing
 
     // MARK: Rule 1: the wire is spelled once
 
-    static let wireIdentifiers = [AlertWire.subscriptionID, AlertWire.containerIdentifier]
+    /// AMENDED (#194): each identifier with the one file that spells it; the
+    /// prompt subscription's ID joins, spelled in `ApprovalWire`.
+    static let approvalWireFile = "Sources/NapCatWire/ApprovalWire.swift"
+    static let wireIdentifiers: [(identifier: String, file: String)] = [
+        (AlertWire.subscriptionID, wireFile), (AlertWire.containerIdentifier, wireFile),
+        (ApprovalWire.promptSubscriptionID, approvalWireFile),
+    ]
+    /// #194: the decision record's name's suffix as a literal's end: only the
+    /// wire spells it (`ApprovalWire.decisionRecordName`).
+    static let decisionSuffix = "-decision\""
     /// The record keys and lane values as quoted literals.
     static let wireKeys = ([AlertWire.recordType] + AlertWire.Field.allCases.map(\.rawValue)
         + AlertWire.Lane.allCases.map(\.rawValue)).map { "\"\($0)\"" }
@@ -645,15 +658,18 @@ import Testing
     /// receiver app's sources only.
     static func wireFailures(scanned: [Source], receiver: [Source]) -> [String] {
         var failures: [String] = []
-        for identifier in wireIdentifiers {
+        for (identifier, file) in wireIdentifiers {
             let holders = scanned.filter { $0.text.contains(identifier) }.map(\.path)
-            if holders != [wireFile] {
-                failures.append("'\(identifier)' is spelled in \(holders), expected only \(wireFile)")
+            if holders != [file] {
+                failures.append("'\(identifier)' is spelled in \(holders), expected only \(file)")
             }
         }
         for (path, text) in receiver {
             for key in wireKeys where codeOnly(text).contains(key) {
                 failures.append("\(path) spells the wire key \(key); use AlertWire")
+            }
+            if codeOnly(text).contains(decisionSuffix) {
+                failures.append("\(path) spells the decision record's name; use ApprovalWire.decisionRecordName")
             }
         }
         return failures
@@ -666,6 +682,7 @@ import Testing
     @Test func theScanSeesTheRepository() throws {
         let paths = try Self.scannedSources().map(\.path)
         #expect(paths.contains(Self.wireFile))
+        #expect(paths.contains(Self.approvalWireFile))
         #expect(paths.contains(Self.cloudKitFile))
         #expect(paths.contains("\(Self.testsDir)/CloudKitStructureTests.swift"))
         #expect(paths.contains("Sources/NapCat/CloudKitMessageSender.swift"))
@@ -680,13 +697,32 @@ import Testing
         let receiver = try Self.swiftFiles(under: Self.appDir)
         let pasted = receiver.map { source -> Source in
             source.path == Self.cloudKitFile
-                ? (source.path, source.text + "\nlet id = \"\(AlertWire.subscriptionID)\"\nlet key = \"\(AlertWire.Field.firedAt.rawValue)\"\n")
+                ? (source.path, source.text + "\nlet id = \"\(AlertWire.subscriptionID)\"\nlet key = \"\(AlertWire.Field.firedAt.rawValue)\"\n"
+                    + "let promptID = \"\(ApprovalWire.promptSubscriptionID)\"\n")
                 : source
         }
         let failures = Self.wireFailures(scanned: try Self.scannedSources().filter { $0.path != Self.cloudKitFile }
             + pasted.filter { $0.path == Self.cloudKitFile }, receiver: pasted)
         #expect(failures.contains { $0.contains(AlertWire.subscriptionID) })
         #expect(failures.contains { $0.contains("\"\(AlertWire.Field.firedAt.rawValue)\"") })
+        #expect(failures.contains { $0.contains(ApprovalWire.promptSubscriptionID) }, "canary 'the prompt subscription's ID pasted' was NOT caught")
+    }
+
+    /// #194: the decision record's name is the wire's alone. The phone's own
+    /// old spelling, and an interpolated one, in any receiver file, are
+    /// caught; a doc comment may name the suffix.
+    @Test func theDecisionNameIsSpelledOnlyByTheWire() throws {
+        let receiver = try Self.swiftFiles(under: Self.appDir)
+        let scanned = try Self.scannedSources()
+        #expect(Self.wireFailures(scanned: scanned, receiver: receiver).isEmpty)
+        let feed = "\(Self.appDir)/Model/AlertFeed.swift"
+        for (path, plant) in [(Self.cloudKitFile, "\nfunc spare(p: PromptID) -> String { p.hex + \"-decision\" }"),
+                              (feed, "\nfunc spare(p: PromptID) -> String { \"\\(p.hex)-decision\" }")] {
+            let planted = receiver.map { $0.path == path ? ($0.path, $0.text + plant) : $0 }
+            #expect(!Self.wireFailures(scanned: scanned, receiver: planted).isEmpty, "canary '\(plant)' was NOT caught")
+        }
+        let noted = receiver.map { $0.path == feed ? ($0.path, $0.text + "\n/// named <prompt>-decision, by the wire\n") : $0 }
+        #expect(Self.wireFailures(scanned: scanned, receiver: noted).isEmpty)
     }
 
     // MARK: Rule 2: one CloudKit file, one container site, behind the gate

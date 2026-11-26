@@ -83,6 +83,16 @@ final class ScriptedApprovalDatabase: CloudKitApprovalDatabase, @unchecked Senda
         #expect(CloudKitAlertSource.decisionRecordID(for: Self.promptID).recordName != Self.promptID.hex)
     }
 
+    /// #194: the decision record is named by the wire's one spelling, the one
+    /// the Mac will read it by: the prompt's record name and `-decision`.
+    @Test func theDecisionIsNamedByTheWire() {
+        let id = CloudKitAlertSource.decisionRecordID(for: Self.promptID)
+        #expect(id.recordName == ApprovalWire.decisionRecordName(for: Self.promptID))
+        #expect(id.recordName == Self.promptID.hex + "-decision")
+        #expect(id.zoneID == CloudKitAlertSource.approvalsZoneID)
+        #expect(CloudKitAlertSource.makeDecisionRecord(Self.decision).recordID == id)
+    }
+
     /// A new record only: an answer is never overwritten.
     @Test func theSaveNeverOverwritesAnAnswer() async throws {
         let database = ScriptedApprovalDatabase(ModifyOperationScript([.saved(0), .batchSucceeded]))
