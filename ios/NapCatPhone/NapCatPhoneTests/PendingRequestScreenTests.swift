@@ -67,6 +67,8 @@ import UIKit
         #expect(PendingRequestScreen.denyTitle(.faceID) == "Deny with Face ID")
         #expect(PendingRequestScreen.denyTitle(.opticID) == "Deny with Optic ID")
         #expect(PendingRequestScreen.answerHint(.faceID) == "Asks for Face ID first.")
+        #expect(PendingRequestScreen.againTitle(.allow, .faceID) == "Send Allow again with Face ID")
+        #expect(PendingRequestScreen.againTitle(.deny, .touchID) == "Send Deny again with Touch ID")
         #expect(PendingRequestScreen.answersUnavailable(.faceID).text
                 == "Unavailable — answering needs Face ID turned on; answer on your Mac")
         #expect(PendingRequestScreen.answersUnavailable(nil).text
@@ -187,15 +189,18 @@ import UIKit
 
     // MARK: The offer
 
-    /// Only an answerable request offers anything; then both answers where
+    /// Only an answerable request offers anything; then its answers where
     /// a biometric match is possible (each asks for one: the owner's
-    /// uniform-signing ruling), and neither where it is not, with the
-    /// reason said instead. Deny is never on offer without the match.
+    /// uniform-signing ruling): both, or after an unconfirmed answer that
+    /// one alone (#154); and neither where it is not, with the reason said
+    /// instead. Deny is never on offer without the match.
     @Test func answersAreOfferedOnlyWhileAnswerable() {
         for status in Self.everyStatus {
             let offer = PendingRequestScreen.offer(for: status, biometry: .available(.faceID), key: .paired)
             if status.isAnswerable {
-                #expect(offer == PendingRequestScreen.Offer(answers: .faceID, caption: nil), "\(status)")
+                #expect(offer == PendingRequestScreen.Offer(answers: .faceID, again: status.resend, caption: nil), "\(status)")
+                let offered: [ApprovalWire.Verdict] = ApprovalWire.Verdict.allCases.filter(offer.offers)
+                #expect(offered == status.answers, "\(status)")
                 for unavailable in [BiometricAvailability.unavailable(.faceID), .unavailable(nil)] {
                     #expect(PendingRequestScreen.offer(for: status, biometry: unavailable, key: .paired)
                             == PendingRequestScreen.Offer(answers: nil,
@@ -226,6 +231,43 @@ import UIKit
                 == PendingRequestScreen.Offer(answers: .opticID, caption: PendingRequestScreen.enrollmentChanged(.opticID)))
         #expect(PendingRequestScreen.offer(for: pending, biometry: .unavailable(.faceID), key: .enrollmentChanged)
                 == PendingRequestScreen.Offer(answers: nil, caption: PendingRequestScreen.answersUnavailable(.faceID)))
+    }
+
+    /// After iCloud left an answer unconfirmed, that answer alone is on
+    /// offer, titled as sent again, with the biometric and the same hint;
+    /// the other is not on offer at all (#154). Any other note keeps both
+    /// answers under their own titles. A phone that cannot answer still
+    /// offers none, and says why.
+    @Test(arguments: ApprovalWire.Verdict.allCases)
+    func afterAnUnconfirmedAnswerOnlyThatAnswerIsOfferedAgain(_ verdict: ApprovalWire.Verdict) {
+        let other: ApprovalWire.Verdict = RequestAnsweringTests.other(verdict)
+        let until: Date = Self.now.addingTimeInterval(540)
+        let status: RequestStatus = .pending(until: until, note: .unconfirmed(verdict))
+        for kind in BiometryKind.allCases {
+            let offer: PendingRequestScreen.Offer = PendingRequestScreen.offer(for: status, biometry: .available(kind), key: .paired)
+            #expect(offer == PendingRequestScreen.Offer(answers: kind, again: verdict, caption: nil))
+            #expect(offer.offers(verdict) && !offer.offers(other))
+            let title: String = PendingRequestScreen.title(verdict, kind, in: offer)
+            #expect(title == "Send \(RequestStatus.name(verdict)) again with \(kind.name)")
+        }
+        let changed: PendingRequestScreen.Offer = PendingRequestScreen.offer(for: status, biometry: .available(.faceID),
+                                                                             key: .enrollmentChanged)
+        #expect(changed == PendingRequestScreen.Offer(answers: .faceID, again: verdict,
+                                                      caption: PendingRequestScreen.enrollmentChanged(.faceID)))
+        #expect(PendingRequestScreen.offer(for: status, biometry: .unavailable(.faceID), key: .paired)
+                == PendingRequestScreen.Offer(answers: nil, caption: PendingRequestScreen.answersUnavailable(.faceID)))
+        #expect(PendingRequestScreen.offer(for: status, biometry: .available(.faceID), key: .unpaired(.neverPaired))
+                == PendingRequestScreen.Offer(answers: nil, caption: PendingRequestScreen.unpaired(.neverPaired, .faceID)))
+        let notes: [RequestNote?] = [nil, .notConfirmed, .unsigned, .unsent]
+        for note in notes {
+            let both: PendingRequestScreen.Offer = PendingRequestScreen.offer(for: .pending(until: until, note: note),
+                                                                              biometry: .available(.faceID), key: .paired)
+            #expect(both == PendingRequestScreen.Offer(answers: .faceID, caption: nil), "\(String(describing: note))")
+            #expect(both.offers(.allow) && both.offers(.deny))
+            #expect(PendingRequestScreen.title(.allow, .faceID, in: both) == "Allow with Face ID")
+            #expect(PendingRequestScreen.title(.deny, .faceID, in: both) == "Deny with Face ID")
+        }
+        #expect(!PendingRequestScreen.Offer.none.offers(.allow) && !PendingRequestScreen.Offer.none.offers(.deny))
     }
 
     /// "The dialog on your Mac stays open" is said only while an answer from
@@ -622,6 +664,9 @@ import UIKit
     /// or neither (each asks for the match), hands them to its two closures
     /// and never reaches the inbox, the writer or the gate itself; the sheet
     /// routes Allow to `inbox.allow` and Deny to `inbox.deny`, nothing else.
+    /// AMENDED (#154): each answer is drawn only while the offer holds it
+    /// (`offers(_:)`), so after iCloud left an answer unconfirmed the other
+    /// is not drawn at all.
     static func wiringFailures(screen: String, sheet: String) -> [String] {
         let screenCode = SettingsReachabilityTests.flat(screen)
         let sheetCode = SettingsReachabilityTests.flat(sheet)
@@ -630,10 +675,8 @@ import UIKit
         where screenCode.contains(token) {
             failures.append("'\(token)' in the screen — it only hands answers to its closures")
         }
-        for shape in ["let offer = Self.offer(for: status, biometry: biometry, key: key) if let caption = offer.caption { "
-                        + "CaptionLine(line: caption) } if let kind = offer.answers { Button(action: allow)",
-                      ".accessibilityHint(Self.answerHint(kind)) Button(action: deny)"]
-        where !screenCode.contains(shape) {
+        let shapes: [String] = [allowOfferShape, denyOfferShape]
+        for shape in shapes where !screenCode.contains(shape) {
             failures.append("the screen lost '\(shape)'")
         }
         if CloudKitStructureTests.occurrences(of: "Button(action:", in: screenCode) != 2 {
@@ -649,6 +692,12 @@ import UIKit
         return failures
     }
 
+    /// Each answer drawn only while the offer holds it (#154).
+    static let allowOfferShape: String = "let offer = Self.offer(for: status, biometry: biometry, key: key) "
+        + "if let caption = offer.caption { CaptionLine(line: caption) } "
+        + "if let kind = offer.answers { if offer.offers(.allow) { Button(action: allow)"
+    static let denyOfferShape: String = ".accessibilityHint(Self.answerHint(kind)) } if offer.offers(.deny) { Button(action: deny)"
+
     @Test func theAnswersGoThroughTheInboxOnly() throws {
         let screen = try Self.code(Self.screenFile)
         let sheet = try Self.code(Self.sheetFile)
@@ -660,10 +709,15 @@ import UIKit
             ("answers offered always", screen.replacingOccurrences(of: "if let kind = offer.answers {",
                                                                    with: "if let kind = Optional(BiometryKind.faceID) {"), sheet),
             ("Deny outside the offer", screen.replacingOccurrences(
-                of: "            .accessibilityHint(Self.answerHint(kind))\n            Button(action: deny) {",
-                with: "            .accessibilityHint(Self.answerHint(kind))\n        }\n        if true {\n            Button(action: deny) {"),
+                of: "            }\n            if offer.offers(.deny) {\n                Button(action: deny) {",
+                with: "            }\n        }\n        if true {\n            if offer.offers(.deny) {\n                Button(action: deny) {"),
              sheet),
             ("a third button", screen + "\nlet b = Button(action: {}) { Text(\"x\") }", sheet),
+            // #154: each answer drawn only while the offer holds it.
+            ("Deny drawn whatever the offer", screen.replacingOccurrences(of: "if offer.offers(.deny) {", with: "if true {"), sheet),
+            ("Allow drawn whatever the offer", screen.replacingOccurrences(of: "if offer.offers(.allow) {", with: "if true {"), sheet),
+            ("Deny drawn on Allow's offer", screen.replacingOccurrences(of: "if offer.offers(.deny) {", with: "if offer.offers(.allow) {"),
+             sheet),
         ]
         for (name, mutantScreen, mutantSheet) in mutants {
             #expect(mutantScreen != screen || mutantSheet != sheet, "canary '\(name)' did not apply")
@@ -692,6 +746,8 @@ import UIKit
     ///   announced to VoiceOver at high priority;
     /// - both answers carry the biometric's glyph and name (each asks for
     ///   the match), and the unavailable line names this phone's biometric;
+    ///   AMENDED (#154): each is titled through `title(_:_:in:)`, so the
+    ///   one answer offered again after an unconfirmed save says so;
     /// - the answers' height comes from the theme's touch target.
     static let compositionShapes = [
         "VStack(alignment: .leading, spacing: theme.rowGap) { promptCard if let note = status.note { CaptionLine(line: note) } "
@@ -721,8 +777,8 @@ import UIKit
         ".onChange(of: status) { old, new in guard let text = Self.announcement(from: old, to: new, at: now) else { return } "
             + "var spoken = AttributedString(text) spoken.accessibilitySpeechAnnouncementPriority = .high "
             + "AccessibilityNotification.Announcement(spoken).post() }",
-        "Label(Self.allowTitle(kind), systemImage: kind.symbol)",
-        "Label(Self.denyTitle(kind), systemImage: kind.symbol) } .buttonStyle(RequestButtonStyle(emphasis: .ink))",
+        "Label(Self.title(.allow, kind, in: offer), systemImage: kind.symbol)",
+        "Label(Self.title(.deny, kind, in: offer), systemImage: kind.symbol) } .buttonStyle(RequestButtonStyle(emphasis: .ink))",
         "guard case .available(let kind) = biometry else { return Offer(answers: nil, caption: answersUnavailable(biometry.kind)) }",
     ]
 
@@ -791,8 +847,12 @@ import UIKit
             ("the unavailable line unnamed", screen.replacingOccurrences(
                 of: "answersUnavailable(biometry.kind)) }", with: "answersUnavailable(nil)) }"), style),
             ("Deny without the biometric's glyph", screen.replacingOccurrences(
-                of: "Label(Self.denyTitle(kind), systemImage: kind.symbol)", with: "Label(Self.denyTitle(kind), systemImage: \"xmark\")"),
-             style),
+                of: "Label(Self.title(.deny, kind, in: offer), systemImage: kind.symbol)",
+                with: "Label(Self.title(.deny, kind, in: offer), systemImage: \"xmark\")"), style),
+            // #154: an answer sent again says so.
+            ("a resend titled as a fresh answer", screen.replacingOccurrences(
+                of: "Label(Self.title(.allow, kind, in: offer), systemImage: kind.symbol)",
+                with: "Label(Self.allowTitle(kind), systemImage: kind.symbol)"), style),
             ("a hard-coded touch target", screen, style.replacingOccurrences(
                 of: "minHeight: theme.minTouchTarget", with: "minHeight: 44")),
         ]
