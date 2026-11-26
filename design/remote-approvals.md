@@ -1014,16 +1014,29 @@ arms anything.
     `intake`/`apply`/`perform` lines, the intake's frame writer at its
     sites, the host's connection writes at today's site, the connection
     type named at today's sites alone, and the host's words for its
-    connections and its peer reader and the seam file's send, write and
-    descriptor at today's lines, so no new line of either file reaches a
-    connection's writer; and the four targets call a C write (`write`,
-    `send` and their kin), and declare a function so named, at today's
-    sites alone. Every `extension` header and every operator
-    implementation in the four targets is today's, and each of today's
-    extensions declares today's members, so no extension member or
-    operator overload added elsewhere or inside one takes over a pinned
-    line; and no function or value there is named with a capital letter,
-    so none takes over the call of a type it is named like.
+    connections and its peer reader, the seam file's send, write and
+    descriptor and the relay's writer to Claude Code (`emit`) at today's
+    lines, so a new line of those files that names one of them fails (a
+    line reaching the socket by another name is not read); and the four
+    targets call a C write (`write`, `send` and their kin), and declare a
+    function so named, at today's sites alone, and the channel server
+    names `write` on its one standard-output line alone. Every `extension`
+    header and every operator implementation in the four targets is
+    today's, and each of today's extensions declares today's members, so
+    no extension member or operator overload added elsewhere or inside one
+    takes over a pinned line; no function or value there is declared with
+    a capital name by `func`, `let` or `var`, in the tuple pattern of a
+    `let` or `var` or in a `case let` pattern (a parameter, a closure's or
+    a loop's binding is not read), so none takes over the call of a type
+    it is named like; nothing stands at a file's top level but imports,
+    types (structs, enums, classes, protocols, today's extensions) and
+    today's one top-level alias, and no attribute there starts with an
+    underscore or is `@c`, so no module-level function or value and no
+    exported C symbol takes over a call; and no type is declared with a
+    name a pinned line spells, or an imported module's, except at today's
+    declarations, so no new type takes over a pinned line by its name. A
+    visible edit to a decision-path file's unpinned lines stays code
+    review's to read.
   - *The road, whole.* The decision's road is pinned as it is, flattened
     by scalars on the compiler's whitespace alone, in every scan copy: the
     verifier (`enum DecisionVerifier`: every check, the message, the

@@ -49,9 +49,11 @@ import Testing
 ///    at today's sites; and the host's connection writes are pinned at
 ///    today's site, the connection type is named at today's sites alone in
 ///    the four targets, the host names its connections and its peer reader
-///    at today's lines, and the seam file its send, its write and its
-///    descriptor, so no new line of either file reaches a connection's
-///    writer;
+///    at today's lines, the seam file its send, its write and its
+///    descriptor, and the relay its writer to Claude Code (`emit`), so a
+///    new line of those files that names one of them fails; a line that
+///    reaches the socket by another name (its read source, a stdio stream)
+///    is not read;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -70,25 +72,47 @@ import Testing
 ///    extension member and no operator overload added elsewhere or inside
 ///    one takes over a pinned line (a constrained extension's subscript, a
 ///    concrete `??`);
-/// j. no function and no value in the four targets is named with a capital
-///    ASCII letter, so none takes over the call of a type it is named like
-///    (a module's own declaration outranks an imported type's);
+/// j. no function and no value in the four targets is declared with a
+///    capital ASCII name by `func`, `let` or `var`, inside the tuple
+///    pattern of a `let` or `var` (before its first `=` or `:`), or after a
+///    `(` or `,` of a `case let`/`case var` pattern, so none takes over the
+///    call of a type it is named like (a module's own declaration outranks
+///    an imported type's); a parameter, a closure's or a loop's binding is
+///    not read;
 /// k. the four targets call a C write (`write`, `send`, `sendto`,
 ///    `sendmsg`, `writev`, bare or through a capitalized qualifier), and
-///    declare a function so named, at today's sites alone, so no new line
-///    writes to a descriptor by number through one, or takes such a call
-///    over.
+///    declare a function so named, at today's sites alone, and the channel
+///    server names `write` on its one standard-output line alone (as the
+///    seam file does on its one write, f.), so no new line writes to a
+///    descriptor by number through one of those names, and no member, local
+///    or parameter added to either file takes one of today's two writes
+///    over (l. keeps out a module-level one);
+/// l. nothing stands at the top level of a file in the four targets but an
+///    import, a `struct`, `enum`, `class` or `protocol` with its body, an
+///    extension (each of today's, i.) or today's one top-level alias, each
+///    with its attributes and modifiers, and no attribute there starts
+///    with an underscore or is `@c`, so no module-level function or value,
+///    and no exported C symbol (the compiler takes the C export attribute
+///    on a global function only), takes over a call in another file;
+/// m. no type in the four targets is declared (`struct`, `enum`, `class`,
+///    `actor`, `protocol`, `typealias` or `associatedtype`, at any depth)
+///    with a name that a line or body this suite pins spells (or one of the
+///    S1 locks' anchors on the same road), or with an imported module's
+///    name, except at today's declarations, so no new type takes over such
+///    a line by its name.
 ///
 /// These pin the sites and bodies they name, nothing more: a value forged
 /// from raw bytes that reaches none of them stays #163's accepted residual,
-/// and raw-memory writes into a live object stay the pairing locks'.
+/// raw-memory writes into a live object stay the pairing locks', and a
+/// visible edit to a decision-path file's unpinned lines stays code
+/// review's to read.
 ///
 /// Each check is a pure function over the sources and catches planted
 /// canaries — the issue's byte-copy forge among them, decided from a new
-/// file and replanted into the wired sink itself, and the security review's
-/// plants verbatim — beside over-match controls, so none can pass
-/// vacuously. Each pin added after a security review catches its own
-/// canary; where another pin catches it too, its test says which.
+/// file and replanted into the wired sink itself, and the security reviews'
+/// plants, verbatim or in their shape — beside over-match controls, so none
+/// can pass vacuously. Each pin added after a security review catches its
+/// own canary; where another pin catches it too, its test says which.
 struct DecisionSinkStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
     typealias RecordPath = ApprovalRecordPathStructureTests
@@ -111,7 +135,9 @@ struct DecisionSinkStructureTests {
     static func hits(_ pattern: String, in text: String) -> Bool { RecordPath.hits(pattern, in: text) }
 
     static let decideHead: String = "func decide(_ verification: DecisionVerification) {"
-    static let decideBody: String = decideHead + " guard case .verified(let decision) = verification else { return } "
+    /// From the brace before it, as the whole pins are, so no modifier or
+    /// attribute on the line above joins it.
+    static let decideBody: String = "} " + decideHead + " guard case .verified(let decision) = verification else { return } "
         + "apply(.remoteDecision(decision), to: decision.promptID) }"
     static let wiredBody: String = "refusals: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) { " + wiredCall + " }"
     static let lifecycleReading: String = "case .remoteDecision(let decision): return decide(decision, now: now)"
@@ -311,6 +337,8 @@ struct DecisionSinkStructureTests {
                 $0.replacingOccurrences(of: guarded, with: "guard case .verified(let decision) = zzForged(verification) else { return }") }),
             ("decide made to take a decision again", Self.mutate(sources, intake) {
                 $0.replacingOccurrences(of: Self.decideHead, with: "func decide(_ verification: DecisionVerification, or d: ApprovalDecision? = nil) {") }),
+            ("a modifier on the line above decide", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "    " + Self.decideHead + "\n", with: "    dynamic\n    " + Self.decideHead + "\n") }),
             // b. the remote-decision event built off its site.
             ("a forged event from the intake", Self.mutate(forged, intake) {
                 $0 + "\nextension ApprovalIntake {\n    func zzForce(_ id: PromptID) { apply(.remoteDecision(zzForge((id, .allow, 1, true))), to: id) }\n}" }),
@@ -1292,6 +1320,18 @@ struct DecisionSinkStructureTests {
         "static func connect(_ descriptor: Int32, to address: sockaddr_un) -> Bool {": 1,
         "var room = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)": 1,
     ]
+    /// The relay's writer to Claude Code: stored, taken at its initializer,
+    /// and called for the three answers it gives itself and the verdict it
+    /// relays.
+    static let relayEmitSites: [String: Int] = [
+        "private let emit: (String) -> Void": 1,
+        "init(emit: @escaping (String) -> Void, connect: @escaping Connector, note: @escaping (ChannelNote) -> Void = { _ in }) {": 1,
+        "self.emit = emit": 2,
+        "emit(ApprovalChannel.initializeResult(id: id, requestedVersion: version))": 1,
+        "emit(ApprovalChannel.pingResult(id: id))": 1,
+        "emit(ApprovalChannel.errorResponse(id: id, code: code))": 1,
+        "emit(ApprovalChannel.verdictNotification(requestID: requestID, verdict: verdict))": 1,
+    ]
     /// Each word pin: its file, its pattern, today's lines.
     static let connectionWordPins: [(file: String, pattern: String, allowed: [String: Int])] = [
         (ApprovalChannelStructureTests.hostFile, #"\bconnections?\b"#, hostConnectionSites),
@@ -1299,15 +1339,18 @@ struct DecisionSinkStructureTests {
         (ApprovalChannelStructureTests.seamFile, #"\bsend\b"#, seamSendSites),
         (ApprovalChannelStructureTests.seamFile, #"\bwrite\b"#, seamWriteSites),
         (ApprovalChannelStructureTests.seamFile, #"\bdescriptor\b"#, seamDescriptorSites),
+        (ApprovalChannelStructureTests.relayFile, #"\bemit\b"#, relayEmitSites),
     ]
 
     /// `sources`: `uncutSources()`.
     static func connectionWordFailures(_ sources: Sources) -> [String] {
-        var failures: [String] = absent([ApprovalChannelStructureTests.hostFile, ApprovalChannelStructureTests.seamFile], in: sources)
+        var failures: [String] = absent([ApprovalChannelStructureTests.hostFile, ApprovalChannelStructureTests.seamFile,
+                                         ApprovalChannelStructureTests.relayFile], in: sources)
         for pin in connectionWordPins {
             failures += PairingStructureTests.appSiteFailures(pin.pattern, in: sources.filter { $0.name == pin.file },
                                                               allowed: [pin.file: pin.allowed],
-                                                              rule: "a connection, its peer reader and its writes are named at today's lines alone")
+                                                              rule: "a connection, its peer reader, its writes and the relay's writer are named at "
+                                                                  + "today's lines alone")
         }
         return unique(failures)
     }
@@ -1366,15 +1409,17 @@ struct DecisionSinkStructureTests {
     /// The host's line handler, where RES2 and RES3 call their files.
     static let handlerIndent: String = String(repeating: " ", count: 29)
 
-    /// A connection's writer is reached from no new line of the host or the
-    /// seam file: the host names its connections and its peer reader at
-    /// today's lines, and the seam file its send, its write and its
-    /// descriptor. The re-check's residual plants, verbatim, as the disk
-    /// would hold them: a writer reached through the connection type's own
-    /// body (RES1), through a descriptor (RES2) and through an inferred type
-    /// (RES3). Each is caught by these pins; RES1 and RES2, which call a
-    /// writer bare, by the C-write pin too; every other pin of this suite
-    /// reads each as the tree.
+    /// A new line of the host, the seam file or the relay that names a
+    /// connection's writer, or the relay's own, fails: the host names its
+    /// connections and its peer reader at today's lines, the seam file its
+    /// send, its write and its descriptor, and the relay its `emit`. The
+    /// re-check's residual plants, verbatim, as the disk would hold them: a
+    /// writer reached through the connection type's own body (RES1), through
+    /// a descriptor (RES2) and through an inferred type (RES3). Each is
+    /// caught by these pins; RES1 and RES2, which call a writer bare, by the
+    /// C-write pin too; RES2 and RES3, which declare functions and a value at
+    /// a new file's top level, by the top-level pin too; every other pin of
+    /// this suite reads each as the tree.
     @Test func aConnectionsWriterIsNamedAtTodaysSites() throws {
         let raw: Sources = try ApprovalChannelStructureTests.sources { $0 }
         let sources: Sources = Self.uncut(raw)
@@ -1401,11 +1446,10 @@ struct DecisionSinkStructureTests {
         withRaw.append(("ZZRaw.swift", Self.rawDescriptorWrite))
         var withInferred: Sources = Self.planting(raw, res3)
         withInferred.append(("ZZInferred.swift", Self.inferredWrite))
-        let bare: [String] = ["C writes"]
         let reviewed: [(name: String, planted: Sources, also: [String])] = [
-            ("RES1: a member writing a hand-built frame, inside the connection type's body", Self.uncut(Self.planting(raw, res1)), bare),
-            ("RES2: the descriptor kept from the host's peer reader, written from a new file", Self.uncut(withRaw), bare),
-            ("RES3: the host's connection handed to a new file as a generic value", Self.uncut(withInferred), []),
+            ("RES1: a member writing a hand-built frame, inside the connection type's body", Self.uncut(Self.planting(raw, res1)), ["C writes"]),
+            ("RES2: the descriptor kept from the host's peer reader, written from a new file", Self.uncut(withRaw), ["C writes", "top level"]),
+            ("RES3: the host's connection handed to a new file as a generic value", Self.uncut(withInferred), ["top level"]),
         ]
         let baseline: [String: [String]] = Self.pinBaseline(sources)
         for (name, planted, also) in reviewed {
@@ -1432,14 +1476,41 @@ struct DecisionSinkStructureTests {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.connectionWordFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // The relay's writer, one hop past the intake's and the host's: a
+        // hand-built line emitted as a prompt is relayed, keyed on the
+        // request ID alone, is caught by this pin alone; every other pin of
+        // this suite reads it as the tree.
+        let relay: String = ApprovalChannelStructureTests.relayFile
+        let relayed: String = "        open.insert(request.requestID)\n        note(.relayed)\n"
+        #expect(ApprovalChannelStructureTests.count(relayed, in: Self.text(relay, in: sources)) == 1, "vacuity: the relay's anchor is there once")
+        let emitted: Sources = Self.mutate(sources, relay) {
+            $0.replacingOccurrences(of: relayed, with: relayed + "        if request.requestID.text == \"zzzzz\" { emit(\"{}\") }\n") }
+        #expect(!Self.connectionWordFailures(emitted).isEmpty, "a line emitted by the relay was NOT caught by the connection words' pins")
+        let emittedOthers: [String] = Self.othersCatching(emitted, besides: "connection words", baseline: baseline)
+        #expect(emittedOthers.isEmpty, "a line emitted by the relay is the connection words' to catch, but \(emittedOthers) caught it too")
+        let relayMutants: [(String, Sources)] = [
+            ("the relay's writer handed on", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: "        self.emit = emit\n", with: "        self.emit = emit\n        zzKeep(emit)\n") }),
+            ("the relay's writer called, backticked", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: relayed, with: relayed + "        `emit`(\"{}\")\n") }),
+            ("the relay's writer behind a block comment", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: relayed, with: relayed + "        self./* x */emit(\"{}\")\n") }),
+        ]
+        for (name, mutant) in relayMutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.connectionWordFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
         // Over-match controls: names that only contain the pinned words, and
         // whole-line comments naming them.
-        let controls: Sources = Self.mutate(Self.mutate(sources, host) {
+        let controls: Sources = Self.mutate(Self.mutate(Self.mutate(sources, host) {
             $0.appending("\nlet connectionCount = 0, reconnection = 1, peerReaderCount = 2, isConnectionOpen = false"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never zzNote(self?.connections[key]), never peerReader: { $0 }"))
         }, seam) {
             $0.appending("\nlet sendCount = 0, rewrite = 1, writes = 2, descriptors = 3, fileDescriptor = 4"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never write(descriptor, frame), never send(frame)"))
+        }, relay) {
+            $0.appending("\nlet emitted = 0, emitCount = 1, reemit = 2"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never emit(frame)"))
         }
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
         #expect(Self.connectionWordFailures(controls).isEmpty, "over-match: \(Self.connectionWordFailures(controls))")
@@ -1648,7 +1719,8 @@ struct DecisionSinkStructureTests {
             ("connection type", { Self.connectionTypeFailures($0) }), ("connection words", { Self.connectionWordFailures($0) }),
             ("extensions", { Self.extensionFailures($0) }), ("operator implementations", { Self.operatorImplementationFailures($0) }),
             ("extension members", { Self.extensionMemberFailures($0) }), ("capital names", { Self.capitalNameFailures($0) }),
-            ("C writes", { Self.cWriteFailures($0) }),
+            ("C writes", { Self.cWriteFailures($0) }), ("top level", { Self.topLevelFailures($0) }),
+            ("borrowed names", { Self.borrowedNameFailures($0) }), ("attributes", { Self.attributeFailures($0) }),
             ("hidden scalars", { LidGuardStructureTests.hiddenScalarFailures($0) }),
         ]
     }
@@ -1734,8 +1806,10 @@ struct DecisionSinkStructureTests {
     /// pinned line (a constrained extension's subscript, a concrete
     /// overload) would take that line over with the line untouched. The
     /// re-check's plants, verbatim: DICT1 (the intake's `prompts[id]`) and
-    /// OP1b (the slot's `??`), each caught by its own pin alone: every other
-    /// pin of this suite reads it as the tree.
+    /// OP1b (the slot's `??`), each caught by its own pin and by the
+    /// top-level pin (each declares module-level state, and OP1b its
+    /// overload, at its file's top level); every other pin of this suite
+    /// reads it as the tree.
     @Test func everyExtensionAndOperatorImplementationIsTodays() throws {
         let sources = try Self.uncutSources()
         #expect(Self.extensionFailures(sources).isEmpty, "\(Self.extensionFailures(sources))")
@@ -1751,7 +1825,7 @@ struct DecisionSinkStructureTests {
             let own: [(name: String, failures: (Sources) -> [String])] = Self.sourcePins.filter { $0.name == pin }
             #expect(own.count == 1 && own.allSatisfy { !$0.failures(planted).isEmpty }, "\(name) was NOT caught by its pin")
             let others: [String] = Self.othersCatching(planted, besides: pin, baseline: baseline)
-            #expect(others.isEmpty, "\(name) is its own pin's to catch, but \(others) caught it too")
+            #expect(others == ["top level"], "\(name) is its own pin's to catch and the top-level pin's, but \(others) caught it")
         }
         // More canaries: an extension in each target and spelled apart, and
         // an operator implemented in a type, at the top level, behind a
@@ -2020,12 +2094,25 @@ struct DecisionSinkStructureTests {
 
     // MARK: - j. No function or value named with a capital
 
+    /// What a pattern may span before its first `=`, `:` or brace (an
+    /// initializer, a type annotation, a case's or a loop's body): any
+    /// scalar but those and a slash, and comments whole.
+    static let patternSpan: String = #"(?:[^=:/{}]|//[^\n]*|/\*[\s\S]*?\*/)*?"#
     /// A function, a constant or a variable whose name starts with a capital
     /// ASCII letter (a comment or a line break before the name is a site
-    /// too). Swift names none so, and the four targets hold none: such a
-    /// name in the module, or in any scope around a pinned line, takes over
-    /// the call of the type it spells there, the line untouched.
-    static let capitalNamePattern: String = #"\b(?:func|let|var)"# + RecordPath.gap + #"+[A-Z]"#
+    /// too); a capital inside the tuple pattern of a `let` or `var` (`let
+    /// (A, b)`, nested too), before its first `=` or `:`; and a capital name
+    /// alone after a `(` or `,` of a `case let`/`case var` pattern (`case let
+    /// .some(A)`, `case let (a, B)`). Swift names none so, and the four
+    /// targets hold none: such a name in the module, or in any scope around
+    /// a pinned line, takes over the call of the type it spells there, the
+    /// line untouched. Not read: a parameter, a closure's or a loop's
+    /// binding, a generic parameter, a labelled tuple pattern's names.
+    static let capitalNamePattern: String = [
+        #"\b(?:func|let|var)"# + RecordPath.gap + #"+[A-Z]"#,
+        #"\b(?:let|var)"# + RecordPath.gap + #"*\("# + patternSpan + #"\b[A-Z]"#,
+        #"\bcase"# + RecordPath.gap + #"+(?:let|var)\b"# + patternSpan + #"[(,]"# + RecordPath.gap + #"*[A-Z]\w*"# + RecordPath.gap + #"*[,)]"#,
+    ].joined(separator: "|")
 
     /// `sources`: `uncutSources()`.
     static func capitalNameFailures(_ sources: Sources) -> [String] {
@@ -2057,22 +2144,42 @@ struct DecisionSinkStructureTests {
 
         """
 
-    /// No function and no value in the four targets is named with a capital
-    /// ASCII letter. The probe is caught by this pin alone: every other pin
-    /// of this suite reads it as the tree.
+    /// The channel server's stream type, where the tuple-pattern canary
+    /// binds a capital at type scope.
+    static let streamsTuple: String = "    static let (PromptID, zz): (Int, Int) = (0, 0)\n"
+
+    /// No function and no value in the four targets is declared with a
+    /// capital ASCII name in the forms the pin reads. The probe, and a
+    /// capital bound through a tuple pattern inside the channel server's
+    /// stream type, are each caught by this pin; the probe, which declares
+    /// a function and a value at a new file's top level, by the top-level
+    /// pin too; every other pin of this suite reads each as the tree.
     @Test func noFunctionOrValueIsNamedWithACapital() throws {
         let sources = try Self.uncutSources()
         #expect(Self.capitalNameFailures(sources).isEmpty, "\(Self.capitalNameFailures(sources))")
         #expect(Self.text(Self.verifierFile, in: sources).contains("guard let promptID = PromptID(hex: evidence.promptID) else {"),
                 "vacuity: the probe's call is on the verifier's road")
+        let server: String = ApprovalChannelStructureTests.serverFile
+        #expect(Self.text(server, in: sources).contains(Self.streamsHead), "vacuity: the stream type is in the channel server")
         let probed: Sources = Self.adding(sources, "ZZPromptID.swift", Self.capitalFunction)
-        #expect(!Self.capitalNameFailures(probed).isEmpty, "the probe was NOT caught by the capital-name pin")
-        let others: [String] = Self.othersCatching(probed, besides: "capital names", baseline: Self.pinBaseline(sources))
-        #expect(others.isEmpty, "the probe is the capital-name pin's to catch, but \(others) caught it too")
+        let tupled: Sources = Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead + Self.streamsTuple) }
+        let baseline: [String: [String]] = Self.pinBaseline(sources)
+        let reviewed: [(name: String, planted: Sources, also: [String])] = [
+            ("the probe", probed, ["top level"]),
+            ("a capital bound through a tuple pattern in the stream type", tupled, []),
+        ]
+        for (name, planted, also) in reviewed {
+            #expect(!Self.capitalNameFailures(planted).isEmpty, "\(name) was NOT caught by the capital-name pin")
+            let others: [String] = Self.othersCatching(planted, besides: "capital names", baseline: baseline)
+            #expect(others == also, "\(name) is the capital-name pin's to catch, and \(also)'s: \(others) caught it")
+        }
         // More canaries: a value named like a type (called, or its members
         // taken), a variable, a static function in a type, a local, a
-        // pattern's binding, and the name backticked, behind a block comment,
-        // on the next line or behind a trailing comment.
+        // pattern's binding, a capital inside a tuple pattern (nested, over
+        // lines, in a variable, a condition or a loop) or after a hoisted
+        // `case let`, and the name backticked, behind a block comment, on the
+        // next line or behind a trailing comment.
         let app: String = "NapCatApp.swift"
         let appended: (String) -> Sources = { text in Self.mutate(sources, app) { $0.appending(text) } }
         let mutants: [(String, Sources)] = [
@@ -2082,10 +2189,19 @@ struct DecisionSinkStructureTests {
             ("a static function in a type", appended("\nstruct ZZ { static func PromptID(hex: String) -> Int { 0 } }")),
             ("a local", appended("\nfunc zz() { let SHA256 = ZZHash(); _ = SHA256 }")),
             ("a pattern's binding", appended("\nfunc zz(_ x: Int?) { if case .some(let PromptID) = x { _ = PromptID } }")),
+            ("a tuple pattern's second name", appended("\nlet (zz, PromptID) = (0, ZZCall())")),
+            ("a nested tuple pattern, the name last", appended("\nlet ((zz, zy), Verdict) = ((0, 1), 2)")),
+            ("a tuple pattern over lines, behind a comment", appended("\nvar (zz, // x\n     /* y */ SHA256) = (0, 1)")),
+            ("a tuple pattern in a condition", appended("\nfunc zz(_ t: (Int, Int)?) { if let (zz, PromptID) = t { _ = (zz, PromptID) } }")),
+            ("a tuple pattern in a loop", appended("\nfunc zz(_ p: [(Int, Int)]) { for var (zz, Verdict) in p { zz += Verdict } }")),
+            ("a hoisted case let", appended("\nfunc zz(_ x: Int?) { if case let .some(PromptID) = x { _ = PromptID } }")),
+            ("a hoisted case var, the name second", appended("\nfunc zz(_ x: (Int, Int)) { switch x { case var (zz, Verdict): _ = (zz, Verdict) } }")),
+            ("a hoisted case let in a loop, over lines", appended("\nfunc zz(_ x: [Int?]) { for case let .some(\n    SHA256) in x { _ = SHA256 } }")),
             ("backticked", appended("\nfunc `PromptID`(hex: String) -> Int { 0 }")),
             ("behind a block comment", appended("\nfunc/* x */PromptID(hex: String) -> Int { 0 }")),
             ("its name on the next line", appended("\nfunc\n    PromptID(hex: String) -> Int { 0 }")),
             ("behind a trailing comment", appended("\nlet // x\n    PromptID = ZZCall()")),
+            ("a tuple pattern's name backticked", appended("\nlet (zz, `PromptID`) = (0, ZZCall())")),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -2093,19 +2209,25 @@ struct DecisionSinkStructureTests {
         }
         // Over-match controls: types named like one, an uppercase enum case,
         // a type's initializer and a method called on a type, capitals in a
-        // type annotation and a return type, words that only contain the
-        // keywords, and a whole-line comment naming the probe.
+        // type annotation and a return type, a tuple pattern's annotation and
+        // initializer, a hoisted pattern's lowercase names and its guard, a
+        // binding inside a pattern compared to a capitalized value, words that
+        // only contain the keywords, and a whole-line comment naming the probe.
         let controls: Sources = appended([
             "\nstruct ZZPromptID {}\nenum ZZKind { case PromptID, Verdict }\ntypealias ZZID = PromptID",
             "\nlet zzID = PromptID(hex: \"00\"), zzInput = ApprovalSigning.shownDigestInput(toolName: \"\", inputPreview: \"\", projectLabel: \"\")",
             "\nvar zzOptional: PromptID? = nil\nfunc zzMake() -> PromptID? { nil }",
-            "\nlet isFunc = 1, letters = 2, variable = 3, outlet = 4",
-            LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never func PromptID(hex:), never let ApprovalSigning = zz"),
+            "\nlet (zzA, zzB): (Int, PromptID?) = (Int.zero, PromptID(hex: \"00\"))",
+            "\nfunc zz(_ x: ZZKind?) { if case let .some(kind) = x, kind == ZZKind.PromptID {}; switch x { case let .some(k) where k == .Verdict: break; default: break } }",
+            "\nfunc zy(_ x: ZZKind?) { if case .some(let kind) = Optional(ZZKind.Verdict) { _ = (kind, x) } }",
+            "\nlet isFunc = 1, letters = 2, variable = 3, outlet = 4, casework = 5",
+            LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never func PromptID(hex:), never let ApprovalSigning = zz, never let (zz, PromptID)"),
         ].joined())
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
         #expect(Self.capitalNameFailures(controls).isEmpty, "over-match: \(Self.capitalNameFailures(controls))")
         // The pattern bites through the lock's own engine.
-        for probe in ["func\tPromptID(", "let /* x */ ApprovalSigning", "var // x\n    Verdict"] {
+        for probe in ["func\tPromptID(", "let /* x */ ApprovalSigning", "var // x\n    Verdict", "let(zz,PromptID)=x",
+                      "case let .some(\n  Verdict)", "case var(zz, (PromptID))"] {
             #expect(Self.hits(Self.capitalNamePattern, in: probe), "the pattern does not match '\(probe)'")
         }
     }
@@ -2140,12 +2262,24 @@ struct DecisionSinkStructureTests {
             "func write(_ prompt: some GateApprovedPrompt, completion: @escaping @Sendable (ApprovalRecordOutcome) -> Void) {": 1],
     ]
 
+    /// The channel server's one line naming `write`, its standard-output
+    /// write (the seam file's one is the connection words', f.): so no
+    /// member, local or parameter of that file is so named, a closure-typed
+    /// value included, which takes the bare call over as a function would.
+    static let serverWriteWordSites: [String: Int] = [
+        "let written = bytes[offset...].withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress, $0.count) }": 1,
+    ]
+
     /// `sources`: `uncutSources()`.
     static func cWriteFailures(_ sources: Sources) -> [String] {
-        absent(cWriteSites.keys, in: sources)
+        let server: String = ApprovalChannelStructureTests.serverFile
+        return absent(cWriteSites.keys, in: sources)
             + PairingStructureTests.appSiteFailures(cWritePattern, in: sources, allowed: cWriteSites,
                                                     rule: "a C write, or a function named like one, is at today's sites alone — a new one could write a frame "
                                                         + "to a descriptor by number, or take a write over")
+            + PairingStructureTests.appSiteFailures(#"\bwrite\b"#, in: sources.filter { $0.name == server }, allowed: [server: serverWriteWordSites],
+                                                    rule: "the channel server names write on its one standard-output line alone — anything else so "
+                                                        + "named there takes that call over")
     }
 
     /// The probe, in a new file naming no connection, no peer reader and no
@@ -2171,10 +2305,16 @@ struct DecisionSinkStructureTests {
     static let streamsHead: String = "enum StandardStreams {\n"
     static let streamsWrite: String = "    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ n: Int) -> Int { n }\n"
 
+    /// The same member as a closure-typed constant: no call, no `func`.
+    static let streamsWriteValue: String = "    static let write: (Int32, UnsafeRawPointer?, Int) -> Int = { _, _, n in n }\n"
+
     /// The four targets call a C write, and declare a function so named, at
-    /// today's sites alone. The probe, and a member that takes the channel
-    /// server's standard-output write over, are each caught by this pin
-    /// alone: every other pin of this suite reads each as the tree.
+    /// today's sites alone, and the channel server names `write` on its one
+    /// write. The probe is caught by this pin and by the top-level pin (it
+    /// declares a function at a new file's top level); a member that takes
+    /// the channel server's standard-output write over, as a function and
+    /// as a closure-typed constant, by this pin alone; every other pin of
+    /// this suite reads each as the tree.
     @Test func aCWriteIsCalledAtTodaysSites() throws {
         let sources = try Self.uncutSources()
         #expect(Self.cWriteFailures(sources).isEmpty, "\(Self.cWriteFailures(sources))")
@@ -2183,16 +2323,27 @@ struct DecisionSinkStructureTests {
         let probed: Sources = Self.adding(sources, "ZZNumbered.swift", Self.numberedWrite)
         let shadowed: Sources = Self.mutate(sources, server) {
             $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead + Self.streamsWrite) }
+        let valued: Sources = Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead + Self.streamsWriteValue) }
         let baseline: [String: [String]] = Self.pinBaseline(sources)
-        let alone: [(String, Sources)] = [("the probe", probed), ("the stream type's write taken over by a member", shadowed)]
-        for (name, planted) in alone {
+        let reviewed: [(name: String, planted: Sources, also: [String])] = [
+            ("the probe", probed, ["top level"]),
+            ("the stream type's write taken over by a member", shadowed, []),
+            ("the stream type's write taken over by a closure-typed constant", valued, []),
+        ]
+        for (name, planted, also) in reviewed {
             #expect(!Self.cWriteFailures(planted).isEmpty, "\(name) was NOT caught by the C-write pin")
             let others: [String] = Self.othersCatching(planted, besides: "C writes", baseline: baseline)
-            #expect(others.isEmpty, "\(name) is the C-write pin's to catch, but \(others) caught it too")
+            #expect(others == also, "\(name) is the C-write pin's to catch, and \(also)'s: \(others) caught it")
         }
+        // The constant names no C call: only the server's word pin reads it.
+        #expect(PairingStructureTests.appSiteFailures(Self.cWritePattern, in: valued, allowed: Self.cWriteSites, rule: "").isEmpty,
+                "vacuity: the closure-typed constant is one the call pattern misses")
         // More canaries: each other name, qualified by the module,
         // backticked, behind a block comment, on the next line, a second
-        // write in the channel server, and a write declared beside the seam.
+        // write in the channel server, a write declared beside the seam, and
+        // a local, a parameter and a member named write in the channel server
+        // (backticked, behind a block comment).
         let app: String = "MenuStateModel.swift"
         let appended: (String) -> Sources = { text in Self.mutate(sources, app) { $0.appending(text) } }
         let mutants: [(String, Sources)] = [
@@ -2208,21 +2359,538 @@ struct DecisionSinkStructureTests {
                 $0.appending("\nfunc zz() { _ = write(STDOUT_FILENO, \"{}\", 2) }") }),
             ("a write declared beside the seam", Self.adding(sources, "ZZSeamWrite.swift",
                 "import Darwin\n\nfunc write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ n: Int) -> Int { n }\n")),
+            ("a local named write in the server's writer", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: "        var offset = 0\n",
+                                        with: "        var offset = 0\n        let write: (Int32, UnsafeRawPointer?, Int) -> Int = { _, _, n in n }\n") }),
+            ("a parameter named write", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: "    static func writeLine(_ line: String) {\n",
+                                        with: "    static func writeLine(_ line: String, write: (Int32, UnsafeRawPointer?, Int) -> Int = { _, _, n in n }) {\n") }),
+            ("a computed member, backticked", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead
+                                        + "    static var `write`: (Int32, UnsafeRawPointer?, Int) -> Int { { _, _, n in n } }\n") }),
+            ("a member behind a block comment", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead
+                                        + "    static let/* x */write: (Int32, UnsafeRawPointer?, Int) -> Int = { _, _, n in n }\n") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.cWriteFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
         // Over-match controls: a file handle's write, methods named send and
-        // write called on a value, names that only contain the pinned ones,
-        // and a whole-line comment naming a write.
-        let controls: Sources = appended([
+        // write called on a value, names that only contain the pinned ones
+        // (in the channel server too), and whole-line comments naming a write.
+        let controls: Sources = Self.mutate(appended([
             "\nfunc zzLog() { FileHandle.standardError.write(Data(\"x\".utf8)) }",
             "\nfunc zzSend(_ link: ZZLink) { _ = link.send(\"{}\"); _ = link?.write(1) }",
             "\nlet rewrite = 1, sendCount = 2, writeAll = 3\nfunc zzWriteAll() {}",
             LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never write(5, frame, frame.utf8.count), never send(5, frame, 2, 0)"),
-        ].joined())
+        ].joined()), server) {
+            $0.replacingOccurrences(of: Self.streamsHead, with: Self.streamsHead + "    static let writes = 0, rewritten = 1, writeCount = 2\n")
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never static let write = zz")
+        }
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
         #expect(Self.cWriteFailures(controls).isEmpty, "over-match: \(Self.cWriteFailures(controls))")
+    }
+
+    // MARK: - l. Nothing at the top level but imports and types
+
+    /// The type forms that may stand at a file's top level: today's, each
+    /// with its header and its body. (No `actor` stands there today.)
+    static let topLevelForms: Set<String> = ["struct", "enum", "class", "protocol", "extension"]
+    /// Today's one alias at a file's top level, whole: every other alias in
+    /// the four targets is a type's member.
+    static let topLevelAliases: [String: [String]] = [
+        "LidGuardController.swift": ["typealias ClaudeBusyProvider = @Sendable () -> LidGuardBusySample?"],
+    ]
+    /// The modifiers that may stand before a form's word.
+    static let topLevelModifiers: Set<String> = ["public", "package", "internal", "fileprivate", "private", "open", "final", "indirect"]
+    /// The kinds a scoped import may name (`import struct M.T`).
+    static let importKinds: Set<String> = ["typealias", "struct", "class", "enum", "protocol", "let", "var", "func"]
+    /// The words that open a declaration, admitted or not: no header holds
+    /// one, and the reader picks up again at one after a stray declaration.
+    static let declarationWords: Set<String> = topLevelForms.union(topLevelModifiers).union([
+        "import", "typealias", "actor", "func", "let", "var", "subscript", "init", "deinit", "macro", "operator",
+        "precedencegroup", "prefix", "infix", "postfix", "case", "associatedtype",
+    ])
+
+    /// Whether `token` is a name (or a keyword): it starts with a letter, a
+    /// mark, a digit, `_`, `$` or a backtick.
+    static func isName(_ token: String) -> Bool {
+        guard let first = token.unicodeScalars.first else { return false }
+        switch first.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .nonspacingMark, .spacingMark, .enclosingMark, .decimalNumber, .letterNumber, .otherNumber:
+            return true
+        default:
+            return "_$`".unicodeScalars.contains(first)
+        }
+    }
+
+    /// `text`'s top level as `RecordPath.topLevel` reads it (every comment
+    /// and literal a space, every body `{ }`), in tokens: a run of name
+    /// scalars, or any other scalar alone.
+    static func topLevelTokens(_ text: String) -> [String] {
+        RecordPath.matches(#"[\p{L}\p{M}\p{N}_$`]+|\S"#, in: RecordPath.topLevel(text))
+    }
+
+    /// `text`'s top level, read declaration by declaration, each from its
+    /// attributes (with their arguments) and modifiers to its word: an
+    /// `import` and its module path (a kind before it), one of
+    /// `topLevelForms` and its header to its body, or one of `aliases`
+    /// whole. `heads`: the words admitted, in order. `stray`: everything
+    /// else, each from where it starts — a function, a value, a directive,
+    /// a statement, another alias.
+    static func readTopLevel(_ text: String, aliases: [String]) -> (heads: [String], stray: [String]) {
+        let tokens: [String] = topLevelTokens(text)
+        let whole: [[String]] = aliases.map(topLevelTokens)
+        func at(_ index: Int) -> String? { index < tokens.count ? tokens[index] : nil }
+        var heads: [String] = []
+        var stray: [String] = []
+        var index: Int = 0
+        while index < tokens.count {
+            if tokens[index] == ";" {
+                index += 1
+                continue
+            }
+            let start: Int = index
+            while at(index) == "@", let name = at(index + 1), isName(name) {
+                index += 2
+                guard at(index) == "(" else { continue }
+                var depth: Int = 0
+                repeat {
+                    if tokens[index] == "(" { depth += 1 } else if tokens[index] == ")" { depth -= 1 }
+                    index += 1
+                } while depth > 0 && index < tokens.count
+            }
+            while let word = at(index), topLevelModifiers.contains(word) { index += 1 }
+            let head: String = at(index) ?? ""
+            var end: Int?
+            if head == "import" {
+                var cursor: Int = index + 1
+                if let kind = at(cursor), importKinds.contains(kind) { cursor += 1 }
+                if let name = at(cursor), isName(name), !declarationWords.contains(name) {
+                    cursor += 1
+                    while at(cursor) == ".", let next = at(cursor + 1), isName(next) { cursor += 2 }
+                    end = cursor
+                }
+            } else if topLevelForms.contains(head) {
+                if let open = tokens[index...].firstIndex(of: "{"), at(open + 1) == "}",
+                   !tokens[(index + 1)..<open].contains(where: { declarationWords.contains($0) }) {
+                    end = open + 2
+                }
+            } else if head == "typealias" {
+                end = whole.first { tokens[index...].starts(with: $0) }.map { index + $0.count }
+            }
+            if let end {
+                heads.append(head)
+                index = end
+                continue
+            }
+            stray.append(tokens[start..<min(index + 4, tokens.count)].joined(separator: " "))
+            index = max(index, start) + 1
+            while let word = at(index), word != "@", word != ";", !declarationWords.contains(word) { index += 1 }
+        }
+        return (heads, stray)
+    }
+
+    /// `sources`: `uncutSources()`. In every scan copy of every file.
+    static func topLevelFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = absent(topLevelAliases.keys, in: sources)
+        for (name, text) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(text) {
+                let stray: [String] = readTopLevel(copy, aliases: topLevelAliases[name] ?? []).stray
+                if !stray.isEmpty {
+                    failures.append("nothing stands at the top level of \(name) but an import, a type or today's alias — a module-level "
+                                    + "function or value could take a call over: read \(stray)")
+                }
+            }
+        }
+        return unique(failures)
+    }
+
+    /// An attribute whose name starts with an underscore (the compiler's
+    /// unofficial ones: a C symbol exported or named, a function replaced, a
+    /// module re-exported), or the C export attribute `@c`, however the gap
+    /// after the `@` is spelled.
+    static let attributePattern: String = #"@"# + RecordPath.gap + #"*(?:_|c\b)"#
+
+    /// `sources`: `uncutSources()`.
+    static func attributeFailures(_ sources: Sources) -> [String] {
+        PairingStructureTests.appSiteFailures(attributePattern, in: sources, allowed: [:],
+                                              rule: "no attribute in the four targets starts with an underscore or is @c — such an attribute exports "
+                                                  + "a C symbol, names one, or replaces a function")
+    }
+
+    /// A module-level constant named like the C call the seam's pinned line
+    /// makes, in a new seam file: in the module it stands in for that call.
+    static let moduleWriteValue: String = """
+        import Darwin
+
+        let write: (Int32, UnsafeRawPointer?, Int) -> Int = { _, _, n in n }
+
+        """
+    /// A module-level function named like the C read the channel server's
+    /// input reader makes, in a new channel file.
+    static let moduleRead: String = """
+        import Darwin
+
+        func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer!, _ n: Int) -> Int { 0 }
+
+        """
+    /// A C symbol exported by attribute from a global function, in a new
+    /// seam file: no Swift declaration carries the symbol's name.
+    static let exportedSymbol: String = """
+        import Darwin
+
+        @_cdecl("zz_symbol") func zzSymbol(_ n: Int) -> Int { n }
+
+        """
+
+    /// Nothing stands at the top level of the four targets but imports,
+    /// today's type forms and today's one alias, and no attribute there
+    /// starts with an underscore or is `@c`. A module-level constant and a
+    /// module-level function, each named like a C call a pinned line makes,
+    /// are caught by the top-level pin alone; a C symbol exported from a
+    /// global function by it and the attribute pin; every other pin of this
+    /// suite reads each as the tree.
+    @Test func nothingStandsAtTheTopLevelButImportsAndTypes() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.topLevelFailures(sources).isEmpty, "\(Self.topLevelFailures(sources))")
+        #expect(Self.attributeFailures(sources).isEmpty, "\(Self.attributeFailures(sources))")
+        // The reader admits today's forms, each standing somewhere today,
+        // and today's alias where it is pinned.
+        var heads: [String] = []
+        for (name, text) in sources { heads += Self.readTopLevel(text, aliases: Self.topLevelAliases[name] ?? []).heads }
+        #expect(Set(heads) == Self.topLevelForms.union(["import", "typealias"]), "vacuity: the forms read are today's: \(Set(heads).sorted())")
+        #expect(heads.filter { $0 == "typealias" }.count == Self.topLevelAliases.values.map { $0.count }.reduce(0, +), "vacuity: today's alias is read once")
+        let reviewed: [(name: String, planted: Sources, also: [String])] = [
+            ("a module-level constant named like a C call, in a new seam file", Self.adding(sources, "ZZTee.swift", Self.moduleWriteValue), []),
+            ("a module-level function named like a C read, in a new channel file", Self.adding(sources, "ZZIn.swift", Self.moduleRead), []),
+            ("a C symbol exported from a global function, in a new seam file", Self.adding(sources, "ZZSym.swift", Self.exportedSymbol),
+             ["attributes"]),
+        ]
+        let baseline: [String: [String]] = Self.pinBaseline(sources)
+        for (name, planted, also) in reviewed {
+            #expect(!Self.topLevelFailures(planted).isEmpty, "\(name) was NOT caught by the top-level pin")
+            let others: [String] = Self.othersCatching(planted, besides: "top level", baseline: baseline)
+            #expect(others == also, "\(name) is the top-level pin's to catch, and \(also)'s: \(others) caught it")
+        }
+        // More canaries: a variable, a computed value, an operator and a
+        // precedence group declared, a conditional block, a macro expansion,
+        // a statement, a second alias, an actor, a function behind
+        // attributes and modifiers, a value after a type on its line, an
+        // unbalanced brace, and a value backticked, behind a block comment or
+        // on the next line — in the app, the wire, the seam and the channel.
+        let appended: (String, String) -> Sources = { file, text in Self.mutate(sources, file) { $0.appending(text) } }
+        let app: String = "NapCatApp.swift"
+        let wire: String = "ApprovalWire.swift"
+        let mutants: [(String, Sources)] = [
+            ("a variable", appended(app, "\nvar zz = 0")),
+            ("a computed value", appended(wire, "\nvar zz: Int { 0 }")),
+            ("an operator declared", appended(app, "\nprefix operator ~~~")),
+            ("a precedence group", appended(app, "\nprecedencegroup ZZ { higherThan: AdditionPrecedence }")),
+            ("a conditional block", appended(app, "\n#if DEBUG\nstruct ZZ {}\n#endif")),
+            ("a macro expansion", appended(app, "\n#zz(1)")),
+            ("a statement", appended(ApprovalChannelStructureTests.serverFile, "\n_ = 0")),
+            ("a second alias", appended(app, "\ntypealias ZZ = Int")),
+            ("today's alias, widened", Self.mutate(sources, "LidGuardController.swift") {
+                $0.replacingOccurrences(of: "LidGuardBusySample?\n", with: "LidGuardBusySample?; let zz = 0\n") }),
+            ("an actor", appended(app, "\nactor ZZ {}")),
+            ("a function behind attributes and modifiers", appended(wire, "\n@inline(never) @available(*, deprecated) private func zz() {}")),
+            ("a value after a type on its line", appended(ApprovalChannelStructureTests.seamFile, "\nstruct ZZ {} let zz = ZZ()")),
+            ("a closing brace too many", appended(app, "\n}\nlet zz = 0")),
+            ("a value backticked", appended(app, "\nlet `zz` = 0")),
+            ("a function behind a block comment", appended(app, "\n/* x */ func zz() {}")),
+            ("a value's word on its own line", appended(ApprovalChannelStructureTests.relayFile, "\nlet\n    zz = 0")),
+            ("a header holding a function", appended(app, "\nstruct ZZ: P func zz() {}")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.topLevelFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // The attribute pin's own canaries: the export, a replacement and a
+        // name, inside a type, behind a block comment, and `@c`.
+        let attributes: [(String, Sources)] = [
+            ("an export inside a type", appended(app, "\nenum ZZ { @_cdecl(\"zz\") static func zz() {} }")),
+            ("a replacement", appended(app, "\nextension ZZ { @_dynamicReplacement(for: zz()) func zy() {} }")),
+            ("a symbol's name", appended(wire, "\nenum ZZ { @_silgen_name(\"zz\") static func zz() }")),
+            ("behind a block comment", appended(app, "\nenum ZZ { @/* x */_cdecl(\"zz\") static func zz() {} }")),
+            ("the C export attribute", appended(app, "\nenum ZZ { @c(zz) static func zz() {} }")),
+        ]
+        for (name, mutant) in attributes {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.attributeFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: members of every kind inside types, attributes
+        // and modifiers on types, an extension, scoped imports, a header over
+        // lines with a where clause, braces and declarations in literals and
+        // comments, a semicolon, and attributes that only start like the
+        // banned ones (`@convention(c)`, `@concurrent`).
+        let controls: Sources = appended(app, [
+            "\nimport struct Foundation.Date\nimport func Darwin.write;",
+            "\n@MainActor public final class ZZ { let zz = 0; var zy: Int { 0 }; func zx() {}; init() {}; subscript(i: Int) -> Int { i } }",
+            "\nindirect enum ZY { case zz(ZY); static let `default` = \"} let zz = 1 {\" }",
+            "\nprivate protocol ZX: AnyObject { func zz() }\nextension ZZ: ZX where ZZ: Sendable {}",
+            "\nstruct ZW<T>\n    : Equatable\n    where T: Equatable {\n    let t: T\n}",
+            "\nstruct ZV { let f: @convention(c) () -> Void; let g: @Sendable () -> Void; let s = \"@_cdecl\" }",
+            "\n/* func zz() {} */ enum ZU {} // let zz = 0",
+            LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never let write = zz, never func read() {}, never @_cdecl"),
+        ].joined())
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.topLevelFailures(controls).isEmpty, "over-match: \(Self.topLevelFailures(controls))")
+        let attributeControls: Sources = appended(app, "\nstruct ZT { let f: @convention(c) () -> Void; @MainActor func zz() {}; let mail = \"x@cc.zz\" }")
+        #expect(Self.attributeFailures(attributeControls).isEmpty, "over-match: \(Self.attributeFailures(attributeControls))")
+        // The attribute pattern bites through the lock's own engine.
+        for probe in ["@_cdecl(", "@ /* x */ _silgen_name", "@c(zz)", "@c func"] {
+            #expect(Self.hits(Self.attributePattern, in: probe), "the pattern does not match '\(probe)'")
+        }
+    }
+
+    // MARK: - m. No type borrows a pinned name
+
+    /// Every text this suite pins: the flat and whole bodies, every
+    /// allow-listed line, every extension's header and members, today's
+    /// top-level alias, and the S1 locks' anchors on the same road.
+    static var pinnedTexts: [String] {
+        var texts: [String] = [decideBody, wiredBody, verificationType, decisionDeclaration]
+        texts.append(contentsOf: allWholePins.map { $0.whole })
+        let byFile: [[String: [String: Int]]] = [decideSites, remoteDecisionSites, verifiedSites, withIntakeSites, intakeTypeSites,
+                                                connectionTypeSites, extensionSites, operatorImplementationSites, cWriteSites]
+        texts.append(contentsOf: byFile.flatMap { $0.values.flatMap { $0.keys } })
+        let lines: [[String: Int]] = [hostIntakeSites, intakeDoorSites, frameWriterSites, hostWriteSites, serverWriteWordSites]
+        texts.append(contentsOf: lines.flatMap { $0.keys })
+        texts.append(contentsOf: declaringSites.flatMap { $0.allowed.keys })
+        texts.append(contentsOf: optionalSites.flatMap { $0.allowed.values.flatMap { $0.keys } })
+        texts.append(contentsOf: connectionWordPins.flatMap { $0.allowed.keys })
+        for pin in extensionMembers {
+            texts.append(pin.header)
+            texts.append(contentsOf: pin.members.keys)
+        }
+        texts.append(contentsOf: topLevelAliases.values.joined())
+        texts.append(contentsOf: s1Anchors)
+        return texts
+    }
+    /// The S1 locks' anchors on the same road, as they spell them
+    /// (`ApprovalChannelStructureTests`: the intake reads a frame strictly,
+    /// classifies it, then opens its lifecycle; each side of the seam has
+    /// one verdict site).
+    static let s1Anchors: [String] = [
+        "guard case .prompt(let request)? = ApprovalChannel.frame(line) else {",
+        "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,",
+        "ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())",
+        "ApprovalChannel.verdictNotification(", "ApprovalChannel.verdictFrame(",
+    ]
+    /// Swift's reserved words: no type is named one (`class func` and
+    /// `class var` are members).
+    static let reservedWords: Set<String> = [
+        "associatedtype", "class", "deinit", "enum", "extension", "fileprivate", "func", "import", "init", "inout", "internal", "let",
+        "operator", "private", "precedencegroup", "protocol", "public", "rethrows", "static", "struct", "subscript", "typealias", "var",
+        "break", "case", "catch", "continue", "default", "defer", "do", "else", "fallthrough", "for", "guard", "if", "in", "repeat",
+        "return", "throw", "switch", "where", "while", "Any", "as", "await", "false", "is", "nil", "self", "Self", "super", "throws",
+        "true", "try",
+    ]
+    /// Every ASCII word a pinned text spells, a reserved one aside: what a
+    /// pinned line calls, names a type by, or passes.
+    static let pinnedNames: Set<String> = Set(pinnedTexts.flatMap { RecordPath.matches(#"[A-Za-z_][A-Za-z0-9_]*"#, in: $0) })
+        .subtracting(reservedWords)
+
+    /// The modules `sources` import (each import's first path name, a kind
+    /// before it skipped), the four targets themselves, and `Swift`.
+    static func moduleNames(_ sources: Sources) -> Set<String> {
+        var names: Set<String> = ["Swift"]
+        names.formUnion(ApprovalChannelStructureTests.directories.map { String($0.split(separator: "/").last ?? "") })
+        let pattern: String = #"\bimport"# + RecordPath.gap + #"+(?:(?:typealias|struct|class|enum|protocol|let|var|func)"#
+            + RecordPath.gap + #"+)?[A-Za-z_][A-Za-z0-9_]*"#
+        for (_, text) in sources {
+            for copy in LidGuardStructureTests.constructorScanCopies(text) {
+                for match in RecordPath.matches(pattern, in: copy) {
+                    if let last = asciiWords(match).last { names.insert(last) }
+                }
+            }
+        }
+        return names
+    }
+
+    /// `text`'s ASCII words, in order.
+    static func asciiWords(_ text: String) -> [String] {
+        text.split(whereSeparator: { !($0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_")) }).map(String.init)
+    }
+
+    /// A type's declaration: its word, then its name, however the gap
+    /// between is spelled.
+    static let typeDeclarationPattern: String =
+        #"\b(?:struct|enum|class|actor|protocol|typealias|associatedtype)"# + RecordPath.gap + #"+[A-Za-z_][A-Za-z0-9_]*\b"#
+
+    /// In `text`, every type declared with a name in `names`, as its word and
+    /// its name, with how many.
+    static func borrowedDeclarations(_ text: String, _ names: Set<String>) -> [String: Int] {
+        var tally: [String: Int] = [:]
+        for match in RecordPath.matches(typeDeclarationPattern, in: text) {
+            let words: [String] = asciiWords(match)
+            guard let word = words.first, let name = words.last, names.contains(name) else { continue }
+            tally[word + " " + name, default: 0] += 1
+        }
+        return tally
+    }
+
+    /// Today's declarations of a name `pinnedNames` or the modules hold, by
+    /// file: each the type's own declaration (seventy), none borrowing an
+    /// imported name.
+    static let homeDeclarations: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.intakeFile: ["class ApprovalIntake": 1, "protocol ApprovalRecordSink": 1, "typealias ConnectionKey": 1],
+        ApprovalChannelStructureTests.hostFile: ["struct Limits": 1],
+        "ChargeLimiter.swift": ["enum ChargeLimitFeatureState": 1],
+        RecordPath.recordPathFile: ["enum ApprovalRecordOutcome": 1, "protocol GateApprovedPrompt": 1],
+        verifierFile: [
+            "enum DecisionUnverifiedReason": 1, "enum DecisionVerification": 1, "enum DecisionVerifier": 1, "enum DecisionVerifierLog": 1,
+            "struct Claimed": 1, "struct DecisionEvidence": 1, "struct DecisionVerifierAudit": 1, "struct ForwardedCopy": 1],
+        "FinishAlertController.swift": ["protocol FinishAlertConfigSource": 1],
+        "HysteresisEngine.swift": ["enum HysteresisEngine": 1],
+        "KeychainTopicStore.swift": ["struct KeychainTopicStore": 1],
+        "LidGuardController.swift": ["class LidGuardController": 1, "struct LidGuardBusySample": 1, "typealias ClaudeBusyProvider": 1],
+        "LidGuardPolicy.swift": [
+            "enum LidGuardArmingState": 1, "enum LidGuardGateDecision": 1, "enum LidGuardPolicy": 1, "struct LidGuardGateInputs": 1,
+            "struct WaitingPromptCounts": 1],
+        "MenuStateModel.swift": ["class MenuStateModel": 1, "enum PanelSeverity": 1, "struct PanelLine": 1],
+        PairingStructureTests.slotFile: ["enum PairedPhoneRead": 1, "struct PairedKeyStore": 1],
+        PairingStructureTests.ceremonyFile: ["enum PairingEvent": 1, "struct PairingCandidate": 1, "struct PairingCeremonyState": 1],
+        PairingStructureTests.controllerFile: ["enum PairingPaneState": 1],
+        PairingStructureTests.sheetFile: ["struct PairingSheetContent": 1, "struct QRCodeView": 1],
+        "SettingsContent.swift": ["enum SettingsPane": 1, "enum SettingsRow": 1, "struct SettingsPaneContent": 1],
+        "UpdateVersion.swift": ["struct ReleaseVersion": 1],
+        ApprovalChannelStructureTests.seamFile: [
+            "class SeamConnection": 1, "class SeamListener": 1, "enum SeamPeerPolicy": 1, "enum SeamSocket": 1, "struct SeamPeer": 1],
+        ApprovalChannelStructureTests.relayFile: ["enum ChannelNote": 1, "protocol ChannelLink": 1, "typealias Connector": 1],
+        "ApprovalChannel.swift": [
+            "enum ApprovalChannel": 1, "enum ChannelErrorCode": 1, "enum ChannelMessage": 1, "enum ChannelMessageID": 1, "enum SeamFrame": 1,
+            "struct ChannelClient": 1, "struct ChannelPermissionRequest": 1, "struct ChannelRequestID": 1],
+        "ApprovalClassification.swift": ["enum ApprovalClassification": 1, "enum ApprovalGate": 1, "enum ApprovalTool": 1],
+        "ApprovalPreview.swift": ["enum PreviewValue": 1, "struct PreviewMember": 1],
+        "ApprovalSigning.swift": ["enum ApprovalSigning": 1],
+        declaringFile: [
+            "enum ApprovalEvent": 1, "struct ApprovalDecision": 1, "struct ApprovalLifecycle": 1, "struct ApprovalTransition": 1,
+            "struct PromptID": 1],
+        "ApprovalWire.swift": ["enum ApprovalWire": 1, "enum Verdict": 1],
+    ]
+
+    /// `sources`: `uncutSources()`. In every scan copy of every file.
+    static func borrowedNameFailures(_ sources: Sources) -> [String] {
+        let names: Set<String> = pinnedNames.union(moduleNames(sources)).subtracting(reservedWords)
+        var failures: [String] = absent(homeDeclarations.keys, in: sources)
+        for (file, text) in sources {
+            let allowed: [String: Int] = homeDeclarations[file] ?? [:]
+            for copy in LidGuardStructureTests.constructorScanCopies(text) {
+                let found: [String: Int] = borrowedDeclarations(copy, names)
+                if found == allowed { continue }
+                let off: [String] = found.filter { allowed[$0.key] != $0.value }.map { "\($0.value)× \($0.key)" }.sorted()
+                let gone: [String] = allowed.filter { found[$0.key] != $0.value }.map { $0.key }.sorted()
+                failures.append("no type in \(file) is declared with a name a pinned line spells, or a module's, but today's — a new one "
+                                + "takes that line over: off the list \(off); moved or gone \(gone)")
+            }
+        }
+        return unique(failures)
+    }
+
+    /// A type named like the imported one the seam's pinned descriptor lines
+    /// call, in a new seam file.
+    static let borrowedSource: String = """
+        import Dispatch
+
+        enum DispatchSource {}
+
+        """
+    /// A file-private type named like the wire's channel enum, at the end of
+    /// the intake's file, whose whole-pinned `perform` calls that enum.
+    static let borrowedChannel: String = "\nprivate enum ApprovalChannel {}\n"
+
+    /// No type in the four targets is declared with a name a pinned line or
+    /// body spells, or with an imported module's, but at today's
+    /// declarations. A type named like an imported one the seam's pinned
+    /// lines call, in a new seam file, and a file-private type named like the
+    /// wire's channel enum at the end of the intake's file, are each caught
+    /// by this pin alone: every other pin of this suite reads each as the
+    /// tree.
+    @Test func noTypeBorrowsAPinnedName() throws {
+        let sources = try Self.uncutSources()
+        #expect(Self.borrowedNameFailures(sources).isEmpty, "\(Self.borrowedNameFailures(sources))")
+        // The names are read from the pins and the imports.
+        for name in ["ApprovalChannel", "PromptID", "DispatchSource", "SHA256", "P256", "Int32", "Sendable", "write", "read", "fcntl", "chmod"] {
+            #expect(Self.pinnedNames.contains(name), "vacuity: '\(name)' is spelled on a pinned line")
+        }
+        let modules: Set<String> = Self.moduleNames(sources)
+        for name in ["Darwin", "Dispatch", "Foundation", "CryptoKit", "NapCat", "NapCatWire", "NapCatSeam", "NapCatChannel", "Swift"] {
+            #expect(modules.contains(name), "vacuity: '\(name)' is an imported module")
+        }
+        // Every home is a type's own: seventy, none named like a module or
+        // like the imported types the pinned lines call.
+        let homes: [String] = Self.homeDeclarations.values.flatMap { $0.keys }
+        #expect(homes.count == 70 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
+        let imported: Set<String> = modules.union(["DispatchSource", "DispatchQueue", "P256", "SHA256", "Int32", "Sendable", "Equatable"])
+        #expect(homes.allSatisfy { !imported.contains(Self.asciiWords($0).last ?? "") }, "a home borrows an imported name: \(homes.sorted())")
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        let reviewed: [(String, Sources)] = [
+            ("a type named like an imported one the seam's pinned lines call, in a new seam file",
+             Self.adding(sources, "ZZSources.swift", Self.borrowedSource)),
+            ("a file-private type named like the wire's channel enum, at the end of the intake's file",
+             Self.mutate(sources, intake) { $0 + Self.borrowedChannel }),
+        ]
+        let baseline: [String: [String]] = Self.pinBaseline(sources)
+        for (name, planted) in reviewed {
+            #expect(!Self.borrowedNameFailures(planted).isEmpty, "\(name) was NOT caught by the borrowed-name pin")
+            let others: [String] = Self.othersCatching(planted, besides: "borrowed names", baseline: baseline)
+            #expect(others.isEmpty, "\(name) is the borrowed-name pin's to catch, but \(others) caught it too")
+        }
+        // More canaries: a type nested in the host, an alias, a lowercase
+        // type named like a C call a pinned line makes, a type named like an
+        // imported module, one of the four or the standard library, a module
+        // the plant imports itself, a protocol named like a pinned
+        // conformance, a second wire type, an associated type, an actor, a
+        // local type, and the name backticked, behind a block comment, on the
+        // next line or behind a trailing comment.
+        let appended: (String, String) -> Sources = { file, text in Self.mutate(sources, file) { $0.appending(text) } }
+        let app: String = "NapCatApp.swift"
+        let host: String = ApprovalChannelStructureTests.hostFile
+        let hostHead: String = "final class ApprovalSeamHost: @unchecked Sendable {\n"
+        #expect(Self.text(host, in: sources).contains(hostHead), "vacuity: the host's head is where its canary plants")
+        let mutants: [(String, Sources)] = [
+            ("a type nested in the host", Self.mutate(sources, host) {
+                $0.replacingOccurrences(of: hostHead, with: hostHead + "    private enum DispatchSource {}\n") }),
+            ("an alias named like an imported type", appended(app, "\ntypealias SHA256 = Int")),
+            ("a lowercase type named like a C call", Self.adding(sources, "ZZFcntl.swift", "import Darwin\n\nstruct fcntl {}\n")),
+            ("a type named like an imported module", Self.adding(sources, "ZZDarwin.swift", "enum Darwin {}\n")),
+            ("a type named like one of the four", appended(app, "\nenum NapCatWire {}")),
+            ("a type named like the standard library", appended(app, "\nenum Swift {}")),
+            ("a type named like a module the plant imports", Self.adding(sources, "ZZImport.swift", "import Accelerate\n\nenum Accelerate {}\n")),
+            ("a protocol named like a pinned conformance", appended("ApprovalWire.swift", "\nprotocol Sendable {}")),
+            ("a second wire type", appended(app, "\nstruct PromptID {}")),
+            ("an associated type", appended(app, "\nprotocol ZZ { associatedtype PromptID }")),
+            ("an actor", appended(app, "\nactor DispatchSource {}")),
+            ("a local type", appended(app, "\nstruct ZZ { func zz() { final class SHA256 {} } }")),
+            ("backticked", appended(app, "\nenum `DispatchSource` {}")),
+            ("behind a block comment", appended(app, "\nenum/* x */DispatchSource {}")),
+            ("its name on the next line", appended(app, "\nstruct\n    P256 {}")),
+            ("behind a trailing comment", appended(app, "\nclass // x\n    ApprovalChannel {}")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.borrowedNameFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: types whose names only contain a pinned one, a
+        // pinned name as a conformance, a member's type or a function, an
+        // extension (the extension pin's), words that only contain the
+        // declaration words, and a whole-line comment naming the canaries.
+        let controls: Sources = appended(app, [
+            "\nstruct DispatchSourceLog {}\nenum ZZApprovalChannel {}\nclass PromptIDCache {}",
+            "\nfinal class ZZ: Sendable { let source: DispatchSource? = nil; func fcntl() {}; class func zz() {}; class var zy: Int { 0 } }",
+            "\nenum ZY: Int32 { case write }\nextension PromptID {}",
+            "\nlet zzClass = 1, structure = 2, enumerated = 3, protocols = 4",
+            LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never enum DispatchSource {}, never private enum ApprovalChannel {}"),
+        ].joined())
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.borrowedNameFailures(controls).isEmpty, "over-match: \(Self.borrowedNameFailures(controls))")
+        // The declaration pattern bites through the lock's own engine.
+        for probe in ["enum /* x */ DispatchSource", "struct\n    fcntl", "associatedtype\tPromptID"] {
+            #expect(Self.hits(Self.typeDeclarationPattern, in: probe), "the pattern does not match '\(probe)'")
+        }
     }
 }
