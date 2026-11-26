@@ -33,7 +33,7 @@ let package = Package(
         // one source of truth both apps import.
         .library(name: "NapCatWire", targets: ["NapCatWire"]),
         // F4: the channel server Claude Code spawns for a wired session
-        // (slice S1). Built by `make`; not part of the app bundle yet.
+        // (slice S1). `make` bundles it as Contents/MacOS/napcat-channel.
         .executable(name: "napcat-channel", targets: ["NapCatChannel"]),
     ],
     targets: [
