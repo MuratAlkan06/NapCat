@@ -143,10 +143,12 @@ struct WireContractTests {
     /// the signatures stay in the apps; ApprovalSigningVectorTests pins it on
     /// both devices). S-PAIR-C1 (#168) added the pairing code's rendering
     /// (`PairingFingerprint.swift`: text assembly only — the digest stays in
-    /// the apps; PairingFingerprintVectorTests pins it on both devices).
+    /// the apps; PairingFingerprintVectorTests pins it on both devices). The
+    /// project label rule (`ApprovalProjectLabel.swift`) joined for the live
+    /// approval path: the caller reads the path, the rule only reads bytes.
     static let pureFiles = ["ApprovalChannel.swift", "ApprovalChannelPolicy.swift", "ApprovalClassification.swift",
-                            "ApprovalPreview.swift", "ApprovalSigning.swift", "ApprovalStateMachine.swift",
-                            "PairingFingerprint.swift"]
+                            "ApprovalPreview.swift", "ApprovalProjectLabel.swift", "ApprovalSigning.swift",
+                            "ApprovalStateMachine.swift", "PairingFingerprint.swift"]
 
     static func wireDirectory() -> URL {
         LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire")
