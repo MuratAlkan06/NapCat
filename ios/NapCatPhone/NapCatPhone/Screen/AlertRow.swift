@@ -51,8 +51,9 @@ struct AlertRow: View {
         return PhoneLine(text: "\(alert.lane.title), \(when). \(alert.body)", severity: alert.lane.severity).spoken
     }
 
-    /// "2 min. ago", "yesterday" (named where natural).
-    static func relative(_ date: Date, to now: Date, style: RelativeDateTimeFormatter.UnitsStyle) -> String {
+    /// "2 min. ago", "yesterday" (named where natural). Pure, so a waiting
+    /// prompt's row says its age in the same words (#194).
+    nonisolated static func relative(_ date: Date, to now: Date, style: RelativeDateTimeFormatter.UnitsStyle) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = style
         formatter.dateTimeStyle = .named
