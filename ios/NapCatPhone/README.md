@@ -274,7 +274,7 @@ this iPhone cannot answer one. A device build does this only while
    tapped prompt push, opens the prompt as a preview: the tool, the project
    and the input, with no answer on offer.
 
-The prompt push says "A permission prompt is waiting on your Mac." under
+The prompt push says "A permission prompt is waiting." under
 the title "NapCat", with the default sound: nothing of the prompt but its
 record's ID, which opens it, and no action. Switching **Prompts on This
 iPhone** off empties the list; it deletes the subscription only if the

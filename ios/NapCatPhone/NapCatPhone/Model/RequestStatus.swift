@@ -118,7 +118,7 @@ enum RequestStatus: Equatable, Sendable {
         case .expired:
             return PhoneLine(text: "Expired — only your Mac can answer it now", severity: .info)
         case .withdrawn:
-            return PhoneLine(text: "Withdrawn — your Mac took this prompt back", severity: .info)
+            return PhoneLine(text: "Withdrawn — this prompt was taken back", severity: .info)
         }
     }
 

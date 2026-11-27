@@ -1603,7 +1603,7 @@ import Testing
         ("promptKeys", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
             promptKeysHead: 1, "zone.desiredKeys = promptKeys": 1, "return keys.count == promptKeys.count && Set(keys) == Set(promptKeys)": 2]])),
         ("promptNotificationBody", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
-            "static let promptNotificationBody = \"A permission prompt is waiting on your Mac.\"": 1,
+            "static let promptNotificationBody = \"A permission prompt is waiting.\"": 1,
             "info.alertBody = promptNotificationBody": 1, "guard info.title == notificationTitle, info.alertBody == promptNotificationBody,": 1]])),
         ("promptSubscriptionID", CloudKitStructureTests.appSites(["Live/CloudKitAlertSource.swift": [
             "notification.subscriptionID == ApprovalWire.promptSubscriptionID,": 1, "subscriptionID: ApprovalWire.promptSubscriptionID,": 1,

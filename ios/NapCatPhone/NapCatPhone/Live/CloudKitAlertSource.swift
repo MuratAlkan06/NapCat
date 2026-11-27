@@ -551,7 +551,7 @@ actor CloudKitAlertSource: AlertSource {
 
     /// The prompt push's words: fixed, the same for every prompt. Nothing of
     /// a prompt reaches the push or the lock screen; the app shows it.
-    static let promptNotificationBody = "A permission prompt is waiting on your Mac."
+    static let promptNotificationBody = "A permission prompt is waiting."
 
     /// THE prompt subscription (#194), the phone's second: a query subscription
     /// on PromptRequest records in the approvals zone, TRUEPREDICATE, on
