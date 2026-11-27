@@ -672,9 +672,11 @@ actor CloudKitAlertSource: AlertSource {
 
     /// THE snapshot of the approvals zone (#194): every record it holds now (no
     /// change token), each with the prompt's six fields only. A prompt is
-    /// read as it arrives (`pendingRequest(from:)`) and every other record is
-    /// dropped unread. `then` hears once the prompts the Mac offers, or nil
-    /// when any part of the read failed: a failed read changes nothing.
+    /// read strictly as it arrives (`pendingRequest(from:)`), and every other
+    /// record is dropped once its type is checked: its name, and any of the
+    /// six fields it holds, cross with it and are never read. `then` hears
+    /// once the prompts the Mac offers, or nil when any part of the read
+    /// failed: a failed read changes nothing.
     static func makePromptSnapshot(then: @escaping @Sendable ([PendingRequest]?) -> Void) -> CKFetchRecordZoneChangesOperation {
         let zone = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
         zone.desiredKeys = promptKeys
@@ -981,7 +983,9 @@ private final class ZoneLookupResult: @unchecked Sendable {
 /// arrives, then says once what came in (#194): how many items arrived, the
 /// prompts among them (a snapshot's), or the first failure, an item's
 /// before the batch's (CloudKit can hand the batch a success for a refused
-/// item). A record that is no prompt is counted and dropped unread.
+/// item). A record that is no prompt arrives as nil, once
+/// `pendingRequest(from:)` has checked it: it is counted, and nothing of it
+/// is kept.
 private final class PromptResults: @unchecked Sendable {
     private let lock = NSLock()
     private var items = 0
