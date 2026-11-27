@@ -297,17 +297,26 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
 ## Network use and privacy
 
 NapCat has no telemetry and no account. It makes exactly three kinds of
-network request, and the code that may make them lives in three files
-(a structure test fails if a fourth file ever does):
+network request, and the code that may make them lives in four files: the
+ntfy sender, the update check and two CloudKit files (structure tests fail
+if any other file of the app's own sources names URL loading, or any other
+Mac source file imports CloudKit):
 
 - **ntfy** — only for the alerts you switched on (the lid alert, session
   alerts, and the catch-up summary after a dropped connection) and the test
   message you send: each is one HTTPS `POST` of one of NapCat's fixed
   sentences to the server and topic you configured. See
   [Notify me if the Mac sleeps mid-task](#notify-me-if-the-mac-sleeps-mid-task).
-- **iCloud** — only with **Phone alerts (beta)** on, in the signed release
-  build: one record in your own private iCloud database. See
-  [Phone alerts via iCloud](#phone-alerts-via-icloud-beta).
+- **iCloud** — only in a build signed with NapCat's iCloud entitlement, as
+  the release build is (a plain `make` build is not, and cannot reach
+  iCloud), and only for two things. With **Phone alerts (beta)** on: one
+  record per alert in your own private iCloud database (see
+  [Phone alerts via iCloud](#phone-alerts-via-icloud-beta)). And while you
+  pair an iPhone in **Settings › Claude**, whatever Phone alerts is set to:
+  the Mac looks up the iPhone's one pairing record by its name every few
+  seconds while the pairing is under way, and asks iCloud to delete it when
+  the pairing ends. A deletion that did not go through is tried again at
+  each later launch, until it does or you start a new pairing.
 - **The update check** — one unauthenticated HTTPS `GET` to `api.github.com`
   for this repository's latest release.
 
@@ -463,7 +472,11 @@ If you registered the remote approvals channel server, run
 registration from Claude Code, but only if it runs the NapCat channel server
 its receipt records, and deletes the receipt.
 Finally, once NapCat has quit, you can delete its state folder
-`~/Library/Application Support/NapCat` if you want nothing left behind.
+`~/Library/Application Support/NapCat` if you want nothing of NapCat's
+left on this Mac. What NapCat and the iPhone app saved in your iCloud
+(phone alert records; the approvals zone, any records in it and the iPhone
+app's push subscriptions) is not on this Mac, and none of these steps
+removes it.
 
 Manual equivalent:
 
@@ -823,7 +836,8 @@ It is a **beta** and it is **off by default**:
   exactly as before.
 - **iCloud delivery needs the signed and notarized release build** (the
   v1.6.0 disk image or later). A build you make yourself with `make` is ad-hoc
-  signed and cannot use iCloud. NapCat checks this at runtime and keeps sending
+  signed, without the iCloud entitlement, and cannot use iCloud. NapCat reads
+  its own entitlements at runtime and, without that one, keeps sending
   through ntfy; with Phone alerts on, the menu and **Settings › Alerts** say
   "Phone alerts: unavailable in this build — it is not signed for iCloud, so
   alerts go to ntfy".
