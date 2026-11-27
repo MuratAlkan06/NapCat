@@ -118,12 +118,15 @@ registered_command() {
 # this script registers: <bundle>/Contents/MacOS/napcat-channel exactly, where
 # <bundle> is an absolute path as `pwd -P` prints one (no empty, "." or ".."
 # component, no control character) and its own name ends in .app, after at
-# least one other character.
+# least one other character. Tested byte by byte, the same in every locale:
+# a control character is a byte below 0x20, DEL (0x7F), or a C1 control as
+# UTF-8 encodes it (C2 80 to C2 9F).
 is_napcat_helper() {
+    local LC_ALL=C
     local bundle="${1%/"$HELPER_IN_BUNDLE"}"
     [ "$bundle/$HELPER_IN_BUNDLE" = "$1" ] || return 1
     case "$bundle" in
-        *[[:cntrl:]]* | *//* | */./* | */../*) return 1 ;;
+        *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']* | *//* | */./* | */../*) return 1 ;;
         /*) ;;
         *) return 1 ;;
     esac

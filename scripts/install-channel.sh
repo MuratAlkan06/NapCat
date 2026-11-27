@@ -91,12 +91,15 @@ RECEIPT="$APPROVALS_DIR/channel-registration"
 # this script registers: <bundle>/Contents/MacOS/napcat-channel exactly, where
 # <bundle> is an absolute path as `pwd -P` prints one (no empty, "." or ".."
 # component, no control character) and its own name ends in .app, after at
-# least one other character.
+# least one other character. Tested byte by byte, the same in every locale:
+# a control character is a byte below 0x20, DEL (0x7F), or a C1 control as
+# UTF-8 encodes it (C2 80 to C2 9F).
 is_napcat_helper() {
+    local LC_ALL=C
     local bundle="${1%/"$HELPER_IN_BUNDLE"}"
     [ "$bundle/$HELPER_IN_BUNDLE" = "$1" ] || return 1
     case "$bundle" in
-        *[[:cntrl:]]* | *//* | */./* | */../*) return 1 ;;
+        *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']* | *//* | */./* | */../*) return 1 ;;
         /*) ;;
         *) return 1 ;;
     esac
@@ -132,10 +135,18 @@ fi
 # the control-character test below.
 APP="$(cd -P -- "$APP" && pwd -P && echo .)" || die "cannot resolve $APP."
 APP="${APP%??}"
+# Whether $1 holds a control character, tested byte by byte as
+# is_napcat_helper does, the same in every locale: a byte below 0x20, DEL
+# (0x7F), or a C1 control as UTF-8 encodes it (C2 80 to C2 9F).
+has_control_character() {
+    local LC_ALL=C
+    case "$1" in
+        *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) return 0 ;;
+    esac
+    return 1
+}
 # The path goes into Claude Code's configuration and a line of the receipt.
-case "$APP" in
-    *[[:cntrl:]]*) die "the bundle path contains a control character." ;;
-esac
+! has_control_character "$APP" || die "the bundle path contains a control character."
 HELPER="$APP/$HELPER_IN_BUNDLE"
 # So the registration is one that uninstall-channel.sh, and a later run of this
 # script, recognise as NapCat's.

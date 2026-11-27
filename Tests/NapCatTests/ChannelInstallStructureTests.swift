@@ -663,7 +663,7 @@ struct ChannelInstallStructureTests {
     static let installOrder = [
         "APP=\"$(cd -P -- \"$APP\" && pwd -P && echo .)\" || die \"cannot resolve $APP.\"",
         "APP=\"${APP%??}\"",
-        "*[[:cntrl:]]*) die \"the bundle path contains a control character.\" ;;",
+        "! has_control_character \"$APP\" || die \"the bundle path contains a control character.\"",
         "is_napcat_helper \"$HELPER\" || die \"$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered.\"",
         "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict. Nothing was registered.\"",
         "grep -qxF \"Identifier=$CHANNEL_IDENTIFIER\" <<< \"$HELPER_SIGNATURE\" \\",
