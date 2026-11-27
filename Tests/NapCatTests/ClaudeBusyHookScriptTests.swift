@@ -2873,11 +2873,22 @@ struct ClaudeBusyHookScriptTests {
     ///  4. An ALLOW list over the check's two functions, command
     ///     substitutions included (`allowListCheck`): every command is a
     ///     keyword or builtin from an explicit list, and only
-    ///     `final_message_check` may also run `plutil` with `-o -`,
-    ///     `/usr/bin/tail -c N` and `/usr/bin/tr`, and call `tail_asks`.
-    ///     No here-document or here-string, no redirect but to /dev/null,
-    ///     no backtick, and no variable holding message text is ever a word
-    ///     of one of those three commands.
+    ///     `final_message_check` may also run `plutil -extract` with
+    ///     exactly one `-o -`, `/usr/bin/tail -c N` and `/usr/bin/tr`, and
+    ///     call `tail_asks`. No here-document or here-string, no redirect
+    ///     but to /dev/null, no backtick, no word naming `BASH_REMATCH` or
+    ///     holding `${!` (a regex capture, an indirect expansion), and no
+    ///     word of those three commands expands a name taken to hold
+    ///     message text: `$_`, `tail_asks`' arguments, and any name
+    ///     assigned from one of those or from a read of the field. The
+    ///     lint reads a body up to its first line that is exactly `}`, so
+    ///     each function is defined exactly once (`definitionCount`) and
+    ///     the `{` and `}` words of its body balance (`bracesBalance`):
+    ///     the body read is the whole function.
+    /// Limit: the allow list reads those two functions only. A copy of the
+    /// payload or the message made by code outside them (in `main()`, say)
+    /// to a place outside the test HOME is caught neither by this lint nor
+    /// by the privacy sweep, which reads the test HOME only.
     static func finalMessageCheckFailures(_ script: String) -> [String] {
         let code = script.split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -2927,6 +2938,13 @@ struct ClaudeBusyHookScriptTests {
             failures.append("the keep branch or the check line is missing from main")
         }
 
+        for (name, body) in [("final_message_check", check), ("tail_asks", judge)] {
+            let defined = definitionCount(name, in: script)
+            if defined != 1 { failures.append("\(name) must be defined exactly once, got \(defined) definitions") }
+            if !bracesBalance(body.joined(separator: "\n")) {
+                failures.append("the braces in \(name)'s body do not balance (the body read is not the whole function)")
+            }
+        }
         let tools = allowListCheck(check.joined(separator: "\n"), in: "final_message_check", mayRunTools: true,
                                    tainted: [])
         let judging = allowListCheck(judge.joined(separator: "\n"), in: "tail_asks", mayRunTools: false,
@@ -3112,20 +3130,66 @@ struct ClaudeBusyHookScriptTests {
         return names
     }
 
+    /// How many times `script` defines the shell function `name`: each
+    /// `name()` (spaces allowed before and inside the parentheses) or
+    /// `function name` on a code line, at its start or after any character
+    /// that cannot be part of a name. Comment lines are skipped; a code line
+    /// ending in a backslash is read with the next one, as bash reads it.
+    nonisolated static func definitionCount(_ name: String, in script: String) -> Int {
+        var code: [String] = [], joining = false
+        for raw in script.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if joining {
+                code[code.count - 1] = String(code[code.count - 1].dropLast()) + line
+            } else if line.hasPrefix("#") {
+                continue
+            } else {
+                code.append(line)
+            }
+            joining = code[code.count - 1].hasSuffix("\\")
+        }
+        let n = NSRegularExpression.escapedPattern(for: name)
+        guard let definition = try? NSRegularExpression(
+            pattern: #"(^|[^A-Za-z0-9_])(function[ \t]+"# + n + #"([^A-Za-z0-9_]|$)|"# + n + #"[ \t]*\([ \t]*\))"#)
+        else { return 0 }
+        return code.reduce(0) { $0 + definition.numberOfMatches(in: $1, range: NSRange($1.startIndex..., in: $1)) }
+    }
+
+    /// Whether the standalone `{` and `}` words of `text` pair up: never
+    /// more `}` than `{` so far, and as many of each in all. Text it cannot
+    /// split counts as balanced (`allowListCheck` reports it).
+    nonisolated static func bracesBalance(_ text: String) -> Bool {
+        var depth = 0
+        for token in shellTokens(text) ?? [] {
+            if token == .word("{") { depth += 1 }
+            if token == .word("}") {
+                depth -= 1
+                if depth < 0 { return false }
+            }
+        }
+        return depth == 0
+    }
+
     /// The allow-list rule (4. above) over `text`: a function body, or the
     /// inside of a command substitution in one. `tainted` names hold message
-    /// text; so does any name assigned from one of them, or from a read of
-    /// `last_assistant_message`. Returns the failures and the external
-    /// commands it saw, in order.
+    /// text; so does `_` (`$_`, the last argument of the command before, can
+    /// be a copy of it), and any name assigned from one of them or from a
+    /// read of `last_assistant_message`. A word naming `BASH_REMATCH` or
+    /// holding `${!` fails wherever it stands: a regex capture or an
+    /// indirect expansion copies text without assigning it. Returns the
+    /// failures and the external commands it saw, in order.
     nonisolated static func allowListCheck(_ text: String, in name: String, mayRunTools: Bool,
                                            tainted seeds: Set<String>) -> (failures: [String], ran: [String]) {
         guard let tokens = shellTokens(text) else {
             return (["\(name) cannot be read (an unclosed quote or substitution)"], [])
         }
         var failures: [String] = [], ran: [String] = []
-        var tainted = seeds
+        var tainted = seeds.union(["_"])
         let allWords = tokens.compactMap { token -> String? in
             if case .word(let w) = token { return w } else { return nil }
+        }
+        for w in allWords where w.contains("BASH_REMATCH") || w.contains("${!") {
+            failures.append("a regex capture or indirect expansion in \(name): \(w)")
         }
         var grew = true
         while grew {
@@ -3214,6 +3278,9 @@ struct ClaudeBusyHookScriptTests {
                 }
                 for w in assignments + args where expands(w, anyOf: tainted) {
                     failures.append("message text reaches \(command) in \(name): \(w)")
+                }
+                if command == "plutil", args.first != "-extract" {
+                    failures.append("plutil other than `plutil -extract` in \(name): \(args)")
                 }
                 if command == "plutil", args.filter({ $0 == "-o" }).count != 1
                     || args.firstIndex(of: "-o").map({ $0 + 1 < args.count && args[$0 + 1] == "-" }) != true {
@@ -3314,7 +3381,12 @@ struct ClaudeBusyHookScriptTests {
     /// Canaries for the allow list (rule 4): each mutant must be caught BY
     /// that rule, with the failure it names. The first two are leaks a ban
     /// list let through: a copy of the whole payload out of the hook's
-    /// folder, and message bytes in a file NAME.
+    /// folder, and message bytes in a file NAME. The last seven are leaks
+    /// the allow list itself first let through: message bytes copied by a
+    /// regex capture, an indirect expansion or `$_`, a file `plutil -create`
+    /// writes despite `-o -`, a second definition (bash runs the last one,
+    /// the lint reads the first), and a `}` at the start of a line that
+    /// ends the body the lint reads while the function goes on.
     @Test func theAllowListCatchesWhatABanListMissed() throws {
         let original = try Self.read(Self.hookScriptURL)
         try #require(Self.finalMessageCheckFailures(original).isEmpty, "canary baseline must be clean")
@@ -3376,6 +3448,29 @@ struct ClaudeBusyHookScriptTests {
                 $0.replacingOccurrences(of: #"| /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C"#,
                                         with: #"| /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C TZ=x"#)
             }, "a prefix assignment on /usr/bin/tr in final_message_check"),
+            ("message bytes in a file name through a regex capture",
+             beforeJudged(#"  [[ $t =~ ([A-Z]{8}) ]] && plutil -create xml1 -o - "/private/tmp/napcat-x-${BASH_REMATCH[1]}" >/dev/null 2>&1"#),
+             "a regex capture or indirect expansion in final_message_check"),
+            ("message bytes in a file name through an indirect expansion",
+             beforeJudged("  n=t\n  u=${!n}\n" + #"  plutil -create xml1 -o - "/private/tmp/napcat-x-${u: -8}" >/dev/null 2>&1"#),
+             "a regex capture or indirect expansion in final_message_check"),
+            ("the message through the last argument", beforeJudged("  : \"$t\"\n" + #"  /usr/bin/tr "${_: -8}" x >/dev/null"#),
+             "message text reaches /usr/bin/tr in final_message_check"),
+            ("plutil creating a file despite -o -",
+             beforeJudged(#"  plutil -create xml1 -o - "/private/tmp/napcat-created" >/dev/null 2>&1"#),
+             "plutil other than `plutil -extract` in final_message_check"),
+            ("a second, leaky definition of the judgement", {
+                $0.replacingOccurrences(of: "\nmain() {\n", with: "\ntail_asks() {\n"
+                    + #"  printf '%s' "$1" >"/private/tmp/napcat-judged""# + "\n  printf no\n}\n\nmain() {\n")
+            }, "tail_asks must be defined exactly once"),
+            ("a second definition of the check, with the keyword", {
+                $0.replacingOccurrences(of: "\nmain() {\n", with: "\n"
+                    + #"function final_message_check { /bin/cp "$1" /private/tmp/napcat-payload-copy; }"# + "\n\nmain() {\n")
+            }, "final_message_check must be defined exactly once"),
+            ("a } at the start of a line ending the body read early", {
+                $0.replacingOccurrences(of: judged, with: judged + "  { :\n}\n"
+                    + #"  /bin/cp "$1" /private/tmp/napcat-payload-copy 2>/dev/null"# + "\n")
+            }, "the braces in final_message_check's body do not balance"),
         ]
         for (name, transform, caughtAs) in mutants {
             let mutant = transform(original)
