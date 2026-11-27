@@ -680,6 +680,16 @@ struct ApprovalIntakeTests {
         #expect(later.newPrompts == 1 && later.newPromptsWithEvidence == 0)
     }
 
+    /// The new-prompt window by value, which the tests above read by name: 10
+    /// seconds, and its line in the intake as written, once.
+    @Test func theNewPromptWindowIsTenSeconds() throws {
+        #expect(ApprovalIntake.newPromptSeconds == 10)
+        let constant: String = "    static let newPromptSeconds = 10\n"
+        let intake: String = DecisionSinkStructureTests.text(ApprovalChannelStructureTests.intakeFile,
+                                                             in: try DecisionSinkStructureTests.uncutSources())
+        #expect(ApprovalChannelStructureTests.count(constant, in: intake) == 1, "the constant's line, once")
+    }
+
     /// What crosses from the seam to the alert lane, by shape: tool kinds,
     /// counts and the mark, which holds two Ints (the intake's clock and how
     /// many prompts of that second the read saw), never a prompt ID, preview

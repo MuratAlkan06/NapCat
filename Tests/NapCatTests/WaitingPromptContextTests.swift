@@ -920,4 +920,107 @@ struct WaitingPromptContextTests {
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
         #expect(Self.findingFailures(controls).isEmpty, "over-match: \(Self.findingFailures(controls))")
     }
+
+    // MARK: - The alert lane's evidence, at today's sites (#216)
+
+    /// Where the alert lane's evidence and its reads of the seam are named
+    /// in the four targets, line by line: the evidence counts at their
+    /// declarations, in the intake's one read that fills them, in the
+    /// toggle's one construction of the context and in the policy's rule and
+    /// fold; the context built there and as `.none`, alone; and the lane's
+    /// closure, stored, called as it arms and for a diff, its one fold call,
+    /// the toggle's read it is handed and the app's one closure line. So a
+    /// second construction, another read, or a closure that hands the lane a
+    /// context of its own fails. (An implicit `.init(` builds a context
+    /// unnamed; one that carries evidence still names the counts.)
+    static let laneSites: [(pattern: String, allowed: [String: [String: Int]], rule: String)] = [
+        (#"\bnewPromptsWithEvidence\b|\bcountsWithEvidence\b"#, [
+            ApprovalChannelStructureTests.intakeFile: [
+                "let newPromptsWithEvidence: Int": 1,
+                "newPrompts: relayed.count + rest, newPromptsWithEvidence: relayed.filter(\\.hasPushEvidence).count,": 1],
+            FinishAlertStructureTests.policyFile: [
+                "var countsWithEvidence = WaitingPromptCounts.none": 1, "var newPromptsWithEvidence = 0": 1,
+                "newPromptsWithEvidence: Int) -> Bool {": 1, "waitingWrites == 1 && newPrompts == 1 && newPromptsWithEvidence == 1": 1,
+                "let prompts: WaitingPromptCounts = promptsWithoutEvidence(context.counts, withEvidence: context.countsWithEvidence)": 1,
+                "newPromptsWithEvidence: context.newPromptsWithEvidence) else {": 2],
+            ApprovalChannelStructureTests.toggleFile: [
+                "countsWithEvidence: WaitingPromptCounts(prompts.recentWithEvidence),": 1,
+                "newPrompts: prompts.newPrompts, newPromptsWithEvidence: prompts.newPromptsWithEvidence)": 2]],
+         "the evidence counts are named at their declarations, the intake's read, the toggle's construction and the policy's rule and fold alone"),
+        (ApprovalRecordPathStructureTests.constructionPattern("WaitingPromptContext"), [
+            FinishAlertStructureTests.policyFile: ["static let none = WaitingPromptContext()": 1],
+            ApprovalChannelStructureTests.toggleFile: ["return WaitingPromptContext(counts: WaitingPromptCounts(prompts.recent),": 1]],
+         "the context is built by the toggle's one read, and as `.none`, alone"),
+        (#"\bwaitingPrompts\b|\bpromptPushFold\b"#, [
+            FinishAlertStructureTests.controllerFile: [
+                "private let waitingPrompts: () -> WaitingPromptContext": 1,
+                "waitingPrompts: @escaping () -> WaitingPromptContext = { .none }": 2, "self.waitingPrompts = waitingPrompts": 2,
+                "waitingPrompts: waitingPrompts": 2, "_ = waitingPrompts()": 1,
+                "let context: WaitingPromptContext = observation.waitingWrites > 0 ? waitingPrompts() : .none": 1,
+                "let fold = FinishAlertPolicy.promptPushFold(events: observation.events, waitingWrites: observation.waitingWrites,": 1],
+            FinishAlertStructureTests.policyFile: [
+                "static func promptPushFold(events: [FinishAlertEvent], waitingWrites: Int, context: WaitingPromptContext)": 1],
+            ApprovalChannelStructureTests.toggleFile: ["func waitingPrompts() -> WaitingPromptContext {": 1],
+            "NapCatApp.swift": ["waitingPrompts: { approvals?.waitingPrompts() ?? .none }": 2]],
+         "the lane's closure is stored, called and folded at today's sites, and the app hands it the toggle's read alone"),
+    ]
+
+    static func laneFailures(_ sources: ApprovalChannelStructureTests.Sources) -> [String] {
+        laneSites.flatMap { site in
+            DecisionSinkStructureTests.absent(site.allowed.keys, in: sources)
+                + PairingStructureTests.appSiteFailures(site.pattern, in: sources, allowed: site.allowed, rule: site.rule)
+        }
+    }
+
+    @Test func theAlertLanesEvidenceIsNamedAtTodaysSitesAlone() throws {
+        let sources = try DecisionSinkStructureTests.uncutSources()
+        #expect(Self.laneFailures(sources).isEmpty, "\(Self.laneFailures(sources))")
+        let controller: String = FinishAlertStructureTests.controllerFile
+        let toggle: String = ApprovalChannelStructureTests.toggleFile
+        let app: String = "NapCatApp.swift"
+        let diffRead: String = "let context: WaitingPromptContext = observation.waitingWrites > 0 ? waitingPrompts() : .none"
+        let closure: String = "waitingPrompts: { approvals?.waitingPrompts() ?? .none }"
+        let built: String = "        return WaitingPromptContext(counts: WaitingPromptCounts(prompts.recent),\n"
+        let armRead: String = "        _ = waitingPrompts()\n"
+        for (file, anchor) in [(controller, diffRead), (controller, armRead), (app, closure), (toggle, built)] {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: DecisionSinkStructureTests.text(file, in: sources)) == 1,
+                    "vacuity: '\(anchor.prefix(50))' is in \(file) once")
+        }
+        let covered: String = "WaitingPromptContext(counts: .none, countsWithEvidence: .none, newPrompts: 1, newPromptsWithEvidence: 1)"
+        let mutants: [(String, ApprovalChannelStructureTests.Sources)] = [
+            ("a second construction, with evidence, in the controller's read", DecisionSinkStructureTests.mutate(sources, controller) {
+                $0.replacingOccurrences(of: diffRead,
+                                        with: "let context: WaitingPromptContext = observation.waitingWrites > 0 ? " + covered + " : .none") }),
+            ("a second construction naming no evidence, in a new file", DecisionSinkStructureTests.adding(sources, "ZZContext.swift",
+                "func zz() -> WaitingPromptContext { WaitingPromptContext(newPrompts: 1) }\n")),
+            ("a second construction in the toggle", DecisionSinkStructureTests.mutate(sources, toggle) {
+                $0.replacingOccurrences(of: built, with: "        _ = WaitingPromptContext(newPrompts: 0)\n" + built) }),
+            ("the app's closure replaced by a constant context", DecisionSinkStructureTests.mutate(sources, app) {
+                $0.replacingOccurrences(of: closure, with: "waitingPrompts: { " + covered + " }") }),
+            ("the app's closure replaced by an implicit context with evidence", DecisionSinkStructureTests.mutate(sources, app) {
+                $0.replacingOccurrences(of: closure, with: "waitingPrompts: { .init(newPrompts: 1, newPromptsWithEvidence: 1) }") }),
+            ("the app's closure replaced by `.none`", DecisionSinkStructureTests.mutate(sources, app) {
+                $0.replacingOccurrences(of: closure, with: "waitingPrompts: { .none }") }),
+            ("evidence set on a copy of `.none`", DecisionSinkStructureTests.mutate(sources, toggle) {
+                $0 + "\nfunc zz() -> WaitingPromptContext { var c = WaitingPromptContext.none; c.newPromptsWithEvidence = 1; return c }" }),
+            ("evidence named through a key path, in a new file", DecisionSinkStructureTests.adding(sources, "ZZKeyPath.swift",
+                "let zz = \\WaitingPromptContext.countsWithEvidence\n")),
+            ("a second read of the seam as the lane arms", DecisionSinkStructureTests.mutate(sources, controller) {
+                $0.replacingOccurrences(of: armRead, with: armRead + armRead) }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.laneFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned ones, a
+        // type named like the context and built, and a whole-line comment
+        // naming them.
+        let controls = DecisionSinkStructureTests.mutate(sources, toggle) {
+            $0 + "\nlet newPromptsWithEvidenceCount = 0, recountsWithEvidence = 1, waitingPromptsRead = 2"
+                + "\nstruct WaitingPromptContextLog {}\nlet zzLog = WaitingPromptContextLog()"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never waitingPrompts: { .none }, never WaitingPromptContext(newPrompts: 1)")
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.laneFailures(controls).isEmpty, "over-match: \(Self.laneFailures(controls))")
+    }
 }
