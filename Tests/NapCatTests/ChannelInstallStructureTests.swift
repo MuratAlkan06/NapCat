@@ -238,6 +238,57 @@ struct ChannelInstallStructureTests {
         #expect(!Self.identifierFailures(files, expected: drifted).isEmpty, "the app's bundle identifier moved alone")
     }
 
+    // MARK: - One team, the release's (#193)
+
+    static let entitlementsPath = "Resources/NapCat.entitlements"
+    static let teamPrefix = "TEAM_IDENTIFIER=\""
+    static let teamRequirement =
+        "TEAM_REQUIREMENT=\"anchor apple generic and certificate leaf[subject.OU] = \\\"$TEAM_IDENTIFIER\\\"\""
+
+    /// Every violation: the installer defines the team once, as `expected`
+    /// (the team the release is signed for), spells it nowhere else, and
+    /// builds its Apple-anchored requirement from that one definition.
+    static func teamFailures(install: String, expected: String) -> [String] {
+        var failures: [String] = []
+        let defining = lines(install).filter { $0.hasPrefix(teamPrefix) }
+        if defining != [teamPrefix + expected + "\""] {
+            failures.append("install-channel.sh must define the team once as \(expected): \(defining)")
+        }
+        if count(expected, in: install) != 1 {
+            failures.append("install-channel.sh spells \(expected) \(count(expected, in: install)) times; use the variable")
+        }
+        if codeLines(install).filter({ $0 == teamRequirement }).count != 1 {
+            failures.append("install-channel.sh must build its requirement once as \(teamRequirement)")
+        }
+        return failures
+    }
+
+    /// The installer's team is the one the committed entitlements name (the
+    /// release's Developer ID team). Canaries: a drift on either side, a
+    /// second copy, and a requirement that spells the team itself or drops
+    /// its Apple anchor.
+    @Test func theInstallerPinsTheTeamTheReleaseIsSignedFor() throws {
+        let entitlements = try PropertyListSerialization.propertyList(
+            from: Data(try Self.read(Self.entitlementsPath).utf8), format: nil) as? [String: Any]
+        let team = try #require(entitlements?["com.apple.developer.team-identifier"] as? String)
+        let install = try Self.read(Self.installPath)
+        let failures = Self.teamFailures(install: install, expected: team)
+        #expect(failures.isEmpty, "\(failures)")
+        let drifted = "ABCDE12345"
+        #expect(!Self.teamFailures(install: install, expected: drifted).isEmpty, "the entitlements' team moved alone")
+        let mutants: [(String, String)] = [
+            ("the installer's team drifted", install.replacingOccurrences(of: Self.teamPrefix + team, with: Self.teamPrefix + drifted)),
+            ("a second copy", install.replacingOccurrences(of: "\nexit 0\n", with: "\n# signed for \(team)\nexit 0\n")),
+            ("the requirement spells the team", install.replacingOccurrences(
+                of: "= \\\"$TEAM_IDENTIFIER\\\"\"", with: "= \\\"\(team)\\\"\"")),
+            ("the requirement drops its anchor", install.replacingOccurrences(of: "\"anchor apple generic and ", with: "\"")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != install, "canary setup '\(name)': target text must exist")
+            #expect(!Self.teamFailures(install: mutant, expected: team).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - Info.plist names the server's version
 
     static let versionKey = "NapCatChannelVersion"
@@ -603,6 +654,10 @@ struct ChannelInstallStructureTests {
         "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict. Nothing was registered.\"",
         "grep -qxF \"Identifier=$CHANNEL_IDENTIFIER\" <<< \"$HELPER_SIGNATURE\" \\",
         "codesign --verify --strict \"$APP\" || die \"$APP fails codesign --verify --strict. Nothing was registered.\"",
+        "[ \"$HELPER_TEAM\" = \"$APP_TEAM\" ] \\",
+        "[ \"$APP_TEAM\" = \"$TEAM_IDENTIFIER\" ] \\",
+        "codesign --verify --strict -R \"=identifier \\\"$CHANNEL_IDENTIFIER\\\" and $TEAM_REQUIREMENT\" \"$HELPER\" \\",
+        "codesign --verify --strict -R \"=identifier \\\"$BUNDLE_IDENTIFIER\\\" and $TEAM_REQUIREMENT\" \"$APP\" \\",
         "FOUND_BUNDLE_IDENTIFIER=\"$(plutil -extract CFBundleIdentifier raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || FOUND_BUNDLE_IDENTIFIER=\"\"",
         "CHANNEL_VERSION=\"$(plutil -extract NapCatChannelVersion raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || CHANNEL_VERSION=\"\"",
         "CURRENT=\"$(registered_command)\" || CURRENT=\"\"",
@@ -652,27 +707,47 @@ struct ChannelInstallStructureTests {
         #expect(failures.isEmpty, "\(failures)")
     }
 
+    /// The one step of `installOrder` that starts with `prefix`.
+    static func step(_ prefix: String) -> String {
+        let steps = installOrder.filter { $0.hasPrefix(prefix) }
+        return steps.count == 1 ? steps[0] : "<\(steps.count) steps start with \(prefix)>"
+    }
+
     /// Canaries: the helper's verification dropped, the Info.plist read
-    /// before the seal is checked, each receipt guard or the receipt's mode
-    /// dropped, the receipt written before the registration, the flag line
-    /// dropped; and an unguarded or a second removal, a folder removed, or
-    /// the receipt's symlink guard dropped.
+    /// before the seal is checked, each team check dropped or moved past the
+    /// registration, each receipt guard or the receipt's mode dropped, the
+    /// receipt written before the registration, the flag line dropped; and
+    /// an unguarded or a second removal, a folder removed, or the receipt's
+    /// symlink guard dropped.
     @Test func theStepLockCatchesRegressionMutants() throws {
         let install = try Self.read(Self.installPath)
         let uninstall = try Self.read(Self.uninstallPath)
         try #require(Self.stepFailures(install: install, uninstall: uninstall).isEmpty, "canary baseline must be clean")
-        let verify = Self.installOrder[0] + "\n"
-        let plistRead = Self.installOrder[4] + "\n"
+        let verify = Self.step("codesign --verify --strict \"$HELPER\"") + "\n"
+        let plistRead = Self.step("CHANNEL_VERSION=") + "\n"
+        let teamMatch = Self.step("[ \"$HELPER_TEAM\"")
+        let expectedTeam = Self.step("[ \"$APP_TEAM\"")
+        let helperRequirement = Self.step("codesign --verify --strict -R \"=identifier \\\"$CHANNEL_IDENTIFIER")
+        let appRequirement = Self.step("codesign --verify --strict -R \"=identifier \\\"$BUNDLE_IDENTIFIER")
+        let add = Self.step("claude_cli mcp add ") + "\n"
+        let current = Self.step("CURRENT=") + "\n"
+        let receiptTemp = Self.step("RECEIPT_TMP=") + "\n"
         let installMutants: [(String, String)] = [
             ("helper verification dropped", install.replacingOccurrences(of: verify, with: "")),
             ("Info.plist read before the seal", install.replacingOccurrences(of: plistRead, with: "")
                 .replacingOccurrences(of: verify, with: plistRead + verify)),
-            ("approvals symlink guard dropped", install.replacingOccurrences(of: Self.installOrder[7] + "\n", with: "")),
-            ("receipt symlink guard dropped", install.replacingOccurrences(of: Self.installOrder[8], with: "if false; then")),
-            ("receipt mode dropped", install.replacingOccurrences(of: Self.installOrder[11] + "\n", with: "")),
-            ("receipt written before the registration", install.replacingOccurrences(of: Self.installOrder[9] + "\n", with: "")
-                .replacingOccurrences(of: Self.installOrder[5] + "\n", with: Self.installOrder[9] + "\n" + Self.installOrder[5] + "\n")),
-            ("flag line dropped", install.replacingOccurrences(of: Self.installOrder[13] + "\n", with: "")),
+            ("team match dropped", install.replacingOccurrences(of: teamMatch, with: "true \\")),
+            ("expected team dropped", install.replacingOccurrences(of: expectedTeam, with: "true \\")),
+            ("helper requirement dropped", install.replacingOccurrences(of: helperRequirement, with: "true \\")),
+            ("app requirement dropped", install.replacingOccurrences(of: appRequirement, with: "true \\")),
+            ("expected team checked after the registration", install.replacingOccurrences(of: expectedTeam + "\n", with: "")
+                .replacingOccurrences(of: add, with: add + expectedTeam + "\n")),
+            ("approvals symlink guard dropped", install.replacingOccurrences(of: Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n", with: "")),
+            ("receipt symlink guard dropped", install.replacingOccurrences(of: Self.step("if [ -L \"$RECEIPT\" ]"), with: "if false; then")),
+            ("receipt mode dropped", install.replacingOccurrences(of: Self.step("chmod 600 ") + "\n", with: "")),
+            ("receipt written before the registration", install.replacingOccurrences(of: receiptTemp, with: "")
+                .replacingOccurrences(of: current, with: receiptTemp + current)),
+            ("flag line dropped", install.replacingOccurrences(of: Self.step("echo \"    claude --dangerously") + "\n", with: "")),
         ]
         for (name, mutant) in installMutants {
             #expect(mutant != install, "canary setup '\(name)': target text must exist")

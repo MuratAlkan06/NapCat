@@ -10,8 +10,12 @@
 #   1. checks the bundle path: a real directory, not a symlink;
 #   2. verifies the helper, Contents/MacOS/napcat-channel, BEFORE anything else
 #      uses it: `codesign --verify --strict` on the helper, its signing
-#      identifier, then the app's own seal (which covers the helper); only then
-#      does it read the bundle's Info.plist (NapCat's bundle identifier and its
+#      identifier, then the app's own seal (which covers the helper); then the
+#      team: the app and the helper must name the same team, NapCat's own
+#      (TEAM_IDENTIFIER below), and each must satisfy a code requirement
+#      anchored at Apple for that team and its own identifier, so an ad-hoc
+#      build, or another team's, is refused; only then does it read the
+#      bundle's Info.plist (NapCat's bundle identifier and its
 #      NapCatChannelVersion);
 #   3. registers the helper with Claude Code at user scope under the name
 #      "napcat", through Claude Code's own command line:
@@ -28,6 +32,12 @@
 # (only Claude Code's own `claude mcp` commands change its configuration),
 # never prints another server's settings, and needs no administrator rights.
 # Undo with ./scripts/uninstall-channel.sh.
+#
+# Exit status: 0 once the helper is registered (or already was) and the
+# receipt is written; 1 when it refuses or a step fails, after one
+# "install-channel: error:" line that says why and what changed (most say
+# "Nothing was registered."); a system command that fails unexpectedly
+# stops it with that command's own non-zero status.
 
 set -euo pipefail
 # Your own PATH, kept only to find and run Claude Code, your own tool (an npm
@@ -49,6 +59,9 @@ SERVER_NAME="napcat"
 # Makefile (ChannelInstallStructureTests).
 CHANNEL_IDENTIFIER="com.muratalkan.napcat.channel"
 BUNDLE_IDENTIFIER="com.muratalkan.napcat"
+# NapCat's signing team: byte-identical to com.apple.developer.team-identifier
+# in Resources/NapCat.entitlements (ChannelInstallStructureTests).
+TEAM_IDENTIFIER="HJSC985877"
 HELPER_IN_BUNDLE="Contents/MacOS/napcat-channel"
 # The app's seam folder (SeamPaths.directoryRelativePath); the receipt sits in it.
 APPROVALS_DIR="$HOME/Library/Application Support/NapCat/approvals"
@@ -97,6 +110,44 @@ HELPER_SIGNATURE="$(codesign -d --verbose=2 "$HELPER" 2>&1)" || die "codesign ca
 grep -qxF "Identifier=$CHANNEL_IDENTIFIER" <<< "$HELPER_SIGNATURE" \
     || die "$HELPER is not signed as $CHANNEL_IDENTIFIER. Nothing was registered."
 codesign --verify --strict "$APP" || die "$APP fails codesign --verify --strict. Nothing was registered."
+APP_SIGNATURE="$(codesign -d --verbose=2 "$APP" 2>&1)" || die "codesign cannot describe $APP."
+
+# The team a description names: its one TeamIdentifier line when that is an
+# Apple team ID (ten capital letters and digits); nothing for an ad-hoc or
+# unsigned build ("not set") or no such line; status 1 for anything else.
+signature_team() {
+    local LC_ALL=C team
+    team="$(sed -n 's/^TeamIdentifier=//p' <<< "$1")"
+    case "$team" in
+        "" | "not set") return 0 ;;
+    esac
+    [[ "$team" =~ ^[A-Z0-9]{10}$ ]] || return 1
+    printf '%s\n' "$team"
+}
+
+# How an error names a team, or the lack of one.
+team_label() {
+    if [ -n "$1" ]; then
+        echo "team $1"
+    else
+        echo "no team (an ad-hoc or unsigned build)"
+    fi
+}
+
+HELPER_TEAM="$(signature_team "$HELPER_SIGNATURE")" || die "codesign names a malformed team for $HELPER. Nothing was registered."
+APP_TEAM="$(signature_team "$APP_SIGNATURE")" || die "codesign names a malformed team for $APP. Nothing was registered."
+[ "$HELPER_TEAM" = "$APP_TEAM" ] \
+    || die "$HELPER is signed for $(team_label "$HELPER_TEAM"), but $APP for $(team_label "$APP_TEAM"). Nothing was registered."
+[ "$APP_TEAM" = "$TEAM_IDENTIFIER" ] \
+    || die "$APP and its helper are signed for $(team_label "$APP_TEAM"), not NapCat's team $TEAM_IDENTIFIER. Nothing was registered."
+# Those lines are what each signature claims. Each must also satisfy a
+# requirement anchored at Apple: a certificate Apple issued to NapCat's team,
+# for its own identifier.
+TEAM_REQUIREMENT="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\""
+codesign --verify --strict -R "=identifier \"$CHANNEL_IDENTIFIER\" and $TEAM_REQUIREMENT" "$HELPER" \
+    || die "$HELPER is not signed as $CHANNEL_IDENTIFIER with a certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
+codesign --verify --strict -R "=identifier \"$BUNDLE_IDENTIFIER\" and $TEAM_REQUIREMENT" "$APP" \
+    || die "$APP is not signed as $BUNDLE_IDENTIFIER with a certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
 
 # The bundle is NapCat, and names its channel version (read after the seal
 # that covers Info.plist verified).
