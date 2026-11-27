@@ -76,11 +76,12 @@ final class SeamWorld: @unchecked Sendable {
 
 /// F4 slice S1, end to end over the real socket: a permission request
 /// crosses the seam, the gate decides on NapCat's side, and only a valid
-/// signed decision comes back as Claude Code's verdict. No Claude Code, no
-/// CloudKit, no real home directory.
+/// signed decision comes back across the seam as a verdict frame, which the
+/// server withholds from Claude Code until the seam checks which program
+/// listens (#221). No Claude Code, no CloudKit, no real home directory.
 struct ApprovalSeamEndToEndTests {
     @Test(arguments: ApprovalWire.Verdict.allCases)
-    func aPromptCrossesTheSeamAndASignedDecisionComesBackAsTheVerdict(_ verdict: ApprovalWire.Verdict) throws {
+    func aPromptCrossesTheSeamAndASignedDecisionComesBackButIsWithheld(_ verdict: ApprovalWire.Verdict) throws {
         let world = try SeamWorld()
         #expect(world.host.start())
         defer { world.host.stop() }
@@ -96,10 +97,10 @@ struct ApprovalSeamEndToEndTests {
             intake.decide(.verified(ApprovalDecision(promptID: saved.id, verdict: verdict, wireVersion: ApprovalWire.wireVersion,
                                                      signatureVerified: true)))
         }
-        #expect(world.emitted.next() == RelayHarness.verdictLine("abcde", verdict))
         #expect(world.sink.superseded.next() == saved.id)
         #expect(world.sink.retracted.next() == saved.id)
-        #expect(world.emitted.next(within: 0.2) == nil, "exactly one verdict")
+        #expect(world.waitForNote(.verdictWithheld), "the verdict frame reaches the server, which withholds it")
+        #expect(world.emitted.next(within: 0.2) == nil, "no answer reaches Claude Code")
     }
 
     /// A Bash preview carries the model's own description as a member; what
@@ -179,6 +180,34 @@ struct ApprovalSeamEndToEndTests {
         world.handshake()
         world.stdin(RelayHarness.permissionRequest("abcde"))
         #expect(world.waitForNote(.heldNoSeam))
+        #expect(world.emitted.next(within: 0.2) == nil)
+    }
+
+    /// A listener of this user that is not NapCat (a bare seam listener, no
+    /// host, no intake) at NapCat's socket path: the seam's peer check reads
+    /// its user, not which program it is, so it reads the prompt, and its
+    /// `allow` for a privileged command reaches Claude Code as nothing
+    /// (#221). The link stays and the next prompt still crosses.
+    @Test func aListenerThatIsNotNapCatGetsNoAnswerToClaudeCode() throws {
+        let world = try SeamWorld()
+        let listener = ApprovalSeamTests.Server(world.fixture)
+        #expect(listener.start())
+        defer { listener.stop() }
+        world.handshake()
+        let preview = #"{"command":"sudo pmset -a disablesleep 0"}"#
+        world.stdin(RelayHarness.permissionRequest("abcde", preview: preview))
+        let line = try #require(listener.lines.next(), "the prompt reaches whatever listens there")
+        let request = ChannelPermissionRequest(requestID: ChannelRequestID("abcde")!, toolName: "Bash", inputPreview: preview)
+        let relayed: SeamFrame? = ApprovalChannel.frame(Array(line.utf8))
+        #expect(relayed == .prompt(request, server: ApprovalChannel.serverVersion, client: ApprovalChannel.confirmedClients[0]))
+        let connection = try #require(listener.connections.next())
+        let answer: String = ApprovalChannel.verdictFrame(request.requestID, .allow)
+        #expect(listener.queue.sync { connection.send(answer) })
+        #expect(world.waitForNote(.verdictWithheld), "the server withholds the listener's answer")
+        #expect(world.emitted.next(within: 0.2) == nil, "Claude Code's side receives nothing")
+        world.stdin(RelayHarness.permissionRequest("bcdef"))
+        #expect(listener.lines.next() != nil, "the link stays: the next prompt crosses it")
+        #expect(listener.connections.next(within: 0.2) == nil && listener.closes.next(within: 0.2) == nil)
         #expect(world.emitted.next(within: 0.2) == nil)
     }
 

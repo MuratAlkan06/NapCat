@@ -266,6 +266,95 @@ struct ApprovalChannelStructureTests {
         }
     }
 
+    // MARK: - No answer goes back until the listener is identified (#221)
+
+    /// The relay's strict read of a verdict frame (a refused one closes the
+    /// link), the guard that withholds every verdict, and the open check.
+    static let seamRead: String = "        guard case .verdict(let requestID, let verdict)? = ApprovalChannel.frame(line) else {\n"
+        + "            note(.frameRefused)\n            link?.close()\n            return\n        }\n"
+    static let answerGuard: String = "        guard ApprovalChannel.passesAnswersBack else {\n            note(.verdictWithheld)\n"
+        + "            return\n        }\n"
+    static let openCheck: String = "        guard open.remove(requestID) != nil else {\n"
+    /// The wire's switch, as declared: a constant, false.
+    static let answerSwitch: String = "public static let passesAnswersBack = false"
+    /// The relay's one read of it.
+    static let answerRead: String = "guard ApprovalChannel.passesAnswersBack else {"
+
+    /// The seam's peer check reads the listener's user, not which program it
+    /// is, so the server passes no answer back: the relay withholds every
+    /// verdict right after its strict read, ahead of the open check (which
+    /// the one verdict notification follows directly, `verdictSiteFailures`),
+    /// so no path from a seam frame to that write passes it; the switch is
+    /// declared once, a false constant, and named in the four targets there
+    /// and in that guard alone, so it is not flipped, shadowed or read
+    /// another way; and the relay reaches Claude Code only through the
+    /// writer it is handed (it names none of the server's own streams).
+    static func answerGuardFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        let relay = text(relayFile, in: sources)
+        if count(answerGuard, in: relay) != 1 || count(seamRead + answerGuard + openCheck, in: relay) != 1 {
+            failures.append("the relay must withhold every verdict right after its strict read, before the open check (#221)")
+        }
+        failures += PairingStructureTests.appSiteFailures(#"\bpassesAnswersBack\b"#, in: sources,
+                                                          allowed: ["ApprovalChannel.swift": [answerSwitch: 1], relayFile: [answerRead: 1]],
+                                                          rule: "the answer switch is declared false once and read by the relay's guard alone (#221)")
+        for token in ["StandardStreams", "writeLine", "STDOUT_FILENO", "STDERR_FILENO"] where relay.contains(token) {
+            failures.append("'\(token)' in \(relayFile) — the relay writes to Claude Code only through the writer it is handed")
+        }
+        return failures
+    }
+
+    @Test func theServerPassesNoAnswerBackUntilTheListenerIsIdentified() throws {
+        let sources = try Self.sources()
+        #expect(Self.answerGuardFailures(sources).isEmpty, "\(Self.answerGuardFailures(sources))")
+        let relay: String = Self.text(Self.relayFile, in: sources)
+        let wire: String = Self.text("ApprovalChannel.swift", in: sources)
+        let emitted: String = "        emit(ApprovalChannel.verdictNotification("
+        let relayed: String = "        open.insert(request.requestID)\n        note(.relayed)\n"
+        for anchor in [Self.seamRead, Self.answerGuard, Self.openCheck, emitted, relayed] {
+            #expect(Self.count(anchor, in: relay) == 1, "vacuity: '\(anchor.prefix(50))' is in the relay once")
+        }
+        #expect(Self.count(Self.answerSwitch, in: wire) == 1, "vacuity: the switch is declared in the wire")
+        let relayMutant: (String, String) -> Sources = { old, new in
+            Self.mutate(sources, Self.relayFile) { $0.replacingOccurrences(of: old, with: new) }
+        }
+        let wireMutant: (String) -> Sources = { new in
+            Self.mutate(sources, "ApprovalChannel.swift") { $0.replacingOccurrences(of: Self.answerSwitch, with: new) }
+        }
+        let mutants: [(String, Sources)] = [
+            ("the guard dropped", relayMutant(Self.answerGuard, "")),
+            ("the guard inverted", relayMutant(Self.answerRead, "guard !ApprovalChannel.passesAnswersBack else {")),
+            ("the guard passed by anything", relayMutant(Self.answerRead, "guard ApprovalChannel.passesAnswersBack || true else {")),
+            ("the guard moved past the open check", Self.mutate(relayMutant(Self.answerGuard + Self.openCheck, Self.openCheck), Self.relayFile) {
+                $0.replacingOccurrences(of: emitted, with: Self.answerGuard + emitted) }),
+            ("the guard ahead of the strict read", Self.mutate(relayMutant(Self.seamRead + Self.answerGuard, Self.seamRead), Self.relayFile) {
+                $0.replacingOccurrences(of: Self.seamRead, with: Self.answerGuard + Self.seamRead) }),
+            ("the switch flipped to true", wireMutant("public static let passesAnswersBack = true")),
+            ("the switch made a variable", wireMutant("public static var passesAnswersBack = false")),
+            ("the switch made computed", wireMutant("public static var passesAnswersBack: Bool { true }")),
+            ("the switch's value hidden behind an expression", wireMutant("public static let passesAnswersBack = false || true")),
+            ("the switch declared twice behind #if", wireMutant("#if DEBUG\n    public static let passesAnswersBack = true\n    #else\n    "
+                + Self.answerSwitch + "\n    #endif")),
+            ("the switch shadowed in the relay's module", Self.mutate(sources, Self.serverFile) {
+                $0 + "\nextension ApprovalChannel { static var passesAnswersBack: Bool { true } }" }),
+            ("the switch read somewhere else", Self.mutate(sources, Self.intakeFile) {
+                $0 + "\nlet zzAnswers = ApprovalChannel.passesAnswersBack || true" }),
+            ("a second write to Claude Code through the server's stream", relayMutant(relayed, relayed + "        StandardStreams.writeLine(frame)\n")),
+            ("the server's stream handed to the relay", relayMutant(relayed, relayed + "        let zz: (String) -> Void = StandardStreams.writeLine\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.answerGuardFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: blanks around the declaration's line, and
+        // names that only contain the switch's.
+        let controls: Sources = Self.mutate(wireMutant("\t" + Self.answerSwitch + "   "), Self.hostFile) {
+            $0 + "\nlet zzPassesAnswersBackCount = 0, passesAnswersBackward = 1"
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.answerGuardFailures(controls).isEmpty, "over-match: \(Self.answerGuardFailures(controls))")
+    }
+
     // MARK: - The gate classifies every prompt before its lifecycle opens
 
     /// The intake's strict read of a frame, its server and client bound.

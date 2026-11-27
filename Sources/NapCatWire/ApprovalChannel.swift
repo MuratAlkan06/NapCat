@@ -11,14 +11,16 @@
 // per line. The server opts into the channel and permission-relay
 // capabilities, answers `initialize` and `ping`, refuses every other request,
 // and reads exactly one notification: the relay's permission request. The
-// only message it ever sends on its own is a verdict for a request it
-// relayed. It never sends a channel message into the session (replies are
-// F4.1, out of the MVP).
+// only message it would send on its own is a verdict for a request it
+// relayed, and it sends none while `ApprovalChannel.passesAnswersBack` is
+// false (#221). It never sends a channel message into the session (replies
+// are F4.1, out of the MVP).
 //
 // Wire 2, the server ↔ NapCat: the seam (NapCatSeam), one JSON object per
-// line over an authenticated Unix socket. The server sends `prompt` frames,
-// NapCat answers with `verdict` frames, and each side accepts only its own
-// inbound kind.
+// line over a Unix socket restricted to this user (which program is on the
+// other end is not checked yet). The server sends `prompt` frames, NapCat
+// answers with `verdict` frames, and each side accepts only its own inbound
+// kind.
 
 /// The channel server's constants.
 public enum ApprovalChannel {
@@ -48,6 +50,15 @@ public enum ApprovalChannel {
     /// whose client is not on this list, or does not name itself, keeps every
     /// prompt local. A build joins only after its relay has been re-checked.
     public static let confirmedClients = [ChannelClient(name: "claude-code", version: "2.1.326")]
+
+    /// Whether the server passes a verdict from the seam back to Claude Code
+    /// as the permission answer. False: the seam's peer check confirms that
+    /// the listener runs as this user, not that it is NapCat, so the relay
+    /// drops every verdict frame (`ChannelNote.verdictWithheld`) and each
+    /// dialog is answered in the terminal; prompts are still relayed. It
+    /// flips only in the slice that checks the listener's code identity on
+    /// the seam (#221; lint-locked: declared once, read once, by the relay).
+    public static let passesAnswersBack = false
 
     /// The experimental capability that makes the server a channel.
     public static let channelCapability = "claude/channel"

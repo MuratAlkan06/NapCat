@@ -1889,11 +1889,14 @@ struct DecisionSinkStructureTests {
         "relay(request)", "case .ignored, .malformed:", "break", "}", "}",
     ].joined(separator: " ")
     /// The relay's receive from NapCat, whole: the strict read (a refused
-    /// frame closes the link), the open check, and the one verdict
+    /// frame closes the link), the guard that withholds every verdict while
+    /// the server passes no answer back (AMENDED #221: it stands between the
+    /// read and the open check), the open check, and the one verdict
     /// notification.
     static let relaySeamWhole: String = [
         "} func receive(seamLine line: [UInt8]) {", "guard case .verdict(let requestID, let verdict)? = ApprovalChannel.frame(line) else {",
-        "note(.frameRefused)", "link?.close()", "return", "}", "guard open.remove(requestID) != nil else {", "note(.verdictIgnored)", "return", "}",
+        "note(.frameRefused)", "link?.close()", "return", "}", "guard ApprovalChannel.passesAnswersBack else {", "note(.verdictWithheld)", "return", "}",
+        "guard open.remove(requestID) != nil else {", "note(.verdictIgnored)", "return", "}",
         "emit(ApprovalChannel.verdictNotification(requestID: requestID, verdict: verdict))", "note(.verdictRelayed)", "}",
     ].joined(separator: " ")
     static let channelPins: [WholePin] = [
@@ -1922,10 +1925,11 @@ struct DecisionSinkStructureTests {
         let openCheck: String = "        guard open.remove(requestID) != nil else {\n"
         let relayed: String = "        note(.verdictRelayed)\n"
         let seamHead: String = "    func receive(seamLine line: [UInt8]) {\n"
+        let answerGuard: String = "        guard ApprovalChannel.passesAnswersBack else {\n            note(.verdictWithheld)\n            return\n        }\n"
         let failed: String = "                exit(0)\n"
         let constant: String = "    private static let logger = Logger(subsystem: \"com.muratalkan.napcat\", category: \"channel\")\n"
         let serverAnchors: [String] = [Self.streamsHead, failed, constant, "write(STDOUT_FILENO,"]
-        let relayAnchors: [String] = [confirming, pinged, refusedClose, openCheck, relayed, seamHead]
+        let relayAnchors: [String] = [confirming, pinged, refusedClose, openCheck, relayed, seamHead, answerGuard]
         for anchor in serverAnchors {
             #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(server, in: sources)) == 1, "vacuity: '\(anchor.prefix(50))' is in the server once")
         }
@@ -1955,7 +1959,9 @@ struct DecisionSinkStructureTests {
         // refused frame keeping the link, the open check skipped, a verdict
         // emitted twice, a statement after the verdict's note, a second
         // receive from NapCat declared, and the pinned stream type kept in a
-        // literal beside a changed one.
+        // literal beside a changed one. #221: the answer guard dropped,
+        // inverted, passed by anything or moved past the open check, and an
+        // answer written to Claude Code ahead of it.
         let decoy: String = constant + "    static let zz = \"" + Self.streamsWhole + "\"\n"
         let mutants: [(String, Sources)] = [
             ("a member added to the stream type", streams("    static let zz = 0\n")),
@@ -1976,6 +1982,16 @@ struct DecisionSinkStructureTests {
             ("a statement after the verdict's note", Self.mutate(sources, relay) { $0.replacingOccurrences(of: relayed, with: relayed + "        zzTap()\n") }),
             ("a second receive from NapCat declared", Self.mutate(sources, relay) {
                 $0.replacingOccurrences(of: seamHead, with: "    func receive(seamLine line: ArraySlice<UInt8>) {}\n\n" + seamHead) }),
+            ("the answer guard dropped", Self.mutate(sources, relay) { $0.replacingOccurrences(of: answerGuard, with: "") }),
+            ("the answer guard inverted", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: "guard ApprovalChannel.passesAnswersBack else {", with: "guard !ApprovalChannel.passesAnswersBack else {") }),
+            ("the answer guard passed by anything", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: "guard ApprovalChannel.passesAnswersBack else {", with: "guard ApprovalChannel.passesAnswersBack || true else {") }),
+            ("the answer guard moved past the open check", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: answerGuard + openCheck, with: openCheck)
+                    .replacingOccurrences(of: "        emit(ApprovalChannel.verdictNotification(", with: answerGuard + "        emit(ApprovalChannel.verdictNotification(") }),
+            ("an answer written ahead of the answer guard", Self.mutate(sources, relay) {
+                $0.replacingOccurrences(of: answerGuard, with: "        emit(ApprovalChannel.verdictNotification(requestID: requestID, verdict: verdict))\n" + answerGuard) }),
             ("the pinned stream type kept in a literal, the real one changed", Self.mutate(sources, server) {
                 $0.replacingOccurrences(of: failed, with: "                break\n").replacingOccurrences(of: constant, with: decoy) }),
         ]

@@ -85,9 +85,10 @@ final class RelayHarness {
 
 /// F4 slice S1: the channel server's behaviour (`ChannelRelay`), driven line
 /// by line with no process, no socket and no Claude Code. The safety rules:
-/// the handshake declares exactly the two channel capabilities; nothing but
-/// NapCat's verdict frame for an open, relayed request ever produces a
-/// verdict, and only once; every failure keeps the prompt local.
+/// the handshake declares exactly the two channel capabilities; no verdict
+/// goes back to Claude Code while the seam does not check which program
+/// listens (#221), and nothing else ever produces one; every failure keeps
+/// the prompt local.
 struct ChannelRelayTests {
     // MARK: - The handshake
 
@@ -375,18 +376,38 @@ struct ChannelRelayTests {
         #expect(harness.notes == [.relayed, .heldRepeatedID])
     }
 
-    // MARK: - Relaying a verdict
+    // MARK: - No verdict goes back (#221)
 
+    /// The seam's peer check reads the listener's user, not which program it
+    /// is, so the server passes no answer back until a later slice checks
+    /// the listener's code identity; each withheld verdict is logged by its
+    /// closed code alone.
+    @Test func theAnswerSwitchStaysOffUntilTheListenerIsIdentified() {
+        #expect(ApprovalChannel.passesAnswersBack == false, "flips only with the seam's code identity check")
+        #expect(ChannelNote.verdictWithheld.rawValue == "verdictWithheld", "the server's log reads relay: verdictWithheld")
+    }
+
+    /// An `allow` and a `deny` for an open request each write nothing to
+    /// Claude Code and leave one withheld code; the link stays, the request
+    /// stays open (its dialog is answered in the terminal), and the server
+    /// still relays the next prompt and answers a ping.
     @Test(arguments: ApprovalWire.Verdict.allCases)
-    func aVerdictForAnOpenRequestIsRelayedExactlyOnce(_ verdict: ApprovalWire.Verdict) throws {
+    func aVerdictForAnOpenRequestIsWithheld(_ verdict: ApprovalWire.Verdict) throws {
         let harness = RelayHarness.initialized()
         harness.stdin(RelayHarness.permissionRequest("qwert"))
         let link = try #require(harness.link)
         link.deliver(RelayHarness.verdict("qwert", verdict))
-        #expect(harness.emitted == [RelayHarness.verdictLine("qwert", verdict)])
+        #expect(harness.emitted.isEmpty, "no answer is written to Claude Code")
+        #expect(harness.notes == [.relayed, .verdictWithheld])
+        #expect(!link.closed, "a well-formed verdict is withheld, not punished")
         link.deliver(RelayHarness.verdict("qwert", verdict == .allow ? .deny : .allow))
-        #expect(harness.emitted.count == 1, "one-shot: a second verdict for the same request does nothing")
-        #expect(harness.notes == [.relayed, .verdictRelayed, .verdictIgnored])
+        #expect(harness.emitted.isEmpty, "the other verdict for the same request is withheld too")
+        #expect(harness.notes == [.relayed, .verdictWithheld, .verdictWithheld])
+        harness.stdin(RelayHarness.permissionRequest("asdfg", preview: #"{"command":"git log"}"#))
+        #expect(link.sent.count == 2, "the next prompt still reaches the seam")
+        harness.stdin(#"{"jsonrpc":"2.0","id":"p-1","method":"ping"}"#)
+        #expect(harness.emitted == [#"{"jsonrpc":"2.0","id":"p-1","result":{}}"#], "a ping is still answered, and only it")
+        #expect(harness.notes == [.relayed, .verdictWithheld, .verdictWithheld, .relayed])
         #expect(!link.closed)
     }
 
@@ -397,6 +418,8 @@ struct ChannelRelayTests {
             == #"{"jsonrpc":"2.0","method":"notifications/claude/channel/permission","params":{"request_id":"zyxwv","behavior":"deny"}}"#)
     }
 
+    /// As before #221: nothing is written and the link stays. The guard
+    /// stands before the open check, so it is withheld like any verdict.
     @Test func aVerdictForARequestNeverRelayedIsIgnored() throws {
         let harness = RelayHarness.initialized()
         harness.stdin(RelayHarness.permissionRequest("abcde"))
@@ -404,8 +427,9 @@ struct ChannelRelayTests {
         link.deliver(RelayHarness.verdict("zzzzz", .allow))
         #expect(harness.emitted.isEmpty)
         #expect(!link.closed, "a well-formed verdict for nothing open is ignored, not punished")
+        #expect(harness.notes == [.relayed, .verdictWithheld])
         link.deliver(RelayHarness.verdict("abcde", .deny))
-        #expect(harness.emitted == [RelayHarness.verdictLine("abcde", .deny)])
+        #expect(harness.emitted.isEmpty, "nor is the open request's (#221)")
     }
 
     static let refusedFrames: [String] = [
@@ -444,7 +468,9 @@ struct ChannelRelayTests {
         second.deliver(RelayHarness.verdict("abcde", .allow))
         #expect(harness.emitted.isEmpty, "a request open on a closed link stays local")
         second.deliver(RelayHarness.verdict("bcdef", .allow))
-        #expect(harness.emitted == [RelayHarness.verdictLine("bcdef", .allow)])
+        #expect(harness.emitted.isEmpty, "and the new link's verdict is withheld (#221)")
+        #expect(harness.notes == [.relayed, .frameRefused, .seamClosed, .relayed, .verdictWithheld, .verdictWithheld])
+        #expect(!second.closed)
     }
 
     // MARK: - Every failure keeps the prompt local
@@ -474,6 +500,8 @@ struct ChannelRelayTests {
         #expect(harness.emitted.isEmpty)
     }
 
+    /// A withheld verdict frees no slot: its request stays open (#221). The
+    /// link's close frees them all, as it always has.
     @Test func atMostMaxOpenRequestsWaitForAVerdict() throws {
         let harness = RelayHarness.initialized()
         let ids = Self.requestIDs(ApprovalChannel.maxOpenRequests + 1)
@@ -483,7 +511,13 @@ struct ChannelRelayTests {
         #expect(harness.notes.last == .heldTooManyOpen)
         link.deliver(RelayHarness.verdict(ids[0], .deny))
         harness.stdin(RelayHarness.permissionRequest("zzzzz"))
-        #expect(link.sent.count == ApprovalChannel.maxOpenRequests + 1, "a verdict frees a slot")
+        #expect(link.sent.count == ApprovalChannel.maxOpenRequests, "a withheld verdict frees no slot")
+        #expect(Array(harness.notes.suffix(2)) == [.verdictWithheld, .heldTooManyOpen])
+        #expect(harness.emitted.isEmpty)
+        link.close()
+        harness.stdin(RelayHarness.permissionRequest("yyyyy"))
+        let next = try #require(harness.link)
+        #expect(next !== link && next.sent.count == 1, "the link's close frees every slot; the next prompt reconnects")
     }
 
     @Test func aPromptTooLargeForAFrameStaysLocal() {
@@ -495,9 +529,10 @@ struct ChannelRelayTests {
     }
 
     /// The property: across every line Claude Code could send and every frame
-    /// NapCat could send, the only verdicts emitted are the ones NapCat's
-    /// valid frames asked for, for requests the server relayed.
-    @Test func nothingButAValidVerdictFrameEverProducesAVerdict() throws {
+    /// NapCat could send — valid verdict frames for requests the server
+    /// relayed and still holds open among them — no verdict is emitted
+    /// (#221).
+    @Test func noLineOrFrameEverProducesAVerdict() throws {
         let harness = RelayHarness.initialized()
         for line in Self.silentLines + Self.malformedRequests { harness.stdin(line) }
         harness.stdin(RelayHarness.permissionRequest("abcde"))
@@ -505,8 +540,9 @@ struct ChannelRelayTests {
         harness.stdin(RelayHarness.permissionRequest("bcdef"))
         harness.link?.deliver(RelayHarness.verdict("zzzzz", .allow))
         #expect(harness.emitted.filter { $0.contains(ApprovalChannel.verdictMethod) }.isEmpty)
-        harness.link?.deliver(RelayHarness.verdict("bcdef", .allow))
-        #expect(harness.emitted.filter { $0.contains(ApprovalChannel.verdictMethod) } == [RelayHarness.verdictLine("bcdef", .allow)])
+        for verdict in ApprovalWire.Verdict.allCases { harness.link?.deliver(RelayHarness.verdict("bcdef", verdict)) }
+        #expect(harness.emitted.filter { $0.contains(ApprovalChannel.verdictMethod) }.isEmpty)
+        #expect(harness.notes.filter { $0 == .verdictRelayed }.isEmpty && harness.notes.filter { $0 == .verdictWithheld }.count == 3)
     }
 
     static func requestIDs(_ count: Int) -> [String] { IntakeHarness.requestIDs(count) }

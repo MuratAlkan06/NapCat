@@ -1,7 +1,8 @@
 import NapCatWire
 
-/// The server's link to NapCat (in production an authenticated
-/// `SeamConnection`; in tests a fake).
+/// The server's link to NapCat (in production a `SeamConnection`, whose
+/// peer check confirms the listener's user, not which program it is; in
+/// tests a fake).
 protocol ChannelLink: AnyObject {
     /// Sends one frame; false when the link failed (it is then closed).
     func send(_ line: String) -> Bool
@@ -27,6 +28,11 @@ enum ChannelNote: String, CaseIterable, Sendable {
     /// The frame could not be sent.
     case heldSendFailed
     case relayed
+    /// A verdict frame the strict reader accepted, dropped: the server
+    /// passes no answer back to Claude Code while
+    /// `ApprovalChannel.passesAnswersBack` is false (#221). Nothing is
+    /// written, the link stays, and any open request stays open.
+    case verdictWithheld
     /// A verdict for a request this server relayed and still holds open.
     case verdictRelayed
     /// A verdict for a request that is not open here: dropped.
@@ -43,14 +49,15 @@ enum ChannelNote: String, CaseIterable, Sendable {
 /// by line; `ChannelServer.swift` wires the real descriptors. Design:
 /// design/remote-approvals.md.
 ///
-/// It answers the MCP handshake, relays each permission request to NapCat as
-/// a prompt frame (only when the session's client is a confirmed Claude Code
-/// build, which the frame names, so NapCat checks it again: #150), and
-/// relays NapCat's verdict back to Claude Code — but only for a
-/// request it relayed and that is still open, once. Nothing it
-/// receives ever becomes a verdict on its own, and a missing or failed seam
-/// only keeps prompts local: the terminal dialog stays open and fully
-/// answerable whatever happens here.
+/// It answers the MCP handshake and relays each permission request to NapCat
+/// as a prompt frame (only when the session's client is a confirmed Claude
+/// Code build, which the frame names, so NapCat checks it again: #150). It
+/// passes no verdict back to Claude Code while the seam does not check which
+/// program listens (`ApprovalChannel.passesAnswersBack`, #221); once it
+/// does, it relays NapCat's verdict — but only for a request it relayed and
+/// that is still open, once. Nothing it receives ever becomes a verdict on
+/// its own, and a missing or failed seam only keeps prompts local: the
+/// terminal dialog stays open and fully answerable whatever happens here.
 ///
 /// Confined to the server's one serial queue (hence `@unchecked Sendable`).
 final class ChannelRelay: @unchecked Sendable {
@@ -106,12 +113,20 @@ final class ChannelRelay: @unchecked Sendable {
         }
     }
 
-    /// One complete frame from NapCat. Only a verdict for an open request
-    /// does anything; anything the strict reader refuses closes the link.
+    /// One complete frame from NapCat. Anything the strict reader refuses
+    /// closes the link. Every verdict is withheld while the server passes no
+    /// answer back (#221): nothing is written to Claude Code, the link stays
+    /// and the request stays open, so its dialog is answered in the
+    /// terminal. Past that guard, only a verdict for an open request does
+    /// anything.
     func receive(seamLine line: [UInt8]) {
         guard case .verdict(let requestID, let verdict)? = ApprovalChannel.frame(line) else {
             note(.frameRefused)
             link?.close()
+            return
+        }
+        guard ApprovalChannel.passesAnswersBack else {
+            note(.verdictWithheld)
             return
         }
         guard open.remove(requestID) != nil else {
