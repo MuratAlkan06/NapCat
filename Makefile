@@ -52,7 +52,19 @@ endif
 # See PLAN.md decision log 2026-07-09.
 CLT_FRAMEWORKS := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
 
-.PHONY: all run test clean frames appicon iosicon smc release-artifacts
+# The SwiftPM flags of both test phases, chosen once, here: build-tests
+# compiles with exactly these and run-tests looks for what was built with
+# exactly these, so the two phases cannot disagree. Build flags only: a
+# run-only option such as --filter would break `swift build`.
+ifneq ($(wildcard $(CLT_FRAMEWORKS)),)
+SWIFT_TEST_FLAGS := -Xswiftc -F"$(CLT_FRAMEWORKS)" \
+	-Xlinker -F"$(CLT_FRAMEWORKS)" \
+	-Xlinker -rpath -Xlinker "$(CLT_FRAMEWORKS)"
+else
+SWIFT_TEST_FLAGS :=
+endif
+
+.PHONY: all run test build-tests run-tests clean frames appicon iosicon smc release-artifacts
 
 all: smc
 	swift build -c release
@@ -83,15 +95,63 @@ run: all
 release-artifacts: all
 	./scripts/make-dmg.sh
 
-test:
-	@if [ -d "$(CLT_FRAMEWORKS)" ]; then \
-		swift test \
-			-Xswiftc -F"$(CLT_FRAMEWORKS)" \
-			-Xlinker -F"$(CLT_FRAMEWORKS)" \
-			-Xlinker -rpath -Xlinker "$(CLT_FRAMEWORKS)"; \
-	else \
-		swift test; \
-	fi
+# make test = build-tests, then run-tests. CI runs `make test`.
+#
+# build-tests compiles the package and its tests (swift build --build-tests).
+# A compile that fails with the known intermittent TestingMacros error below
+# is retried ONCE, with a line saying so; any other failure, or a second
+# failure, fails. If the flake outlasts the retry: rm -rf .build (keeps
+# dist/), then make clean.
+#
+# run-tests runs what build-tests last built (swift test --skip-build): it
+# never compiles and is never retried. It fails when there is no test build,
+# and it fails a run that reports no test at all: swift test exits 0 then,
+# as in the bare-`swift test` trap above.
+#
+# Only the run is sensitive to machine load, so a caller sharing this Mac can
+# hold its test slot for the run alone:
+#   make build-tests && <take the slot> && make run-tests
+# Each phase keeps its output in .build/make-<phase>.log.
+TEST_COMPILE_FLAKE := plugin for module 'TestingMacros' not found
+
+define RUN_TESTS
+bin=`swift build --show-bin-path $(SWIFT_TEST_FLAGS)` || exit 1; \
+if ! ls -d "$$bin"/*.xctest >/dev/null 2>&1; then \
+	echo "run-tests: no test build in $$bin; run make build-tests first"; \
+	exit 1; \
+fi; \
+log=.build/make-run-tests.log; st=.build/make-run-tests.status; rm -f "$$st"; \
+{ swift test --skip-build $(SWIFT_TEST_FLAGS); echo $$? > "$$st"; } 2>&1 | tee "$$log"; \
+rc=`cat "$$st" 2>/dev/null`; rm -f "$$st"; \
+[ "$$rc" = 0 ] || exit $${rc:-1}; \
+if ! grep -Eq 'Test run with [1-9][0-9]* tests? .*passed' "$$log"; then \
+	echo "run-tests: swift test exited 0 but reported no test run (no \"Test run with N tests ... passed\" line with N >= 1)"; \
+	exit 1; \
+fi
+endef
+
+build-tests:
+	@mkdir -p .build; log=.build/make-build-tests.log; st=.build/make-build-tests.status; \
+	attempt=1; \
+	while :; do \
+		rm -f "$$st"; \
+		{ swift build --build-tests $(SWIFT_TEST_FLAGS); echo $$? > "$$st"; } 2>&1 | tee "$$log"; \
+		rc=`cat "$$st" 2>/dev/null`; rm -f "$$st"; \
+		[ "$$rc" = 0 ] && exit 0; \
+		if [ $$attempt = 1 ] && grep -F 'error:' "$$log" | grep -Fq "$(TEST_COMPILE_FLAKE)"; then \
+			echo "build-tests: the compile failed with the known flake ($(TEST_COMPILE_FLAKE)); retrying it once"; \
+			attempt=2; \
+		else \
+			[ $$attempt = 2 ] && echo "build-tests: the retry failed too; not retrying again"; \
+			exit $${rc:-1}; \
+		fi; \
+	done
+
+run-tests:
+	@$(RUN_TESTS)
+
+test: build-tests
+	@$(RUN_TESTS)
 
 clean:
 	rm -rf .build $(DIST)

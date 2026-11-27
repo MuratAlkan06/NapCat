@@ -991,6 +991,11 @@ Notes:
   incorrectly to its derived test runner and `swift test` exits 0 having
   executed *zero* tests. `make test` passes the framework flags explicitly
   so the tests really run. (With full Xcode installed both work.)
+- `make test` is `make build-tests` (compile; retried once if the compile
+  hits the known intermittent `plugin for module 'TestingMacros' not found`
+  error) then `make run-tests` (run the last test build, never compiling;
+  fails if no test ran). To hold a shared machine's test lock for the run
+  alone: `make build-tests && <take the lock> && make run-tests`.
 - Clean checkouts build offline with `make` alone — no package
   dependencies, no network.
 - Frames are committed *and* regenerable: `scripts/render_frames.swift`
