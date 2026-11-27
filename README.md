@@ -832,11 +832,15 @@ It is a **beta** and it is **off by default**:
 
 ### Remote approvals: register the channel server (preview)
 
-Remote approvals are a preview, and **nothing is armed**: NapCat keeps every
-permission prompt on the Mac, and you still answer every dialog in Claude
-Code. Registering the channel server only connects Claude Code sessions to
-NapCat, so that the **Mac-only preview** in **Settings › Claude** can see
-their prompts.
+Remote approvals are a preview, and **nothing is armed**: NapCat sends no
+prompt off this Mac, and this build's channel server passes no answer back
+to Claude Code, so you answer every dialog in the terminal. Registering the
+channel server connects the Claude Code sessions you start with the flag
+below to whatever is listening at NapCat's socket: NapCat itself while the
+**Mac-only preview** in **Settings › Claude** is on, so that it can see
+their prompts. The server checks that the listener runs as you, not yet that
+it is NapCat, so a program already running as you could listen there and
+read those sessions' permission prompts.
 
 The server is built into the app, at
 `NapCat.app/Contents/MacOS/napcat-channel`, and signed with it. Register it

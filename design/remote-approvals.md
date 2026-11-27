@@ -113,8 +113,9 @@ interactive Claude Code sessions, away from the keyboard.
 
 ## Technical rulings
 
-- The seam between the channel server and the app is an authenticated Unix
-  domain socket.
+- The seam between the channel server and the app is a Unix domain socket
+  restricted to this user (peer credentials and audit token, on both ends).
+  It does not yet check which program is on the other end.
 - Prompt records are named by random 128-bit IDs.
 - A forwarded prompt lives at most 10 minutes (the TTL).
 - Records live in a dedicated custom zone of the private database, with their
@@ -261,7 +262,7 @@ slices.
 ## Slice S1: the channel server
 
 S1 adds the server side: `napcat-channel`, the channel server Claude Code
-spawns for a wired session; the authenticated socket seam between it and
+spawns for a wired session; the same-user socket seam between it and
 NapCat; NapCat's intake behind the seam, where the S0 gate and lifecycle run;
 and a read-only probe of the managed-settings channel allowlist. Every
 inbound line on every path is read by the S0 strict reader and by nothing
@@ -286,21 +287,28 @@ napcat-channel-version: 3
   the handshake named a confirmed Claude Code build; since #150 its frame
   names that build and the server's own version), once per request ID
   (Claude Code drops any verdict for a repeated ID), and at most 32 wait at
-  once. A verdict goes back only for a request the server relayed and still
-  holds open, and only once. The server never sends a channel message into the
-  session, reads no Claude Code configuration and no environment, and
-  connects to NapCat only when a prompt opens; once connected it keeps the
-  link until NapCat lets it go (slice S2: after a quiet minute with no prompt
-  waiting on the phone). Every failure keeps the prompt local.
+  once. Since #221 no verdict goes back to Claude Code: the seam checks the
+  listener's user, not which program it is, so the server drops every
+  verdict frame right after its strict read (`relay: verdictWithheld`) and
+  each dialog is answered in the terminal; the request stays open until the
+  link closes. The switch is `ApprovalChannel.passesAnswersBack`, false
+  until the seam checks the listener's code identity (lint-locked). Once it
+  is true, a verdict goes back only for a request the server relayed and
+  still holds open, and only once. The server never sends a channel message
+  into the session, reads no Claude Code configuration and no environment,
+  and connects to NapCat only when a prompt opens; once connected it keeps
+  the link until NapCat lets it go (slice S2: after a quiet minute with no
+  prompt waiting on the phone). Every failure keeps the prompt local.
 - **The seam** (`Sources/NapCatSeam`). A Unix socket,
   `~/Library/Application Support/NapCat/approvals/seam.sock`, in a 0700
   directory (the socket itself 0600). NapCat listens and each server
   connects. Both ends check the peer before reading a byte: it must run as
   this user by its socket credentials and by its audit token alike, and
-  unreadable credentials are a refusal. The listener replaces only a stale
-  socket of its own, never another kind of file, another user's socket or a
-  live listener; the server connects only to a socket of its own user inside
-  a directory nobody else can enter. A frame must be written within 2
+  unreadable credentials are a refusal. Neither end checks yet which program
+  the other is. The listener replaces only a stale socket of its own, never
+  another kind of file, another user's socket or a live listener; the server
+  connects only to a socket of its own user inside a directory nobody else
+  can enter. A frame must be written within 2
   seconds (since slice S2 a deadline per frame, over non-blocking writes), so
   a stuck or slow-reading peer cannot hold either side. Frames are one JSON object per line, at
   most 256 KiB, frame version 2 (since #150; a version-1 frame is refused):
@@ -327,8 +335,11 @@ napcat-channel-version: 3
   closed code, never prompt text, a request ID, a session ID or the topic.
 - **Dark by default.** In S1 nothing constructed the host or ran the probe
   (lint-locked). Slice S2 wires both behind the Mac toggle, never armed (see
-  below); with the toggle off no socket exists, a server finds nothing to
-  connect to, and every prompt stays local.
+  below); with the toggle off NapCat makes no socket, so a server finds
+  nothing to connect to unless another program of this user listens at that
+  path. Such a program would read the prompts of sessions started with the
+  flag; none of its verdicts reaches Claude Code (#221), so every prompt is
+  answered locally.
 - **The allowlist probe** (`ChannelPolicyProbe`, the reading in
   `NapCatWire/ApprovalChannelPolicy.swift`). It reads the file tier of the
   managed settings (`managed-settings.json`, then the `managed-settings.d`
@@ -359,7 +370,8 @@ napcat-channel-version: 3
 
 Later slices own the rest: bundling and signing the server, the user-run
 registration rails and the per-session flag, a code-signing check on the
-seam's peer (the audit token is already read for it), the project label,
+seam's peer (the audit token is already read for it; until it exists the
+server passes no answer back, #221), the project label,
 CloudKit, the phone, pairing and the toggles (the Mac's is slice S2). The relay carries no signal
 that a dialog was answered at the Mac; a remote verdict that arrives after a
 local answer is dropped by Claude Code, and the TTL withdraws the record.
@@ -514,7 +526,10 @@ this section points at them.
   - The project label passes the gate's filters before it is ever written.
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
-    re-check; done, see slice S1's seam and intake), #153 (the alert lane's CloudKit structure locks and the
+    re-check; done, see slice S1's seam and intake), #221 (no answer
+    passes back to Claude Code until the seam checks which program
+    listens; done, see slice S1's server: the code identity check itself
+    is still owed), #153 (the alert lane's CloudKit structure locks and the
     construction-count pins), #154 (the unconfirmed-Allow re-offer), #159
     (a forwarded path may hold quote and brace characters, so the phone's
     raw preview can look like more fields than it has: restrict them in
