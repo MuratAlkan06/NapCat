@@ -32,7 +32,11 @@
 #      means exactly <bundle>.app/Contents/MacOS/napcat-channel, with
 #      <bundle>.app an absolute path that has no empty, "." or ".."
 #      component (the only shape this script registers); a command that is
-#      merely close to that is another server;
+#      merely close to that is another server. The entry is read with
+#      `claude mcp get napcat`, and only two answers are acted on (a stdio
+#      entry's one Command: line, or Claude Code's not-found line); anything
+#      else stops the script with nothing changed, rather than risk a second
+#      registration;
 #   5. writes the receipt, mode 0600, holding the channel version and the
 #      helper path: ~/Library/Application Support/NapCat/approvals/
 #      channel-registration (replaced by rename, never written through);
@@ -65,6 +69,10 @@ die() {
 
 # The registration's name: the server's own MCP name, ApprovalChannel.serverName.
 SERVER_NAME="napcat"
+# The start of the one line `claude mcp get` prints, with status 1, when no
+# server has that name (Claude Code 2.1.326; the hint after it, which may
+# name other servers, goes unread).
+NOT_FOUND_PREFIX="No MCP server named \"$SERVER_NAME\"."
 # The helper's signing identifier: byte-identical to CHANNEL_IDENTIFIER in the
 # Makefile (ChannelInstallStructureTests).
 CHANNEL_IDENTIFIER="com.muratalkan.napcat.channel"
@@ -219,23 +227,38 @@ claude_cli() {
     (cd / && /usr/bin/env PATH="$CALLER_PATH" "$CLAUDE_BIN" "$@")
 }
 
-# The command of the server registered as "napcat": the one "Command:" line
-# `claude mcp get napcat` prints for a stdio server. That output is written
-# for people, not scripts, so anything else (no such line, or more than one)
-# reads as unknown (status 1), and the caller then changes nothing it cannot
-# see. The output itself is never printed: it may hold another server's
-# environment.
+# What `claude mcp get napcat` says of the server registered as "napcat". Its
+# output is written for people, not scripts, so only two answers are read:
+#   - status 0 and exactly one "Command:" line (a stdio server): prints that
+#     command;
+#   - status 1 and nothing but one line that starts with $NOT_FOUND_PREFIX:
+#     prints nothing (no server has the name).
+# Anything else (no Command: line or two, a not-found line among other
+# lines, another status, a format this script predates) is unknown: status
+# 1, and the caller changes nothing. The output itself is never printed: it
+# may hold another server's environment, or name other servers.
 registered_command() {
-    local output found
-    output="$(claude_cli mcp get "$SERVER_NAME" 2> /dev/null)" || return 1
-    found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
-    case "$found" in
-        "" | *$'\n'*) return 1 ;;
+    local output found status=0
+    output="$(claude_cli mcp get "$SERVER_NAME" 2>&1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+        found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
+        case "$found" in
+            "" | *$'\n'*) return 1 ;;
+        esac
+        printf '%s\n' "$found"
+        return 0
+    fi
+    [ "$status" -eq 1 ] || return 1
+    output="$(sed '/^[[:space:]]*$/d' <<< "$output")"
+    case "$output" in
+        *$'\n'*) return 1 ;;
+        "$NOT_FOUND_PREFIX"*) return 0 ;;
     esac
-    printf '%s\n' "$found"
+    return 1
 }
 
-CURRENT="$(registered_command)" || CURRENT=""
+CURRENT="$(registered_command)" \
+    || die "cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format). Nothing changed. Inspect it with: claude mcp get $SERVER_NAME"
 if [ "$CURRENT" = "$HELPER" ]; then
     echo "ok:         \"$SERVER_NAME\" already runs $HELPER (user scope); registration unchanged."
 elif [ -n "$CURRENT" ] && ! is_napcat_helper "$CURRENT"; then
@@ -247,8 +270,8 @@ else
             || die "could not remove the registration for $CURRENT (is it outside user scope?). Nothing was added."
         echo "removed:    the registration for another NapCat copy, $CURRENT"
     fi
-    # When an entry named "napcat" exists that `claude mcp get` showed no
-    # command for, this add refuses (it already exists) and changes nothing.
+    # Claude Code's own rule backs that reading up: an add refuses a name
+    # that already exists at user scope, and changes nothing.
     claude_cli mcp add --scope user --transport stdio "$SERVER_NAME" -- "$HELPER" > /dev/null \
         || die "claude mcp add refused (its message is above); no receipt was written. Inspect an existing entry with: claude mcp get $SERVER_NAME"
     echo "registered: \"$SERVER_NAME\" at user scope, running $HELPER"

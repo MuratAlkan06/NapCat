@@ -16,7 +16,11 @@
 #      "napcat" is left alone. A NapCat helper the receipt does not record
 #      (no receipt, an unreadable one, or one naming another path) is left
 #      alone too, and reported as an error: this script cannot show the
-#      installer registered it, so it names the command that removes it;
+#      installer registered it, so it names the command that removes it.
+#      The entry is read with `claude mcp get napcat`, and only its two
+#      known answers count (a stdio entry's one Command: line, or Claude
+#      Code's not-found line); any other answer is an error, never "nothing
+#      to remove";
 #   2. the receipt, ~/Library/Application Support/NapCat/approvals/
 #      channel-registration (a symlink there is reported, never followed).
 #      It is kept while a registration step above fails, so that a later
@@ -43,6 +47,10 @@ unset CDPATH
 
 # The registration's name: the server's own MCP name, ApprovalChannel.serverName.
 SERVER_NAME="napcat"
+# The start of the one line `claude mcp get` prints, with status 1, when no
+# server has that name (Claude Code 2.1.326; the hint after it, which may
+# name other servers, goes unread).
+NOT_FOUND_PREFIX="No MCP server named \"$SERVER_NAME\"."
 HELPER_IN_BUNDLE="Contents/MacOS/napcat-channel"
 # The app's seam folder (SeamPaths.directoryRelativePath); the receipt sits in it.
 APPROVALS_DIR="$HOME/Library/Application Support/NapCat/approvals"
@@ -72,19 +80,34 @@ claude_cli() {
     (cd / && /usr/bin/env PATH="$CALLER_PATH" "$CLAUDE_BIN" "$@")
 }
 
-# The command of the server registered as "napcat": the one "Command:" line
-# `claude mcp get napcat` prints for a stdio server. That output is written
-# for people, not scripts, so anything else (no such line, or more than one)
-# reads as unknown (status 1), and nothing is removed. The output itself is
-# never printed: it may hold another server's environment.
+# What `claude mcp get napcat` says of the server registered as "napcat". Its
+# output is written for people, not scripts, so only two answers are read:
+#   - status 0 and exactly one "Command:" line (a stdio server): prints that
+#     command;
+#   - status 1 and nothing but one line that starts with $NOT_FOUND_PREFIX:
+#     prints nothing (no server has the name).
+# Anything else (no Command: line or two, a not-found line among other
+# lines, another status, a format this script predates) is unknown: status
+# 1, and the caller changes nothing. The output itself is never printed: it
+# may hold another server's environment, or name other servers.
 registered_command() {
-    local output found
-    output="$(claude_cli mcp get "$SERVER_NAME" 2> /dev/null)" || return 1
-    found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
-    case "$found" in
-        "" | *$'\n'*) return 1 ;;
+    local output found status=0
+    output="$(claude_cli mcp get "$SERVER_NAME" 2>&1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+        found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
+        case "$found" in
+            "" | *$'\n'*) return 1 ;;
+        esac
+        printf '%s\n' "$found"
+        return 0
+    fi
+    [ "$status" -eq 1 ] || return 1
+    output="$(sed '/^[[:space:]]*$/d' <<< "$output")"
+    case "$output" in
+        *$'\n'*) return 1 ;;
+        "$NOT_FOUND_PREFIX"*) return 0 ;;
     esac
-    printf '%s\n' "$found"
+    return 1
 }
 
 # Whether $1 is a NapCat bundle's channel server at a path of the one shape
@@ -127,12 +150,13 @@ KEEP_RECEIPT=""
 if [ -z "$CLAUDE_BIN" ]; then
     FAILURES+=("cannot find the claude command on your PATH; if 'claude mcp get $SERVER_NAME' shows a NapCat helper, remove it with: claude mcp remove $SERVER_NAME --scope user")
     KEEP_RECEIPT=1
+elif ! CURRENT="$(registered_command)"; then
+    FAILURES+=("cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format); nothing was removed. Inspect it with: claude mcp get $SERVER_NAME")
+    KEEP_RECEIPT=1
 else
-    CURRENT="$(registered_command)" || CURRENT=""
     RECORDED="$(receipt_path)" || RECORDED=""
     if [ -z "$CURRENT" ]; then
-        echo "ok: no \"$SERVER_NAME\" registration with a command to read; nothing to remove"
-        echo "    (if 'claude mcp list' still shows $SERVER_NAME, inspect it with: claude mcp get $SERVER_NAME)"
+        echo "ok: no \"$SERVER_NAME\" registration; nothing to remove"
     elif ! is_napcat_helper "$CURRENT"; then
         echo "left alone: the server registered as \"$SERVER_NAME\" does not run a NapCat helper"
     elif [ "$RECORDED" != "$CURRENT" ]; then

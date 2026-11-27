@@ -594,6 +594,7 @@ struct ChannelInstallStructureTests {
             "APPROVALS_DIR=\"$HOME/\(SeamPaths.directoryRelativePath)\"",
             "RECEIPT=\"$APPROVALS_DIR/channel-registration\"",
             "?*.app) return 0 ;;",
+            "NOT_FOUND_PREFIX=\"No MCP server named \\\"$SERVER_NAME\\\".\"",
         ]
         for (name, script) in [("install-channel.sh", install), ("uninstall-channel.sh", uninstall)] {
             let code = codeLines(script)
@@ -635,6 +636,8 @@ struct ChannelInstallStructureTests {
             ("helper test loosened", "?*.app) return 0 ;;", "*.app) return 0 ;;"),
             ("helper test lets a dot-dot through", "*//* | */./* | */../*) return 1 ;;", "*//* | */./*) return 1 ;;"),
             ("claude_cli drifted", "(cd / && /usr/bin/env", "(cd \"$HOME\" && /usr/bin/env"),
+            ("not-found line drifted", "NOT_FOUND_PREFIX=\"No MCP server named", "NOT_FOUND_PREFIX=\"No MCP server found with name"),
+            ("registered_command drifted", "[ \"$status\" -eq 1 ] || return 1", "true"),
         ]
         for (name, target, replacement) in mutants {
             let mutant = install.replacingOccurrences(of: target, with: replacement)
@@ -666,7 +669,7 @@ struct ChannelInstallStructureTests {
         "if [ -L \"$APPROVALS_DIR\" ] || [ ! -d \"$APPROVALS_DIR\" ] || [ \"$(stat -f %u \"$APPROVALS_DIR\")\" != \"$(id -u)\" ]; then",
         "chmod 700 \"$APPROVALS_DIR\"",
         "if [ -L \"$RECEIPT\" ] || { [ -e \"$RECEIPT\" ] && [ ! -f \"$RECEIPT\" ]; }; then",
-        "CURRENT=\"$(registered_command)\" || CURRENT=\"\"",
+        "CURRENT=\"$(registered_command)\" \\",
         "claude_cli mcp add --scope user --transport stdio \"$SERVER_NAME\" -- \"$HELPER\" > /dev/null \\",
         "RECEIPT_TMP=\"$(mktemp \"$APPROVALS_DIR/.channel-registration.XXXXXXXX\")\"",
         "printf 'version=%s\\npath=%s\\n' \"$CHANNEL_VERSION\" \"$HELPER\" > \"$RECEIPT_TMP\"",
@@ -681,6 +684,13 @@ struct ChannelInstallStructureTests {
     static let uninstallReceiptGuard = "elif [ \"$RECORDED\" != \"$CURRENT\" ]; then"
     static let uninstallRemove = "elif claude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null; then"
     static let uninstallKeep = "if [ -n \"$KEEP_RECEIPT\" ]; then"
+    /// Each script reads the registration fail-safe: an unknown answer stops
+    /// the installer and is an uninstall error, never an empty command.
+    static let installRead = "CURRENT=\"$(registered_command)\" \\"
+    static let installReadRefusal = "|| die \"cannot read the \\\"$SERVER_NAME\\\" entry: "
+    static let uninstallRead = "elif ! CURRENT=\"$(registered_command)\"; then"
+    static let uninstallReadFailure = "FAILURES+=(\"cannot read the \\\"$SERVER_NAME\\\" entry: "
+    static let failOpenRead = "$(registered_command)\" || CURRENT=\"\""
     static let uninstallLink = "elif [ -L \"$RECEIPT\" ]; then"
 
     /// The index of the next `elif`/`else` of the `if` chain that holds
@@ -726,6 +736,20 @@ struct ChannelInstallStructureTests {
         if removal.contains(where: { $0.contains("rm -rf") || $0.contains("rmdir") }) {
             failures.append("uninstall-channel.sh removes only the receipt, never a folder")
         }
+        if let read = code.firstIndex(of: installRead) {
+            if read + 1 >= code.count || !code[read + 1].hasPrefix(installReadRefusal) {
+                failures.append("install-channel.sh must stop when it cannot read the registration")
+            }
+        }
+        let reads = removal.indices.filter { removal[$0] == uninstallRead }
+        if reads.count != 1 || reads[0] + 2 >= removal.count || !removal[reads[0] + 1].hasPrefix(uninstallReadFailure)
+            || removal[reads[0] + 2] != "KEEP_RECEIPT=1" {
+            failures.append("uninstall-channel.sh must report an unreadable registration as an error and keep the receipt")
+        }
+        for (name, lines) in [("install-channel.sh", code), ("uninstall-channel.sh", removal)]
+        where lines.contains(where: { $0.contains(failOpenRead) }) {
+            failures.append("\(name) reads an unknown registration as none")
+        }
         guard let keep = removal.firstIndex(of: uninstallKeep), let link = removal.firstIndex(of: uninstallLink),
               let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), keep < link, link < receipt else {
             return failures + ["uninstall-channel.sh must keep the receipt while a registration step failed, and refuse a symlinked one, before removing one"]
@@ -767,6 +791,10 @@ struct ChannelInstallStructureTests {
         let current = Self.step("CURRENT=") + "\n"
         let receiptTemp = Self.step("RECEIPT_TMP=") + "\n"
         let installMutants: [(String, String)] = [
+            ("an unreadable registration read as none", install.replacingOccurrences(
+                of: Self.installRead + "\n", with: "CURRENT=\"$(registered_command)\" || CURRENT=\"\"\n")),
+            ("an unreadable registration let through", install.replacingOccurrences(
+                of: Self.installRead + "\n", with: "CURRENT=\"$(registered_command)\" \\\n    || true\n")),
             ("bundle name check dropped", install.replacingOccurrences(of: Self.step("is_napcat_helper ") + "\n", with: "")),
             ("helper verification dropped", install.replacingOccurrences(of: verify, with: "")),
             ("Info.plist read before the seal", install.replacingOccurrences(of: plistRead, with: "")
@@ -805,6 +833,10 @@ struct ChannelInstallStructureTests {
             ("receipt match dropped", uninstall.replacingOccurrences(of: Self.uninstallReceiptGuard, with: "elif false; then")),
             ("receipt never read", uninstall.replacingOccurrences(of: Self.uninstallRecorded, with: "RECORDED=\"$CURRENT\"")),
             ("receipt removed even when a step failed", uninstall.replacingOccurrences(of: Self.uninstallKeep, with: "if false; then")),
+            ("an unreadable registration read as none", uninstall.replacingOccurrences(
+                of: Self.uninstallRead, with: "elif false; then\nelse\nCURRENT=\"$(registered_command)\" || CURRENT=\"\"")),
+            ("an unreadable registration not kept", uninstall.replacingOccurrences(
+                of: Self.uninstallRead + "\n", with: Self.uninstallRead + "\n    KEEP_RECEIPT=\"\"\n")),
         ]
         for (name, mutant) in uninstallMutants {
             #expect(mutant != uninstall, "canary setup '\(name)': target text must exist")

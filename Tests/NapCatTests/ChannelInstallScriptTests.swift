@@ -342,6 +342,7 @@ struct ChannelInstallScriptTests {
 
         let second = try sandbox.uninstall()
         #expect(second.status == 0, "\(second.errors)")
+        #expect(second.lines.contains("ok: no \"napcat\" registration; nothing to remove"), "\(second.lines)")
         #expect(second.lines.contains("ok: \(sandbox.receipt) not present; nothing to remove"), "\(second.lines)")
         #expect(Array(sandbox.claudeArguments.suffix(3)) == [Self.mcpGet, Self.mcpRemove, Self.mcpGet])
     }
@@ -709,5 +710,100 @@ struct ChannelInstallScriptTests {
         #expect(!run.stdout.contains("/usr/local/bin/some-server"), "another server's command is never printed")
         #expect(!sandbox.claudeArguments.contains(Self.mcpRemove) && sandbox.registered == "/usr/local/bin/some-server")
         #expect(!sandbox.exists(sandbox.receipt))
+    }
+
+    // MARK: - An answer the scripts do not recognise changes nothing
+
+    /// Scripts the stub's next `mcp get` answers.
+    static func script(_ sandbox: Sandbox, status: Int32, stdout: String = "", stderr: String = "") throws {
+        try sandbox.write(sandbox.root + "/claude/get-status", "\(status)\n")
+        try sandbox.write(sandbox.root + "/claude/get-stdout", stdout)
+        try sandbox.write(sandbox.root + "/claude/get-stderr", stderr)
+    }
+
+    static let secret = "napcat-test-secret-7f3a"
+
+    /// `mcp get` answers neither script was written for: a server that is
+    /// not a stdio server (with a secret in its settings), two Command:
+    /// lines, a renamed Command: line, another not-found wording, the
+    /// not-found line after or before another line or under another status,
+    /// a colored not-found line, no answer at all, and a claude that cannot
+    /// start.
+    static let unrecognisedAnswers: [(String, Int32, String, String)] = [
+        ("an http server", 0, "napcat:\n  Scope: User config (available in all your projects)\n  Status: \u{2713} Connected\n  Type: http\n"
+            + "  URL: https://example.invalid/mcp\n  Headers:\n    Authorization: Bearer \(secret)\n", ""),
+        ("two Command: lines", 0, "napcat:\n  Type: stdio\n  Command: /Applications/NapCat.app/Contents/MacOS/napcat-channel\n"
+            + "  Environment:\n    Command: /tmp/x=\(secret)\n", ""),
+        ("Command: renamed", 0, "napcat:\n  Type: stdio\n  Command line: /Applications/NapCat.app/Contents/MacOS/napcat-channel\n", ""),
+        ("another not-found wording", 1, "", "MCP server napcat not found\n"),
+        ("the not-found line after another", 1, "", "Warning: \(secret)\nNo MCP server named \"napcat\". Run `claude mcp add` to add one.\n"),
+        ("the not-found line before another", 1, "", "No MCP server named \"napcat\". Run `claude mcp add` to add one.\nWarning: \(secret)\n"),
+        ("the not-found line under status 2", 2, "", "No MCP server named \"napcat\". Run `claude mcp add` to add one.\n"),
+        ("a colored not-found line", 1, "", "\u{1B}[31mNo MCP server named \"napcat\". Run `claude mcp add` to add one.\u{1B}[39m\n"),
+        ("no answer at all", 1, "", ""),
+        ("a claude that cannot start", 127, "", "env: node: No such file or directory\n"),
+    ]
+
+    /// The installer refuses rather than risk a second registration: it
+    /// calls only `mcp get`, adds and removes nothing, writes no receipt,
+    /// and prints none of the answer.
+    @Test func anUnrecognisedAnswerStopsTheInstallerWithNothingChanged() throws {
+        for (name, status, stdout, stderr) in Self.unrecognisedAnswers {
+            let sandbox = try Sandbox()
+            try Self.script(sandbox, status: status, stdout: stdout, stderr: stderr)
+            let run = try sandbox.install()
+            #expect(run.status == 1, "\(name): status \(run.status)")
+            #expect(run.errors == ["install-channel: error: cannot read the \"napcat\" entry: claude mcp get answered in a way "
+                                   + "this script does not recognise (a server that is not a stdio server, or a newer Claude Code's "
+                                   + "format). Nothing changed. Inspect it with: claude mcp get napcat"], "\(name): \(run.errors)")
+            #expect(sandbox.claudeArguments == [Self.mcpGet], "\(name): \(sandbox.claudeArguments)")
+            #expect(sandbox.registered == nil && !sandbox.exists(sandbox.receipt), "\(name)")
+            #expect(!(run.stdout + run.stderr).contains(Self.secret) && !run.stdout.contains("example.invalid"),
+                    "\(name): the answer was printed")
+        }
+    }
+
+    /// The uninstaller reports an error, status 1, rather than "nothing to
+    /// remove": it removes nothing, keeps the receipt, and prints none of
+    /// the answer.
+    @Test func anUnrecognisedAnswerIsAnUninstallErrorNotSuccess() throws {
+        for (name, status, stdout, stderr) in Self.unrecognisedAnswers {
+            let sandbox = try Sandbox()
+            #expect(try sandbox.install().status == 0, "\(name): setup")
+            try Self.script(sandbox, status: status, stdout: stdout, stderr: stderr)
+            let run = try sandbox.uninstall()
+            #expect(run.status == 1, "\(name): status \(run.status)")
+            #expect(run.stderr.contains("uninstall-channel finished WITH ERRORS"), "\(name): \(run.errors)")
+            #expect(run.stderr.contains("cannot read the \"napcat\" entry: claude mcp get answered in a way this script does not "
+                                        + "recognise"), "\(name): \(run.errors)")
+            #expect(!run.lines.contains { $0.hasPrefix("ok: no ") || $0.hasPrefix("Done.") }, "\(name): \(run.lines)")
+            #expect(!sandbox.claudeArguments.contains(Self.mcpRemove) && sandbox.registered == sandbox.helper, "\(name)")
+            #expect(sandbox.exists(sandbox.receipt) && run.lines.contains("kept: \(sandbox.receipt), for the registration step reported below"),
+                    "\(name): \(run.lines)")
+            #expect(!(run.stdout + run.stderr).contains(Self.secret), "\(name): the answer was printed")
+        }
+    }
+
+    /// Claude Code 2.1.326's not-found line, whatever hint follows it (the
+    /// hint may name other servers), alone on its status-1 answer: no
+    /// registration. The installer registers; the uninstaller has nothing
+    /// to remove. Neither prints the hint.
+    @Test func theNotFoundLineIsReadWhateverItsHint() throws {
+        let hints = ["Did you mean \"napcat2\"? Run `claude mcp list` to see all.", "Configured servers: alpha-server, beta-server",
+                     "Run `claude mcp add` to add one."]
+        for hint in hints {
+            let line = "No MCP server named \"napcat\". " + hint
+            let sandbox = try Sandbox()
+            try Self.script(sandbox, status: 1, stderr: "\n" + line + "\n\n")
+            let uninstall = try sandbox.uninstall()
+            #expect(uninstall.status == 0 && uninstall.lines.contains("ok: no \"napcat\" registration; nothing to remove"),
+                    "\(hint): \(uninstall.lines) \(uninstall.errors)")
+            let install = try sandbox.install()
+            #expect(install.status == 0 && install.lines.contains(Self.registeredLine(sandbox.helper)), "\(hint): \(install.errors)")
+            #expect(sandbox.claudeArguments == [Self.mcpGet, Self.mcpGet, Self.mcpAdd(sandbox.helper)], "\(hint)")
+            for output in [uninstall, install] {
+                #expect(!(output.stdout + output.stderr).contains(hint), "\(hint): the hint was printed")
+            }
+        }
     }
 }
