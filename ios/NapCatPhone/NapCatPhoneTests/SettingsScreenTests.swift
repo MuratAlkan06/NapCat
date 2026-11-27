@@ -106,7 +106,8 @@ import UIKit
     @Test func theApprovalsRowSaysExactlyThis() {
         #expect(SettingsScreen.approvalsHeader == "Remote approvals")
         #expect(SettingsScreen.approvalsLabel == "Prompts on This iPhone")
-        let paired: String = "Shows permission prompts from your paired Mac and notifies you when one is waiting. "
+        let paired: String = "Shows permission prompts that reach this iPhone through your iCloud, and notifies you "
+            + "when one is waiting. This iPhone can't check which Mac sent a prompt. "
             + "You can't answer from iPhone yet — answer on your Mac."
         let unpaired: String = "Pair this iPhone with your Mac above to see its permission prompts here."
         #expect(SettingsScreen.approvalsPairedFooter == paired)

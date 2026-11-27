@@ -1508,15 +1508,17 @@ final class MenuStateModel: ObservableObject {
     /// Under the Settings switch: what it does today, the one change it
     /// makes you can see, what would stay on the Mac (with the iPhone half
     /// stated as a condition, not a promise) — what the gate recognizes,
-    /// from its fixed lists, and every Read whatever its path — and that
-    /// off is the kill switch.
+    /// from its fixed lists, and every Read whatever its path — that the
+    /// gate judges the prompt, not what a command then does, and that off is
+    /// the kill switch.
     nonisolated static let remoteApprovalsHint =
         "NapCat listens for permission prompts from Claude Code sessions set up for it, and keeps every one on "
         + "this Mac. A waiting push can count some of them by kind (“— 1 Bash permission prompt”). Prompts "
         + "NapCat's gate recognizes as privileged, settings or secret — a fixed list of commands and locations — "
         + "are never counted, and would stay on this Mac even if a later version let the iPhone app answer. Read "
-        + "prompts are never counted either, and would stay on this Mac too, whatever file they name. The terminal "
-        + "dialog always stays answerable. Off withdraws every prompt at once."
+        + "prompts are never counted either, and would stay on this Mac too, whatever file they name. The gate "
+        + "reads the prompt, not what a command goes on to do. The terminal dialog always stays answerable. Off "
+        + "withdraws every prompt at once."
 
     /// The Remote approvals row's caption (canon C2: a fragment, state word
     /// first, no row-title prefix). Off is a choice (nominal). On, it is
