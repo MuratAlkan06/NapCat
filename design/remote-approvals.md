@@ -362,8 +362,8 @@ napcat-channel-version: 3
   since #198, the lifecycle's one open counted however it is spelled in the
   intake, and elsewhere, the state machine that declares it aside, by its
   call's shape (an `open` whose first label is `id`) and by the lifecycle's
-  name before `.open`, also inside a longer name; a reference written
-  neither way is not read),
+  name before `.open`, also inside a longer name or across a postfix
+  `#if`'s directives (#211); a reference written neither way is not read),
   the strict reader as the only parser, and the seam and probe
   unwired (slice S2 replaced that last lock with one that allows them only
   behind the toggle). The refusal catalogue the gate and the seam are tested against is
@@ -1074,11 +1074,12 @@ arms anything.
     type, named in the four targets at its one call and their declarations
     alone (#210), so a second caller fails (one through the relay's own
     `emit` is the relay's word pin's to read); the
-    seam connection's writer and reader, the intake's `receive`, the channel
-    server's stream type and the relay's two receives are pinned whole
-    (below); the four targets call a C write (`write`, `send` and their
-    kin), and declare a function so named, at today's sites alone, and the
-    channel server names `write` on its one standard-output line alone; and
+    seam connection's writer and reader, the intake's `receive` and its
+    initializer, the channel server's stream type and the relay's two
+    receives are pinned whole (below); the four targets call a C
+    write (`write`, `send` and their kin), and declare a function so named,
+    at today's sites alone, and the channel server names `write` on its one
+    standard-output line alone; and
     no other descriptor writer is named in the four targets at all (a stdio
     stream, or its unlocked, word, wide-character or locale writers, a
     copied descriptor, a positional, queued, listed or copying write, a Core
@@ -1118,6 +1119,9 @@ arms anything.
     carry the last writes (#197–#199): the intake's `receive`, from the
     strict read to the entry a verdict goes back through (the gate's answer,
     the armed flag and the lifecycle's one open, with its default window),
+    and its stored members and initializer, each closure it is handed (the
+    armed flag among them) stored as a `let`, exactly as passed in (#211;
+    what the host passes in is not read by that pin),
     the seam connection's `send` and `drain`, the channel server's stream
     type, and the relay's two receives. A line added on any of them fails
     unless the stripper reads it as whitespace or a `//` comment, also

@@ -46,34 +46,36 @@ import Testing
 ///    `Optional` (by its name, its `?` or an alias declared there); inside
 ///    the intake every `apply` and `perform` is pinned at its sites, both
 ///    bodies are pinned whole, `receive` is pinned whole (#198: the strict
-///    read, the re-check, the held checks, the gate's answer, the
-///    lifecycle's one open with its armed flag and default window, and the
-///    entry a verdict goes back through), and the frame writer
-///    (`sendFrame`) is named at today's sites; and the host's connection
-///    writes are pinned at today's site, the connection type is named at
-///    today's sites alone in the four targets, the host names its
-///    connections and its peer reader at today's lines, the seam file its
-///    send, its write, its read and its descriptor, also by the
-///    descriptor's other names (#208: the read sources, a source's
-///    `handle`, at no line today, and the listener's accepted `client`),
-///    and the relay its writer to Claude Code (`emit`), so a new line of
-///    those files that names one of them fails; the seam connection's
-///    writer (`send`) and reader (`drain`) are pinned whole (#197), and so
-///    are the channel server's stream type (`StandardStreams`) and the
-///    relay's two `receive`s, the last writes before Claude Code (#199), so
-///    nothing is added to any of them; the stream type and its writer
-///    (`writeLine`) are named in the four targets at today's lines alone,
-///    the writer's one call among them, and the relay names its open
+///    read, the re-check, the held checks, the gate's answer, the lifecycle's
+///    one open with its armed flag and default window, and the entry a
+///    verdict goes back through), its stored members and its initializer are
+///    pinned whole (#211: each closure it is handed, the armed flag among
+///    them, stored as a `let`, exactly as passed in; what the host passes in
+///    is not read by this pin), and the frame writer (`sendFrame`) is named
+///    at today's sites; and the host's connection writes are pinned at
+///    today's site, the connection type is named at today's sites alone in
+///    the four targets, the host names its connections and its peer reader at
+///    today's lines, the seam file its send, its write, its read and its
+///    descriptor, also by the descriptor's other names (#208: the read
+///    sources, a source's `handle`, at no line today, and the listener's
+///    accepted `client`), and the relay its writer to Claude Code (`emit`),
+///    so a new line of those files that names one of them fails; the seam
+///    connection's writer (`send`) and reader (`drain`) are pinned whole
+///    (#197), and so are the channel server's stream type (`StandardStreams`)
+///    and the relay's two `receive`s, the last writes before Claude Code
+///    (#199), so nothing is added to any of them; the stream type and its
+///    writer (`writeLine`) are named in the four targets at today's lines
+///    alone, the writer's one call among them, and the relay names its open
 ///    requests (`open`) at today's lines (#210), so a second caller of the
 ///    writer, or a set of another type holding the requests a verdict may
 ///    answer, fails (a caller through the relay's own `emit` is read by the
-///    relay's pin instead). A line of the seam file that reaches
-///    the socket by none of those names (the connection handed on whole, or
-///    the descriptor through the peer reader the listener is given) is not
-///    read itself, and k. and n. read the writers they list by their
-///    spelled names only: a write to that socket, there or in code it is
-///    handed to, in a spelling neither reads (n. says which) or through a
-///    file API and a path, is not caught by them;
+///    relay's pin instead). A line of the seam file that reaches the socket
+///    by none of those names (the connection handed on whole, or the
+///    descriptor through the peer reader the listener is given) is not read
+///    itself, and k. and n. read the writers they list by their spelled names
+///    only: a write to that socket, there or in code it is handed to, in a
+///    spelling neither reads (n. says which) or through a file API and a
+///    path, is not caught by them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -1265,7 +1267,8 @@ struct DecisionSinkStructureTests {
         // gate's chain reflowed), and body-only changes outside it (a
         // statement at the end of the initializer, whose closing brace stands
         // before `receive`, and the prune's first line): free for this pin,
-        // and every other whole pin reads each as the tree.
+        // and every other whole pin reads each as the tree (since #211 but
+        // the initializer's own, which reads the statement at its end).
         let initialized: String = "        self.audit = audit\n    }\n"
         let pruned: String = "    private func prune() {\n        let moment = now()\n"
         for anchor in [initialized, pruned] {
@@ -1283,8 +1286,129 @@ struct DecisionSinkStructureTests {
             $0.replacingOccurrences(of: initialized, with: "        self.audit = audit\n        zzReady()\n    }\n")
                 .replacingOccurrences(of: pruned, with: "    private func prune() {\n        let moment: Int = now()\n")
         }
+        // Since #211 the initializer is pinned whole too: the statement at its
+        // end is that pin's to read (asserted below), so that control is read
+        // by every other whole pin.
+        let besideInit: [WholePin] = Self.allWholePins.filter { $0.whole != Self.initWhole }
+        let controls: [(String, Sources, [WholePin])] = [("whitespace only", reflowed, Self.allWholePins),
+                                                         ("comments only", commented, Self.allWholePins), ("bodies outside the pin", outside, besideInit)]
+        for (name, control, others) in controls {
+            #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
+            #expect(Self.wholeFailures(control, pin).isEmpty && Self.wholeFailures(control, others) == Self.wholeFailures(sources, others),
+                    "control '\(name)': \(Self.wholeFailures(control, others))")
+        }
+        #expect(!Self.wholeFailures(outside, [Self.initPin]).isEmpty, "the statement at the initializer's end was NOT caught by its pin (#211)")
+    }
+
+    // MARK: - f, continued. The intake's stored members and initializer, whole (#211)
+
+    /// The intake's stored members and its initializer, whole (from the
+    /// token before the first, the last of the constant above it, so no
+    /// attribute or modifier joins them): each closure it is handed — the
+    /// armed flag, the secrets, the prompt IDs, the clock, the record sink,
+    /// the frame writer, the closer and the audit — stored as a `let`,
+    /// exactly as it is passed in, and the held prompts beside them.
+    static let initWhole: String = [
+        "ApprovalChannel.maxOpenRequests private let armed: () -> Bool", "private let secrets: () -> [String]?",
+        "private let newPromptID: () -> PromptID?", "private let now: () -> Int", "private let records: ApprovalRecordSink",
+        "private let sendFrame: (ConnectionKey, String) -> Void", "private let closeConnection: (ConnectionKey) -> Void",
+        "private let audit: (ApprovalAuditEvent) -> Void", "private(set) var prompts: [PromptID: Entry] = [:]",
+        "init(armed: @escaping () -> Bool, secrets: @escaping () -> [String]?, newPromptID: @escaping () -> PromptID?,",
+        "now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,",
+        "closeConnection: @escaping (ConnectionKey) -> Void, audit: @escaping (ApprovalAuditEvent) -> Void) {",
+        "self.armed = armed", "self.secrets = secrets", "self.newPromptID = newPromptID", "self.now = now", "self.records = records",
+        "self.sendFrame = sendFrame", "self.closeConnection = closeConnection", "self.audit = audit", "}",
+    ].joined(separator: " ")
+    static let initPin: WholePin = (ApprovalChannelStructureTests.intakeFile, #"\binit\b"#, initWhole)
+
+    /// The armed closure as the initializer stores it, and the road #207's
+    /// verification found there, as inert text (never compiled): the closure
+    /// the host passes in, ORed with a switch kept in a new file.
+    static let armedStored: String = "        self.armed = armed\n"
+    static let armedOverridden: String = "        self.armed = { armed() || ZZSwitch.isOn }\n"
+    static let switchFile: String = """
+        import Foundation
+
+        enum ZZSwitch {
+            static var isOn: Bool { ProcessInfo.processInfo.environment["ZZ"] == "zzzzz" }
+        }
+
+        """
+
+    /// The intake's stored members and its initializer are pinned whole
+    /// (#211), so every closure it is handed is stored as a `let`, exactly
+    /// as passed in. The road #207's verification found, as inert text —
+    /// the armed closure ORed with a switch in a new file, where the
+    /// initializer stores it — is caught by this pin alone: every other pin
+    /// of this suite reads it as the tree.
+    @Test func theIntakesInitializerIsPinnedWhole() throws {
+        let sources: Sources = try Self.uncutSources()
+        let pin: [WholePin] = [Self.initPin]
+        #expect(Self.wholeFailures(sources, pin).isEmpty, "\(Self.wholeFailures(sources, pin))")
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        let declared: String = "    private let armed: () -> Bool\n"
+        let secretsStored: String = "        self.secrets = secrets\n"
+        let nowStored: String = "        self.now = now\n"
+        let recordsStored: String = "        self.records = records\n"
+        let auditStored: String = "        self.audit = audit\n    }\n"
+        let constant: String = "    static let maxPromptsPerConnection = 2 * ApprovalChannel.maxOpenRequests\n"
+        let parameters: String = "         now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame:"
+        let pruned: String = "    private func prune() {\n        let moment = now()\n"
+        let anchors: [String] = [Self.armedStored, declared, secretsStored, nowStored, recordsStored, auditStored, constant, parameters, pruned]
+        let intakeText: String = Self.text(intake, in: sources)
+        for anchor in anchors {
+            let found: Int = ApprovalChannelStructureTests.count(anchor, in: intakeText)
+            #expect(found == 1, "vacuity: '\(anchor.prefix(50))' is in the intake once")
+        }
+        let overridden: Sources = Self.adding(Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: Self.armedStored, with: Self.armedOverridden) }, "ZZSwitch.swift", Self.switchFile)
+        #expect(overridden.map { $0.text } != sources.map { $0.text }, "the override did not apply")
+        #expect(!Self.wholeFailures(overridden, pin).isEmpty, "the armed closure's override was NOT caught by the initializer's pin")
+        let others: [String] = Self.othersCatching(overridden, besides: "whole bodies", baseline: Self.pinBaseline(sources))
+        #expect(others.isEmpty, "the override is the initializer's pin's to catch, but \(others) caught it too")
+        // More canaries: each other closure stored otherwise (the secrets
+        // dropped, the clock frozen, the sink swapped, the audit dropped),
+        // the armed flag made a variable, an attribute on the first stored
+        // member, a second initializer, a statement after the stores, and the
+        // pinned text kept in a literal beside a changed one.
+        let decoy: String = constant + "    static let zz = \"" + Self.initWhole + "\"\n"
+        let second: String = "\n    convenience init(zz: Int) {\n        self.init(armed: { true }, secrets: { [] }, newPromptID: { nil }, now: { 0 }, "
+            + "records: ZZSink(), sendFrame: { _, _ in }, closeConnection: { _ in }, audit: { _ in })\n    }\n"
+        let mutants: [(String, Sources)] = [
+            ("the secrets dropped", Self.mutate(sources, intake) { $0.replacingOccurrences(of: secretsStored, with: "        self.secrets = { [] }\n") }),
+            ("the clock frozen", Self.mutate(sources, intake) { $0.replacingOccurrences(of: nowStored, with: "        self.now = { 0 }\n") }),
+            ("the record sink swapped", Self.mutate(sources, intake) { $0.replacingOccurrences(of: recordsStored, with: "        self.records = ZZSink()\n") }),
+            ("the audit dropped", Self.mutate(sources, intake) { $0.replacingOccurrences(of: auditStored, with: "        self.audit = { _ in }\n    }\n") }),
+            ("the armed flag made a variable", Self.mutate(sources, intake) { $0.replacingOccurrences(of: declared, with: "    private var armed: () -> Bool\n") }),
+            ("an attribute on the first stored member", Self.mutate(sources, intake) { $0.replacingOccurrences(of: declared, with: "    @ZZWrapped\n" + declared) }),
+            ("a second initializer", Self.mutate(sources, intake) { $0.replacingOccurrences(of: auditStored, with: auditStored + second) }),
+            ("a statement after the stores", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: auditStored, with: "        self.audit = audit\n        zzReady()\n    }\n") }),
+            ("the pinned text kept in a literal, the real one changed", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: secretsStored, with: "        self.secrets = { [] }\n").replacingOccurrences(of: constant, with: decoy) }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, pin).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: whitespace and comments inside (a parameter on
+        // its own line, a blank line and comments between the stored
+        // members), and changes outside it (the constant above it typed, its
+        // last token kept; the prune's first line): free for this pin, and
+        // every other whole pin reads each as the tree.
+        let reflowed: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: parameters, with: "         now: @escaping () -> Int,\n\t\trecords: ApprovalRecordSink, sendFrame:")
+                .replacingOccurrences(of: declared, with: declared + "\n")
+        }
+        let commented: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: declared, with: "    // the host's flag\n    private let armed: () -> Bool // never set here\n")
+        }
+        let outside: Sources = Self.mutate(sources, intake) {
+            $0.replacingOccurrences(of: constant, with: "    static let maxPromptsPerConnection: Int = 2 * ApprovalChannel.maxOpenRequests\n")
+                .replacingOccurrences(of: pruned, with: "    private func prune() {\n        let moment: Int = now()\n")
+        }
         let tree: [String] = Self.wholeFailures(sources, Self.allWholePins)
-        for (name, control) in [("whitespace only", reflowed), ("comments only", commented), ("bodies outside the pin", outside)] {
+        for (name, control) in [("whitespace only", reflowed), ("comments only", commented), ("changes outside the pin", outside)] {
             #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
             #expect(Self.wholeFailures(control, pin).isEmpty && Self.wholeFailures(control, Self.allWholePins) == tree,
                     "control '\(name)': \(Self.wholeFailures(control, Self.allWholePins))")
@@ -2507,6 +2631,7 @@ struct DecisionSinkStructureTests {
         pins.append(contentsOf: seamPins)
         pins.append(receivePin)
         pins.append(contentsOf: channelPins)
+        pins.append(initPin)
         return pins
     }()
     /// Every pin of this suite that reads the four targets' sources, by
@@ -3538,14 +3663,16 @@ struct DecisionSinkStructureTests {
     }
 
     /// Today's declarations of a name `pinnedNames` or the modules hold, by
-    /// file: each the type's own declaration (seventy-three: the intake's
+    /// file: each the type's own declaration (seventy-four: the intake's
     /// entry since `receive` is pinned whole, #198, the channel server's
-    /// stream type since it is, #199, and the relay's type since its one
-    /// construction, the stream writer's call, is pinned, #210), none
-    /// borrowing an imported name.
+    /// stream type since it is, #199, the relay's type since its one
+    /// construction, the stream writer's call, is pinned, #210, and the
+    /// intake's audit event since its initializer is, #211), none borrowing
+    /// an imported name.
     static let homeDeclarations: [String: [String: Int]] = [
         ApprovalChannelStructureTests.intakeFile: [
-            "class ApprovalIntake": 1, "protocol ApprovalRecordSink": 1, "struct Entry": 1, "typealias ConnectionKey": 1],
+            "class ApprovalIntake": 1, "enum ApprovalAuditEvent": 1, "protocol ApprovalRecordSink": 1, "struct Entry": 1,
+            "typealias ConnectionKey": 1],
         ApprovalChannelStructureTests.hostFile: ["struct Limits": 1],
         "ChargeLimiter.swift": ["enum ChargeLimitFeatureState": 1],
         RecordPath.recordPathFile: ["enum ApprovalRecordOutcome": 1, "protocol GateApprovedPrompt": 1],
@@ -3631,10 +3758,10 @@ struct DecisionSinkStructureTests {
         for name in ["Darwin", "Dispatch", "Foundation", "CryptoKit", "NapCat", "NapCatWire", "NapCatSeam", "NapCatChannel", "Swift"] {
             #expect(modules.contains(name), "vacuity: '\(name)' is an imported module")
         }
-        // Every home is a type's own: seventy-three, none named like a module
+        // Every home is a type's own: seventy-four, none named like a module
         // or like the imported types the pinned lines call.
         let homes: [String] = Self.homeDeclarations.values.flatMap { $0.keys }
-        #expect(homes.count == 73 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
+        #expect(homes.count == 74 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
         let imported: Set<String> = modules.union(["DispatchSource", "DispatchQueue", "P256", "SHA256", "Int32", "Sendable", "Equatable"])
         #expect(homes.allSatisfy { !imported.contains(Self.asciiWords($0).last ?? "") }, "a home borrows an imported name: \(homes.sorted())")
         let intake: String = ApprovalChannelStructureTests.intakeFile
