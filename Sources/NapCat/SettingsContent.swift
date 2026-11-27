@@ -293,7 +293,7 @@ extension MenuStateModel {
 
     nonisolated static let pairingNotPairedLine = "Not paired — remote answers need a paired iPhone"
     nonisolated static let pairingNotPairedHint =
-        "Pairing stores the iPhone's public key on this Mac. Nothing is armed by pairing. No prompt leaves this Mac; while the code is up, the Mac only looks for the iPhone's reply in your iCloud."
+        "Pairing stores the iPhone's public key on this Mac. Nothing is armed by pairing. No prompt leaves this Mac; while the code is up, the Mac looks for the iPhone's reply in your iCloud, and it asks iCloud to delete that reply when the pairing ends."
     nonisolated static let pairingRunningLine = "Pairing — scan the code with your iPhone"
     nonisolated static let pairingRotatingLine = "Rotating — the current pairing keeps working until you confirm the new code"
     nonisolated static let pairButtonTitle = "Pair iPhone…"

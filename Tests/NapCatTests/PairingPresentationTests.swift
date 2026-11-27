@@ -486,7 +486,8 @@ struct PairingPresentationTests {
         let code = try #require(PairingFingerprint(lowercaseHex: "8a2c854aa45c"))
         let since = Date(timeIntervalSince1970: 1_800_000_000)
         let hint = "Pairing stores the iPhone's public key on this Mac. Nothing is armed by pairing. No prompt leaves this Mac; "
-            + "while the code is up, the Mac only looks for the iPhone's reply in your iCloud."
+            + "while the code is up, the Mac looks for the iPhone's reply in your iCloud, and it asks iCloud to delete "
+            + "that reply when the pairing ends."
         #expect(MenuStateModel.pairingRows(.notPaired) == [
             .pairingStatus(line: PanelLine(text: "Not paired — remote answers need a paired iPhone", severity: .nominal),
                            fingerprint: nil, hint: hint),
