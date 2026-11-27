@@ -845,10 +845,12 @@ struct ClaudeBusyHookScriptTests {
     }
 
     /// Hook v6: newer plutil rejects a whole document carrying a `\u0000`
-    /// escape, so a NUL in a field the hook never reads used to drop a Stop
-    /// at the gate and leave the marker stuck. The escape is mapped before
-    /// the gate now: the Stop still CLEARS, logged exactly as a clean one —
-    /// for a top-level field and for one nested in a background task.
+    /// escape, so a NUL in a field the hook does not read used to drop a
+    /// Stop at the gate and leave the marker stuck. The escape is mapped
+    /// before the gate now: the Stop still CLEARS, logged exactly as a clean
+    /// one — for a top-level field and for one nested in a background task.
+    /// (Hook v8 reads the final message only on a Stop kept for background
+    /// work; these Stops keep nothing, so it stays unread here.)
     @Test func aNullEscapeInAnUnreadFieldNoLongerDropsTheEvent() {
         let extras = [
             #""last_assistant_message":"bin\u0000dump""#,
@@ -878,7 +880,8 @@ struct ClaudeBusyHookScriptTests {
     /// gate now, so the payload passes it whatever this OS's plutil makes of
     /// lone surrogates (no probe needed): the Stop CLEARS, logged exactly as a
     /// clean one — for a lone high and a lone low surrogate, top-level and
-    /// nested, and for a valid pair (mapped too, by design).
+    /// nested, and for a valid pair (mapped too, by design). (As above, the
+    /// final message stays unread on these Stops.)
     @Test func aSurrogateEscapeInAnUnreadFieldNoLongerDropsTheEvent() {
         let pair = "\\ud83d\\ude00"  // a VALID pair (U+1F600), as its two JSON escapes
         let extras = [
@@ -1215,7 +1218,9 @@ struct ClaudeBusyHookScriptTests {
                 "\(Self.versionStampFailures(script, expected: ClaudeBusyConstants.hookVersion))")
         // 5 → 6: a `\u0000` escape on stdin is mapped before the plutil gate.
         // 6 → 7: the marker carries the episode start (`ep=`, sixth field).
-        #expect(ClaudeBusyConstants.hookVersion == 7, "the contract value of this slice")
+        // 7 → 8: a Stop kept for background work logs whether the final
+        // message asks (one closed word in hook.log; the marker unchanged).
+        #expect(ClaudeBusyConstants.hookVersion == 8, "the contract value of this hook version")
         #expect(ClaudeBusyConstants.hookVersionStampPrefix == "# napcat-hook-version: ")
     }
 
