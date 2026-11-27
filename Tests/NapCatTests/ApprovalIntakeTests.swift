@@ -594,8 +594,9 @@ struct ApprovalIntakeTests {
 
     /// A read's mark: a prompt is new to the first read after it opened and
     /// to no later one, and one that opens after a read is new to the next.
-    /// One that opens in a read's own second, after it, is new to no read.
-    /// The counts do not depend on the mark, and a read changes nothing the
+    /// One that opens in a read's own second, after it, is new to the next
+    /// read too (here one in that same second), and to none after it. The
+    /// counts do not depend on the mark, and a read changes nothing the
     /// intake holds.
     @Test func eachPromptIsNewToOneReadAtMost() {
         let harness = IntakeHarness()
@@ -614,13 +615,43 @@ struct ApprovalIntakeTests {
         #expect(again.recent == [.bash], "the counts do not depend on the mark")
         harness.receive("efghi")
         let sameSecond = harness.intake.waitingPromptRead(after: again.mark, within: within)
-        #expect(sameSecond.newPrompts == 0, "opened in the read's own second, after it: new to no read")
+        #expect(sameSecond.newPrompts == 1, "opened in the read's own second, after it: new to the next read")
         harness.now += 1
         harness.receive("fghij")
         let next = harness.intake.waitingPromptRead(after: sameSecond.mark, within: within)
         #expect(next.newPrompts == 1)
         #expect(harness.intake.waitingPromptRead(after: next.mark, within: within).newPrompts == 0)
         #expect(harness.intake.waitingPromptRead(after: nil, within: within).newPrompts == 6, "with no mark, every prompt in the window")
+    }
+
+    /// A prompt relayed later in a read's own second is new to the next read,
+    /// in the next second, and to none after it, and never counted as having
+    /// evidence, whatever it has: the mark holds that second and how many of
+    /// its prompts the read saw, not which. So beside a covered prompt the
+    /// read already saw, a kept one adds no evidence, and a covered one of
+    /// its own is new without it.
+    @Test func aPromptLaterInAReadsOwnSecondIsNewToTheNextReadWithoutEvidence() throws {
+        let harness = IntakeHarness()
+        let within = ApprovalIntake.waitingContextSeconds
+        let seen = try #require(harness.forward("abcde"))
+        harness.intake.noteSubscriptionFound(seen)
+        let first = harness.intake.waitingPromptRead(after: nil, within: within)
+        #expect(first.newPrompts == 1 && first.newPromptsWithEvidence == 1, "vacuity: the read saw the covered prompt")
+        harness.receive("bcdef", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#, from: 2)
+        harness.now += 1
+        let next = harness.intake.waitingPromptRead(after: first.mark, within: within)
+        #expect(next.newPrompts == 1, "the kept prompt, relayed in the first read's second after it, is new to the next read")
+        #expect(next.newPromptsWithEvidence == 0, "and adds no evidence: the covered one the first read saw is not new again")
+        let third = harness.intake.waitingPromptRead(after: next.mark, within: within)
+        #expect(third.newPrompts == 0, "new to one read at most")
+        let own = try #require(harness.forward("cdefg"))
+        harness.intake.noteSubscriptionFound(own)
+        #expect(harness.intake.prompts[own]?.hasPushEvidence == true, "vacuity: this one has evidence")
+        harness.now += 1
+        let fourth = harness.intake.waitingPromptRead(after: third.mark, within: within)
+        #expect(fourth.newPrompts == 1 && fourth.newPromptsWithEvidence == 0,
+                "relayed in the third read's second after it: new, never counted as having evidence")
+        #expect(fourth.recentWithEvidence == [.bash, .bash], "the counts' evidence is read as before")
     }
 
     /// New prompts are those of the last `newPromptSeconds` (exactly that
@@ -650,9 +681,10 @@ struct ApprovalIntakeTests {
     }
 
     /// What crosses from the seam to the alert lane, by shape: tool kinds,
-    /// counts and the mark, which holds one Int (the intake's clock), never a
-    /// prompt ID, preview or session; and the lane's context, counts only. A
-    /// new field fails this until it is read here.
+    /// counts and the mark, which holds two Ints (the intake's clock and how
+    /// many prompts of that second the read saw), never a prompt ID, preview
+    /// or session; and the lane's context, counts only. A new field fails
+    /// this until it is read here.
     @Test func whatCrossesIsKindsCountsAndAMark() {
         let harness = IntakeHarness()
         harness.receive("abcde")
@@ -660,7 +692,7 @@ struct ApprovalIntakeTests {
         let fields: [(label: String, type: String)] = Mirror(reflecting: read).children.map { ($0.label ?? "", "\(type(of: $0.value))") }
         #expect(fields.map(\.label) == ["recent", "recentWithEvidence", "newPrompts", "newPromptsWithEvidence", "mark"])
         #expect(fields.map(\.type) == ["Array<ApprovalTool>", "Array<ApprovalTool>", "Int", "Int", "PromptRelayMark"])
-        #expect(Mirror(reflecting: read.mark).children.map { "\(type(of: $0.value))" } == ["Int"], "the mark is one Int")
+        #expect(Mirror(reflecting: read.mark).children.map { "\(type(of: $0.value))" } == ["Int", "Int"], "the mark is two Ints")
         #expect(Mirror(reflecting: WaitingPromptContext.none).children.map { "\(type(of: $0.value))" }
                 == ["WaitingPromptCounts", "WaitingPromptCounts", "Int", "Int"])
     }

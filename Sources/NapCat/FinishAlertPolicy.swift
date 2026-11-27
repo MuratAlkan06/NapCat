@@ -138,7 +138,7 @@ struct WaitingPromptContext: Equatable, Sendable {
     /// The prompts relayed since the previous read and in the last 10 s,
     /// whatever the gate made of them.
     var newPrompts = 0
-    /// Of `newPrompts`, the ones with that evidence.
+    /// Of `newPrompts`, the ones known to have that evidence.
     var newPromptsWithEvidence = 0
 
     static let none = WaitingPromptContext()

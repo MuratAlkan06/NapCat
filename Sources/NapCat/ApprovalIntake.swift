@@ -130,10 +130,14 @@ extension ApprovalClassification {
 
 /// Where one waiting alert's read of the intake left off
 /// (`ApprovalIntake.waitingPromptRead`): the intake's own clock at that
-/// read, never a prompt's ID. Opaque outside this file: the caller keeps it
-/// and hands it back, and can neither read one nor make one.
+/// read and how many prompts of that second the read saw, never a prompt's
+/// ID. Its storage is private to this file: elsewhere a mark comes only
+/// from a read, and the caller keeps it and hands it back. A read also
+/// accepts no mark at all (nil), and then every prompt in its window is new
+/// to it.
 struct PromptRelayMark: Equatable, Sendable {
     fileprivate let second: Int
+    fileprivate let seen: Int
 }
 
 /// What one waiting alert reads of the intake: tool kinds and counts only,
@@ -147,10 +151,14 @@ struct WaitingPromptRead: Equatable, Sendable {
     /// that the phone's own prompt push covers them
     /// (`ApprovalIntake.Entry.hasPushEvidence`).
     let recentWithEvidence: [ApprovalTool]
-    /// The prompts relayed after the mark the read was given and in the last
-    /// `ApprovalIntake.newPromptSeconds`, whatever the gate made of them.
+    /// The prompts relayed after the read that left the mark this read was
+    /// given, and in the last `ApprovalIntake.newPromptSeconds`, whatever the
+    /// gate made of them.
     let newPrompts: Int
-    /// Of `newPrompts`, the ones with that evidence.
+    /// Of `newPrompts`, the ones known to have that evidence. One of the
+    /// mark's own second that the earlier read did not see is new here but
+    /// never counted as having it: the mark cannot say which of that second's
+    /// prompts it is.
     let newPromptsWithEvidence: Int
     /// Where this read left off: the next read is handed it.
     let mark: PromptRelayMark
@@ -333,23 +341,29 @@ final class ApprovalIntake {
     /// clock. Of the prompts that opened in the last `seconds`: the tools of
     /// those the gate would forward, from sessions still connected, and of
     /// those the tools of the ones with evidence (`Entry.hasPushEvidence`).
-    /// Of the prompts that opened after `mark` (nil: any) and in the last
-    /// `newPromptSeconds`, whatever the gate made of them and whether or not
-    /// their session is still connected: how many, and how many of them have
-    /// evidence. A prompt that opens in a read's own second, after it, is new
-    /// to no read, so it folds no alert. The read changes nothing here: the
-    /// caller keeps the mark it returns.
+    /// Of the prompts relayed after the read that left `mark` (nil: any) and
+    /// in the last `newPromptSeconds`, whatever the gate made of them and
+    /// whether or not their session is still connected: how many, and how
+    /// many of them are known to have evidence. The mark holds that read's
+    /// second and how many prompts of it the read saw, so the rest of that
+    /// second, relayed after it, is new to this read; which of that second's
+    /// prompts they are the mark cannot say, so they count as new and never
+    /// as having evidence (they can keep an alert, never fold one). So, each
+    /// read handed the mark the one before it returned, a prompt is new to
+    /// one read at most. The read changes nothing here: the caller keeps the
+    /// mark it returns.
     func waitingPromptRead(after mark: PromptRelayMark?, within seconds: Int) -> WaitingPromptRead {
         let moment = now()
         let after: Int = mark?.second ?? Int.min
         let recent = prompts.values.filter { moment - $0.lifecycle.createdAt <= seconds && $0.forwardable != nil }
-        let relayed = prompts.values.filter {
-            $0.lifecycle.createdAt > after && moment - $0.lifecycle.createdAt <= Self.newPromptSeconds
-        }
+        let window = prompts.values.filter { moment - $0.lifecycle.createdAt <= Self.newPromptSeconds }
+        let relayed = window.filter { $0.lifecycle.createdAt > after }
+        // None once the mark's second is past the window.
+        let rest: Int = max(0, window.filter { $0.lifecycle.createdAt == after }.count - (mark?.seen ?? 0))
         return WaitingPromptRead(recent: recent.compactMap(\.forwardable),
                                  recentWithEvidence: recent.filter(\.hasPushEvidence).compactMap(\.forwardable),
-                                 newPrompts: relayed.count, newPromptsWithEvidence: relayed.filter(\.hasPushEvidence).count,
-                                 mark: PromptRelayMark(second: moment))
+                                 newPrompts: relayed.count + rest, newPromptsWithEvidence: relayed.filter(\.hasPushEvidence).count,
+                                 mark: PromptRelayMark(second: moment, seen: window.filter { $0.lifecycle.createdAt == moment }.count))
     }
 
     /// The record path's finding for one held prompt: the Mac found the

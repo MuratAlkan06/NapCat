@@ -152,8 +152,9 @@ final class RemoteApprovalsController {
     /// `ApprovalIntake.waitingContextSeconds`, and of those the ones with
     /// evidence; how many prompts were relayed since the previous read and
     /// in the last `ApprovalIntake.newPromptSeconds`, and how many of those
-    /// have evidence. Every read moves the mark on. Nothing while not
-    /// listening — off, the host is never even reached, and the mark stays.
+    /// are known to have evidence. Every read moves the mark on. Nothing
+    /// while not listening — off, the host is never even reached, and the
+    /// mark stays.
     func waitingPrompts() -> WaitingPromptContext {
         guard state.phase == .listening, let host else { return .none }
         let mark = relayMark

@@ -581,6 +581,66 @@ struct WaitingPromptContextTests {
         }
     }
 
+    /// A read (the arm's) at one second; session A's prompt, kept by the
+    /// gate (no phone push), relayed later in that second; session B's
+    /// covered prompt the next second; then a change holding A's waiting
+    /// write alone. A's prompt is new to that change's read, so the read
+    /// finds two new prompts, and A's plain alert goes out. (Both reach the
+    /// seam through the test's one relay: which server relays a prompt
+    /// changes no count of the read.)
+    @Test func aKeptPromptLaterInAReadsOwnSecondKeepsTheNextLoneWaitsAlert() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.controller.reconcile()
+            #expect(log.reads == [.none], "vacuity: the arm read this second and saw no prompt")
+            world.prompt("abcde", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
+            #expect(world.nextPrompt(endingIn: "suppressed.gate.forbidden.privilegeEscalation") != nil, "A's prompt, kept on the Mac")
+            clock.advance(1)
+            _ = try relay(world, sink, "bcdef")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last == WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), countsWithEvidence: WaitingPromptCounts(bash: 1),
+                                                           newPrompts: 2, newPromptsWithEvidence: 1),
+                    "A's prompt is new to this read: two new prompts, one with evidence")
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1, prompts: .none)], "A's alert is sent")
+        }
+    }
+
+    /// A prompt relayed later in a read's own second never brings evidence
+    /// to the next read: a covered prompt the arm's read saw, then a kept
+    /// one later in that second, then a lone wait the next second. The read
+    /// finds one new prompt, without evidence, and the alert goes out.
+    @Test func aPromptLaterInAReadsOwnSecondBringsNoEvidence() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.controller.reconcile()
+            #expect(log.reads == [Self.covered], "vacuity: the arm read the covered prompt")
+            world.prompt("bcdef", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
+            #expect(world.nextPrompt(endingIn: "suppressed.gate.forbidden.privilegeEscalation") != nil)
+            clock.advance(1)
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last == WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), countsWithEvidence: WaitingPromptCounts(bash: 1),
+                                                           newPrompts: 1),
+                    "one new prompt, the kept one, without evidence")
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 0, prompts: .none)])
+        }
+    }
+
     /// Every read moves the mark, whether or not the rule yields: two waits
     /// at once (no fold) use the prompt up, and so does a read before its
     /// evidence existed, so a later lone wait alerts.
