@@ -1139,10 +1139,11 @@ arms anything.
     superclass, conformance or member of it and no second reader wired in
     `start` takes its one read of standard input over; the server's `main`,
     which hands the reader's lines to the relay, is pinned whole too, #221;
-    a read of standard input elsewhere in the channel target, and the
-    wire's line reader's own body, are not read), and the relay's two
-    receives. A line added on any of them fails unless the stripper reads
-    it as whitespace or a `//` comment, also
+    a read of standard input anywhere else the server's code reaches
+    (elsewhere in the channel target, or in seam code it calls, a new seam
+    file among them), and the wire's line reader's own body, are not read),
+    and the relay's two receives. A line added on any of them fails unless
+    the stripper reads it as whitespace or a `//` comment, also
     beside a pinned copy kept in a literal or an inactive block. A raw-text
     lock over the four targets and the phone app keeps out the scalars a
     text reading drops or matches to another: control and format characters,

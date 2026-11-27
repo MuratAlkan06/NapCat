@@ -81,17 +81,19 @@ import Testing
 ///    `start` takes the read over. The server's `main`, which hands the
 ///    reader's lines to the relay, is pinned whole too (#221's pin, in
 ///    `ApprovalChannelStructureTests`, read here among the whole pins, so m.
-///    reads its names). Not read: a read of standard input elsewhere in the
-///    channel target, and the wire's line reader's own body. A line of the seam
-///    file that reaches the socket by none of those names (the connection
-///    handed on whole, or the descriptor through the peer reader the listener
-///    is given) is not read itself, nor is one that changes the frames read
-///    from the socket without naming any of them (the handler the connection's
-///    `start` stores, the connection's line reader's declaration; a type named
-///    like the wire's line reader is m.'s to read); and k. and n. read the
-///    writers they list by their spelled names only: a write to that socket,
-///    there or in code it is handed to, in a spelling neither reads (n. says
-///    which) or through a file API and a path, is not caught by them;
+///    reads its names). Not read: a read of standard input anywhere else the
+///    server's code reaches (elsewhere in the channel target, or in seam code
+///    it calls, a new seam file among them), and the wire's line reader's own
+///    body. A line of the seam file that reaches the socket by none of those
+///    names (the connection handed on whole, or the descriptor through the peer
+///    reader the listener is given) is not read itself, nor is one that changes
+///    the frames read from the socket without naming any of them (the handler
+///    the connection's `start` stores, the connection's line reader's
+///    declaration; a type named like the wire's line reader is m.'s to read);
+///    and k. and n. read the writers they list by their spelled names only: a
+///    write to that socket, there or in code it is handed to, in a spelling
+///    neither reads (n. says which) or through a file API and a path, is not
+///    caught by them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
