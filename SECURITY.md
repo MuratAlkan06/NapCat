@@ -57,6 +57,20 @@ user defaults without printing either. The full rationale and the honest
 trade-offs are in the README's [Security model](README.md#security-model)
 section.
 
+The optional Claude busy hook (`scripts/claude-busy-hook.sh`) runs as you,
+makes no network request, and writes only to its own folder,
+`~/Library/Application Support/NapCat/claude-busy/`. Claude Code passes it
+each event's details, which can include your prompt or Claude's final
+message; the hook keeps them in a private temporary file there while it
+runs and deletes the file before it exits (a later run deletes one left
+behind by a run that was killed). Since hook version 8, when a turn ends
+while background work is still running, the hook looks at the last 400
+bytes of Claude's final message, on the Mac, to judge whether the turn
+ended with a question. It keeps none of the text and logs one word for it
+in that folder's `hook.log`. The README's
+[Claude busy detection](README.md#claude-busy-detection-track-b--optional-read-only)
+section has the details.
+
 ## The paired iPhone key
 
 Remote approvals (a preview, off by default) pair one iPhone with the Mac.
