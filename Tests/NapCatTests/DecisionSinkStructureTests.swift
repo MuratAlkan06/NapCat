@@ -69,19 +69,24 @@ import Testing
 ///    requests (`open`) at today's lines (#210), so a second caller of the
 ///    writer, or a set of another type holding the requests a verdict may
 ///    answer, fails (a caller through the relay's own `emit` is read by the
-///    relay's pin instead); and the channel server's stdin reader
-///    (`StandardInput.drain`), which decides every byte the relay sees, is
-///    pinned whole, and the server names its one `read` at its line (#212),
-///    so no member of the reader's type so named takes that call over (the
-///    reader's initializer and `start` and the server's `main`, which wire
-///    its lines to the relay, are not pinned: a second reader of standard
-///    input by another name, wired in there, is not read). A line of the seam
-///    file that reaches the socket by none of those names (the connection
-///    handed on whole, or the descriptor through the peer reader the listener
-///    is given) is not read itself, and k. and n. read the writers they list
-///    by their spelled names only: a write to that socket, there or in code
-///    it is handed to, in a spelling neither reads (n. says which) or through
-///    a file API and a path, is not caught by them;
+///    relay's pin instead); and the channel server's stdin reader's type
+///    (`StandardInput`) is pinned whole (#212): its header (no superclass,
+///    no conformance but today's), its stored members (the read source,
+///    the line handler and the line reader, each of today's type), its
+///    initializer, `start` and its reader (`drain`), the server file's one
+///    read of what Claude Code writes; and the server names that `read` at
+///    its line, so no member of the type, none it inherits and no second
+///    reader wired in `start` takes the read over. The server's `main`,
+///    which hands the reader's lines to the relay, is pinned whole too
+///    (#221, `ApprovalChannelStructureTests`). Not read: a read of standard
+///    input elsewhere in the channel target, and the wire's line reader's
+///    own body. A line of the seam file that reaches the socket by none of
+///    those names (the connection handed on whole, or the descriptor through
+///    the peer reader the listener is given) is not read itself, and k. and
+///    n. read the writers they list by their spelled names only: a write to
+///    that socket, there or in code it is handed to, in a spelling neither
+///    reads (n. says which) or through a file API and a path, is not caught
+///    by them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -2286,7 +2291,7 @@ struct DecisionSinkStructureTests {
         // brace stands before the first receive; and the relay's own relay
         // and link-closed bodies): free for these pins, and every other
         // whole pin reads each as the tree (since #212 but the input
-        // reader's own, which reads the change inside it).
+        // reader's type's own, which reads the change inside it).
         let readIn: String = "        let count = read(STDIN_FILENO, &buffer, buffer.count)\n"
         let initialized: String = "        self.note = note\n    }\n"
         let inserted: String = "        open.insert(request.requestID)\n"
@@ -2307,10 +2312,10 @@ struct DecisionSinkStructureTests {
                 .replacingOccurrences(of: inserted, with: "        _ = open.insert(request.requestID)\n")
                 .replacingOccurrences(of: cleared, with: "        open = []\n")
         }
-        // Since #212 the input reader is pinned whole too: the change inside
-        // it is that pin's to read (asserted below), so that control is read
-        // by every other whole pin.
-        let besideReader: [WholePin] = Self.allWholePins.filter { $0.whole != Self.stdinDrainWhole }
+        // Since #212 the input reader's type is pinned whole too: the change
+        // inside it is that pin's to read (asserted below), so that control
+        // is read by every other whole pin.
+        let besideReader: [WholePin] = Self.allWholePins.filter { $0.whole != Self.stdinPin.whole }
         let controls: [(String, Sources, [WholePin])] = [("whitespace only", reflowed, Self.allWholePins),
                                                          ("comments only", commented, Self.allWholePins), ("bodies outside the pins", outside, besideReader)]
         for (name, control, others) in controls {
@@ -2323,35 +2328,91 @@ struct DecisionSinkStructureTests {
 
     // MARK: - f, continued. The channel server's stdin reader, whole (#212)
 
-    /// The channel server's stdin reader, whole (from the brace before it,
-    /// so no attribute or modifier joins it): one read of standard input,
-    /// the end of input or a read error ending the server, and each
-    /// complete line to the relay's handler and nowhere else. It decides
-    /// every byte the relay sees.
+    /// The channel server's stdin reader (`drain`), as it is (from the brace
+    /// before it, `start`'s): one read of standard input, the end of input
+    /// or a read error ending the server, and each complete line to the
+    /// handler and nowhere else. It is the server file's one read of what
+    /// Claude Code writes; the wire's line reader splits the lines.
     static let stdinDrainWhole: String = [
         "} private func drain() {", "var buffer = [UInt8](repeating: 0, count: 65_536)",
         "let count = read(STDIN_FILENO, &buffer, buffer.count)", "if count == 0 { exit(0) }", "if count < 0 {",
         "if errno == EINTR || errno == EAGAIN { return }", "exit(1)", "}", "for piece in reader.feed(Array(buffer[0..<count])) {",
         "if case .line(let line) = piece { onLine(line) }", "}", "}",
     ].joined(separator: " ")
-    static let stdinPin: WholePin = (ApprovalChannelStructureTests.serverFile, #"\bfunc\s+drain\b"#, stdinDrainWhole)
+    /// The reader's type, whole (#212), from the brace before it, so no
+    /// attribute or modifier joins it, to its own closing brace: its header
+    /// (no superclass, and no conformance but `@unchecked Sendable`), its
+    /// stored members (the read source, the line handler and the line
+    /// reader, each of today's type), its initializer (the read source made
+    /// on standard input, the handler stored as it is passed in), `start`
+    /// (one event handler, the reader) and the reader.
+    static let stdinTypeWhole: String = [
+        "} final class StandardInput: @unchecked Sendable {", "private let source: DispatchSourceRead",
+        "private let onLine: ([UInt8]) -> Void", "private var reader = ChannelLineReader(limit: ApprovalChannel.maxLineBytes)",
+        "init(queue: DispatchQueue, onLine: @escaping ([UInt8]) -> Void) {", "self.onLine = onLine",
+        "source = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: queue)", "}", "func start() {",
+        "source.setEventHandler { [self] in drain() }", "source.resume()", stdinDrainWhole, "}",
+    ].joined(separator: " ")
+    static let stdinPin: WholePin = (ApprovalChannelStructureTests.serverFile, #"\bclass\s+StandardInput\b"#, stdinTypeWhole)
 
-    /// The input reader's type's head, and its reader's line handler: where
-    /// the canaries add a member and a line.
+    /// The input reader's type's header, its line reader, its event
+    /// handler, its `start` and its reader's line handler: where the
+    /// canaries change the type, add a member and a line.
+    static let inputHead: String = "final class StandardInput: @unchecked Sendable {\n"
+    static let inputReader: String = "    private var reader = ChannelLineReader(limit: ApprovalChannel.maxLineBytes)\n"
+    static let inputHandler: String = "        source.setEventHandler { [self] in drain() }\n"
     static let inputStart: String = "    func start() {\n"
     static let inputLine: String = "            if case .line(let line) = piece { onLine(line) }\n"
     /// A member named like the C read the reader makes: it takes that call
     /// over, the reader's body untouched (a compiled probe, in scratch:
     /// so does it in the seam's connection).
     static let inputRead: String = "    private func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer!, _ n: Int) -> Int { 0 }\n\n"
+    /// Shapes the reviews of #212 found, as inert text (never compiled): a
+    /// class in a new channel file with a member named like that C read,
+    /// which, made the reader type's superclass, takes the read over from
+    /// another file, the reader's body untouched …
+    static let inheritedRead: String = """
+        import Darwin
 
-    /// The channel server's stdin reader is pinned whole, and the server
-    /// names its one `read` at its line (#212). A line added to the reader
-    /// is caught by the reader's pin alone; a member of the reader's type
-    /// named like the C read, which takes the reader's call over with its
-    /// body untouched, by the read's word pin alone (the connection words);
-    /// both at once, by both. Every other pin of this suite reads each as
-    /// the tree.
+        class ZZInput {
+            func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer!, _ n: Int) -> Int { 0 }
+        }
+
+        """
+    /// … a type for the line reader, in a new channel file, that the
+    /// reader's `feed` resolves to …
+    static let linesType: String = """
+        import NapCatWire
+
+        struct ZZLines {
+            private var inner: ChannelLineReader
+            init(limit: Int) { inner = ChannelLineReader(limit: limit) }
+            mutating func feed(_ bytes: [UInt8]) -> [ChannelLine] { inner.feed(bytes) }
+        }
+
+        """
+    /// … and a type named like the wire's line reader, in a new channel
+    /// file, that the line reader's declaration resolves to.
+    static let borrowedLineReader: String = """
+        import NapCatWire
+
+        struct ChannelLineReader {
+            init(limit: Int) {}
+            mutating func feed(_ bytes: [UInt8]) -> [ChannelLine] { [] }
+        }
+
+        """
+
+    /// The channel server's stdin reader's type is pinned whole, and the
+    /// server names its one `read` at its line (#212). A line added to the
+    /// reader, the type given a superclass with a member named like the C
+    /// read (in a new channel file), its line reader given another type,
+    /// and a second reader wired in `start`, are each caught by the type's
+    /// pin alone; a member of the type named like the C read, by that pin
+    /// and the read's word pin (the connection words), and so is that
+    /// member with a line added; a type named like the wire's line reader,
+    /// in a new channel file, by the borrowed-name pin alone. Every other
+    /// pin of this suite reads each as the tree.
     @Test func theChannelServersStdinReaderIsPinnedWhole() throws {
         let sources: Sources = try Self.uncutSources()
         let pin: [WholePin] = [Self.stdinPin]
@@ -2362,7 +2423,10 @@ struct DecisionSinkStructureTests {
         let drainHead: String = "    private func drain() {\n"
         let started: String = "        source.resume()\n    }\n\n" + drainHead
         let stored: String = "        self.onLine = onLine\n"
-        let anchors: [String] = [Self.inputStart, Self.inputLine, readIn, ended, drainHead, started, stored]
+        let made: String = "makeReadSource(fileDescriptor: STDIN_FILENO, queue: queue)"
+        let closed: String = Self.inputLine + "        }\n    }\n}\n"
+        let anchors: [String] = [Self.inputHead, Self.inputReader, Self.inputHandler, Self.inputStart, Self.inputLine, readIn, ended, drainHead,
+                                 started, stored, made, closed]
         let serverText: String = Self.text(server, in: sources)
         for anchor in anchors {
             let found: Int = ApprovalChannelStructureTests.count(anchor, in: serverText)
@@ -2373,11 +2437,22 @@ struct DecisionSinkStructureTests {
         let shadowed: Sources = Self.mutate(sources, server) {
             $0.replacingOccurrences(of: Self.inputStart, with: Self.inputRead + Self.inputStart) }
         let both: Sources = Self.mutate(added, server) { $0.replacingOccurrences(of: Self.inputStart, with: Self.inputRead + Self.inputStart) }
+        let inherited: Sources = Self.adding(Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: Self.inputHead, with: "final class StandardInput: ZZInput, @unchecked Sendable {\n") }, "ZZInput.swift", Self.inheritedRead)
+        let retyped: Sources = Self.adding(Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: Self.inputReader, with: "    private var reader = ZZLines(limit: ApprovalChannel.maxLineBytes)\n") }, "ZZLines.swift", Self.linesType)
+        let wired: Sources = Self.mutate(sources, server) {
+            $0.replacingOccurrences(of: Self.inputHandler, with: "        source.setEventHandler { [self] in drain(); zzMore() }\n") }
+        let borrowed: Sources = Self.adding(sources, "ZZLineReader.swift", Self.borrowedLineReader)
         let baseline: [String: [String]] = Self.pinBaseline(sources)
         let reviewed: [(name: String, planted: Sources, own: [String])] = [
             ("a line added to the reader", added, ["whole bodies"]),
-            ("a member named like the reader's C read", shadowed, ["connection words"]),
-            ("both at once", both, ["whole bodies", "connection words"]),
+            ("a superclass with a member named like the C read, in a new channel file", inherited, ["whole bodies"]),
+            ("the line reader given another type, in a new channel file", retyped, ["whole bodies"]),
+            ("a second reader wired in start", wired, ["whole bodies"]),
+            ("a member named like the reader's C read", shadowed, ["whole bodies", "connection words"]),
+            ("that member and a line added to the reader", both, ["whole bodies", "connection words"]),
+            ("a type named like the wire's line reader, in a new channel file", borrowed, ["borrowed names"]),
         ]
         for (name, planted, own) in reviewed {
             #expect(planted.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -2387,10 +2462,12 @@ struct DecisionSinkStructureTests {
         // More canaries: a closure-typed member named like the read, a read
         // of another descriptor, the end of input or a read error ignored,
         // each line handed elsewhere, a modifier on the reader, an attribute
-        // on the line above it, a second reader declared, and the pinned body
-        // kept in a literal beside a changed one.
-        let constant: String = "    private let onLine: ([UInt8]) -> Void\n"
-        let decoy: String = constant + "    static let zz = \"" + Self.stdinDrainWhole + "\"\n"
+        // on the line above it, a second reader declared; and around it, a
+        // statement at the end of `start` or in the initializer, the handler
+        // stored otherwise, the read source made on another descriptor, a
+        // conformance, a modifier or an attribute on the type, a member after
+        // the reader, and the pinned type kept in a literal beside a changed
+        // one.
         let mutants: [(String, Sources, (Sources) -> [String])] = [
             ("a closure-typed member named like the read", Self.mutate(sources, server) {
                 $0.replacingOccurrences(of: Self.inputStart, with: "    private let read: (Int32, UnsafeMutableRawPointer?, Int) -> Int = { _, _, _ in 0 }\n\n"
@@ -2409,36 +2486,63 @@ struct DecisionSinkStructureTests {
                 $0.replacingOccurrences(of: drainHead, with: "    @inline(never)\n" + drainHead) }, { Self.wholeFailures($0, pin) }),
             ("a second reader declared", Self.mutate(sources, server) {
                 $0.replacingOccurrences(of: drainHead, with: "    private func drain(_ zz: Int) {}\n\n" + drainHead) }, { Self.wholeFailures($0, pin) }),
-            ("the pinned body kept in a literal, the real one changed", Self.mutate(sources, server) {
-                $0.replacingOccurrences(of: ended, with: "        if count == 0 { return }\n").replacingOccurrences(of: constant, with: decoy) },
-             { Self.wholeFailures($0, pin) }),
         ]
-        let constants: Int = ApprovalChannelStructureTests.count(constant, in: serverText)
-        #expect(constants == 1, "vacuity: the decoy's anchor is in the server once")
         for (name, mutant, own) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!own(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
-        // Over-match controls: whitespace and comments inside the reader;
-        // body-only changes outside it (a statement at the end of `start`,
-        // whose closing brace stands before the reader, and one in the
-        // initializer): free for this pin, and every other whole pin reads
-        // each as the tree; names that only contain the read's word (the
-        // type's own `reader` among them already).
+        let decoy: String = "\nenum ZZ { static let zz = \"" + Self.stdinTypeWhole + "\" }\n"
+        let typeMutants: [(String, Sources)] = [
+            ("a statement at the end of start", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: started, with: "        source.resume()\n        zzStarted()\n    }\n\n" + drainHead) }),
+            ("a statement in the initializer", Self.mutate(sources, server) { $0.replacingOccurrences(of: stored, with: stored + "        zzReady()\n") }),
+            ("the handler stored otherwise", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: stored, with: "        self.onLine = { onLine($0); zzTap($0) }\n") }),
+            ("the read source made on another descriptor", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: made, with: "makeReadSource(fileDescriptor: 3, queue: queue)") }),
+            ("a conformance added to the type", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: Self.inputHead, with: "final class StandardInput: @unchecked Sendable, ZZReading {\n") }),
+            ("a modifier on the type", Self.mutate(sources, server) { $0.replacingOccurrences(of: Self.inputHead, with: "private " + Self.inputHead) }),
+            ("an attribute on the line above the type", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: Self.inputHead, with: "@objcMembers\n" + Self.inputHead) }),
+            ("a member after the reader", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: closed, with: Self.inputLine + "        }\n    }\n\n    private let zz = 0\n}\n") }),
+            ("the pinned type kept in a literal, the real one changed", Self.mutate(sources, server) {
+                $0.replacingOccurrences(of: ended, with: "        if count == 0 { return }\n").appending(decoy) }),
+        ]
+        for (name, mutant) in typeMutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.wholeFailures(mutant, pin).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: whitespace and comments inside the type (its
+        // header and its initializer's parameters across lines, a comment
+        // above its line reader and inside the reader); a body-only change
+        // outside it (a statement in the server's `main`): free for this
+        // pin, and every other whole pin reads each as the tree but `main`'s,
+        // #221's, which reads the statement in it; names that only contain
+        // the read's word (the type's own `reader` among them already).
         let reflowed: Sources = Self.mutate(sources, server) {
-            $0.replacingOccurrences(of: readIn, with: "\n        let count  =\n            read(STDIN_FILENO, &buffer, buffer.count)\n\n") }
+            $0.replacingOccurrences(of: readIn, with: "\n        let count  =\n            read(STDIN_FILENO, &buffer, buffer.count)\n\n")
+                .replacingOccurrences(of: Self.inputHead, with: "final class StandardInput:\n    @unchecked Sendable {\n")
+                .replacingOccurrences(of: "    init(queue: DispatchQueue, onLine:", with: "    init(queue: DispatchQueue,\n         onLine:")
+        }
         let commented: Sources = Self.mutate(sources, server) {
-            $0.replacingOccurrences(of: ended, with: "        // Claude Code closed stdin\n        if count == 0 { exit(0) } // the session ended\n") }
-        let outside: Sources = Self.mutate(sources, server) {
-            $0.replacingOccurrences(of: started, with: "        source.resume()\n        zzStarted()\n    }\n\n" + drainHead)
-                .replacingOccurrences(of: stored, with: stored + "        zzReady()\n")
+            $0.replacingOccurrences(of: ended, with: "        // Claude Code closed stdin\n        if count == 0 { exit(0) } // the session ended\n")
+                .replacingOccurrences(of: Self.inputReader, with: "    // one line at a time\n" + Self.inputReader)
         }
-        let tree: [String] = Self.wholeFailures(sources, Self.allWholePins)
-        for (name, control) in [("whitespace only", reflowed), ("comments only", commented), ("bodies outside the pin", outside)] {
+        let begun: String = "        input.start()\n"
+        let outside: Sources = Self.mutate(sources, server) { $0.replacingOccurrences(of: begun, with: "        zzReady()\n" + begun) }
+        let begins: Int = ApprovalChannelStructureTests.count(begun, in: serverText)
+        #expect(begins == 1, "vacuity: the reader is started in main once")
+        let besideMain: [WholePin] = Self.allWholePins.filter { $0.whole != ApprovalChannelStructureTests.serverMainWhole }
+        let controls: [(String, Sources, [WholePin])] = [("whitespace only", reflowed, Self.allWholePins),
+                                                         ("comments only", commented, Self.allWholePins), ("a body outside the type", outside, besideMain)]
+        for (name, control, others) in controls {
             #expect(control.map { $0.text } != sources.map { $0.text }, "control '\(name)' did not apply")
-            #expect(Self.wholeFailures(control, pin).isEmpty && Self.wholeFailures(control, Self.allWholePins) == tree,
-                    "control '\(name)': \(Self.wholeFailures(control, Self.allWholePins))")
+            #expect(Self.wholeFailures(control, pin).isEmpty && Self.wholeFailures(control, others) == Self.wholeFailures(sources, others),
+                    "control '\(name)': \(Self.wholeFailures(control, others))")
         }
+        #expect(!Self.wholeFailures(outside, [ApprovalChannelStructureTests.serverMainPin]).isEmpty, "the statement in main was NOT caught by its pin (#221)")
         let readControls: Sources = Self.mutate(sources, server) {
             $0.appending("\nenum ZZ { static let reads = 0, readCount = 1, isRead = false, reread = 2 }"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never read(STDIN_FILENO, &buffer, n)"))
@@ -3810,12 +3914,13 @@ struct DecisionSinkStructureTests {
     }
 
     /// Today's declarations of a name `pinnedNames` or the modules hold, by
-    /// file: each the type's own declaration (seventy-four: the intake's
+    /// file: each the type's own declaration (seventy-six: the intake's
     /// entry since `receive` is pinned whole, #198, the channel server's
     /// stream type since it is, #199, the relay's type since its one
-    /// construction, the stream writer's call, is pinned, #210, and the
-    /// intake's audit event since its initializer is, #211), none borrowing
-    /// an imported name.
+    /// construction, the stream writer's call, is pinned, #210, the
+    /// intake's audit event since its initializer is, #211, and the stdin
+    /// reader's type and the wire's line reader since that type is, #212),
+    /// none borrowing an imported name.
     static let homeDeclarations: [String: [String: Int]] = [
         ApprovalChannelStructureTests.intakeFile: [
             "class ApprovalIntake": 1, "enum ApprovalAuditEvent": 1, "protocol ApprovalRecordSink": 1, "struct Entry": 1,
@@ -3844,10 +3949,10 @@ struct DecisionSinkStructureTests {
             "class SeamConnection": 1, "class SeamListener": 1, "enum SeamPeerPolicy": 1, "enum SeamSocket": 1, "struct SeamPeer": 1],
         ApprovalChannelStructureTests.relayFile: [
             "class ChannelRelay": 1, "enum ChannelNote": 1, "protocol ChannelLink": 1, "typealias Connector": 1],
-        ApprovalChannelStructureTests.serverFile: ["enum StandardStreams": 1],
+        ApprovalChannelStructureTests.serverFile: ["class StandardInput": 1, "enum StandardStreams": 1],
         "ApprovalChannel.swift": [
             "enum ApprovalChannel": 1, "enum ChannelErrorCode": 1, "enum ChannelMessage": 1, "enum ChannelMessageID": 1, "enum SeamFrame": 1,
-            "struct ChannelClient": 1, "struct ChannelPermissionRequest": 1, "struct ChannelRequestID": 1],
+            "struct ChannelClient": 1, "struct ChannelLineReader": 1, "struct ChannelPermissionRequest": 1, "struct ChannelRequestID": 1],
         "ApprovalClassification.swift": ["enum ApprovalClassification": 1, "enum ApprovalGate": 1, "enum ApprovalTool": 1],
         "ApprovalPreview.swift": ["enum PreviewValue": 1, "struct PreviewMember": 1],
         "ApprovalSigning.swift": ["enum ApprovalSigning": 1],
@@ -3898,17 +4003,18 @@ struct DecisionSinkStructureTests {
         let sources = try Self.uncutSources()
         #expect(Self.borrowedNameFailures(sources).isEmpty, "\(Self.borrowedNameFailures(sources))")
         // The names are read from the pins and the imports.
-        for name in ["ApprovalChannel", "PromptID", "DispatchSource", "SHA256", "P256", "Int32", "Sendable", "write", "read", "fcntl", "chmod"] {
+        for name in ["ApprovalChannel", "PromptID", "DispatchSource", "SHA256", "P256", "Int32", "Sendable", "write", "read", "fcntl", "chmod",
+                     "ChannelLineReader"] {
             #expect(Self.pinnedNames.contains(name), "vacuity: '\(name)' is spelled on a pinned line")
         }
         let modules: Set<String> = Self.moduleNames(sources)
         for name in ["Darwin", "Dispatch", "Foundation", "CryptoKit", "NapCat", "NapCatWire", "NapCatSeam", "NapCatChannel", "Swift"] {
             #expect(modules.contains(name), "vacuity: '\(name)' is an imported module")
         }
-        // Every home is a type's own: seventy-four, none named like a module
+        // Every home is a type's own: seventy-six, none named like a module
         // or like the imported types the pinned lines call.
         let homes: [String] = Self.homeDeclarations.values.flatMap { $0.keys }
-        #expect(homes.count == 74 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
+        #expect(homes.count == 76 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
         let imported: Set<String> = modules.union(["DispatchSource", "DispatchQueue", "P256", "SHA256", "Int32", "Sendable", "Equatable"])
         #expect(homes.allSatisfy { !imported.contains(Self.asciiWords($0).last ?? "") }, "a home borrows an imported name: \(homes.sorted())")
         let intake: String = ApprovalChannelStructureTests.intakeFile
@@ -3928,9 +4034,10 @@ struct DecisionSinkStructureTests {
         // type named like a C call a pinned line makes, a type named like an
         // imported module, one of the four or the standard library, a module
         // the plant imports itself, a protocol named like a pinned
-        // conformance, a second wire type, an associated type, an actor, a
-        // local type, and the name backticked, behind a block comment, on the
-        // next line or behind a trailing comment.
+        // conformance, a second wire type, the wire's line reader named in a
+        // new seam file (#212), an associated type, an actor, a local type,
+        // and the name backticked, behind a block comment, on the next line
+        // or behind a trailing comment.
         let appended: (String, String) -> Sources = { file, text in Self.mutate(sources, file) { $0.appending(text) } }
         let app: String = "NapCatApp.swift"
         let host: String = ApprovalChannelStructureTests.hostFile
@@ -3947,6 +4054,8 @@ struct DecisionSinkStructureTests {
             ("a type named like a module the plant imports", Self.adding(sources, "ZZImport.swift", "import Accelerate\n\nenum Accelerate {}\n")),
             ("a protocol named like a pinned conformance", appended("ApprovalWire.swift", "\nprotocol Sendable {}")),
             ("a second wire type", appended(app, "\nstruct PromptID {}")),
+            ("a type named like the wire's line reader, in a new seam file",
+             Self.adding(sources, "ZZSeamLines.swift", "import NapCatWire\n\nstruct ChannelLineReader {}\n")),
             ("an associated type", appended(app, "\nprotocol ZZ { associatedtype PromptID }")),
             ("an actor", appended(app, "\nactor DispatchSource {}")),
             ("a local type", appended(app, "\nstruct ZZ { func zz() { final class SHA256 {} } }")),

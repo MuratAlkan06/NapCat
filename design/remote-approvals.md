@@ -1076,11 +1076,11 @@ arms anything.
     alone (#210), so a second caller fails (one through the relay's own
     `emit` is the relay's word pin's to read); the
     seam connection's writer and reader, the intake's `receive` and its
-    initializer, the channel server's stream type and stdin reader, and the
-    relay's two receives are pinned whole (below); the four targets call a C
-    write (`write`, `send` and their kin), and declare a function so named,
-    at today's sites alone, and the channel server names `write` on its one
-    standard-output line alone; and
+    initializer, the channel server's stream type and stdin reader's type,
+    and the relay's two receives are pinned whole (below); the four
+    targets call a C write (`write`, `send` and their kin), and declare a
+    function so named, at today's sites alone, and the channel server
+    names `write` on its one standard-output line alone; and
     no other descriptor writer is named in the four targets at all (a stdio
     stream, or its unlocked, word, wide-character or locale writers, a
     copied descriptor, a positional, queued, listed or copying write, a Core
@@ -1124,9 +1124,13 @@ arms anything.
     armed flag among them) stored as a `let`, exactly as passed in (#211;
     what the host passes in is not read by that pin),
     the seam connection's `send` and `drain`, the channel server's stream
-    type and its stdin reader (`StandardInput.drain`, #212: the reader's
-    initializer and `start` and the server's `main`, which wire its lines
-    to the relay, are not pinned), and the relay's two receives. A line
+    type and its stdin reader's type (`StandardInput`, #212: its header,
+    stored members, initializer, `start` and reader, so no superclass,
+    conformance or member of it and no second reader wired in `start`
+    takes its one read of standard input over; the server's `main`, which
+    hands the reader's lines to the relay, is pinned whole too, #221; a read
+    of standard input elsewhere in the channel target, and the wire's line
+    reader's own body, are not read), and the relay's two receives. A line
     added on any of them fails
     unless the stripper reads it as whitespace or a `//` comment, also
     beside a pinned copy kept in a literal or an inactive block. A raw-text
