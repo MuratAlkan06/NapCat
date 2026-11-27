@@ -510,22 +510,22 @@ It builds controls only: nothing can be forwarded yet.
   Session alerts arm; the read reaches the seam only while the toggle is on
   and listening. Besides the counts it returns how many prompts were relayed
   since the previous read and in the last 10 seconds, whatever the gate made
-  of them, and how many of those, and of the counted ones, carry evidence:
-  CloudKit accepted the prompt's record, the prompt is still open on the
-  phone (not answered, expired or withdrawn since), and the Mac found the
-  phone's prompt subscription. What crosses from the seam is tool kinds,
-  counts and an opaque mark the toggle keeps, never a prompt ID, preview or
-  session; each read moves the mark on, so a prompt is new to one read at
-  most. One relayed in a read's own second, after it, is new to the next
-  read if that read comes within those 10 seconds, but never counted as
+  of them, and how many of those, and of the counted ones, are known to
+  carry evidence: CloudKit accepted the prompt's record, the prompt is still
+  open on the phone (not answered, expired or withdrawn since), and the Mac
+  found the phone's prompt subscription. What crosses from the seam is tool
+  kinds, counts and an opaque mark the toggle keeps, never a prompt ID,
+  preview or session; each read moves the mark on, so a prompt is new to one
+  read at most. One relayed in a read's own second, after it, is new to the
+  next read if that read comes within those 10 seconds, but never counted as
   carrying evidence: the mark keeps the read's second and how many of its
   prompts the read saw, not which. When a change holds exactly one waiting
   write and the read finds exactly one new prompt, with evidence, its plain
   waiting push, if it has one, is dropped; the finish pushes in it still go
   out. A waiting push that does go out leaves the prompts with evidence out
   of its count. Nothing in the app sets that evidence yet (the record path
-  that will is not live, and the host is never armed), so no push is
-  dropped and every push reads as before.
+  that will is not live, and the host is never armed), so no push is dropped
+  and every push reads as before.
 - **Hardening.** A topic that exists but could not be read keeps every prompt
   local. The host holds at most 64 servers and, per server, 64 of its 256
   prompts; part of a frame left unfinished for 5 seconds closes the link, and
@@ -635,10 +635,11 @@ this section points at them.
   - A decision record the Mac never read is never deleted.
   - The project label passes the gate's filters before it is ever written.
   - A prompt refused before the intake holds one (its frame, server or
-    client refused, a prompt limit reached, no prompt ID, or its server
-    closed unread by the seam) is new to no read, so it cannot stop a
-    waiting push from being dropped. Before anything produces evidence,
-    such a prompt must also block the drop for the 10-second window.
+    client refused, a duplicate request ID, a prompt limit reached, no
+    prompt ID, or its server closed unread by the seam) is new to no read,
+    so it cannot stop a waiting push from being dropped. Before anything
+    produces evidence, such a prompt must also block the drop for the
+    10-second window.
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
     re-check; done, see slice S1's seam and intake), #221 (no answer
