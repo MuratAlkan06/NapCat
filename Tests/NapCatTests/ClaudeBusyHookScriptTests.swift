@@ -2645,13 +2645,20 @@ struct ClaudeBusyHookScriptTests {
         return files
     }
 
+    /// The path of every entry under `root` (files, folders, anything else;
+    /// hidden ones included), relative to `root`.
+    private func everyName(under root: URL) -> [String] {
+        FileManager.default.enumerator(atPath: root.path)?.compactMap { $0 as? String } ?? []
+    }
+
     /// Privacy: no byte of the final message is written anywhere. Distinctive
     /// messages (one that asks, one that does not, one far past the bound,
     /// one ending in a code block, one in multi-byte text) go through the
     /// checked path, then a SubagentStop and a plain end of turn with the
     /// same text; afterwards no file under the test HOME — hook.log, the
     /// markers, any temp file — holds a message or any 8-character piece of
-    /// one, and no temp file is left.
+    /// one, no file or folder NAME there holds such a piece, and no temp
+    /// file is left.
     @Test func theFinalMessageIsNeverWrittenAnywhere() {
         let d = Self.distinctive
         let messages = [
@@ -2683,6 +2690,9 @@ struct ClaudeBusyHookScriptTests {
             #expect(askCheckLines(home).count == messages.count, "non-vacuity: every checked Stop logged its word")
             let files = everyFile(under: home)
             #expect(files.contains { $0.path.hasSuffix("/" + ClaudeBusyConstants.logFileName) }, "the walk sees hook.log")
+            let names = everyName(under: home)
+            #expect(names.contains { $0.hasSuffix("/claude-busy/" + ClaudeBusyConstants.logFileName) },
+                    "the name walk sees hook.log: \(names)")
             var leaks: [String] = []
             for text in messages {
                 let characters = Array(text)
@@ -2690,6 +2700,9 @@ struct ClaudeBusyHookScriptTests {
                     let piece = Data(String(characters[start..<(start + 8)]).utf8)
                     for file in files where file.data.range(of: piece) != nil {
                         leaks.append("\(String(reflecting: String(characters[start..<(start + 8)]))) in \(file.path)")
+                    }
+                    for name in names where Data(name.utf8).range(of: piece) != nil {
+                        leaks.append("\(String(reflecting: String(characters[start..<(start + 8)]))) in the name \(name)")
                     }
                 }
             }
@@ -2763,10 +2776,19 @@ struct ClaudeBusyHookScriptTests {
             row("fp-1", "known false positive: a rhetorical question, then its answer",
                 "Why did it fail?\nThe cache was stale.\nFixed.", "asks"),
             row("fp-2", "known false positive: a code span ending in ?", "The helper is `ready?`", "asks"),
+            row("fp-3", "known false positive: a ? line inside a code block that is never closed",
+                "Here is the log:\n```\nwhy did it fail?", "asks"),
+            row("fp-4", "known false positive: a ? line between two ``` lines inside a ~~~ block",
+                "Example:\n~~~\n```\nwhy?\n```\n~~~", "asks"),
             row("fn-1", "known false negative: (y/n) after the mark", "Want me to do it? (y/n)", "no"),
             row("fn-2", "known false negative: an emoji after the mark", "Ship it? 🚀", "no"),
             // Only ASCII whitespace is stripped, in any locale.
             row("fn-3", "known false negative: a no-break space after the mark", "Ready?\u{00A0}", "no"),
+            row("fn-4", "known false negative: a ``` line inside a ~~~ block below the question",
+                "Shall I run it?\n~~~\n```\n~~~", "no"),
+            // "Shall I continue" in Arabic, ending in U+061F ARABIC QUESTION MARK.
+            row("fn-5", "known false negative: the Arabic question mark",
+                "\u{0647}\u{0644} \u{0623}\u{062A}\u{0627}\u{0628}\u{0639}\u{061F}", "no"),
         ]
     }()
 
@@ -2828,7 +2850,7 @@ struct ClaudeBusyHookScriptTests {
     }
 
     @Test func theTableCoversBothWordsAndThePinnedBounds() throws {
-        #expect(Self.askRows.count == 38 && Set(Self.askRows.map(\.id)).count == 38, "vacuity guard")
+        #expect(Self.askRows.count == 42 && Set(Self.askRows.map(\.id)).count == 42, "vacuity guard")
         #expect(Set(Self.askRows.map(\.result)) == ["asks", "no"])
         let lines = try Self.read(Self.hookScriptURL).split(separator: "\n").map(String.init)
         #expect(lines.filter { $0.hasPrefix("ASK_TAIL_BYTES=") } == ["ASK_TAIL_BYTES=\(Self.askTailBytes)"])
@@ -2848,9 +2870,14 @@ struct ClaudeBusyHookScriptTests {
     ///     `asked` is set nowhere else but its reset.
     ///  3. `ask-check` is logged on exactly one code line: the closed-word
     ///     arm of `case "$asked" in`, inside the background-task keep branch.
-    ///  4. The check's two functions write nothing: no mktemp, tee, echo, log
-    ///     or `>>`, every redirect goes to /dev/null, and every printf prints
-    ///     one of the four closed words, literally.
+    ///  4. An ALLOW list over the check's two functions, command
+    ///     substitutions included (`allowListCheck`): every command is a
+    ///     keyword or builtin from an explicit list, and only
+    ///     `final_message_check` may also run `plutil` with `-o -`,
+    ///     `/usr/bin/tail -c N` and `/usr/bin/tr`, and call `tail_asks`.
+    ///     No here-document or here-string, no redirect but to /dev/null,
+    ///     no backtick, and no variable holding message text is ever a word
+    ///     of one of those three commands.
     static func finalMessageCheckFailures(_ script: String) -> [String] {
         let code = script.split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -2900,25 +2927,331 @@ struct ClaudeBusyHookScriptTests {
             failures.append("the keep branch or the check line is missing from main")
         }
 
-        for (name, body) in [("final_message_check", check), ("tail_asks", judge)] {
-            for line in body {
-                for token in ["mktemp", "tee ", "echo", "log ", ">>"] where line.contains(token) {
-                    failures.append("'\(token)' in \(name): \(line)")
-                }
-                let unredirected = ["2>/dev/null", ">/dev/null", "2>&1"]
-                    .reduce(line) { $0.replacingOccurrences(of: $1, with: "") }
-                if unredirected.contains(">") { failures.append("a redirect in \(name): \(line)") }
-                let printfs = line.components(separatedBy: "printf").count - 1
-                let closed = line.components(separatedBy: " ").indices.filter { index in
-                    let words = line.components(separatedBy: " ")
-                    guard words[index] == "printf", index + 1 < words.count else { return false }
-                    return ["asks", "asks;", "no", "no;", "absent", "absent;", "unreadable", "unreadable;"]
-                        .contains(words[index + 1])
-                }.count
-                if printfs != closed { failures.append("a printf of anything but a closed word in \(name): \(line)") }
-            }
+        let tools = allowListCheck(check.joined(separator: "\n"), in: "final_message_check", mayRunTools: true,
+                                   tainted: [])
+        let judging = allowListCheck(judge.joined(separator: "\n"), in: "tail_asks", mayRunTools: false,
+                                     tainted: ["1", "@", "*"])
+        failures += tools.failures + judging.failures
+        if Set(tools.ran) != ["plutil", "/usr/bin/tail", "/usr/bin/tr"] {
+            failures.append("final_message_check must run plutil, /usr/bin/tail and /usr/bin/tr (lint would be vacuous), got \(tools.ran)")
         }
         return failures
+    }
+
+    // MARK: The allow list: a small reader of the shell this hook writes
+
+    /// One token of `shellTokens`.
+    enum ShellToken: Equatable, Sendable {
+        case word(String)
+        /// `;` `;;` `&` `&&` `|` `||` `(` `)`, or a newline.
+        case separator(String)
+        /// A redirection operator with its file descriptor, if any: `>`,
+        /// `2>`, `2>&`, `>>`, `<`, `<<`, `<<<` and so on.
+        case redirect(String)
+    }
+
+    nonisolated static func scalars(_ s: [Unicode.Scalar], _ from: Int, _ to: Int) -> String {
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: s[from..<min(to, s.count)])
+        return String(view)
+    }
+
+    /// The index just past the quoted or substituted text starting at
+    /// `start` (a `'`, `"` or backtick, or `$(` or `${`), skipping escapes,
+    /// quotes and substitutions nested in it; nil when it is never closed.
+    nonisolated static func skipGroup(_ s: [Unicode.Scalar], from start: Int) -> Int? {
+        func at(_ k: Int) -> Unicode.Scalar? { k < s.count ? s[k] : nil }
+        func opensGroup(_ k: Int) -> Bool {
+            at(k) == "'" || at(k) == "\"" || at(k) == "`" || (at(k) == "$" && (at(k + 1) == "(" || at(k + 1) == "{"))
+        }
+        switch s[start] {
+        case "'":
+            var i = start + 1
+            while let c = at(i), c != "'" { i += 1 }
+            return at(i) == nil ? nil : i + 1
+        case "`":
+            var i = start + 1
+            while let c = at(i), c != "`" { i += c == "\\" ? 2 : 1 }
+            return at(i) == nil ? nil : i + 1
+        case "\"":
+            var i = start + 1
+            while let c = at(i), c != "\"" {
+                if c == "\\" {
+                    i += 2
+                } else if c != "'" && opensGroup(i) {
+                    guard let end = skipGroup(s, from: i) else { return nil }
+                    i = end
+                } else {
+                    i += 1
+                }
+            }
+            return at(i) == nil ? nil : i + 1
+        case "$" where at(start + 1) == "(" || at(start + 1) == "{":
+            let open = s[start + 1], close: Unicode.Scalar = open == "(" ? ")" : "}"
+            var depth = 1, i = start + 2
+            while let c = at(i) {
+                if c == "\\" { i += 2; continue }
+                if opensGroup(i) {
+                    guard let end = skipGroup(s, from: i) else { return nil }
+                    i = end
+                    continue
+                }
+                if c == open { depth += 1 }
+                if c == close { depth -= 1; if depth == 0 { return i + 1 } }
+                i += 1
+            }
+            return nil
+        default:
+            return start + 1
+        }
+    }
+
+    /// Splits shell text into words, separators and redirections. Quoted
+    /// text, escapes, `$(…)`, `$((…))`, `${…}` and backticks stay inside
+    /// their word; a `#` starting a word starts a comment. Nil for text it
+    /// cannot split (an unclosed quote or substitution).
+    nonisolated static func shellTokens(_ text: String) -> [ShellToken]? {
+        let s = Array(text.unicodeScalars)
+        var tokens: [ShellToken] = [], word = "", i = 0
+        func flush() { if !word.isEmpty { tokens.append(.word(word)); word = "" } }
+        while i < s.count {
+            let c = s[i]
+            switch c {
+            case " ", "\t":
+                flush(); i += 1
+            case "\n":
+                flush(); tokens.append(.separator("\n")); i += 1
+            case "#" where word.isEmpty:
+                while i < s.count, s[i] != "\n" { i += 1 }
+            case "\\":
+                word += scalars(s, i, i + 2); i += 2
+            case "'", "\"", "`", "$":
+                guard let end = skipGroup(s, from: i) else { return nil }
+                word += scalars(s, i, end); i = end
+            case "<", ">":
+                // A file descriptor number right before the operator is part of it.
+                let descriptor = !word.isEmpty && word.allSatisfy { $0.isASCII && $0.isNumber }
+                var op = descriptor ? word : ""
+                if descriptor { word = "" } else { flush() }
+                let ahead = scalars(s, i, i + 3)
+                let ops = c == "<" ? ["<<<", "<<-", "<<", "<&", "<>", "<"] : [">>", ">&", ">|", ">"]
+                let found = ops.first { ahead.hasPrefix($0) } ?? String(c)
+                op += found
+                i += found.unicodeScalars.count
+                tokens.append(.redirect(op))
+            case ";", "&", "|", "(", ")":
+                flush()
+                let pair = scalars(s, i, i + 2)
+                if ["&&", "||", ";;"].contains(pair) {
+                    tokens.append(.separator(pair)); i += 2
+                } else if pair == "&>" {
+                    tokens.append(.redirect(pair)); i += 2
+                } else {
+                    tokens.append(.separator(String(c))); i += 1
+                }
+            default:
+                word.unicodeScalars.append(c); i += 1
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    /// What `word` runs: the inner text of each `$(…)` in it (inside a
+    /// `$((…))` the search goes on), and whether it holds a backtick
+    /// substitution.
+    nonisolated static func substitutions(in word: String) -> (inner: [String], backtick: Bool) {
+        let s = Array(word.unicodeScalars)
+        var inner: [String] = [], backtick = false, quoted = false, i = 0
+        while i < s.count {
+            let c = s[i]
+            if c == "\\" {
+                i += 2
+            } else if c == "'" && !quoted {
+                i = skipGroup(s, from: i) ?? s.count
+            } else if c == "\"" {
+                quoted.toggle(); i += 1
+            } else if c == "`" {
+                backtick = true; i += 1
+            } else if c == "$", i + 1 < s.count, s[i + 1] == "(" {
+                if i + 2 < s.count, s[i + 2] == "(" { i += 3; continue }
+                let end = skipGroup(s, from: i) ?? s.count
+                inner.append(scalars(s, i + 2, max(i + 2, end - 1)))
+                i = end
+            } else {
+                i += 1
+            }
+        }
+        return (inner, backtick)
+    }
+
+    /// Whether `word` expands one of `names`: `$n`, `${n…}`, `${#n}`, or,
+    /// inside `$((…))`, the bare name.
+    nonisolated static func expands(_ word: String, anyOf names: Set<String>) -> Bool {
+        names.contains { name in
+            let n = NSRegularExpression.escapedPattern(for: name)
+            if word.range(of: #"\$\{?[#!]?"# + n + #"([^A-Za-z0-9_]|$)"#, options: .regularExpression) != nil {
+                return true
+            }
+            return word.contains("$((") && name.range(of: "^[A-Za-z_][A-Za-z0-9_]*$", options: .regularExpression) != nil
+                && word.range(of: #"(^|[^A-Za-z0-9_$])"# + n + #"([^A-Za-z0-9_]|$)"#, options: .regularExpression) != nil
+        }
+    }
+
+    /// The names `word` assigns: `name=…` (or `+=`) and every `${name:=…}`.
+    nonisolated static func assignedNames(_ word: String) -> [String] {
+        var names: [String] = []
+        if let range = word.range(of: #"^[A-Za-z_][A-Za-z0-9_]*\+?="#, options: .regularExpression) {
+            names.append(String(word[range]).trimmingCharacters(in: CharacterSet(charactersIn: "+=")))
+        }
+        var rest = word[...]
+        while let range = rest.range(of: #"\$\{[A-Za-z_][A-Za-z0-9_]*:?="#, options: .regularExpression) {
+            names.append(String(rest[range].dropFirst(2)).trimmingCharacters(in: CharacterSet(charactersIn: ":=")))
+            rest = rest[range.upperBound...]
+        }
+        return names
+    }
+
+    /// The allow-list rule (4. above) over `text`: a function body, or the
+    /// inside of a command substitution in one. `tainted` names hold message
+    /// text; so does any name assigned from one of them, or from a read of
+    /// `last_assistant_message`. Returns the failures and the external
+    /// commands it saw, in order.
+    nonisolated static func allowListCheck(_ text: String, in name: String, mayRunTools: Bool,
+                                           tainted seeds: Set<String>) -> (failures: [String], ran: [String]) {
+        guard let tokens = shellTokens(text) else {
+            return (["\(name) cannot be read (an unclosed quote or substitution)"], [])
+        }
+        var failures: [String] = [], ran: [String] = []
+        var tainted = seeds
+        let allWords = tokens.compactMap { token -> String? in
+            if case .word(let w) = token { return w } else { return nil }
+        }
+        var grew = true
+        while grew {
+            grew = false
+            for w in allWords where w.contains("last_assistant_message") || expands(w, anyOf: tainted) {
+                for target in assignedNames(w) where !tainted.contains(target) {
+                    tainted.insert(target); grew = true
+                }
+            }
+        }
+        let closedWords: Set<String> = ["asks", "no", "absent", "unreadable"]
+        let leading: Set<String> = ["if", "then", "elif", "else", "while", "do", "{"]
+        func isAssignment(_ w: String) -> Bool {
+            w.range(of: #"^[A-Za-z_][A-Za-z0-9_]*\+?="#, options: .regularExpression) != nil
+        }
+        func allowedAssignment(_ w: String) -> Bool {
+            w == "LC_ALL=C" || w.range(of: #"^[a-z_][a-z0-9_]*\+?="#, options: .regularExpression) != nil
+        }
+
+        var caseArms: [Bool] = []  // one per open `case`: true while a pattern is due
+        var words: [String] = [], redirects: [(op: String, target: String)] = []
+        var pendingRedirect: String?, inTest = false
+
+        func checkCommand(_ separator: String) {
+            for w in words + redirects.map(\.target) {
+                let found = substitutions(in: w)
+                if found.backtick { failures.append("a backtick substitution in \(name): \(w)") }
+                for inner in found.inner {
+                    let nested = allowListCheck(inner, in: name, mayRunTools: mayRunTools, tainted: tainted)
+                    failures += nested.failures
+                    ran += nested.ran
+                }
+            }
+            for r in redirects {
+                if r.op.contains("<<") {
+                    failures.append("a here-document or here-string in \(name): \(r.op)\(r.target)")
+                } else if !(((r.op == ">" || r.op == "2>") && r.target == "/dev/null") || (r.op == "2>&" && r.target == "1")) {
+                    failures.append("a redirect in \(name) that is not to /dev/null: \(r.op)\(r.target)")
+                }
+            }
+            if let due = caseArms.last, due {
+                // A pattern list (`a|b)`), or the `esac` that closes the case.
+                if words == ["esac"] { caseArms.removeLast() } else if separator == ")" { caseArms[caseArms.count - 1] = false }
+                return
+            }
+            var rest = words[...]
+            while let first = rest.first, leading.contains(first) { rest = rest.dropFirst() }
+            guard let first = rest.first else { return }
+            if first == "case" {
+                if rest.count != 3 || rest.last != "in" { failures.append("a case line that is not `case WORD in` in \(name)") }
+                caseArms.append(true)
+                return
+            }
+            if ["fi", "done", "esac", "}"].contains(first) {
+                if first == "esac" && !caseArms.isEmpty { caseArms.removeLast() }
+                return
+            }
+            var assignments: [String] = []
+            while let w = rest.first, isAssignment(w) { assignments.append(w); rest = rest.dropFirst() }
+            for a in assignments where !allowedAssignment(a) {
+                failures.append("an assignment to \(a.prefix { $0 != "=" && $0 != "+" }) in \(name)")
+            }
+            guard let command = rest.first else { return }
+            let args = Array(rest.dropFirst())
+            switch command {
+            case "[[", "[", ":", "return", "break", "continue":
+                break
+            case "local":
+                for a in args where a.hasPrefix("-")
+                    || !(isAssignment(a) ? allowedAssignment(a)
+                         : a.range(of: "^[a-z_][a-z0-9_]*$", options: .regularExpression) != nil) {
+                    failures.append("local \(a) in \(name): only lowercase names, or LC_ALL=C")
+                }
+            case "set":
+                if args != ["-o", "pipefail"] { failures.append("set other than `set -o pipefail` in \(name): \(args)") }
+            case "printf":
+                if args.count != 1 || !closedWords.contains(args[0]) {
+                    failures.append("a printf of anything but one closed word in \(name): printf \(args)")
+                }
+            case "tail_asks" where mayRunTools:
+                break
+            case "plutil" where mayRunTools, "/usr/bin/tail" where mayRunTools, "/usr/bin/tr" where mayRunTools:
+                ran.append(command)
+                for a in assignments where a != "LC_ALL=C" {
+                    failures.append("a prefix assignment on \(command) in \(name): \(a)")
+                }
+                for w in assignments + args where expands(w, anyOf: tainted) {
+                    failures.append("message text reaches \(command) in \(name): \(w)")
+                }
+                if command == "plutil", args.filter({ $0 == "-o" }).count != 1
+                    || args.firstIndex(of: "-o").map({ $0 + 1 < args.count && args[$0 + 1] == "-" }) != true {
+                    failures.append("plutil without exactly one `-o -` in \(name): \(args)")
+                }
+                if command == "/usr/bin/tail", args.count != 2 || args[0] != "-c" {
+                    failures.append("tail other than `tail -c N` in \(name): \(args)")
+                }
+            default:
+                failures.append("'\(command)' in \(name) is not on the allow list")
+            }
+        }
+
+        for token in tokens {
+            switch token {
+            case .word(let w):
+                if let op = pendingRedirect {
+                    redirects.append((op, w)); pendingRedirect = nil
+                    continue
+                }
+                if w == "[[" && words.allSatisfy({ leading.contains($0) }) { inTest = true }
+                if w == "]]" { inTest = false }
+                words.append(w)
+            case .redirect(let op):
+                if inTest { words.append(op); continue }
+                if let op = pendingRedirect { failures.append("a redirect with no target in \(name): \(op)") }
+                pendingRedirect = op
+            case .separator(let separator):
+                if inTest && separator != "\n" { words.append(separator); continue }
+                if let op = pendingRedirect { failures.append("a redirect with no target in \(name): \(op)") }
+                checkCommand(separator)
+                if separator == ";;", !caseArms.isEmpty { caseArms[caseArms.count - 1] = true }
+                words = []; redirects = []; pendingRedirect = nil; inTest = false
+            }
+        }
+        if let op = pendingRedirect { failures.append("a redirect with no target in \(name): \(op)") }
+        checkCommand("\n")
+        return (failures, ran)
     }
 
     @Test func theFinalMessageIsReadAndLoggedOnlyWhereTheContractSays() throws {
@@ -2975,6 +3308,80 @@ struct ClaudeBusyHookScriptTests {
             let mutant = transform(original)
             #expect(mutant != original, "canary setup '\(name)'")
             #expect(!Self.finalMessageCheckFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// Canaries for the allow list (rule 4): each mutant must be caught BY
+    /// that rule, with the failure it names. The first two are leaks a ban
+    /// list let through: a copy of the whole payload out of the hook's
+    /// folder, and message bytes in a file NAME.
+    @Test func theAllowListCatchesWhatABanListMissed() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        try #require(Self.finalMessageCheckFailures(original).isEmpty, "canary baseline must be clean")
+        let declared = "final_message_check() {\n  local t\n"
+        let judged = "  tail_asks \"$t\"\n"
+        let judgeStart = "  local text=$1 line more=yes counted=0 code=no\n"
+        func afterDeclared(_ line: String) -> (String) -> String {
+            { $0.replacingOccurrences(of: declared, with: declared + line + "\n") }
+        }
+        func beforeJudged(_ line: String) -> (String) -> String {
+            { $0.replacingOccurrences(of: judged, with: line + "\n" + judged) }
+        }
+        let mutants: [(name: String, transform: (String) -> String, caughtAs: String)] = [
+            ("the payload copied out of the folder", afterDeclared(#"  /bin/cp "$1" /private/tmp/napcat-payload-copy"#),
+             "'/bin/cp' in final_message_check is not on the allow list"),
+            ("message bytes in a file name", beforeJudged(#"  /usr/bin/touch "$STATE_DIR/.n-${t: -8}""#),
+             "'/usr/bin/touch' in final_message_check is not on the allow list"),
+            ("a here-string", beforeJudged(#"  /usr/bin/tr -d x <<<"$t" >/dev/null"#),
+             "a here-document or here-string in final_message_check"),
+            ("a here-document", beforeJudged("  /usr/bin/tr -d x >/dev/null <<EOF\n$t\nEOF"),
+             "a here-document or here-string in final_message_check"),
+            ("the message on an external command's command line",
+             beforeJudged(#"  plutil -extract "${t: -8}" raw -o - "$1" >/dev/null 2>&1"#),
+             "message text reaches plutil in final_message_check"),
+            ("the message through a copy", beforeJudged("  u=$t\n  /usr/bin/tr \"$u\" x >/dev/null"),
+             "message text reaches /usr/bin/tr in final_message_check"),
+            ("the message through a default", beforeJudged("  : \"${u:=$t}\"\n  /usr/bin/tr \"$u\" x >/dev/null"),
+             "message text reaches /usr/bin/tr in final_message_check"),
+            ("tail by its bare name", {
+                $0.replacingOccurrences(of: "| /usr/bin/tail -c", with: "| tail -c")
+            }, "'tail' in final_message_check is not on the allow list"),
+            ("tail reading a file", {
+                $0.replacingOccurrences(of: #"/usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))""#,
+                                        with: #"/usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" "$1""#)
+            }, "tail other than `tail -c N` in final_message_check"),
+            ("plutil writing a file", beforeJudged(#"  plutil -convert json -o "$STATE_DIR/.copy" "$1""#),
+             "plutil without exactly one `-o -` in final_message_check"),
+            ("a tool in the judgement", {
+                $0.replacingOccurrences(of: judgeStart, with: judgeStart + "  /usr/bin/tr -d x >/dev/null\n")
+            }, "'/usr/bin/tr' in tail_asks is not on the allow list"),
+            ("a closed word redirected to a file", {
+                $0.replacingOccurrences(of: "printf asks; return 0", with: #"printf asks >"$STATE_DIR/.asked"; return 0"#)
+            }, "a redirect in tail_asks that is not to /dev/null"),
+            ("an input redirect", beforeJudged(#"  /usr/bin/tr -d x <"$1" >/dev/null"#),
+             "a redirect in final_message_check that is not to /dev/null"),
+            ("a backtick substitution", beforeJudged("  : `/usr/bin/touch \"$STATE_DIR/.n\"`"),
+             "a backtick substitution in final_message_check"),
+            ("a tool inside a command substitution", beforeJudged(#"  : "$(/usr/bin/touch "$STATE_DIR/.n")""#),
+             "'/usr/bin/touch' in final_message_check is not on the allow list"),
+            ("eval", beforeJudged(#"  eval "$t""#), "'eval' in final_message_check is not on the allow list"),
+            ("PATH reset", afterDeclared("  PATH=/private/tmp/napcat-bin:$PATH"),
+             "an assignment to PATH in final_message_check"),
+            ("an exported local", {
+                $0.replacingOccurrences(of: declared, with: "final_message_check() {\n  local -x t\n")
+            },
+             "local -x in final_message_check"),
+            ("allexport", afterDeclared("  set -a"), "set other than `set -o pipefail` in final_message_check"),
+            ("a prefix assignment on a tool", {
+                $0.replacingOccurrences(of: #"| /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C"#,
+                                        with: #"| /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C TZ=x"#)
+            }, "a prefix assignment on /usr/bin/tr in final_message_check"),
+        ]
+        for (name, transform, caughtAs) in mutants {
+            let mutant = transform(original)
+            #expect(mutant != original, "canary setup '\(name)'")
+            let failures = Self.finalMessageCheckFailures(mutant)
+            #expect(failures.contains { $0.hasPrefix(caughtAs) }, "canary '\(name)' was NOT caught as \(caughtAs): \(failures)")
         }
     }
 
