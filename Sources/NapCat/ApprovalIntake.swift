@@ -28,8 +28,12 @@ protocol ApprovalRecordSink: AnyObject {
     func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int)
     /// Delete the prompt record (and its decision, if any).
     func retract(_ id: PromptID)
-    /// The forward was accepted: the prompt push (fixed text, no action)
-    /// replaces this episode's plain waiting alert.
+    /// The forward was accepted. That alone drops no plain waiting alert:
+    /// the alert lane drops one only for a change holding one waiting write
+    /// whose read finds exactly one new prompt, with evidence that the
+    /// phone's prompt push (fixed text, no action) covers it: its record
+    /// accepted, the prompt still open on the phone, and the phone's prompt
+    /// subscription found (`ApprovalIntake.Entry.hasPushEvidence`).
     func supersedeWaitingAlert(_ id: PromptID)
 }
 

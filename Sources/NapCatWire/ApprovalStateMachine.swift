@@ -170,9 +170,11 @@ public enum ApprovalPhase: Equatable, Sendable {
 public enum ApprovalEffect: Equatable, Sendable {
     /// Write the prompt record.
     case saveRecord
-    /// The forward was accepted: the prompt push (fixed text, no action)
-    /// replaces the plain waiting alert for this episode (only now, never
-    /// before the save).
+    /// The forward was accepted (only now, never before the save). That
+    /// alone drops no plain waiting alert: the Mac's alert lane drops one
+    /// only for a change holding one waiting write whose read finds exactly
+    /// one new prompt, and that prompt accepted, still open on the phone,
+    /// and with the phone's prompt subscription found.
     case supersedeWaitingAlert
     /// Resolve the open dialog with this verdict.
     case deliverVerdict(ApprovalWire.Verdict)

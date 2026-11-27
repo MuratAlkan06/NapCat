@@ -337,8 +337,8 @@ final class FinishAlertController {
         let armedAt = Int(now())
         tracked = FinishAlertPolicy.baseline(current: markers, now: armedAt)
         // F4: no prompt relayed before this arm is new to a diff of it: one
-        // read, after the baseline, moves the seam's mark past them all (it
-        // reaches the seam only while remote approvals listen).
+        // read, after the baseline, moves the mark the toggle keeps past them
+        // all (it reaches the seam only while remote approvals listen).
         _ = waitingPrompts()
         Self.logger.notice("finish alert: armed, tracking \(self.tracked.count, privacy: .public) session(s)")
         logUnusableEpisodeStarts(FinishAlertPolicy.invalidEpisodeStartCount(in: markers, now: armedAt))
@@ -418,10 +418,10 @@ final class FinishAlertController {
         }
         // F4: the prompt context is read once, and only for a diff with a
         // waiting write (zero hops otherwise): a transition that alerts, one
-        // under the floor, or a waiting rewrite. So each such read moves the
-        // seam's mark past the prompts it saw, whether or not the rule
-        // yields. The policy drops the diff's waiting events only when it
-        // does, and never a finish.
+        // under the floor or suppressed for a clock jump, or a waiting
+        // rewrite. So each such read moves the mark the toggle keeps past the
+        // prompts it saw, whether or not the rule yields. The policy drops
+        // the diff's waiting events only when it does, and never a finish.
         let context: WaitingPromptContext = observation.waitingWrites > 0 ? waitingPrompts() : .none
         let fold = FinishAlertPolicy.promptPushFold(events: observation.events, waitingWrites: observation.waitingWrites,
                                                     context: context)
