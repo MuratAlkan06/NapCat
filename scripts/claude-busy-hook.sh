@@ -387,9 +387,13 @@ marker_episode() {
 # ASK_TAIL_BYTES bytes (the caller cuts it). Walking up from the last line,
 # it prints `asks` when one of the last ASK_TAIL_LINES non-empty lines
 # outside fenced code blocks ends with `?` or the full-width question mark,
-# once trailing whitespace and closing characters are stripped: the ASCII
-# ) ] } " ' * _ ~ and backtick, and the four non-ASCII closers above.
+# once trailing ASCII whitespace and closing characters are stripped: the
+# ASCII ) ] } " ' * _ ~ and backtick, and the four non-ASCII closers above.
 # Otherwise it prints `no`.
+# It matches bytes: LC_ALL is C inside this function only (bash puts the
+# caller's locale back on return), so an inherited UTF-8 locale can neither
+# widen [[:space:]] beyond ASCII whitespace nor change what one `?` in a
+# pattern strips.
 # Code blocks: every fence line (FENCE_RE) switches between prose and code,
 # and is not judged itself. A message ends in prose, so walking up the first
 # fence met is a closing one: a `?` inside any block closed within the
@@ -404,11 +408,13 @@ marker_episode() {
 # `?`, and a line inside a code block whose fence is indented four or more
 # spaces (one in a list item). Known false negatives: a question followed by
 # ASK_TAIL_LINES or more non-empty lines (an option list of three or more
-# items after it), by an emoji, by "(y/n)" or other text on the same line, a
-# question asked without a question mark, a question above a code block
-# that is never closed, and anything beyond the bound.
+# items after it), by an emoji, by "(y/n)" or other text on the same line,
+# by a space that is not ASCII (a no-break space, say), a question asked
+# without a question mark, a question above a code block that is never
+# closed, and anything beyond the bound.
 #   $1 text
 tail_asks() {
+  local LC_ALL=C
   local text=$1 line more=yes counted=0 code=no
   while [ "$more" = yes ]; do
     case "$text" in
@@ -461,7 +467,7 @@ tail_asks() {
 #   $1 payload file
 final_message_check() {
   local t
-  t=$(set -o pipefail; plutil -extract last_assistant_message raw -expect string -o - "$1" 2>/dev/null | tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C /usr/bin/tr '\000' '#') || {
+  t=$(set -o pipefail; plutil -extract last_assistant_message raw -expect string -o - "$1" 2>/dev/null | /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C /usr/bin/tr '\000' '#') || {
     if plutil -extract last_assistant_message raw -o - "$1" >/dev/null 2>&1; then
       printf unreadable
     else

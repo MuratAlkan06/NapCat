@@ -183,12 +183,15 @@ struct ClaudeBusyHookScriptTests {
         runScript(scriptURL, bytes: Data(json.utf8), home: home)
     }
 
-    /// `runScript` with raw stdin bytes (a payload that is not valid UTF-8).
-    private func runScript(_ scriptURL: URL, bytes: Data, home: URL) -> RunResult {
+    /// `runScript` with raw stdin bytes (a payload that is not valid UTF-8),
+    /// and optionally more environment variables than HOME and PATH.
+    private func runScript(_ scriptURL: URL, bytes: Data, home: URL,
+                           extraEnvironment: [String: String] = [:]) -> RunResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [scriptURL.path]
         process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+            .merging(extraEnvironment) { current, _ in current }
         let stdin = Pipe(), stdout = Pipe()
         process.standardInput = stdin
         process.standardOutput = stdout
@@ -2721,44 +2724,49 @@ struct ClaudeBusyHookScriptTests {
         func a(_ count: Int) -> String { String(repeating: "a", count: count) }
         let euros = String(repeating: "€", count: 200)  // 600 bytes: the cut lands inside a character
         return [
-            row("Q1", "a plain question", "Shall I go ahead?", "asks"),
-            row("Q2", "trailing spaces, a tab, a CR and blank lines", "Shall I go ahead?  \t\r\n\n \n", "asks"),
-            row("Q3", "a closing quote", #"He asked "is it done?""#, "asks"),
-            row("Q4", "a closing parenthesis", "(is that ok?)", "asks"),
-            row("Q5", "bold", "**Merge now?**", "asks"),
-            row("Q6", "italic, in a list item", "- _Ship it?_", "asks"),
-            row("Q7", "curly double quotes", "She said “ready?”", "asks"),
-            row("Q8", "a curly single quote", "It reads ’really?’", "asks"),
-            row("Q9", "a short sign-off after the question", "Which option do you want?\n\nThanks.", "asks"),
-            row("Q10", "two lines after the question", "Which one?\n1. A\n2. B", "asks"),
-            row("Q11", "the full-width question mark", "全部終わりましたか？", "asks"),
-            row("Q12", "full-width, in full-width parentheses", "（続けますか？）", "asks"),
-            row("Q13", "full-width, in corner brackets", "「進めますか？」", "asks"),
-            row("Q14", "a question above a closing code block", "Ready to run this?\n```sh\nmake test\n```", "asks"),
-            row("Q15", "a question above two code blocks", "Is this right?\n```\na\n```\n```\nb\n```", "asks"),
-            row("N1", "a statement", "All done.", "no"),
-            row("N2", "an empty message", "", "no"),
-            row("N3", "a question mid-line", "What next? Nothing, all done.", "no"),
-            row("N4", "the question only inside the closing code block", "Here it is:\n```swift\nlet x = a?\n```", "no"),
-            row("N5", "the question inside a tilde block", "Here:\n~~~\nwhy?\n~~~", "no"),
-            row("N6", "the question in an earlier code block", "a\n```\nb?\n```\n```\nc\n```", "no"),
-            row("N7", "nothing but a code block", "```\nonly code?\n```", "no"),
-            row("N8", "three lines after the question", "Which one?\n1. A\n2. B\n3. C", "no"),
-            row("B1", "the mark is byte \(askTailBytes) from the end", "Shall I?\n" + a(askTailBytes - 2), "asks"),
-            row("B2", "the mark is byte \(askTailBytes + 1) from the end", "Shall I?\n" + a(askTailBytes - 1), "no"),
-            row("B3", "a full-width mark wholly inside the bound", "Proceed？\n" + a(askTailBytes - 4), "asks"),
-            row("B4", "a full-width mark the bound cuts through", "Proceed？\n" + a(askTailBytes - 3), "no"),
-            row("B5", "a question far past the bound", "Shall I continue?\n" + String(repeating: "x", count: 1_000), "no"),
-            row("B6", "a long head, the question at the end", String(repeating: "y", count: 5_000) + "\nShall I go on?", "asks"),
-            row("B7", "multi-byte text cut mid-character, then a question", euros + "\nContinuer ?", "asks"),
-            row("B8", "multi-byte text cut mid-character, no question", euros + "\nContinuer.", "no"),
-            row("B9", "a closing fence whose opening fence is past the bound",
+            row("asks-1", "a plain question", "Shall I go ahead?", "asks"),
+            row("asks-2", "trailing spaces, a tab, a CR and blank lines", "Shall I go ahead?  \t\r\n\n \n", "asks"),
+            row("asks-3", "a closing quote", #"He asked "is it done?""#, "asks"),
+            row("asks-4", "a closing parenthesis", "(is that ok?)", "asks"),
+            row("asks-5", "bold", "**Merge now?**", "asks"),
+            row("asks-6", "italic, in a list item", "- _Ship it?_", "asks"),
+            row("asks-7", "curly double quotes", "She said “ready?”", "asks"),
+            row("asks-8", "a curly single quote", "It reads ’really?’", "asks"),
+            row("asks-9", "a short sign-off after the question", "Which option do you want?\n\nThanks.", "asks"),
+            row("asks-10", "two lines after the question", "Which one?\n1. A\n2. B", "asks"),
+            row("asks-11", "the full-width question mark", "全部終わりましたか？", "asks"),
+            row("asks-12", "full-width, in full-width parentheses", "（続けますか？）", "asks"),
+            row("asks-13", "full-width, in corner brackets", "「進めますか？」", "asks"),
+            row("asks-14", "a question above a closing code block", "Ready to run this?\n```sh\nmake test\n```", "asks"),
+            row("asks-15", "a question above two code blocks", "Is this right?\n```\na\n```\n```\nb\n```", "asks"),
+            row("no-1", "a statement", "All done.", "no"),
+            row("no-2", "an empty message", "", "no"),
+            row("no-3", "a question mid-line", "What next? Nothing, all done.", "no"),
+            row("no-4", "the question only inside the closing code block", "Here it is:\n```swift\nlet x = a?\n```", "no"),
+            row("no-5", "the question inside a tilde block", "Here:\n~~~\nwhy?\n~~~", "no"),
+            row("no-6", "the question in an earlier code block", "a\n```\nb?\n```\n```\nc\n```", "no"),
+            row("no-7", "nothing but a code block", "```\nonly code?\n```", "no"),
+            row("no-8", "three lines after the question", "Which one?\n1. A\n2. B\n3. C", "no"),
+            row("no-9", "the message is a result word itself", "asks", "no"),
+            row("bound-1", "the mark is byte \(askTailBytes) from the end", "Shall I?\n" + a(askTailBytes - 2), "asks"),
+            row("bound-2", "the mark is byte \(askTailBytes + 1) from the end", "Shall I?\n" + a(askTailBytes - 1), "no"),
+            row("bound-3", "a full-width mark wholly inside the bound", "Proceed？\n" + a(askTailBytes - 4), "asks"),
+            row("bound-4", "a full-width mark the bound cuts through", "Proceed？\n" + a(askTailBytes - 3), "no"),
+            row("bound-5", "a question far past the bound",
+                "Shall I continue?\n" + String(repeating: "x", count: 1_000), "no"),
+            row("bound-6", "a long head, the question at the end",
+                String(repeating: "y", count: 5_000) + "\nShall I go on?", "asks"),
+            row("bound-7", "multi-byte text cut mid-character, then a question", euros + "\nContinuer ?", "asks"),
+            row("bound-8", "multi-byte text cut mid-character, no question", euros + "\nContinuer.", "no"),
+            row("bound-9", "a closing fence whose opening fence is past the bound",
                 "Here:\n```\n" + String(repeating: "q?\n", count: 200) + "```", "no"),
-            row("P1", "known false positive: a rhetorical question, then its answer",
+            row("fp-1", "known false positive: a rhetorical question, then its answer",
                 "Why did it fail?\nThe cache was stale.\nFixed.", "asks"),
-            row("P2", "known false positive: a code span ending in ?", "The helper is `ready?`", "asks"),
-            row("F1", "known false negative: (y/n) after the mark", "Want me to do it? (y/n)", "no"),
-            row("F2", "known false negative: an emoji after the mark", "Ship it? 🚀", "no"),
+            row("fp-2", "known false positive: a code span ending in ?", "The helper is `ready?`", "asks"),
+            row("fn-1", "known false negative: (y/n) after the mark", "Want me to do it? (y/n)", "no"),
+            row("fn-2", "known false negative: an emoji after the mark", "Ship it? 🚀", "no"),
+            // Only ASCII whitespace is stripped, in any locale.
+            row("fn-3", "known false negative: a no-break space after the mark", "Ready?\u{00A0}", "no"),
         ]
     }()
 
@@ -2775,8 +2783,52 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    /// The judgement matches bytes whatever locale the hook inherits:
+    /// `tail_asks` sets LC_ALL=C for itself, first thing. Three rows run
+    /// through the hook in the bare environment (as the exec-form
+    /// registration's `env -i` leaves it) and again with
+    /// LC_ALL=en_US.UTF-8, and log the same word both times. In that UTF-8
+    /// locale bash counts a no-break space as [[:space:]], so without the
+    /// pin the no-break-space row (fn-3) would read `asks` there.
+    @Test func theJudgementIsTheSameUnderAUTF8Locale() throws {
+        let utf8 = ["LC_ALL": "en_US.UTF-8"]
+        let body = Self.functionBody("tail_asks", in: try Self.read(Self.hookScriptURL))
+        #expect(body.first == "local LC_ALL=C", "the pin is tail_asks' first line, got \(String(describing: body.first))")
+
+        // Non-vacuity: bash really runs in a UTF-8 locale here, one in which
+        // a no-break space is [[:space:]].
+        let probe = Process(), output = Pipe()
+        probe.executableURL = URL(fileURLWithPath: "/bin/bash")
+        probe.arguments = ["-c", #"case $'\xc2\xa0' in [[:space:]]) printf space ;; *) printf other ;; esac"#]
+        probe.environment = ["PATH": "/usr/bin:/bin"].merging(utf8) { current, _ in current }
+        probe.standardOutput = output
+        probe.standardError = FileHandle.nullDevice
+        try probe.run()
+        let seen = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+        probe.waitUntilExit()
+        #expect(seen == "space", "under \(utf8) bash must treat U+00A0 as [[:space:]], got \(String(describing: seen))")
+
+        let ids = ["fn-3", "bound-7", "asks-12"]
+        let rows = Self.askRows.filter { ids.contains($0.id) }
+        try #require(rows.map(\.id) == ["asks-12", "bound-7", "fn-3"], "the rows exist")
+        for row in rows {
+            for environment in [[:], utf8] {
+                withHome { home in
+                    let session = "a8000007-0107-4abc-8def-000000000107"
+                    let json = finalMessageJSON("Stop", session, message: row.message, backgroundTasks: Self.runningTask)
+                    let result = runScript(Self.hookScriptURL, bytes: Data(json.utf8), home: home,
+                                           extraEnvironment: environment)
+                    #expect(result.exitCode == 0 && result.stdout.isEmpty)
+                    let lines = askCheckLines(home)
+                    #expect(lines.count == 1 && isAskCheckLine(lines[0], session: session, result: row.result),
+                            "\(row.id) under \(environment) must log result=\(row.result), got \(lines)")
+                }
+            }
+        }
+    }
+
     @Test func theTableCoversBothWordsAndThePinnedBounds() throws {
-        #expect(Self.askRows.count == 36 && Set(Self.askRows.map(\.id)).count == 36, "vacuity guard")
+        #expect(Self.askRows.count == 38 && Set(Self.askRows.map(\.id)).count == 38, "vacuity guard")
         #expect(Set(Self.askRows.map(\.result)) == ["asks", "no"])
         let lines = try Self.read(Self.hookScriptURL).split(separator: "\n").map(String.init)
         #expect(lines.filter { $0.hasPrefix("ASK_TAIL_BYTES=") } == ["ASK_TAIL_BYTES=\(Self.askTailBytes)"])
@@ -2811,7 +2863,7 @@ struct ClaudeBusyHookScriptTests {
         }
         var failures: [String] = []
 
-        let extraction = #"t=$(set -o pipefail; plutil -extract last_assistant_message raw -expect string -o - "$1" 2>/dev/null | tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C /usr/bin/tr '\000' '#') || {"#
+        let extraction = #"t=$(set -o pipefail; plutil -extract last_assistant_message raw -expect string -o - "$1" 2>/dev/null | /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C /usr/bin/tr '\000' '#') || {"#
         let probe = #"if plutil -extract last_assistant_message raw -o - "$1" >/dev/null 2>&1; then"#
         let naming = code.filter { $0.contains("last_assistant_message") }
         if naming != [extraction, probe] {
