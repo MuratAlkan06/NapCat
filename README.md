@@ -836,11 +836,13 @@ Remote approvals are a preview, and **nothing is armed**: NapCat sends no
 prompt off this Mac, and this build's channel server passes no answer back
 to Claude Code, so you answer every dialog in the terminal. Registering the
 channel server connects the Claude Code sessions you start with the flag
-below to whatever is listening at NapCat's socket: NapCat itself while the
-**Mac-only preview** in **Settings › Claude** is on, so that it can see
-their prompts. The server checks that the listener runs as you, not yet that
-it is NapCat, so a program already running as you could listen there and
-read those sessions' permission prompts.
+below to whatever is listening at NapCat's socket: normally NapCat itself,
+while the **Mac-only preview** in **Settings › Claude** is on, so that it
+can see their prompts. The server checks that the listener runs as you, not
+yet that it is NapCat, so a program already running as you could listen
+there instead, whether the preview is on or off, and read those sessions'
+permission prompts: the tool's name and its arguments (for a shell command
+the command, for a file write the path and the content).
 
 The server is built into the app, at
 `NapCat.app/Contents/MacOS/napcat-channel`, and signed with it. Register it
@@ -884,10 +886,14 @@ checked; in a session from any other build, NapCat does not see them.
 **If you move or rename NapCat.app, run the script again**, because the
 registration names the server's path. **Run it again after you install a new
 NapCat build, too**: it keeps a matching registration as it is and rewrites
-the receipt with the new server's version. Then start your flagged sessions
-again. A session keeps the server it started with, and NapCat refuses the
-prompts of a server whose version is not its own, so they stay in the
-terminal.
+the receipt with the new server's version. Then end every Claude Code session
+you started with the flag, and start it again. A session keeps the server it
+started with, so what this section says about this build's server holds for a
+session only once that session has started it. NapCat refuses the prompts of
+a server whose version is not its own, which keeps them out of NapCat but does
+not change that server: a channel server from a build before version 3 (the
+receipt's `version=` line) still passes an answer back to Claude Code from
+whatever is listening at the socket.
 
 To undo the registration:
 

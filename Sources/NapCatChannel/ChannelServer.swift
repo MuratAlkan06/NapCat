@@ -6,8 +6,9 @@ import os
 
 /// F4 slice S1: `napcat-channel`, the channel server Claude Code spawns for a
 /// session wired for remote approvals. It speaks MCP over its stdin and
-/// stdout (one message per line), reaches NapCat over the authenticated seam
-/// (it connects when its first prompt opens and keeps the link until either
+/// stdout (one message per line), reaches NapCat over the seam (a Unix socket
+/// restricted to this user; which program listens is not checked yet) (it
+/// connects when its first prompt opens and keeps the link until either
 /// end closes it — NapCat lets go of one quiet for a minute with nothing
 /// waiting on the phone — then connects again with its next prompt), and
 /// exits when Claude Code closes its stdin. Everything it decides is in `ChannelRelay`;

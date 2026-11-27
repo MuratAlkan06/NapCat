@@ -337,9 +337,10 @@ napcat-channel-version: 3
   (lint-locked). Slice S2 wires both behind the Mac toggle, never armed (see
   below); with the toggle off NapCat makes no socket, so a server finds
   nothing to connect to unless another program of this user listens at that
-  path. Such a program would read the prompts of sessions started with the
-  flag; none of its verdicts reaches Claude Code (#221), so every prompt is
-  answered locally.
+  path (or takes the path over while NapCat listens, which NapCat does not
+  notice). Such a program would read the prompts of sessions started with
+  the flag; a version-3 server passes none of its verdicts to Claude Code
+  (#221), so every prompt is answered locally.
 - **The allowlist probe** (`ChannelPolicyProbe`, the reading in
   `NapCatWire/ApprovalChannelPolicy.swift`). It reads the file tier of the
   managed settings (`managed-settings.json`, then the `managed-settings.d`
