@@ -65,28 +65,30 @@ import Testing
 ///    and the relay's two `receive`s, the last writes before Claude Code
 ///    (#199), so nothing is added to any of them; the stream type and its
 ///    writer (`writeLine`) are named in the four targets at today's lines
-///    alone, the writer's one call among them, and the relay names its open
-///    requests (`open`) at today's lines (#210), so a second caller of the
-///    writer, or a set of another type holding the requests a verdict may
-///    answer, fails (a caller through the relay's own `emit` is read by the
-///    relay's pin instead); and the channel server's stdin reader's type
-///    (`StandardInput`) is pinned whole (#212): its header (no superclass,
-///    no conformance but today's), its stored members (the read source,
-///    the line handler and the line reader, each of today's type), its
-///    initializer, `start` and its reader (`drain`), the server file's one
-///    read of what Claude Code writes; and the server names that `read` at
-///    its line, so no member of the type, none it inherits and no second
-///    reader wired in `start` takes the read over. The server's `main`,
-///    which hands the reader's lines to the relay, is pinned whole too
-///    (#221, `ApprovalChannelStructureTests`). Not read: a read of standard
-///    input elsewhere in the channel target, and the wire's line reader's
-///    own body. A line of the seam file that reaches the socket by none of
-///    those names (the connection handed on whole, or the descriptor through
-///    the peer reader the listener is given) is not read itself, and k. and
-///    n. read the writers they list by their spelled names only: a write to
-///    that socket, there or in code it is handed to, in a spelling neither
-///    reads (n. says which) or through a file API and a path, is not caught
-///    by them;
+///    alone, the writer's one call among them (#221's pin, read here), and
+///    the relay names its open requests (`open`) at today's lines (#210),
+///    so a second caller of the writer, or a set of another type holding
+///    the requests a verdict may answer, fails (a caller through the
+///    relay's own `emit` is read by the relay's pin instead); and the
+///    channel server's stdin reader's type (`StandardInput`) is pinned
+///    whole (#212): its header (no superclass, no conformance but today's),
+///    its stored members (the read source, the line handler and the line
+///    reader, each of today's type), its initializer, `start` and its
+///    reader (`drain`), the server file's one read of what Claude Code
+///    writes; and the server names that `read` at its line, so no member of
+///    the type, none it inherits and no second reader wired in `start`
+///    takes the read over. The server's `main`, which hands the reader's
+///    lines to the relay, is pinned whole too (#221's pin, in
+///    `ApprovalChannelStructureTests`, read here among the whole pins, so
+///    m. reads its names). Not read: a read of standard input elsewhere in
+///    the channel target, and the wire's line reader's own body. A line of
+///    the seam file that reaches the socket by none of those names (the
+///    connection handed on whole, or the descriptor through the peer reader
+///    the listener is given) is not read itself, and k. and n. read the
+///    writers they list by their spelled names only: a write to that
+///    socket, there or in code it is handed to, in a spelling neither reads
+///    (n. says which) or through a file API and a path, is not caught by
+///    them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -2552,25 +2554,13 @@ struct DecisionSinkStructureTests {
 
     // MARK: - f, continued. The channel server's stream writer, at its one call (#210)
 
-    /// The channel server's stream type and its writer, named at today's
-    /// lines alone in the four targets (#210): the type's declaration, the
-    /// writer's, and its one call, where the server hands it to the relay as
-    /// `emit`. A second caller, a reference kept elsewhere, a second relay
-    /// built with it or an alias of the type names one of them.
-    static let streamWriterPattern: String = #"\bwriteLine\b|\bStandardStreams\b"#
-    static let streamWriterSites: [String: [String: Int]] = [
-        ApprovalChannelStructureTests.serverFile: [
-            "let relay = ChannelRelay(emit: StandardStreams.writeLine, connect: { onFrame, onClose in": 2,
-            "enum StandardStreams {": 1, "static func writeLine(_ line: String) {": 1],
-    ]
-
-    /// `sources`: `uncutSources()`.
-    static func streamWriterFailures(_ sources: Sources) -> [String] {
-        absent(streamWriterSites.keys, in: sources)
-            + PairingStructureTests.appSiteFailures(streamWriterPattern, in: sources, allowed: streamWriterSites,
-                                                    rule: "the channel server's stream writer is named at its one call and its declarations alone — a "
-                                                        + "second caller could answer Claude Code")
-    }
+    // The stream type and its writer are named in the four targets at
+    // today's lines alone by #221's pin, the one definition
+    // (`ApprovalChannelStructureTests.streamWordFailures`: the type's
+    // declaration, the writer's, and its one call, where the server hands
+    // it to the relay as `emit`): this suite reads it as its stream writer
+    // pin. A second caller, a reference kept elsewhere, a second relay built
+    // with it or an alias of the type names one of them.
 
     /// The anchor in the relay's `relay`, after a prompt is relayed (its
     /// body is not pinned), and the relay's open set as it is declared.
@@ -2602,17 +2592,20 @@ struct DecisionSinkStructureTests {
         """
 
     /// The channel server's stream writer and its type are named at its
-    /// one call and their declarations alone in the four targets, and the
-    /// relay names its open requests at today's lines (#210). The road
-    /// #207's verification found past the pinned writer, as inert text — a
-    /// hand-built allow written straight through the stream writer from the
-    /// relay — is caught by the stream writer's pin alone; the relay's open
-    /// set given a type that admits a request it never relayed, by the
+    /// one call and their declarations alone in the four targets (#221's
+    /// pin, read here as the stream writer's), and the relay names its open
+    /// requests at today's lines (#210). The road #207's verification found
+    /// past the pinned writer, as inert text — a hand-built allow written
+    /// straight through the stream writer from the relay — is caught, of
+    /// this suite's pins, by the stream writer's alone, and by #221's answer
+    /// guard too (the relay names none of the server's streams); the relay's
+    /// open set given a type that admits a request it never relayed, by the
     /// relay's open word pin alone (the connection words); every other pin
     /// of this suite reads each as the tree.
     @Test func theChannelServersStreamWriterIsNamedAtItsOneCall() throws {
         let sources: Sources = try Self.uncutSources()
-        #expect(Self.streamWriterFailures(sources).isEmpty, "\(Self.streamWriterFailures(sources))")
+        let streamWords: [String] = ApprovalChannelStructureTests.streamWordFailures(sources)
+        #expect(streamWords.isEmpty, "\(streamWords)")
         let server: String = ApprovalChannelStructureTests.serverFile
         let relay: String = ApprovalChannelStructureTests.relayFile
         let called: String = "        let relay = ChannelRelay(emit: StandardStreams.writeLine, connect: { onFrame, onClose in\n"
@@ -2640,6 +2633,8 @@ struct DecisionSinkStructureTests {
             let others: [String] = Self.othersCatching(planted, besides: own, baseline: baseline)
             #expect(others.isEmpty, "canary '\(name)' is its pin's to catch, but \(others) caught it too")
         }
+        let guarded: [String] = ApprovalChannelStructureTests.answerGuardFailures(caller)
+        #expect(!guarded.isEmpty, "the second caller was NOT caught by #221's answer guard")
         // More canaries: the writer taken in another target, the type
         // aliased, a member so named in the relay, a second relay built with
         // the writer, the one call handed a wrapper, the writer backticked or
@@ -2661,7 +2656,7 @@ struct DecisionSinkStructureTests {
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
-            #expect(!Self.streamWriterFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+            #expect(!ApprovalChannelStructureTests.streamWordFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
         let openMutants: [(String, Sources)] = [
             ("the open set handed on", relayed("        zzKeep(open)\n")),
@@ -2683,7 +2678,8 @@ struct DecisionSinkStructureTests {
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never open.insert(zz)"))
         }
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
-        #expect(Self.streamWriterFailures(controls).isEmpty, "over-match: \(Self.streamWriterFailures(controls))")
+        let controlWords: [String] = ApprovalChannelStructureTests.streamWordFailures(controls)
+        #expect(controlWords.isEmpty, "over-match: \(controlWords)")
         #expect(Self.connectionWordFailures(controls).isEmpty, "over-match: \(Self.connectionWordFailures(controls))")
     }
 
@@ -2873,7 +2869,9 @@ struct DecisionSinkStructureTests {
                                                     rule: "every operator implementation is today's — a new overload could take a pinned line's operator")
     }
 
-    /// Every whole-body pin.
+    /// Every whole-body pin: this suite's, and #221's of the channel
+    /// server's `main` (`ApprovalChannelStructureTests`, its one definition),
+    /// so the borrowed-name pin reads `main`'s names too.
     static let allWholePins: [WholePin] = {
         var pins: [WholePin] = roadPins
         pins.append(doorPin)
@@ -2883,6 +2881,7 @@ struct DecisionSinkStructureTests {
         pins.append(contentsOf: channelPins)
         pins.append(initPin)
         pins.append(stdinPin)
+        pins.append(ApprovalChannelStructureTests.serverMainPin)
         return pins
     }()
     /// Every pin of this suite that reads the four targets' sources, by
@@ -2893,7 +2892,7 @@ struct DecisionSinkStructureTests {
             ("intake type", { Self.intakeTypeFailures($0) }), ("Optional", { Self.optionalFailures($0) }),
             ("frame writer", { Self.frameWriterFailures($0) }), ("host writes", { Self.hostWriteFailures($0) }),
             ("connection type", { Self.connectionTypeFailures($0) }), ("connection words", { Self.connectionWordFailures($0) }),
-            ("stream writer", { Self.streamWriterFailures($0) }),
+            ("stream writer", { ApprovalChannelStructureTests.streamWordFailures($0) }),
             ("extensions", { Self.extensionFailures($0) }), ("operator implementations", { Self.operatorImplementationFailures($0) }),
             ("extension members", { Self.extensionMemberFailures($0) }), ("capital names", { Self.capitalNameFailures($0) }),
             ("C writes", { Self.cWriteFailures($0) }), ("top level", { Self.topLevelFailures($0) }),
@@ -3827,15 +3826,16 @@ struct DecisionSinkStructureTests {
 
     // MARK: - m. No type borrows a pinned name
 
-    /// Every text this suite pins: the flat and whole bodies, every
-    /// allow-listed line, every extension's header and members, today's
-    /// top-level alias, and the S1 locks' anchors on the same road.
+    /// Every text this suite pins: the flat and whole bodies (#221's `main`
+    /// among them), every allow-listed line (#221's stream words among
+    /// them), every extension's header and members, today's top-level
+    /// alias, and the S1 locks' anchors on the same road.
     static var pinnedTexts: [String] {
         var texts: [String] = [decideBody, wiredBody, verificationType, decisionDeclaration]
         texts.append(contentsOf: allWholePins.map { $0.whole })
         let byFile: [[String: [String: Int]]] = [decideSites, remoteDecisionSites, verifiedSites, withIntakeSites, intakeTypeSites,
                                                 connectionTypeSites, extensionSites, operatorImplementationSites, cWriteSites, fileHandleSites,
-                                                streamWriterSites]
+                                                ApprovalChannelStructureTests.streamWordSites]
         texts.append(contentsOf: byFile.flatMap { $0.values.flatMap { $0.keys } })
         let lines: [[String: Int]] = [hostIntakeSites, intakeDoorSites, frameWriterSites, hostWriteSites, serverWriteWordSites]
         texts.append(contentsOf: lines.flatMap { $0.keys })
@@ -3914,13 +3914,15 @@ struct DecisionSinkStructureTests {
     }
 
     /// Today's declarations of a name `pinnedNames` or the modules hold, by
-    /// file: each the type's own declaration (seventy-six: the intake's
+    /// file: each the type's own declaration (seventy-nine: the intake's
     /// entry since `receive` is pinned whole, #198, the channel server's
     /// stream type since it is, #199, the relay's type since its one
     /// construction, the stream writer's call, is pinned, #210, the
-    /// intake's audit event since its initializer is, #211, and the stdin
-    /// reader's type and the wire's line reader since that type is, #212),
-    /// none borrowing an imported name.
+    /// intake's audit event since its initializer is, #211, the stdin
+    /// reader's type and the wire's line reader since that type is, #212,
+    /// and the channel server's entry point and the seam's paths and client
+    /// since its `main`, #221's pin, is read here), none borrowing an
+    /// imported name.
     static let homeDeclarations: [String: [String: Int]] = [
         ApprovalChannelStructureTests.intakeFile: [
             "class ApprovalIntake": 1, "enum ApprovalAuditEvent": 1, "protocol ApprovalRecordSink": 1, "struct Entry": 1,
@@ -3946,10 +3948,11 @@ struct DecisionSinkStructureTests {
         "SettingsContent.swift": ["enum SettingsPane": 1, "enum SettingsRow": 1, "struct SettingsPaneContent": 1],
         "UpdateVersion.swift": ["struct ReleaseVersion": 1],
         ApprovalChannelStructureTests.seamFile: [
-            "class SeamConnection": 1, "class SeamListener": 1, "enum SeamPeerPolicy": 1, "enum SeamSocket": 1, "struct SeamPeer": 1],
+            "class SeamConnection": 1, "class SeamListener": 1, "enum SeamClient": 1, "enum SeamPaths": 1, "enum SeamPeerPolicy": 1,
+            "enum SeamSocket": 1, "struct SeamPeer": 1],
         ApprovalChannelStructureTests.relayFile: [
             "class ChannelRelay": 1, "enum ChannelNote": 1, "protocol ChannelLink": 1, "typealias Connector": 1],
-        ApprovalChannelStructureTests.serverFile: ["class StandardInput": 1, "enum StandardStreams": 1],
+        ApprovalChannelStructureTests.serverFile: ["class StandardInput": 1, "enum ChannelServer": 1, "enum StandardStreams": 1],
         "ApprovalChannel.swift": [
             "enum ApprovalChannel": 1, "enum ChannelErrorCode": 1, "enum ChannelMessage": 1, "enum ChannelMessageID": 1, "enum SeamFrame": 1,
             "struct ChannelClient": 1, "struct ChannelLineReader": 1, "struct ChannelPermissionRequest": 1, "struct ChannelRequestID": 1],
@@ -4004,17 +4007,17 @@ struct DecisionSinkStructureTests {
         #expect(Self.borrowedNameFailures(sources).isEmpty, "\(Self.borrowedNameFailures(sources))")
         // The names are read from the pins and the imports.
         for name in ["ApprovalChannel", "PromptID", "DispatchSource", "SHA256", "P256", "Int32", "Sendable", "write", "read", "fcntl", "chmod",
-                     "ChannelLineReader"] {
+                     "ChannelLineReader", "SeamClient", "dispatchMain"] {
             #expect(Self.pinnedNames.contains(name), "vacuity: '\(name)' is spelled on a pinned line")
         }
         let modules: Set<String> = Self.moduleNames(sources)
         for name in ["Darwin", "Dispatch", "Foundation", "CryptoKit", "NapCat", "NapCatWire", "NapCatSeam", "NapCatChannel", "Swift"] {
             #expect(modules.contains(name), "vacuity: '\(name)' is an imported module")
         }
-        // Every home is a type's own: seventy-six, none named like a module
+        // Every home is a type's own: seventy-nine, none named like a module
         // or like the imported types the pinned lines call.
         let homes: [String] = Self.homeDeclarations.values.flatMap { $0.keys }
-        #expect(homes.count == 76 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
+        #expect(homes.count == 79 && Self.homeDeclarations.values.allSatisfy { $0.values.allSatisfy { $0 == 1 } }, "\(homes.count) homes")
         let imported: Set<String> = modules.union(["DispatchSource", "DispatchQueue", "P256", "SHA256", "Int32", "Sendable", "Equatable"])
         #expect(homes.allSatisfy { !imported.contains(Self.asciiWords($0).last ?? "") }, "a home borrows an imported name: \(homes.sorted())")
         let intake: String = ApprovalChannelStructureTests.intakeFile

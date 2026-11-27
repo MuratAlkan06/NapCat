@@ -1073,8 +1073,8 @@ arms anything.
     of them, through the connection handed on whole or the listener's peer
     reader, is not read itself); the channel server's stream writer and its
     type, named in the four targets at its one call and their declarations
-    alone (#210), so a second caller fails (one through the relay's own
-    `emit` is the relay's word pin's to read); the
+    alone (#210, by #221's pin), so a second caller fails (one through the
+    relay's own `emit` is the relay's word pin's to read); the
     seam connection's writer and reader, the intake's `receive` and its
     initializer, the channel server's stream type and stdin reader's type,
     and the relay's two receives are pinned whole (below); the four
