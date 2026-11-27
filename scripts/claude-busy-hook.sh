@@ -1,5 +1,5 @@
 #!/bin/bash
-# napcat-hook-version: 7
+# napcat-hook-version: 8
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
 #
@@ -88,6 +88,19 @@
 # re-anchors them. The phase probe below only reads the event token, so it
 # is unaffected by the extra field.
 #
+# Hook v8 — a SILENT check of how a turn ended, counted in hook.log only. On
+# a Stop that the reconcile KEEPS because background work is still running
+# (the main turn is over, so a question asked there raises no waiting
+# notification), the hook reads the END of Claude's final message (the
+# payload's `last_assistant_message`) to judge whether it asks something,
+# and appends ONE line to hook.log:
+#   ask-check session=<id> result=asks|no|absent|unreadable
+# Nothing reads that line yet. The marker, its grammar and every other path
+# are exactly as in v7. No other event and no other Stop reads the field,
+# and the transcript is never opened. The message itself is never written
+# anywhere: not to hook.log, not to the marker, not to a file of its own
+# (see final_message_check).
+#
 # HARD UX-SAFETY LAYERS (a buggy hook must never be able to break the user's
 # Claude Code experience — lint-enforced by ClaudeBusyHookScriptTests):
 #   * FORCED EXIT 0 on every path. All work happens in main(); the file ends
@@ -130,8 +143,8 @@
 # best-effort (recorded `unknown` when SUPERCONDUCTOR_MANAGED_AGENT is absent);
 # `src` is DEBUG-ONLY and never a policy input.
 #
-# Stock macOS only: bash 3.2, plutil, date, stat, mktemp, head, grep, tr,
-# sed. No jq, no sudo.
+# Stock macOS only: bash 3.2, plutil, date, stat, mktemp, head, tail, grep,
+# tr, sed. No jq, no sudo.
 
 umask 077
 
@@ -162,6 +175,22 @@ WAITING_AFTER_STOP_EVENT=waiting-after-stop
 MAX_STDIN=262144
 NL=$'\n'
 CR=$'\r'
+# Hook v8 — the final-message check's bounds: the shell reads at most the
+# last ASK_TAIL_BYTES bytes of the message, and judges at most the last
+# ASK_TAIL_LINES non-empty lines of those.
+ASK_TAIL_BYTES=400
+ASK_TAIL_LINES=3
+# A fenced code block's fence: up to three spaces, then ``` or ~~~.
+FENCE_RE='^ {0,3}(```|~~~)'
+# U+FF1F FULLWIDTH QUESTION MARK, as UTF-8.
+FW_QMARK=$'\xef\xbc\x9f'
+# Closing characters stripped after a question mark, besides the ASCII ones:
+# U+201D and U+2019 (right double and single quotation marks), U+FF09
+# (fullwidth right parenthesis) and U+300D (right corner bracket).
+RDQUO=$'\xe2\x80\x9d'
+RSQUO=$'\xe2\x80\x99'
+FW_RPAREN=$'\xef\xbc\x89'
+RCORNER=$'\xe3\x80\x8d'
 
 # Layer 6 — kill switch. FIRST action: if the user paused detection, do nothing
 # (no reads, no writes, no log) and succeed. Placed before every write in the
@@ -353,11 +382,114 @@ marker_episode() {
   return 0
 }
 
+# Hook v8 — the PURE judgement: no file, no other process, and no output but
+# one word. $1 is the end of Claude's final message, at most its last
+# ASK_TAIL_BYTES bytes (the caller cuts it). Walking up from the last line,
+# it prints `asks` when one of the last ASK_TAIL_LINES non-empty lines
+# outside fenced code blocks ends with `?` or the full-width question mark,
+# once trailing ASCII whitespace and closing characters are stripped: the
+# ASCII ) ] } " ' * _ ~ and backtick, and the four non-ASCII closers above.
+# Otherwise it prints `no`.
+# It matches bytes: LC_ALL is C inside this function only (bash puts the
+# caller's locale back on return), so an inherited UTF-8 locale can neither
+# widen [[:space:]] beyond ASCII whitespace nor change what one `?` in a
+# pattern strips.
+# Code blocks: every fence line (FENCE_RE) switches between prose and code,
+# and is not judged itself. A message ends in prose, so walking up the first
+# fence met is a closing one: a `?` inside any block closed within the
+# bound never counts, and when a block's opening fence lies beyond the cut,
+# every line read above its closing fence is code.
+# A line is judged by its END: the first line, cut by the bound, still
+# counts; a question mark the bound leaves outside, or cuts through (a
+# full-width one with its first bytes outside), does not.
+# Known false positives: a question mark that ends a line but asks nothing
+# of the user, such as a rhetorical heading ("Why did it fail?") followed by
+# its answer, a quoted question, or a code span, path or table row ending in
+# `?`; a line inside a code block whose fence is indented four or more
+# spaces (one in a list item); a `?` line inside a code block that is never
+# closed (the message ends in code, so walking up, its lines are judged as
+# prose until its opening fence, which is taken for a closing one); and a
+# `?` line between two ``` lines inside a ~~~ block (or the reverse). Known
+# false negatives: a question followed by ASK_TAIL_LINES or more non-empty
+# lines (an option list of three or more items after it), by an emoji, by
+# "(y/n)" or other text on the same line, or by a space that is not ASCII (a
+# no-break space, say); a question asked without a question mark, or with
+# one this rule does not know, such as the Arabic question mark (U+061F); a
+# question above a code block that is never closed, or above a ~~~ block
+# holding a ``` line (or the reverse), which the walk takes for a fence; and
+# anything beyond the bound.
+#   $1 text
+tail_asks() {
+  local LC_ALL=C
+  local text=$1 line more=yes counted=0 code=no
+  while [ "$more" = yes ]; do
+    case "$text" in
+      *"$NL"*) line=${text##*"$NL"}; text=${text%"$NL"*} ;;
+      *) line=$text; more=no ;;
+    esac
+    if [[ $line =~ $FENCE_RE ]]; then
+      if [ "$code" = no ]; then code=yes; else code=no; fi
+      continue
+    fi
+    [ "$code" = no ] || continue
+    while :; do
+      case "$line" in
+        *[[:space:]]|*[]\)\}\*_~\`\"\']) line=${line%?} ;;
+        *"$RDQUO") line=${line%"$RDQUO"} ;;
+        *"$RSQUO") line=${line%"$RSQUO"} ;;
+        *"$FW_RPAREN") line=${line%"$FW_RPAREN"} ;;
+        *"$RCORNER") line=${line%"$RCORNER"} ;;
+        *) break ;;
+      esac
+    done
+    [ -n "$line" ] || continue
+    case "$line" in
+      *'?'|*"$FW_QMARK") printf asks; return 0 ;;
+    esac
+    counted=$((counted + 1))
+    [ "$counted" -lt "$ASK_TAIL_LINES" ] || break
+  done
+  printf no
+  return 0
+}
+
+# Hook v8 — the final-message check, read-only. Called from ONE place in
+# main(): a Stop that the reconcile keeps because background work is still
+# running, while the payload still exists (inside its traps). Prints exactly
+# one closed word: `asks` or `no` (tail_asks); `absent` when there is no
+# value at the key, or a JSON null; `unreadable` when the value is not a
+# string. A payload that fails the stdin gate (invalid JSON or UTF-8, or one
+# cut at MAX_STDIN) never gets this far: the event is ignored as before.
+# The message reaches the shell only through this pipe: plutil decodes the
+# string, `tail -c` keeps its last ASK_TAIL_BYTES bytes (plus plutil's own
+# newline), so the shell never holds more than that however long the
+# message is, and any NUL is mapped to `#` before the shell sees it (bash
+# 3.2 drops NULs inside $(…); the v6 stdin mapping should leave none). The
+# text is held in this function's one variable only: never written to a
+# file, logged or printed.
+# pipefail keeps plutil's own status as the pipeline's, so a non-string or
+# missing value takes the second branch, whose probe prints to /dev/null
+# only (a dictionary would print its keys).
+#   $1 payload file
+final_message_check() {
+  local t
+  t=$(set -o pipefail; plutil -extract last_assistant_message raw -expect string -o - "$1" 2>/dev/null | /usr/bin/tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C /usr/bin/tr '\000' '#') || {
+    if plutil -extract last_assistant_message raw -o - "$1" >/dev/null 2>&1; then
+      printf unreadable
+    else
+      printf absent
+    fi
+    return 0
+  }
+  tail_asks "$t"
+  return 0
+}
+
 main() {
   mkdir -p "$STATE_DIR" 2>/dev/null
   chmod 700 "$STATE_DIR" 2>/dev/null
 
-  local now src payload event logevent session marker bg_running ntype tclass tinfo phase pinfo token
+  local now src payload event logevent session marker bg_running ntype tclass tinfo phase pinfo token asked
   now=$(date +%s)
   src=unknown
   [ -n "${SUPERCONDUCTOR_MANAGED_AGENT:-}" ] && src=sc
@@ -380,12 +512,15 @@ main() {
   #   * Every surrogate escape (`\uD800`-`\uDFFF`) becomes the escape for
   #     U+FFFD: a LONE one is rejected, and JSON.stringify emits one when a
   #     string is cut mid-emoji. A valid pair is mapped too (two U+FFFD) — an
-  #     accepted tradeoff, since no field this hook reads (event, session,
-  #     type, task status) can legitimately contain one.
+  #     accepted tradeoff, since no field this hook matches (event, session,
+  #     type, task status) can legitimately contain one, and the final-message
+  #     check (hook v8) only looks for a question mark at a line's end, which
+  #     neither the pair nor its U+FFFD is.
   # Each rewrite is six characters for six, so the payload never outgrows the
   # cap, and the two patterns cannot overlap. A literal `\\u0000` or `\\ud83d`
-  # text is rewritten too — harmless, since no field this hook reads can
-  # legitimately contain a backslash.
+  # text is rewritten too — harmless, since no field this hook matches can
+  # legitimately contain a backslash, and in the final message the rewrite
+  # never adds or removes a question mark or a line break.
   head -c "$MAX_STDIN" | LC_ALL=C /usr/bin/sed -E -e 's/\\u0000/\\u0023/g' -e 's/\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\ufffd/g' >"$payload" 2>/dev/null
   # JSON validity, not plist convertibility: `-convert xml1` rejects any JSON
   # null, so one nullable field would drop the whole event.
@@ -403,6 +538,14 @@ main() {
   session=$(plutil -extract session_id raw -o - "$payload" 2>/dev/null) || session=""
   bg_running=no
   has_running_background_task "$payload" && bg_running=yes
+  # Hook v8 — only a Stop that the reconcile below keeps because background
+  # work is still running reads the final message: for a Stop, that is
+  # exactly a valid session with bg_running=yes (no branch before that keep
+  # can take a Stop). It is read here, while the payload exists, so the
+  # check stays inside the payload's traps; its one word is logged in that
+  # keep branch.
+  asked=""
+  [ "$event" = Stop ] && [ "$bg_running" = yes ] && valid_session "$session" && asked=$(final_message_check "$payload")
   # Only a Notification carries a type worth reading (no extra plutil process
   # on the latency-sensitive UserPromptSubmit path).
   ntype=""
@@ -475,6 +618,11 @@ main() {
         fi
         ( write_marker "$marker" "$now" "$token" "$src" ) &
         log "keep session=$session event=$event$tinfo$pinfo reason=background-task-running pid=$PPID src=$src"
+        # Hook v8 — set on a Stop only (above), and only a closed word is
+        # ever logged.
+        case "$asked" in
+          asks|no|absent|unreadable) log "ask-check session=$session result=$asked" ;;
+        esac
       elif [ "$event" = SubagentStop ] && [ "$phase" = none ]; then
         log "ignore reason=no-marker event=$event$pinfo"
       elif [ "$event" = Notification ] && [ "$phase" = poststop ]; then
