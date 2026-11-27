@@ -19,8 +19,9 @@ import NapCatWire
 // Mac. No CloudKit record operation exists in this slice; forwarding becomes
 // possible only when the Mac arms it (the Mac's decision alone, not the
 // iPhone's), which waits on the Mac's live record path and the seam's check
-// of which program listens (#221), among the items owed before arming (a
-// later slice amends this file and its lint deliberately).
+// of which program listens (still owed; #221 holds every answer until then),
+// among the items owed before arming (a later slice amends this file and
+// its lint deliberately).
 
 /// The seam's record sink in this slice: it writes NOTHING. No prompt record
 /// is written before the Mac's live record path exists — and since the host

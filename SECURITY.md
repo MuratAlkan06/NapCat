@@ -73,11 +73,11 @@ Mac, that both devices show the same code, and a new pairing replaces it in
 one write. **Unpair…** in Settings › Claude asks the keychain to delete it
 and turns Remote approvals off either way. If the keychain refuses, the
 item stays: Settings › Claude re-reads it, so a pairing still there still
-shows, and NapCat logs `pairing.unpairFailed`. `scripts/uninstall.sh`
-deletes it too, as you and without printing it. The keychain's access
-prompt guards reading this item, not replacing it: software already
-running as you can replace it without a prompt, so the key is as
-trustworthy as your user account, no more.
+shows as long as the item can be read, and NapCat logs
+`pairing.unpairFailed`. `scripts/uninstall.sh` deletes it too, as you and
+without printing it. The keychain's access prompt guards reading this item,
+not replacing it: software already running as you can replace it without a
+prompt, so the key is as trustworthy as your user account, no more.
 
 While a pairing is under way, the iPhone's reply travels as one record in
 your iCloud private database, every field but the format version

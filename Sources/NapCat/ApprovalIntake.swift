@@ -18,8 +18,9 @@ import NapCatWire
 /// tests in that slice). Nothing reaches it while the feature is unarmed,
 /// which every build is: arming is the Mac's decision, and it waits on the
 /// Mac's live record path and the seam's check of which program listens
-/// (#221), among the items owed before arming (the S2 host is built never
-/// armed, with a sink that writes nothing).
+/// (still owed; #221 holds every answer until then), among the items owed
+/// before arming (the S2 host is built never armed, with a sink that writes
+/// nothing).
 protocol ApprovalRecordSink: AnyObject {
     /// Write the prompt record: the tool the gate forwarded and the gate's
     /// own copy of the preview (`ApprovalGate.forwardedPreview`: no

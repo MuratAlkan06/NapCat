@@ -563,10 +563,10 @@ this section points at them.
   (S3; since S-PAIR-B it carries the paired key's). In S3 only a
   `-NapCatRequest` launch showed a request (a fixture, answered in memory);
   since #194 a live launch also lists, read only, the prompt records it
-  reads in the approvals zone, each at most until its window closes, while
-  the phone's switch is in effect. No Mac build writes one yet, and the
-  phone cannot check which Mac wrote one (see "The phone's prompt path").
-  No app source builds the CloudKit decision writer.
+  reads in the approvals zone whose window was still open when the list was
+  last drawn, while the phone's switch is in effect. No Mac build writes one
+  yet, and the phone cannot check who wrote one (see "The phone's prompt
+  path"). No app source builds the CloudKit decision writer.
 - **The records.** Both types live in the approvals zone, with the readable
   fields encrypted as `ApprovalWire` lists them. The readers refuse a record
   whose type, zone, encryption or version differs, and the Mac's refuses a
@@ -721,8 +721,8 @@ arms anything.
   a new pairing replaces it. Unpair on the Mac asks the keychain to delete
   the stored key and stops the feature through the kill switch either way;
   if the keychain refuses, the key stays (Settings › Claude re-reads the
-  slot, so a pairing still there still shows) and the `pairing` log says
-  `pairing.unpairFailed`. Re-enrolling Face ID
+  slot, so a pairing still there still shows while the slot can be read)
+  and the `pairing` log says `pairing.unpairFailed`. Re-enrolling Face ID
   invalidates the phone's key in hardware; the phone then unpairs itself
   and asks to pair again. A new or restored phone arrives unpaired (Secure
   Enclave keys never leave their device). Each case is recovered by the
@@ -1337,12 +1337,12 @@ is started with the development flag load the channel.
 ## The phone's prompt path (#194)
 
 #194 lets the phone list, read only, the prompt records it reads in the
-approvals zone, each at most until its window closes, while its switch is
-in effect. No Mac build writes one yet, and the phone cannot check which
-Mac wrote one. Nothing arms on either device, and in a live launch every
-answer goes to a writer that writes nothing (`UnsentDecisionWriter`), so
-the prompt screen is a preview with no answer buttons, and the inbox
-refuses an answer before it asks for a match.
+approvals zone whose window was still open when the list was last drawn,
+while its switch is in effect. No Mac build writes one yet, and the phone
+cannot check who wrote one. Nothing arms on either device, and in a live
+launch every answer goes to a writer that writes nothing
+(`UnsentDecisionWriter`), so the prompt screen is a preview with no answer
+buttons, and the inbox refuses an answer before it asks for a match.
 
 - **The phone's switch** (Settings › Remote approvals, "Prompts on This
   iPhone", off by default; `ApprovalsSwitch`). It takes effect only on a
