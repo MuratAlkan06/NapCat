@@ -1224,6 +1224,17 @@ struct ChannelInstallScriptTests {
     /// 81).
     static let formatNeighbours = ["\u{AC}", "\u{AE}", "\u{61B}", "\u{61F}", "\u{1810}", "\u{2010}", "\u{2030}", "\u{2057}",
                                    "\u{2070}", "\u{FEFC}", "\u{FF01}"]
+    /// Format characters that a UTF-8 [[:cntrl:]] refuses and the byte-wise
+    /// rule accepts on purpose: the Arabic number sign (D8 80), the inhibit
+    /// symmetric swapping mark (E2 81 AA), the interlinear annotation anchor
+    /// (EF BF B9) and the tag latin capital letter A (F3 A0 81 81); APFS
+    /// takes each in a folder name. They are here to pin that the checks
+    /// read bytes, not the locale: a check that read the locale (its
+    /// `local LC_ALL=C` gone) would take them for text under C and for
+    /// controls under UTF-8, so the installer would refuse in one locale the
+    /// bundle it registers in the other, and the uninstaller would leave a
+    /// registration made in the other locale behind.
+    static let localeOnlyControls = ["\u{600}", "\u{206A}", "\u{FFF9}", "\u{E0041}"]
 
     static func codePoint(_ text: String) -> String {
         text.unicodeScalars.map { String(format: "U+%04X", $0.value) }.joined(separator: " ")
@@ -1325,6 +1336,52 @@ struct ChannelInstallScriptTests {
             }
             #expect(try Self.functionStatus(check, "has_control_character", command, locale: locale) == 1,
                     "\(name): has_control_character refuses it")
+        }
+    }
+
+    /// A character only a UTF-8 locale calls a control (localeOnlyControls)
+    /// is accepted on purpose, to pin that the checks read bytes, not the
+    /// locale: under each locale, a bundle whose name holds it registers, a
+    /// second run leaves the registration unchanged, and an uninstall under
+    /// the other locale removes the registration and the receipt; the
+    /// installer's has_control_character and both scripts' is_napcat_helper
+    /// give it the same status in both locales. Vacuity: a UTF-8 [[:cntrl:]]
+    /// takes it, and the C locale's does not.
+    @Test func aCharacterOnlyAUTF8LocaleCallsAControlRegistersInEveryLocale() throws {
+        let probe = "locale_control() { case \"$1\" in *[[:cntrl:]]*) return 0 ;; esac; return 1; }"
+        let functions = try Self.helperFunctions()
+        let install = try ChannelInstallStructureTests.read(ChannelInstallStructureTests.installPath)
+        let check = try #require(ChannelInstallStructureTests.functionBody("has_control_character() {", in: install)).joined(separator: "\n")
+        for text in Self.localeOnlyControls {
+            let code = Self.codePoint(text)
+            let command = "/Users/someone/Nap\(text)Cat.app/" + Self.helperInBundle
+            let (utf8, c) = (try Self.functionStatus(probe, "locale_control", command, locale: "en_US.UTF-8"),
+                             try Self.functionStatus(probe, "locale_control", command, locale: "C"))
+            #expect(utf8 == 0 && c == 1, "vacuity: \(code): a UTF-8 [[:cntrl:]] takes it and the C locale's does not")
+            for function in functions {
+                let statuses = try Self.locales.map { try Self.helperTestStatus(function, command, locale: $0) }
+                #expect(statuses == [0, 0], "\(code): is_napcat_helper in \(Self.locales): \(statuses)")
+            }
+            let checked = try Self.locales.map { try Self.functionStatus(check, "has_control_character", command, locale: $0) }
+            #expect(checked == [1, 1], "\(code): has_control_character in \(Self.locales): \(checked)")
+
+            for (locale, other) in zip(Self.locales, Self.locales.reversed()) {
+                let name = "\(code), installed under \(locale), removed under \(other)"
+                let sandbox = try Sandbox()
+                let bundle = sandbox.root + "/Apps/Nap\(text)Cat.app"
+                try FileManager.default.moveItem(atPath: sandbox.app, toPath: bundle)
+                let helper = bundle + "/" + Self.helperInBundle
+                let first = try sandbox.run("install-channel.sh", [bundle], environment: Self.environment(locale))
+                #expect(first.status == 0 && first.lines.contains(Self.registeredLine(helper)), "\(name), run 1: \(first.errors)")
+                let second = try sandbox.run("install-channel.sh", [bundle], environment: Self.environment(locale))
+                #expect(second.status == 0 && second.lines.contains(Self.unchangedLine(helper)),
+                        "\(name), run 2: \(second.lines) \(second.errors)")
+                #expect(sandbox.claudeArguments == [Self.mcpGet, Self.mcpAdd(helper), Self.mcpGet], "\(name): \(sandbox.claudeArguments)")
+                let removed = try sandbox.uninstall(environment: Self.environment(other))
+                #expect(removed.status == 0 && removed.lines.contains("removed: the \"napcat\" registration (user scope) for \(helper)")
+                        && removed.lines.contains("removed: \(sandbox.receipt)"), "\(name): \(removed.lines) \(removed.errors)")
+                #expect(sandbox.registered == nil && !sandbox.exists(sandbox.receipt), "\(name): something was left behind")
+            }
         }
     }
 }

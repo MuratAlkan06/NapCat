@@ -93,14 +93,15 @@ RECEIPT="$APPROVALS_DIR/channel-registration"
 # component, no control character) and its own name ends in .app, after at
 # least one other character. Tested byte by byte, the same in every locale:
 # a control character is a byte below 0x20, DEL (0x7F), a C1 control as
-# UTF-8 encodes it (C2 80 to C2 9F), or the UTF-8 of a format character
-# that is invisible or reorders the text around it, so that a printed path
-# can look like another: U+00AD (C2 AD), U+061C (D8 9C), U+180E (E1 A0 8E),
-# U+200B to U+200F (E2 80 8B to 8F), U+202A to U+202E (E2 80 AA to AE),
-# U+2060 to U+2064 (E2 81 A0 to A4), U+2066 to U+2069 (E2 81 A6 to A9) and
-# U+FEFF (EF BB BF). A lone byte 0x80 to 0x9F, which is not UTF-8, is not
-# refused: byte by byte it cannot be told from the last byte of a character
-# such as U+0110 (C4 90), whose name would be refused with it.
+# UTF-8 encodes it (C2 80 to C2 9F), or the UTF-8 of one of these format
+# characters, each invisible or reordering the text around it, so that a
+# printed path can look like another: U+00AD (C2 AD), U+061C (D8 9C),
+# U+180E (E1 A0 8E), U+200B to U+200F (E2 80 8B to 8F),
+# U+202A to U+202E (E2 80 AA to AE), U+2060 to U+2064 (E2 81 A0 to A4),
+# U+2066 to U+2069 (E2 81 A6 to A9) and U+FEFF (EF BB BF). A lone byte
+# 0x80 to 0x9F, which is not UTF-8, is not refused: byte by byte it cannot
+# be told from the last byte of a character such as U+0110 (C4 90), whose
+# name would be refused with it.
 is_napcat_helper() {
     local LC_ALL=C
     local bundle="${1%/"$HELPER_IN_BUNDLE"}"

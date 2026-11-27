@@ -912,10 +912,12 @@ so and exits with an error rather than reporting success, and keeps the
 receipt for the next run.
 
 To undo it by hand instead, look at the entry first with
-`claude mcp get napcat`, because `claude mcp remove napcat --scope user`
-removes any server of that name, not only NapCat's. If the entry's command
-is NapCat's channel server (`<NapCat.app>/Contents/MacOS/napcat-channel`),
-remove it with that command, then delete
+`cd / && claude mcp get napcat` (from `/`, as the scripts run it, so that no
+project's own `napcat` entry stands in for the user-scope one), because
+`claude mcp remove napcat --scope user` removes any user-scope server of
+that name, not only NapCat's. If the entry's command is NapCat's channel
+server (`<NapCat.app>/Contents/MacOS/napcat-channel`), remove it with that
+command, then delete
 `~/Library/Application Support/NapCat/approvals/channel-registration`.
 
 ### Honest limitations
