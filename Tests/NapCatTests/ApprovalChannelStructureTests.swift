@@ -533,11 +533,15 @@ struct ApprovalChannelStructureTests {
     /// but the state machine (the open's own), the call's shape — an `open`
     /// whose first argument label is `id`, qualified by any name, implicit
     /// or bare, applied or named with its labels — and the lifecycle's name
-    /// before `.open`, also inside a longer name, applied or not. Outside
-    /// the intake, a reference written neither way is not read.
+    /// before `.open`, also inside a longer name or across a postfix `#if`'s
+    /// directives (#211: each `#if`, `#elseif` or `#else` with what it holds
+    /// up to the next directive, a brace or a semicolon, and each `#endif`),
+    /// applied or not. Outside the intake, a reference written neither way
+    /// is not read.
     static let intakeOpenPattern: String = #"\. ?open\b"#
     static let openShapePattern: String = #"\bopen ?\( ?id ?:"#
-    static let lifecycleOpenPattern: String = #"ApprovalLifecycle ?\. ?open\b|"# + openShapePattern
+    static let postfixDirectives: String = #"(?: ?#(?:if|elseif|else)\b[^#{};]*?| ?#endif\b)*"#
+    static let lifecycleOpenPattern: String = #"ApprovalLifecycle"# + postfixDirectives + #" ?\. ?open\b|"# + openShapePattern
 
     /// `pattern`'s count in each scan copy of `text`, flattened.
     static func flatCounts(_ pattern: String, in text: String) -> [Int] {
@@ -669,6 +673,13 @@ struct ApprovalChannelStructureTests {
             ("a longer name's open taken unapplied", newFile(prefixed + "enum ZZ { static let zz = ZZApprovalLifecycle.open }")),
             ("a lifecycle opened in the gate's file", Self.mutate(sources, "ApprovalClassification.swift") {
                 $0 + "\nlet l = ApprovalLifecycle.open" + arguments }),
+            // #211: the lifecycle's name and its `.open` apart across a
+            // postfix `#if`, unapplied, in its active branch, an `#else` or an
+            // `#elseif` whose condition holds a dot.
+            ("the open behind a postfix #if, unapplied", newFile("enum ZZ {\n    static let zz = ApprovalLifecycle\n    #if true\n        .open\n    #endif\n}")),
+            ("the open in a postfix #else", newFile("enum ZZ {\n    static let zz = ApprovalLifecycle\n    #if false\n        .zz\n    #else\n        .open\n    #endif\n}")),
+            ("the open in a postfix #elseif", newFile(
+                "enum ZZ {\n    static let zz = ApprovalLifecycle\n    #if os(iOS)\n        .zz\n    #elseif compiler(>=5.9)\n        .open\n    #endif\n}")),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -678,6 +689,10 @@ struct ApprovalChannelStructureTests {
         let broken: String = "ApprovalLifecycle\n            .open(id: id"
         #expect(Self.count("ApprovalLifecycle.open(", in: broken) == 0 && Self.flatCounts(Self.intakeOpenPattern, in: broken) == [1],
                 "vacuity: the line break hides the call from a raw count and not from the flattened one")
+        let postfixed: String = "let f = ApprovalLifecycle\n#if true\n    .open\n#endif"
+        let postfixedCounts: [Int] = Self.flatCounts(Self.lifecycleOpenPattern, in: postfixed)
+        let once: [Int] = [1]
+        #expect(postfixedCounts == once, "vacuity: the name half reads the open across a postfix #if (#211)")
         // Over-match controls: a blank line and a line the stripper empties
         // (a comment, read as spaces) between the two checks; and words that
         // only contain the open's, a member of another name, and another
@@ -690,7 +705,11 @@ struct ApprovalChannelStructureTests {
                                          Self.hostFile) { $0 + "\nfunc zz(_ u: URL) { _ = NSWorkspace.shared.open(u); _ = ZZLifecycle.open }" }
         let shapes: Sources = newFile("enum ZZ { static func zz(_ d: ZZDoor, _ u: URL) { d.open(url: u); _ = d.open(identifier: 3); d.reopen(id: 1); "
                                       + "_ = d.opened(id: 2); _ = ZZApprovalLifecycle.opening } }")
-        for (name, control) in [("the checks spaced", spaced), ("words like open", words), ("opens of other shapes", shapes)] {
+        // #211: a postfix `#if` around other members of the lifecycle's name.
+        let postfix: Sources = newFile("enum ZZ {\n    static let zz = ZZApprovalLifecycle\n    #if DEBUG\n        .opening\n    #endif\n"
+                                       + "    static let zy = ApprovalLifecycle\n    #if DEBUG\n        .self\n    #endif\n}")
+        for (name, control) in [("the checks spaced", spaced), ("words like open", words), ("opens of other shapes", shapes),
+                                ("a postfix #if around other members", postfix)] {
             #expect(control.map { $0.text } != sources.map { $0.text }, "the control '\(name)' applied")
             #expect(Self.gateOrderFailures(control).isEmpty, "over-match '\(name)': \(Self.gateOrderFailures(control))")
         }
