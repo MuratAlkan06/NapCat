@@ -44,18 +44,23 @@ The gate checks a prompt in this order and logs the first code it meets:
    (`unclassifiable.unknownTool`).
 6. The tool's row: a key it does not list (`unknownArgument`), a missing
    required one (`missingArgument`), then every value. A forbidden family
-   found in any value wins (`forbidden.<family>`: a location in a path; in
-   Bash a substring, and, in a command the grammar reads, a command or a
-   word); otherwise the first refusal in the preview's order
-   (`argumentKind`, `argumentValue`, `pathNotCanonical`,
-   `commandOutsideGrammar`, `commandNotInTable`).
+   found in any value wins (`forbidden.<family>`: a location in a path whose
+   shape passes — absolute, at most 1 KiB, printable ASCII without a
+   backslash, no empty, `.` or `..` component, no trailing slash; in Bash,
+   `dangerouslyDisableSandbox: true`, a substring of the command, and, when
+   the grammar reads the command, a forbidden command leading one of its
+   simple commands or a location in a later word of one, up to that simple
+   command's first word with a `..` or an empty component); otherwise the
+   first refusal in the preview's order (`argumentKind`, `argumentValue`,
+   `pathNotCanonical`, `commandOutsideGrammar`, `commandNotInTable`).
 7. The row's local-only code: `localOnly.fileEdit` for Write, Edit and
    NotebookEdit, `localOnly.read` for Read.
 8. Only then, and only for Bash, the forward.
 
-So a Read that names the alert topic is `forbidden.secretAccess`, a Read of a
-forbidden location keeps its family's code, a malformed Read keeps its
-`unclassifiable` code, and every other Read is `localOnly.read`. NapCat's
+So a Read that names the alert topic is `forbidden.secretAccess`; a Read of
+a forbidden location keeps its family's code unless its preview, its keys or
+its path's shape are malformed, and a malformed Read keeps its
+`unclassifiable` code; every other Read is `localOnly.read`. NapCat's
 intake then applies its own holds: a topic that exists but could not be read
 keeps every prompt as `forbidden.secretAccess`, and while the feature is
 unarmed (every build so far) each prompt is logged `suppressed.notArmed`
@@ -65,7 +70,10 @@ instead of the gate's code.
 
 Checked by path, by command and by substring, in the order "Precedence"
 gives: the alert topic for every prompt, the rest in the tool's row, before
-any local-only code.
+that row's local-only code. An MCP tool or an unlisted tool has no row, so
+apart from the alert topic its arguments are not checked against the
+families: it is `localOnly.mcp` or `unclassifiable.unknownTool` whatever
+they name.
 
 - **`forbidden.privilegeEscalation`**
   - `sudo` in any case, path or position: `sudo ls`, `SUDO ls`,
@@ -138,18 +146,24 @@ not a listed command.
 | Paths | `..` and empty components; and any word naming a forbidden location is that family (`ls /etc`, `git add ../../.ssh`) |
 | Encoding | look-alikes and non-ASCII (a no-break space, fullwidth letters, a Cyrillic letter in a command name, an em dash), zero-width characters (`unclassifiable.hiddenText`), an empty or blank command, more than 2,048 bytes, 8 commands or 64 words, a NUL escape (`unclassifiable.previewNotStrictJSON`) |
 
+The gate reads the prompt, not what a command goes on to do. A listed
+command runs whatever the project's build files and tests say (`Makefile`,
+`package.json`, `Package.swift`, the test code), and `git status` and
+`git diff` run any program the repository's git configuration names, all
+with your privileges. The phone would show only the command.
+
 ## Read: local-only, a path and plain numbers
 
 No Read is forwarded, whatever its path (issue #231): a list of locations
-cannot name every credential file. Claude Code does not ask before a Read
-inside a session's working directories, and folders you trust beyond those
-belong in Claude Code's own settings (an allow rule or an added directory),
-which NapCat never edits. A Read prompt is still checked in full: one
-that names the alert topic or a forbidden location keeps that code (see
-"Precedence"), a malformed one its `unclassifiable` code, and one that
-passes every check is `localOnly.read`. The checks take a canonical path
-(see "Paths" below) and, since issue #149, its optional arguments only in
-the shapes the Read tool writes:
+cannot name every credential file. Claude Code does not ask, by default,
+before a Read inside a session's working directories, and folders you trust
+beyond those belong in Claude Code's own settings (an allow rule or an
+added directory), which NapCat never edits. A Read prompt is still checked
+in full: one that names the alert topic or a forbidden location keeps that
+code (see "Precedence"), a malformed one its `unclassifiable` code, and one
+that passes every check is `localOnly.read`. The checks take a canonical
+path (see "Paths" below) and, since issue #149, its optional arguments only
+in the shapes the Read tool writes:
 
 - `pages` absent, or a PDF page range: one page (`"3"`) or a range
   (`"1-5"`, `"10-20"`), pages counted from 1 up to 99,999, the first no later
@@ -224,9 +238,9 @@ None of this widens what an Allow authorizes. An Allow still covers only the
 named tool on that exact path, so this rule protects what the phone
 displays, not what can run.
 
-Since issue #231 no tool with a path forwards (the file-edit tools never
-did, and Read no longer does), so today these rules only decide which code
-such a prompt is kept with.
+Since issue #231 no tool with a path forwards (the file-edit tools have not
+since slice S-GATE, and Read no longer does), so today these rules only
+decide which code such a prompt is kept with.
 
 ## Every other tool and shape (fail closed)
 

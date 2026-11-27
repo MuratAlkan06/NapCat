@@ -749,8 +749,8 @@ silences both pushes, and the row says so.
   a fixed list ("— 1 Bash permission prompt") — never a command, a path or any
   other text from the session. Only prompts the safety gate could ever let
   leave the Mac are counted, and today those are only Bash prompts whose
-  whole command is one of a short list of build and status commands (the list
-  is in [design/remote-approvals-catalogue.md](design/remote-approvals-catalogue.md)).
+  whole command is one of a short list of build, test and status commands
+  (the list is in [design/remote-approvals-catalogue.md](design/remote-approvals-catalogue.md)).
   A Read prompt is never counted, whatever file it names, since a list cannot
   name every credential file; nor is a prompt the gate recognizes as
   privileged, settings or secret from its fixed list of commands and

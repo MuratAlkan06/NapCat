@@ -106,10 +106,10 @@ interactive Claude Code sessions, away from the keyboard.
 - **No Read is forwarded (owner ruling, #231).** A list of locations cannot
   name every credential file, so the gate keeps every Read prompt on the
   Mac, whatever its path, with its own code, `localOnly.read`. Claude Code
-  does not ask before a Read inside a session's working directories; folders
-  the owner trusts beyond those belong in Claude Code's own allow rules.
-  What can leave the Mac is now only a Bash prompt whose whole command is a
-  listed one.
+  does not ask, by default, before a Read inside a session's working
+  directories; folders the owner trusts beyond those belong in Claude Code's
+  own allow rules. What can leave the Mac is now only a Bash prompt whose
+  whole command is a listed one.
 - **Uniform signing (owner ruling, 2026-11-24, during S-PAIR).** Deny is
   signed like Allow, so it asks for the same biometric match, in-app: both
   verdicts need a match of the biometrics enrolled now, and both produce a
@@ -151,7 +151,9 @@ interactive Claude Code sessions, away from the keyboard.
   and locations (the refusal catalogue), and a list cannot name every
   credential file, so no Read prompt is forwarded at all (#231): the only
   prompts that can leave the Mac are Bash prompts whose whole command is one
-  of the listed commands.
+  of the listed commands. The gate judges the prompt, not what an approved
+  command then does: a listed command runs the project's own build files,
+  tests and git configuration.
 - **Classification and display rely on the tool name and the parsed input
   preview, never on the description.** The S-1 spike showed why: the
   description is often the tool's generic text, while the preview carries the
@@ -253,8 +255,13 @@ code are normative, and the unit tests pin them.
   encrypted fields, the custom zone, the phone's subscription ID, the verdict
   values, the 10-minute TTL and the 128-bit prompt ID size.
 - **Category gate** (data-driven tables): the three forbidden families are
-  checked first and are never forwarded; a Bash command is forwarded only when
-  it parses under the positive grammar and every command matches a row of the
+  never forwarded. The alert topic is checked for every tool, before any
+  row; MCP tools and tools the table does not list have no row, so nothing
+  else in their arguments is checked against the families; a listed tool's
+  row is checked next, the families among its checks, and a local-only
+  row's own code comes only after all of them (the catalogue's "Precedence"
+  gives the whole order). A Bash command is forwarded only when it parses
+  under the positive grammar and every command matches a row of the
   command table (since slice S-GATE: only when it is exactly one of a short
   list of commands, with the grammar kept as a refusal filter); MCP tools are
   local-only (since S-GATE, the file-edit tools too, and since #231 every
