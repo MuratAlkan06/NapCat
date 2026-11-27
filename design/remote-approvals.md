@@ -1134,17 +1134,20 @@ is started with the development flag load the channel.
   user: never as root, no sudo) changes nothing until every check has
   passed. The bundle is a real directory named `.app`. The helper's and
   the app's signatures verify, and both name the same team, the one the
-  committed entitlements name; each also satisfies a requirement anchored
-  at Apple for that team and its own identifier, so an ad-hoc build, or
-  another team's, is refused. The Info.plist names NapCat and its channel
-  version. The receipt's folder is a real directory of the owner's, forced
-  to 0700, and the receipt is a regular file if it exists: checked before
-  Claude Code is called, so a refusal leaves no registration behind. Then
-  it registers the helper at user scope with `claude mcp add`, and writes
-  the receipt (version and path, 0600).
+  committed entitlements name; each also satisfies a requirement, for its
+  own identifier, that only a Developer ID Application certificate Apple
+  issued to that team meets, so an ad-hoc build, an Apple Development
+  build, or another team's, is refused. The Info.plist names NapCat and
+  its channel version. The receipt's folder is a real directory of the
+  owner's, forced to 0700, and the receipt is a regular file if it exists:
+  checked before Claude Code is called, so a refusal leaves no
+  registration behind. Then it registers the helper at user scope with
+  `claude mcp add`, and writes the receipt (version and path, 0600).
 - **Development builds.** A plain `make` signs ad hoc, so the installer
-  refuses its bundle; a build registers only when it is signed with
-  NapCat's Developer ID (`make SIGN_IDENTITY=…`). No override exists.
+  refuses its bundle, as it refuses one signed with an Apple Development
+  certificate of NapCat's own team; a build registers only when it is
+  signed with NapCat's Developer ID Application certificate
+  (`make SIGN_IDENTITY=…`). No override exists.
 - **Reading the registration.** `claude mcp get` prints for people, so both
   scripts act on two answers only: a stdio entry's one `Command:` line, or
   the not-found line alone (Claude Code 2.1.326's wording). Any other

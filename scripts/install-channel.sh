@@ -13,10 +13,11 @@
 #      uses it: `codesign --verify --strict` on the helper, its signing
 #      identifier, then the app's own seal (which covers the helper); then the
 #      team: the app and the helper must name the same team, NapCat's own
-#      (TEAM_IDENTIFIER below), and each must satisfy a code requirement
-#      anchored at Apple for that team and its own identifier, so an ad-hoc
-#      build, or another team's, is refused; only then does it read the
-#      bundle's Info.plist (NapCat's bundle identifier and its
+#      (TEAM_IDENTIFIER below), and each must satisfy a code requirement for
+#      its own identifier that only a Developer ID Application certificate
+#      Apple issued to that team meets, so an ad-hoc build, an Apple
+#      Development build, or another team's, is refused; only then does it
+#      read the bundle's Info.plist (NapCat's bundle identifier and its
 #      NapCatChannelVersion);
 #   3. checks the receipt's folder, BEFORE anything is registered, so that a
 #      refusal here leaves no registration behind: the approvals folder
@@ -185,13 +186,17 @@ APP_TEAM="$(signature_team "$APP_SIGNATURE")" || die "codesign names a malformed
 [ "$APP_TEAM" = "$TEAM_IDENTIFIER" ] \
     || die "$APP and its helper are signed for $(team_label "$APP_TEAM"), not NapCat's team $TEAM_IDENTIFIER. Nothing was registered."
 # Those lines are what each signature claims. Each must also satisfy a
-# requirement anchored at Apple: a certificate Apple issued to NapCat's team,
-# for its own identifier.
-TEAM_REQUIREMENT="anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\""
+# requirement anchored at Apple, for its own identifier: a Developer ID
+# Application certificate (the leaf's field 1.2.840.113635.100.6.1.13),
+# issued by Apple's Developer ID Certification Authority (field
+# 1.2.840.113635.100.6.2.6), to NapCat's team, as Apple's TN3127 spells
+# a Developer ID signature. An Apple Development certificate of the same
+# team does not satisfy it.
+TEAM_REQUIREMENT="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\""
 codesign --verify --strict -R "=identifier \"$CHANNEL_IDENTIFIER\" and $TEAM_REQUIREMENT" "$HELPER" \
-    || die "$HELPER is not signed as $CHANNEL_IDENTIFIER with a certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
+    || die "$HELPER is not signed as $CHANNEL_IDENTIFIER with a Developer ID Application certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
 codesign --verify --strict -R "=identifier \"$BUNDLE_IDENTIFIER\" and $TEAM_REQUIREMENT" "$APP" \
-    || die "$APP is not signed as $BUNDLE_IDENTIFIER with a certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
+    || die "$APP is not signed as $BUNDLE_IDENTIFIER with a Developer ID Application certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
 
 # The bundle is NapCat, and names its channel version (read after the seal
 # that covers Info.plist verified).

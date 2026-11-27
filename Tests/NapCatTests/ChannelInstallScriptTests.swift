@@ -33,9 +33,11 @@ struct ChannelInstallScriptTests {
     enum Role: String { case app, helper }
 
     /// What Apple's certificate chain proves about a signature: what its
-    /// description claims, nothing (ad-hoc or self-signed), or this
-    /// identifier and team.
-    enum Anchor { case claimed, unproven, proven(String, String) }
+    /// description claims, with a Developer ID Application certificate;
+    /// nothing (ad-hoc or self-signed); this identifier and team, with a
+    /// Developer ID Application certificate; or what its description
+    /// claims, with an Apple Development certificate.
+    enum Anchor { case claimed, unproven, proven(String, String), appleDevelopment }
 
     /// A stub `claude`: each call is one `<cwd>|<arguments>` line in
     /// claude/calls, and the registration's command is claude/registered.
@@ -87,8 +89,12 @@ struct ChannelInstallScriptTests {
     /// A stub `codesign`: answers for the app or its helper from
     /// codesign/<role>-*, and records each call (and each requirement).
     /// <role>-anchor stands for what Apple's certificate chain proves,
-    /// "<identifier> <team>"; with no such file (an ad-hoc or self-signed
-    /// build) every requirement fails, status 3, as codesign's does.
+    /// "<identifier> <team> <certificate>", where <certificate> is
+    /// developer-id (a Developer ID Application leaf, issued by the
+    /// Developer ID Certification Authority) or development; with no such
+    /// file (an ad-hoc or self-signed build) every requirement fails,
+    /// status 3, as codesign's does. A requirement holds when each of its
+    /// "and" clauses does; a clause the stub does not know fails it.
     static let codesignStub = #"""
     #!/bin/bash
     set -u
@@ -108,9 +114,19 @@ struct ChannelInstallScriptTests {
     if [ "$#" -eq 5 ] && [ "$1 $2 $3" = "--verify --strict -R" ]; then
         printf '%s\n' "$4" >> "$fixtures/requirements"
         [ -f "$fixtures/$role-anchor" ] || exit 3
-        read -r identifier team < "$fixtures/$role-anchor"
-        [ "$4" = "=identifier \"$identifier\" and anchor apple generic and certificate leaf[subject.OU] = \"$team\"" ] || exit 3
-        exit 0
+        read -r identifier team certificate < "$fixtures/$role-anchor"
+        rest="${4#=}"
+        while :; do
+            clause="${rest%% and *}"
+            case "$clause" in
+                "identifier \"$identifier\"" | "anchor apple generic" | "certificate leaf[subject.OU] = \"$team\"") ;;
+                "certificate 1[field.1.2.840.113635.100.6.2.6] exists" | "certificate leaf[field.1.2.840.113635.100.6.1.13] exists")
+                    [ "$certificate" = "developer-id" ] || exit 3 ;;
+                *) exit 3 ;;
+            esac
+            [ "$clause" != "$rest" ] || exit 0
+            rest="${rest#* and }"
+        done
     fi
     echo "codesign stub: unexpected call: $*" >&2
     exit 2
@@ -189,24 +205,31 @@ struct ChannelInstallScriptTests {
         /// line outright; `anchor` is what Apple's chain proves.
         func sign(_ role: Role, team: String?, teamLines: [String]? = nil, anchor: Anchor = .claimed) throws {
             let lines = teamLines ?? ["TeamIdentifier=" + (team ?? "not set")]
-            let authority = team.map { ["Authority=Developer ID Application: NapCat Test Signer (\($0))",
-                                        "Authority=Developer ID Certification Authority", "Authority=Apple Root CA"] }
-                ?? ["Signature=adhoc"]
+            let development: Bool
+            if case .appleDevelopment = anchor { development = true } else { development = false }
+            let authority = team.map { team in
+                development
+                    ? ["Authority=Apple Development: NapCat Test Signer (TESTDEV123)",
+                       "Authority=Apple Worldwide Developer Relations Certification Authority", "Authority=Apple Root CA"]
+                    : ["Authority=Developer ID Application: NapCat Test Signer (\(team))",
+                       "Authority=Developer ID Certification Authority", "Authority=Apple Root CA"]
+            } ?? ["Signature=adhoc"]
             let description = ["Executable=" + (role == .app ? app + "/Contents/MacOS/NapCat" : helper),
                                "Identifier=" + identifier(role), "Format=Mach-O thin (arm64)",
                                "CodeDirectory v=20500 size=1000 flags=0x10000(runtime) hashes=20+7 location=embedded"]
                 + authority + lines
             try write(root + "/codesign/\(role.rawValue)-description", description.joined(separator: "\n") + "\n")
             try write(root + "/codesign/\(role.rawValue)-verify", "0\n")
-            let proven: (String, String)?
+            let proven: (String, String, String)?
             switch anchor {
-            case .claimed: proven = team.map { (identifier(role), $0) }
+            case .claimed: proven = team.map { (identifier(role), $0, "developer-id") }
             case .unproven: proven = nil
-            case let .proven(identifier, team): proven = (identifier, team)
+            case let .proven(identifier, team): proven = (identifier, team, "developer-id")
+            case .appleDevelopment: proven = team.map { (identifier(role), $0, "development") }
             }
             let anchorPath = root + "/codesign/\(role.rawValue)-anchor"
             if let proven {
-                try write(anchorPath, "\(proven.0) \(proven.1)\n")
+                try write(anchorPath, "\(proven.0) \(proven.1) \(proven.2)\n")
             } else {
                 try? FileManager.default.removeItem(atPath: anchorPath)
             }
@@ -395,12 +418,12 @@ struct ChannelInstallScriptTests {
             ("two team lines", { try $0.sign(.app, team: team, teamLines: ["TeamIdentifier=" + team, "TeamIdentifier=" + other]) },
              "codesign names a malformed team for \(app). Nothing was registered."),
             ("helper claims the team, self-signed", { try $0.sign(.helper, team: team, anchor: .unproven) },
-             "\(helper) is not signed as \(probe.identifier(.helper)) with a certificate Apple issued to team \(team)."),
+             "\(helper) is not signed as \(probe.identifier(.helper)) with a Developer ID Application certificate Apple issued to team \(team)."),
             ("app claims the team, Apple proves another", { try $0.sign(.app, team: team, anchor: .proven(probe.identifier(.app), other)) },
-             "\(app) is not signed as \(probe.identifier(.app)) with a certificate Apple issued to team \(team)."),
+             "\(app) is not signed as \(probe.identifier(.app)) with a Developer ID Application certificate Apple issued to team \(team)."),
             ("helper proven for the team under another identifier",
              { try $0.sign(.helper, team: team, anchor: .proven(probe.identifier(.app), team)) },
-             "\(helper) is not signed as \(probe.identifier(.helper)) with a certificate Apple issued to team \(team)."),
+             "\(helper) is not signed as \(probe.identifier(.helper)) with a Developer ID Application certificate Apple issued to team \(team)."),
         ]
         for (name, signing, error) in cases {
             let sandbox = try Sandbox()
@@ -425,6 +448,34 @@ struct ChannelInstallScriptTests {
         #expect(run.status == 0 && run.lines.contains(Self.registeredLine(sandbox.helper)), "\(run.errors)")
     }
 
+    /// Only a Developer ID signature registers: the app, the helper or
+    /// both signed with an Apple Development certificate of NapCat's own
+    /// team, for their own identifiers, are refused before anything, naming
+    /// the first one that failed and not printing codesign's description.
+    /// The same sandbox, signed with Developer ID, registers (teeth).
+    @Test func anAppleDevelopmentBuildOfNapCatsTeamIsRefusedBeforeAnything() throws {
+        let cases: [(String, [Role], Role)] = [("the helper", [.helper], .helper), ("the app", [.app], .app),
+                                               ("both", [.app, .helper], .helper)]
+        for (name, roles, refused) in cases {
+            let sandbox = try Sandbox()
+            for role in roles {
+                try sandbox.sign(role, team: sandbox.team, anchor: .appleDevelopment)
+            }
+            let run = try sandbox.install()
+            let path = refused == .app ? sandbox.app : sandbox.helper
+            Self.expectRefusedBeforeAnything(run, sandbox, "\(path) is not signed as \(sandbox.identifier(refused)) with a "
+                                             + "Developer ID Application certificate Apple issued to team \(sandbox.team). "
+                                             + "Nothing was registered.", name)
+            #expect(!run.stderr.contains("Authority=") && !run.stderr.contains("NapCat Test Signer"),
+                    "\(name): codesign's description was printed")
+            for role in roles {
+                try sandbox.sign(role, team: sandbox.team)
+            }
+            let signed = try sandbox.install()
+            #expect(signed.status == 0 && signed.lines.contains(Self.registeredLine(sandbox.helper)), "\(name): \(signed.errors)")
+        }
+    }
+
     /// The two requirements the installer passes compile for the REAL
     /// codesign: an Apple-signed binary of another team fails them with
     /// status 3 ("does not satisfy"), not 1 (a syntax error, which every
@@ -434,9 +485,11 @@ struct ChannelInstallScriptTests {
         #expect(try sandbox.install().status == 0)
         let requirements = sandbox.requirements
         let team = sandbox.team
+        let developerID = "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
+            + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"\(team)\""
         #expect(requirements == [
-            "=identifier \"\(sandbox.identifier(.helper))\" and anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"",
-            "=identifier \"\(sandbox.identifier(.app))\" and anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"",
+            "=identifier \"\(sandbox.identifier(.helper))\" and " + developerID,
+            "=identifier \"\(sandbox.identifier(.app))\" and " + developerID,
         ], "\(requirements)")
         func realStatus(_ requirement: String) throws -> Int32 {
             let process = Process()

@@ -242,8 +242,13 @@ struct ChannelInstallStructureTests {
 
     static let entitlementsPath = "Resources/NapCat.entitlements"
     static let teamPrefix = "TEAM_IDENTIFIER=\""
+    /// The two Developer ID clauses (TN3127): the issuer is Apple's
+    /// Developer ID Certification Authority, the leaf a Developer ID
+    /// Application certificate.
+    static let developerIDClauses =
+        "certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and "
     static let teamRequirement =
-        "TEAM_REQUIREMENT=\"anchor apple generic and certificate leaf[subject.OU] = \\\"$TEAM_IDENTIFIER\\\"\""
+        "TEAM_REQUIREMENT=\"anchor apple generic and " + developerIDClauses + "certificate leaf[subject.OU] = \\\"$TEAM_IDENTIFIER\\\"\""
 
     /// Every violation: the installer defines the team once, as `expected`
     /// (the team the release is signed for), spells it nowhere else, and
@@ -266,7 +271,7 @@ struct ChannelInstallStructureTests {
     /// The installer's team is the one the committed entitlements name (the
     /// release's Developer ID team). Canaries: a drift on either side, a
     /// second copy, and a requirement that spells the team itself or drops
-    /// its Apple anchor.
+    /// its Apple anchor or its Developer ID clauses.
     @Test func theInstallerPinsTheTeamTheReleaseIsSignedFor() throws {
         let entitlements = try PropertyListSerialization.propertyList(
             from: Data(try Self.read(Self.entitlementsPath).utf8), format: nil) as? [String: Any]
@@ -282,6 +287,7 @@ struct ChannelInstallStructureTests {
             ("the requirement spells the team", install.replacingOccurrences(
                 of: "= \\\"$TEAM_IDENTIFIER\\\"\"", with: "= \\\"\(team)\\\"\"")),
             ("the requirement drops its anchor", install.replacingOccurrences(of: "\"anchor apple generic and ", with: "\"")),
+            ("the requirement drops its Developer ID clauses", install.replacingOccurrences(of: Self.developerIDClauses, with: "")),
         ]
         for (name, mutant) in mutants {
             #expect(mutant != install, "canary setup '\(name)': target text must exist")

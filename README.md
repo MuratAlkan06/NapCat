@@ -851,9 +851,10 @@ not include the scripts), as yourself, with no `sudo`:
 The script:
 
 - **verifies the server's code signature, and the app's, before doing
-  anything else**, and stops if either check fails. Both must be signed by
-  NapCat's own Developer ID team, the one releases are signed by, so a
-  plain `make` build (signed ad hoc) or another team's build is refused;
+  anything else**, and stops if either check fails. Both must be signed
+  with a Developer ID Application certificate of NapCat's own team, the
+  one releases are signed with, so a plain `make` build (signed ad hoc),
+  an Apple Development build, or another team's build is refused;
 - **checks the receipt's folder before registering anything**, so a folder
   it refuses leaves no registration behind;
 - **registers the server through Claude Code's own CLI**, at user scope and
