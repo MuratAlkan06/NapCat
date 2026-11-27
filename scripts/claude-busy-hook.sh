@@ -407,17 +407,17 @@ marker_episode() {
 # its answer, a quoted question, or a code span, path or table row ending in
 # `?`; a line inside a code block whose fence is indented four or more
 # spaces (one in a list item); a `?` line inside a code block that is never
-# closed (the message ends in code, so walking up, its opening fence is met
-# first and taken for a closing one); and a `?` line between two ``` lines
-# inside a ~~~ block (or the reverse). Known false negatives: a question
-# followed by ASK_TAIL_LINES or more non-empty lines (an option list of
-# three or more items after it), by an emoji, by "(y/n)" or other text on
-# the same line, or by a space that is not ASCII (a no-break space, say); a
-# question asked without a question mark, or with one this rule does not
-# know, such as the Arabic question mark (U+061F); a question above a code
-# block that is never closed, or above a ~~~ block holding a ``` line (or
-# the reverse), which the walk takes for a fence; and anything beyond the
-# bound.
+# closed (the message ends in code, so walking up, its lines are judged as
+# prose until its opening fence, which is taken for a closing one); and a
+# `?` line between two ``` lines inside a ~~~ block (or the reverse). Known
+# false negatives: a question followed by ASK_TAIL_LINES or more non-empty
+# lines (an option list of three or more items after it), by an emoji, by
+# "(y/n)" or other text on the same line, or by a space that is not ASCII (a
+# no-break space, say); a question asked without a question mark, or with
+# one this rule does not know, such as the Arabic question mark (U+061F); a
+# question above a code block that is never closed, or above a ~~~ block
+# holding a ``` line (or the reverse), which the walk takes for a fence; and
+# anything beyond the bound.
 #   $1 text
 tail_asks() {
   local LC_ALL=C
