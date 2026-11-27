@@ -1121,3 +1121,46 @@ arms anything.
   forwarded prompt with an NFD file name and non-ASCII text verifies end
   to end on real CloudKit, which also proves the whole-second time's round
   trip.
+
+## Slice I1a: the registration rails
+
+I1a (issue #190) bundles the server in the app, at
+`Contents/MacOS/napcat-channel`, signed under its own identifier before the
+app is, and adds two user-run scripts that register it with Claude Code;
+#193 hardened them. Nothing arms: a registration only lets a session that
+is started with the development flag load the channel.
+
+- **The installer** (`scripts/install-channel.sh`, run as the owner's own
+  user: never as root, no sudo) changes nothing until every check has
+  passed. The bundle is a real directory named `.app`. The helper's and
+  the app's signatures verify, and both name the same team, the one the
+  committed entitlements name; each also satisfies a requirement anchored
+  at Apple for that team and its own identifier, so an ad-hoc build, or
+  another team's, is refused. The Info.plist names NapCat and its channel
+  version. The receipt's folder is a real directory of the owner's, forced
+  to 0700, and the receipt is a regular file if it exists: checked before
+  Claude Code is called, so a refusal leaves no registration behind. Then
+  it registers the helper at user scope with `claude mcp add`, and writes
+  the receipt (version and path, 0600).
+- **Development builds.** A plain `make` signs ad hoc, so the installer
+  refuses its bundle; a build registers only when it is signed with
+  NapCat's Developer ID (`make SIGN_IDENTITY=…`). No override exists.
+- **Reading the registration.** `claude mcp get` prints for people, so both
+  scripts act on two answers only: a stdio entry's one `Command:` line, or
+  the not-found line alone (Claude Code 2.1.326's wording). Any other
+  answer stops the installer, which never risks a second registration, and
+  is an error in the uninstaller, never "nothing to remove". Only the exact
+  shape the installer registers counts as another NapCat copy's helper: an
+  absolute path, with no empty, `.` or `..` component, to a bundle named
+  `.app`. A command merely close to it is another server, left alone.
+- **The uninstaller** removes the registration only when it runs a NapCat
+  helper and the receipt records that same path. A NapCat helper the
+  receipt does not record (no receipt, an unreadable one, or another path)
+  is left in place and reported as an error, with the command that removes
+  it. The receipt is kept while a registration step fails, so a later run
+  can still match it.
+- **Tests and locks.** Structure locks pin the scripts' house guards, the
+  order of their steps and the team (to the entitlements'). Behavioural
+  tests run copies of both scripts in a scratch folder, with `codesign`,
+  `id` and `claude` stubbed and a scratch home: never this machine's
+  Claude Code configuration, receipt or installed app.

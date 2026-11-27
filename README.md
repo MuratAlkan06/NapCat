@@ -460,8 +460,8 @@ prints the six NapCat entries to delete from `~/.claude/settings.json` by hand
 `Notification` — it never edits that file); restart Claude Code afterwards.
 If you registered the remote approvals channel server, run
 `./scripts/uninstall-channel.sh` as yourself too: it removes the `napcat`
-registration from Claude Code, but only if it runs a NapCat channel server,
-and deletes the receipt.
+registration from Claude Code, but only if it runs the NapCat channel server
+its receipt records, and deletes the receipt.
 Finally, once NapCat has quit, you can delete its state folder
 `~/Library/Application Support/NapCat` if you want nothing left behind.
 
@@ -845,20 +845,26 @@ not include the scripts), as yourself, with no `sudo`:
 
 ```sh
 ./scripts/install-channel.sh                    # /Applications/NapCat.app
-./scripts/install-channel.sh dist/NapCat.app    # or a bundle you built with make
+./scripts/install-channel.sh dist/NapCat.app    # or a make build signed with NapCat's Developer ID
 ```
 
 The script:
 
 - **verifies the server's code signature, and the app's, before doing
-  anything else**, and stops if either check fails;
+  anything else**, and stops if either check fails. Both must be signed by
+  NapCat's own Developer ID team, the one releases are signed by, so a
+  plain `make` build (signed ad hoc) or another team's build is refused;
+- **checks the receipt's folder before registering anything**, so a folder
+  it refuses leaves no registration behind;
 - **registers the server through Claude Code's own CLI**, at user scope and
   under the name `napcat`:
   `claude mcp add --scope user --transport stdio napcat -- <NapCat.app>/Contents/MacOS/napcat-channel`.
   Running it again leaves a matching entry as it is. If the entry points at
   another copy of NapCat (for example, after you moved the app), the script
   points it at this one. It stops without changing anything if a different
-  server is already registered as `napcat`;
+  server is already registered as `napcat`, or if it cannot read the entry
+  (`claude mcp get napcat` answered in a way it does not recognise, as a
+  newer Claude Code might);
 - **writes a small receipt**, mode 0600, holding the server's version and
   path, to `~/Library/Application Support/NapCat/approvals/channel-registration`;
 - **prints the flag** to start each session with. It never edits Claude
@@ -884,8 +890,12 @@ registration names the server's path. To undo it:
 ./scripts/uninstall-channel.sh
 ```
 
-That removes the `napcat` registration, but only if it runs a NapCat
-channel server, and deletes the receipt.
+That removes the `napcat` registration, but only if it runs the NapCat
+channel server the receipt records, and deletes the receipt. A NapCat
+registration the receipt does not record is left in place and reported, with
+the command that removes it; if the script cannot read the entry, it says
+so and exits with an error rather than reporting success, and keeps the
+receipt for the next run.
 
 ### Honest limitations
 
