@@ -115,21 +115,34 @@ import Testing
 ///    S1 locks' anchors on the same road), or with an imported module's
 ///    name, except at today's declarations, so no new type takes over such
 ///    a line by its name;
-/// n. no other descriptor writer is named in the four targets (#197),
+/// n. no other descriptor writer is named in the four targets (#197, #209),
 ///    applied or not: no stdio stream opened (`fdopen`, `fopen`, `freopen`)
 ///    or written (`fputs`, `puts`, `fputc`, `putc`, `putchar`, `fwrite`,
-///    `fprintf`, `vfprintf`, `printf`, `vprintf`, `dprintf`, `vdprintf`), no
-///    descriptor duplicated (`dup`, `dup2`, `F_DUPFD`), no positional write
-///    (`pwrite`, `pwritev`), no file handle made on a descriptor or for
-///    writing (`FileHandle(fileDescriptor:`, `forWriting…`, `forUpdating…`)
-///    and none of the standard ones taken (`FileHandle.standardOutput`,
+///    `fprintf`, `vfprintf`, `printf`, `vprintf`, `dprintf`, `vdprintf`, and
+///    the unlocked, word and wide-character writers and the locale printers:
+///    `putc_unlocked`, `putchar_unlocked`, `putw`, `__swbuf`, `fputwc`,
+///    `fputws`, `putwc`, `putwchar`, `fwprintf`, `vfwprintf`, `wprintf`,
+///    `vwprintf` and the `_l` forms), no descriptor duplicated (`dup`,
+///    `dup2`, `F_DUPFD`), no positional, queued, listed or copying write
+///    (`pwrite`, `pwritev`, `aio_write`, `lio_listio`, `sendfile`,
+///    `fcopyfile`), no Core Foundation stream or socket made on a descriptor
+///    or written (`CFStreamCreatePair…`, `CFWriteStream…`, `CFSocket…`), no
+///    file handle made on a descriptor or for writing
+///    (`FileHandle(fileDescriptor:`, `forWriting…`, `forUpdating…`, and any
+///    `.init(` with those labels, however its type is reached) and none of
+///    the standard ones taken (`FileHandle.standardOutput`,
 ///    `.standardError`), no `DispatchIO`, no `FileDescriptor`, and no
-///    `print`, `debugPrint` or `dump`. Today's sites: none. It is a
-///    tripwire, not a wall: it reads those names as they are spelled, so a
-///    file handle reached by an implicit member or a type alias is not
-///    read, nor is a writer the list does not name; a file API can still
-///    reach a descriptor through a path; and code in a process can always
-///    write to its own descriptors.
+///    `print`, `debugPrint` or `dump`. Today's sites: none. Beside it, the
+///    file handle's type and the standard handles' names (`FileHandle`,
+///    `standardInput`, `standardOutput`, `standardError`) are read as words
+///    at today's lines alone (the app's process setups), so an alias of the
+///    type (at its declaration, not where it is used), a standard handle as
+///    an implicit member and one reached through another handle's type are
+///    read too. It is a tripwire, not a wall: it reads the names it lists as
+///    they are spelled, so a writer the list does not name is not read, nor
+///    is a write on a file handle that already exists (only the making of
+///    one is); a file API can still reach a descriptor through a path; and
+///    code in a process can always write to its own descriptors.
 ///
 /// These pin the sites and bodies they name, nothing more: a value forged
 /// from raw bytes that reaches none of them stays #163's accepted residual,
@@ -3288,7 +3301,7 @@ struct DecisionSinkStructureTests {
         var texts: [String] = [decideBody, wiredBody, verificationType, decisionDeclaration]
         texts.append(contentsOf: allWholePins.map { $0.whole })
         let byFile: [[String: [String: Int]]] = [decideSites, remoteDecisionSites, verifiedSites, withIntakeSites, intakeTypeSites,
-                                                connectionTypeSites, extensionSites, operatorImplementationSites, cWriteSites]
+                                                connectionTypeSites, extensionSites, operatorImplementationSites, cWriteSites, fileHandleSites]
         texts.append(contentsOf: byFile.flatMap { $0.values.flatMap { $0.keys } })
         let lines: [[String: Int]] = [hostIntakeSites, intakeDoorSites, frameWriterSites, hostWriteSites, serverWriteWordSites]
         texts.append(contentsOf: lines.flatMap { $0.keys })
@@ -3530,14 +3543,20 @@ struct DecisionSinkStructureTests {
         }
     }
 
-    // MARK: - n. No other descriptor writer by name (#197)
+    // MARK: - n. No other descriptor writer by name (#197, #209)
 
     /// A descriptor writer outside k.'s C writes, by name, applied or not: a
     /// stdio stream opened or written, a descriptor duplicated, a positional
     /// write, a file handle made on a descriptor or for writing or a
     /// standard one taken (a comment or a line break inside its spelling is
     /// a site too), Dispatch's channel, System's descriptor, and the
-    /// standard library's printers.
+    /// standard library's printers. Since #209 also: a file handle made by
+    /// `.init` with those labels however its type is reached (qualified by
+    /// any name, implicit, or through another handle's type), the unlocked,
+    /// word and wide-character stdio writers and the locale (`_l`) printers,
+    /// a queued, listed or copying write (`aio_write`, `lio_listio`,
+    /// `sendfile`, `fcopyfile`), and a Core Foundation stream or socket made
+    /// on a descriptor or written.
     static let descriptorWriterPattern: String = {
         let gap: String = RecordPath.gap
         let handle: String = #"\bFileHandle"# + gap + #"*(?:\."# + gap + #"*init"# + gap + #"*)?\("# + gap
@@ -3545,18 +3564,67 @@ struct DecisionSinkStructureTests {
         let standard: String = #"\bFileHandle"# + gap + #"*\."# + gap + #"*standard(?:Output|Error)\b"#
         let stdio: String = #"\b(?:fdopen|fopen|freopen|fputs|puts|fputc|putc|putchar|fwrite|fprintf|vfprintf|printf|vprintf|dprintf|vdprintf)\b"#
         let others: String = #"\b(?:dup|dup2|F_DUPFD\w*|pwrite|pwritev|DispatchIO|FileDescriptor|print|debugPrint|dump)\b"#
-        return [handle, standard, stdio, others].joined(separator: "|")
+        let made: String = #"\."# + gap + #"*init"# + gap + #"*\("# + gap + #"*(?:fileDescriptor|forWriting|forUpdating)"#
+        let wide: String = #"\b(?:putc_unlocked|putchar_unlocked|putw|__swbuf|fputwc|fputws|putwc|putwchar|fwprintf|vfwprintf|wprintf|vwprintf"#
+            + #"|(?:f|vf|v|d|vd|fw|vfw|w|vw)?printf_l|(?:fputwc|fputws|putwc|putwchar)_l)\b"#
+        let queued: String = #"\b(?:aio_write|lio_listio|sendfile|fcopyfile)\b"#
+        let streams: String = #"\bCF(?:StreamCreatePair|WriteStream|Socket)\w*"#
+        return [handle, standard, stdio, others, made, wide, queued, streams].joined(separator: "|")
     }()
 
+    /// The file handle's type and the standard handles' names, read as
+    /// words (#209), at today's lines alone: the app's process setups, each
+    /// giving a child process the null device or a pipe, and one reader of
+    /// a pipe. So an alias of the type is read at its declaration (which
+    /// spells it; not where it is used), and a standard handle as an
+    /// implicit member, or one reached through another handle's type,
+    /// wherever it stands.
+    static let fileHandlePattern: String = #"\bFileHandle\b|\bstandard(?:Input|Output|Error)\b"#
+    static let fileHandleSites: [String: [String: Int]] = [
+        "PrivilegedCommand.swift": [
+            "process.standardError = stderrPipe": 1, "process.standardInput = FileHandle.nullDevice": 2,
+            "process.standardOutput = stdoutPipe": 1,
+            "static func readCapped(_ handle: FileHandle, limit: Int = maxCapturedOutputBytes) -> Data {": 1],
+        "SMCKeyReader.swift": [
+            "process.standardError = FileHandle.nullDevice": 2, "process.standardInput = FileHandle.nullDevice": 2,
+            "process.standardOutput = stdoutPipe": 1],
+        "ScreenLockController.swift": [
+            "process.standardError = stderrPipe": 1, "process.standardInput = FileHandle.nullDevice": 2,
+            "process.standardOutput = FileHandle.nullDevice": 2],
+        "SleepStateController.swift": [
+            "process.standardError = FileHandle.nullDevice": 2, "process.standardInput = FileHandle.nullDevice": 2,
+            "process.standardOutput = stdoutPipe": 1],
+        "WatchdogController.swift": [
+            "process.standardError = FileHandle.nullDevice": 2, "process.standardInput = FileHandle.nullDevice": 2,
+            "process.standardOutput = stdoutPipe": 1, "watchdog.standardError = FileHandle.nullDevice": 2,
+            "watchdog.standardInput = FileHandle.nullDevice": 2, "watchdog.standardOutput = FileHandle.nullDevice": 2],
+    ]
+
     /// `sources`: `uncutSources()`. Today's sites: none.
-    static func descriptorWriterFailures(_ sources: Sources) -> [String] {
+    static func writerNameFailures(_ sources: Sources) -> [String] {
         PairingStructureTests.appSiteFailures(descriptorWriterPattern, in: sources, allowed: [:],
                                               rule: "no descriptor writer but today's C writes is named in the four targets — a stdio stream, a "
                                                   + "copied descriptor or a file handle could write a frame or an answer by another name")
     }
 
+    /// `sources`: `uncutSources()`.
+    static func fileHandleFailures(_ sources: Sources) -> [String] {
+        absent(fileHandleSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(fileHandlePattern, in: sources, allowed: fileHandleSites,
+                                                    rule: "the file handle's type and the standard handles are named at today's lines alone — an "
+                                                        + "alias or an implicit member could reach a descriptor by another spelling")
+    }
+
+    /// `sources`: `uncutSources()`: the tripwire's names (no site today) and
+    /// the file handle's words (today's lines).
+    static func descriptorWriterFailures(_ sources: Sources) -> [String] {
+        writerNameFailures(sources) + fileHandleFailures(sources)
+    }
+
     /// No descriptor writer but today's C writes is named in the four
-    /// targets, today's sites being none. The second re-check's stdio shape,
+    /// targets, today's sites being none (and since #209 the file handle's
+    /// words are read at today's lines alone,
+    /// `aFileHandleIsNamedAtTodaysLines`). The second re-check's stdio shape,
     /// as inert text (a stream opened on a copy of a descriptor and written,
     /// in a new file), is caught by this pin alone: every other pin of this
     /// suite reads it as the tree.
@@ -3577,6 +3645,16 @@ struct DecisionSinkStructureTests {
             "dup2(3, 4)", "fcntl(3, F_DUPFD, 0)", "fcntl(3, F_DUPFD_CLOEXEC, 0)", "pwrite(3, b, 1, 0)", "pwritev(3, v, 1, 0)",
             "DispatchIO(type: .stream, fileDescriptor: 3, queue: q) { _ in }", "FileDescriptor(rawValue: 3)", "print(t)", "debugPrint(t)",
             "dump(t)",
+            // #209: a handle made by `.init` however its type is reached, and
+            // the stdio, queued, copying and Core Foundation writers the list
+            // did not name.
+            "h.init(fileDescriptor: 3)", "type(of: h).init(forWritingAtPath: p)", "putc_unlocked(1, s)", "putchar_unlocked(1)", "putw(1, s)",
+            "__swbuf(1, s)", "fputwc(1, s)", "fputws(t, s)", "putwc(1, s)", "putwchar(1)", "fwprintf", "vfwprintf(s, t, a)", "wprintf", "vwprintf(t, a)",
+            "printf_l", "fprintf_l", "vfprintf_l(s, l, t, a)", "vprintf_l(l, t, a)", "dprintf_l", "vdprintf_l(3, l, t, a)", "fwprintf_l",
+            "vfwprintf_l(s, l, t, a)", "wprintf_l", "vwprintf_l(l, t, a)", "fputwc_l(1, s, l)", "fputws_l(t, s, l)", "putwc_l(1, s, l)",
+            "putwchar_l(1, l)", "aio_write(&b)", "lio_listio(m, &l, 1, nil)", "sendfile(f, 3, 0, &n, nil, 0)", "fcopyfile(f, 3, nil, c)",
+            "CFStreamCreatePairWithSocket(nil, 3, nil, &w)", "CFWriteStreamWrite(w, b, 1)", "CFSocketCreateWithNative(nil, 3, 0, nil, nil)",
+            "CFSocketSendData(k, nil, d, 1)",
         ]
         let targets: [String] = ["NapCatApp.swift", ApprovalChannelStructureTests.seamFile, ApprovalChannelStructureTests.serverFile, "ApprovalWire.swift"]
         for (index, use) in uses.enumerated() {
@@ -3598,7 +3676,9 @@ struct DecisionSinkStructureTests {
         // Over-match controls: names that only contain the pinned ones, a
         // process's standard handles, the null device, a handle for reading,
         // a read source on a descriptor, and a whole-line comment naming the
-        // writers.
+        // writers. (Since #209 the process's handles, the null device and the
+        // reading handle at a new line are the file handle's word pin's, so
+        // that line is a control for the tripwire's names alone.)
         let controls: Sources = Self.mutate(sources, "NapCatApp.swift") {
             $0.appending([
                 "\nenum ZZ { static let printer = 0, reprint = 1, duplicate = 2, dumped = 3, isDup = false, putsCount = 4, fopened = 5 }",
@@ -3608,10 +3688,110 @@ struct DecisionSinkStructureTests {
             ].joined())
         }
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
-        #expect(Self.descriptorWriterFailures(controls).isEmpty, "over-match: \(Self.descriptorWriterFailures(controls))")
+        #expect(Self.writerNameFailures(controls).isEmpty, "over-match: \(Self.writerNameFailures(controls))")
+        #expect(!Self.fileHandleFailures(controls).isEmpty, "the process's handles at a new line were NOT read by the file handle's word pin")
         // The pattern bites through the lock's own engine.
-        for probe in ["FileHandle\n(fileDescriptor:", "FileHandle /* x */ . standardOutput", "Darwin.dup2(", "F_DUPFD_CLOEXEC", "`print`(x)"] {
+        for probe in ["FileHandle\n(fileDescriptor:", "FileHandle /* x */ . standardOutput", "Darwin.dup2(", "F_DUPFD_CLOEXEC", "`print`(x)",
+                      "h . /* x */ init (\n    fileDescriptor:", "Darwin.vfwprintf_l(", "CFWriteStreamCreateWithFile"] {
             #expect(Self.hits(Self.descriptorWriterPattern, in: probe), "the pattern does not match '\(probe)'")
+        }
+    }
+
+    // MARK: - n, continued. The file handle's words, at today's lines (#209)
+
+    /// The road #207's verification found ends in a new seam file, as inert
+    /// text (never compiled): each line it is handed is answered on the read
+    /// source's descriptor, through a file handle made by an implicit
+    /// `.init` (the type spelled only in the annotation).
+    static let handleWriter: String = #"""
+        import Foundation
+
+        enum ZZOut {
+            static func answer(_ line: [UInt8], on handle: UInt?) {
+                guard let handle, String(decoding: line, as: UTF8.self).contains("\"request\":\"zzzzz\"") else { return }
+                let out: FileHandle = .init(fileDescriptor: Int32(handle), closeOnDealloc: false)
+                out.write(Data("{\"frame\":\"verdict\",\"v\":2,\"request\":\"zzzzz\",\"verdict\":\"allow\"}\n".utf8))
+            }
+        }
+
+        """#
+
+    /// The file handle's type and the standard handles are named at today's
+    /// lines alone (#209), beside the tripwire's widened names (n.). The
+    /// road #207's verification found, whole, as inert text — the
+    /// connection's line handler wrapped, a new member handing each line on
+    /// with the read source's descriptor, and a new file answering on that
+    /// descriptor through a file handle made by an implicit `.init` — is
+    /// caught by this lock (both halves) and by the seam descriptor's names
+    /// (#208); every other pin of this suite reads it as the tree. Each
+    /// spelling the tripwire read only as spelled is read now, by the half
+    /// its test names.
+    @Test func aFileHandleIsNamedAtTodaysLines() throws {
+        let sources: Sources = try Self.uncutSources()
+        #expect(Self.fileHandleFailures(sources).isEmpty, "\(Self.fileHandleFailures(sources))")
+        #expect(Self.writerNameFailures(sources).isEmpty, "\(Self.writerNameFailures(sources))")
+        let seam: String = ApprovalChannelStructureTests.seamFile
+        let seamText: String = Self.text(seam, in: sources)
+        for anchor in [Self.handlerStored, Self.seamCloseHead] {
+            let found: Int = ApprovalChannelStructureTests.count(anchor, in: seamText)
+            #expect(found == 1, "vacuity: '\(anchor.prefix(50))' is in the seam file once")
+        }
+        let nulled: String = "        watchdog.standardInput = FileHandle.nullDevice\n"
+        #expect(Self.text("WatchdogController.swift", in: sources).contains(nulled), "vacuity: today's lines are where the pin reads them")
+        let road: Sources = Self.adding(Self.mutate(sources, seam) {
+            $0.replacingOccurrences(of: Self.handlerStored, with: Self.handlerWrapped)
+                .replacingOccurrences(of: Self.seamCloseHead, with: Self.sourceMember + Self.seamCloseHead)
+        }, "ZZOut.swift", Self.handleWriter)
+        #expect(!Self.writerNameFailures(road).isEmpty && !Self.fileHandleFailures(road).isEmpty,
+                "the road's writer was NOT caught by both halves of the descriptor-writer lock")
+        let others: [String] = Self.othersCatching(road, besides: "descriptor writers", baseline: Self.pinBaseline(sources))
+        let expected: [String] = ["connection words"]
+        #expect(others == expected, "the road is this lock's and the seam descriptor's names' to catch, and no other pin's")
+        // Each spelling, inside a type across the four targets: whether the
+        // file handle's words read it, and whether the tripwire's names do.
+        let inType: (String, String) -> Sources = { file, body in Self.mutate(sources, file) { $0.appending("\nenum ZZ {\n" + body + "\n}") } }
+        let app: String = "NapCatApp.swift"
+        let spellings: [(name: String, planted: Sources, words: Bool, names: Bool)] = [
+            ("an alias of the type, nested", inType(app, "    typealias ZZHandle = FileHandle"), true, false),
+            ("a handle made through an alias", inType(ApprovalChannelStructureTests.serverFile,
+                "    typealias ZZHandle = FileHandle\n    static func zz() -> ZZHandle { ZZHandle(fileDescriptor: 1, closeOnDealloc: false) }"), true, false),
+            ("a standard handle as an implicit member", inType(seam, "    static func zz() -> FileHandle { .standardOutput }"), true, false),
+            ("a standard handle through another handle's type", inType("ApprovalWire.swift",
+                "    static func zz(_ p: Pipe) { type(of: p.fileHandleForReading).standardError.write(Data()) }"), true, false),
+            ("a handle made on a descriptor as an implicit member", inType(app,
+                "    static func zz() -> FileHandle { .init(fileDescriptor: 3, closeOnDealloc: false) }"), true, true),
+            ("a handle made on a descriptor, its type inferred", inType(ApprovalChannelStructureTests.serverFile,
+                "    static func zz(_ p: Pipe) { var h = p.fileHandleForReading; h = .init(fileDescriptor: 1); h.write(Data()) }"), false, true),
+            ("a standard handle through the type's self", inType(seam, "    static func zz() { FileHandle.self.standardError.write(Data()) }"), true, false),
+            ("a process's standard input at a new line", inType(app, "    static func zz(_ p: Process) { p.standardInput = Pipe() }"), true, false),
+            ("the null device at a new line", inType(app, "    static func zz(_ p: Process) { p.standardError = FileHandle.nullDevice }"), true, false),
+            ("a handle for reading at a new line", inType("ApprovalWire.swift", "    static let zz = FileHandle(forReadingAtPath: \"x\")"), true, false),
+            ("the type backticked", inType(app, "    static let zz: `FileHandle`? = nil"), true, false),
+            ("the type behind a block comment", inType(app, "    static let zz: Foundation./* x */FileHandle? = nil"), true, false),
+        ]
+        for (name, planted, words, names) in spellings {
+            #expect(planted.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.descriptorWriterFailures(planted).isEmpty, "canary '\(name)' was NOT caught")
+            let read: (words: Bool, names: Bool) = (!Self.fileHandleFailures(planted).isEmpty, !Self.writerNameFailures(planted).isEmpty)
+            #expect(read.words == words && read.names == names, "canary '\(name)': read by the words \(read.words), the names \(read.names)")
+        }
+        // Over-match controls: names that only contain the file handle's
+        // words (a pipe's reading handle at a new line among them), and the
+        // memory, reading and URL kin of the tripwire's new names; whole-line
+        // comments naming both.
+        let controls: Sources = Self.mutate(sources, app) {
+            $0.appending([
+                "\nstruct FileHandleLog {}\nenum ZY { static let zzFileHandle = 0, fileHandle = 1, standardOutputs = 2, isStandardError = false, nonstandardInput = 3 }",
+                "\nenum ZX { static func zz(_ p: Pipe, _ u: URL) { _ = p.fileHandleForReading; _ = snprintf; _ = asprintf_l; _ = aio_read; _ = sendfileCount;"
+                    + " _ = CFReadStreamOpen; _ = URL.init(fileURLWithPath: \"x\"); _ = ZZReader.init(forReadingAtPath: \"x\") } }",
+                LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never FileHandle(fileDescriptor: 1), never .standardOutput, never putc_unlocked(c, stdout)"),
+            ].joined())
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.descriptorWriterFailures(controls).isEmpty, "over-match: \(Self.descriptorWriterFailures(controls))")
+        // The word pattern bites through the lock's own engine.
+        for probe in ["`FileHandle`", "Foundation . FileHandle", ".standardInput", "type(of: h).standardError"] {
+            #expect(Self.hits(Self.fileHandlePattern, in: probe), "the pattern does not match '\(probe)'")
         }
     }
 }

@@ -1077,13 +1077,20 @@ arms anything.
     kin), and declare a function so named, at today's sites alone, and the
     channel server names `write` on its one standard-output line alone; and
     no other descriptor writer is named in the four targets at all (a stdio
-    stream, a copied descriptor, a positional write, a file handle on a
-    descriptor or for writing, the standard handles, Dispatch's channel, the
-    printers): a tripwire with no site today, not a wall. It and the C-write
-    pin read the names they list as spelled, so a line reaching the socket
-    by another name is caught only when it writes with one of them so
-    spelled; one writing through an implicit-member or aliased spelling, a
-    writer neither lists, or a file API and a path is not. Every
+    stream, or its unlocked, word, wide-character or locale writers, a
+    copied descriptor, a positional, queued, listed or copying write, a Core
+    Foundation stream or socket on a descriptor, a file handle made on a
+    descriptor or for writing however its type is reached, the standard
+    handles, Dispatch's channel, the printers): a tripwire with no site
+    today, not a wall. Beside it, the file handle's type and the standard
+    handles' names are read as words at today's lines alone (the app's
+    process setups), so an alias of the type (at its declaration, not
+    where it is used), an implicit standard handle and one reached through
+    another handle's type are read too (#209). It
+    and the C-write pin read the names they list as spelled, so a line
+    reaching the socket by another name is caught only when it writes with
+    one of them; a writer neither lists, a write on a file handle that
+    already exists, or a file API and a path is not. Every
     `extension` header and every operator implementation in the four targets
     is today's, and each of today's extensions declares today's members, so
     no extension member or operator overload added elsewhere or inside one
