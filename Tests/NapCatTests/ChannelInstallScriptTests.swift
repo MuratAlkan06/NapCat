@@ -568,10 +568,15 @@ struct ChannelInstallScriptTests {
     /// in a bare bash, under `locale` if one is given: 0 = a NapCat copy's
     /// helper.
     static func helperTestStatus(_ function: String, _ command: String, locale: String? = nil) throws -> Int32 {
+        try functionStatus(function, "is_napcat_helper", command, locale: locale)
+    }
+
+    /// Status of the shell function `name`, as `text` defines it, on one
+    /// argument, the same way.
+    static func functionStatus(_ text: String, _ name: String, _ argument: String, locale: String? = nil) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", "HELPER_IN_BUNDLE=\"\(helperInBundle)\"\n" + function + "\nis_napcat_helper \"$1\"",
-                             "is_napcat_helper", command]
+        process.arguments = ["-c", "HELPER_IN_BUNDLE=\"\(helperInBundle)\"\n" + text + "\n\(name) \"$1\"", name, argument]
         process.environment = ["PATH": "/usr/bin:/bin"].merging(locale.map { ["LANG": $0] } ?? [:]) { _, added in added }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -1201,59 +1206,86 @@ struct ChannelInstallScriptTests {
     /// Printable non-ASCII text, which registers: é, and two whose UTF-8
     /// sits next to C1's (U+00A0 is C2 A0; U+0110 is C4 90).
     static let printableNonASCII = ["é", "\u{A0}", "\u{110}"]
-    /// Format characters (left-to-right mark, right-to-left override, soft
-    /// hyphen): a UTF-8 locale's [[:cntrl:]] takes them and the C locale's
-    /// does not, so they are held only to one outcome in every locale.
-    static let formatCharacters = ["\u{200E}", "\u{202E}", "\u{AD}"]
+    /// Format characters, each in a path, that are invisible or reorder the
+    /// text around them, so that a printed path can look like another: the
+    /// soft hyphen, the Arabic letter mark, the Mongolian vowel separator,
+    /// the zero-width characters and directional marks, the directional
+    /// embeddings and overrides, the invisible operators, the directional
+    /// isolates and the byte order mark.
+    static let formatCodePoints: [ClosedRange<UInt32>] = [0xAD...0xAD, 0x61C...0x61C, 0x180E...0x180E, 0x200B...0x200F,
+                                                          0x202A...0x202E, 0x2060...0x2064, 0x2066...0x2069, 0xFEFF...0xFEFF]
+    static let formatCharacters: [String] = formatCodePoints.flatMap { $0 }.compactMap { Unicode.Scalar($0) }.map { String(Character($0)) }
+    /// Printable text whose UTF-8 sits next to a format character's: the
+    /// not sign (C2 AC), the registered sign (C2 AE), the Arabic semicolon
+    /// (D8 9B) and question mark (D8 9F), the Mongolian digit zero (E1 A0
+    /// 90), the hyphen (E2 80 90), the per mille sign (E2 80 B0), the
+    /// quadruple prime (E2 81 97), the superscript zero (E2 81 B0), an
+    /// Arabic ligature (EF BB BC) and the fullwidth exclamation mark (EF BC
+    /// 81).
+    static let formatNeighbours = ["\u{AC}", "\u{AE}", "\u{61B}", "\u{61F}", "\u{1810}", "\u{2010}", "\u{2030}", "\u{2057}",
+                                   "\u{2070}", "\u{FEFC}", "\u{FF01}"]
 
     static func codePoint(_ text: String) -> String {
         text.unicodeScalars.map { String(format: "U+%04X", $0.value) }.joined(separator: " ")
     }
 
-    /// A control character is refused byte by byte, the same in every
-    /// locale (the C locale once took C1 for text): in the bundle path,
-    /// before anything; by both scripts' is_napcat_helper; and in a
-    /// registered command, which both scripts take for another server's
-    /// (the installer stops, the uninstaller leaves it alone even when the
-    /// receipt records it, printing neither). Teeth: printable non-ASCII
-    /// bundle names register and are removed in every locale, and a format
-    /// character gets one outcome in every locale.
-    @Test func aControlCharacterIsRefusedTheSameInEveryLocale() throws {
-        let functions = try [ChannelInstallStructureTests.installPath, ChannelInstallStructureTests.uninstallPath].map { path in
+    /// Both scripts' own is_napcat_helper texts.
+    static func helperFunctions() throws -> [String] {
+        try [ChannelInstallStructureTests.installPath, ChannelInstallStructureTests.uninstallPath].map { path in
             try #require(ChannelInstallStructureTests.functionBody("is_napcat_helper() {", in: try ChannelInstallStructureTests.read(path)))
                 .joined(separator: "\n")
         }
+    }
+
+    /// `text` in a path is refused under `locale`: in the bundle path,
+    /// before anything; by both scripts' is_napcat_helper (`functions`);
+    /// and in a registered command, which both scripts take for another
+    /// server's (the installer stops, the uninstaller leaves it alone even
+    /// when the receipt records it, printing neither).
+    static func expectRefusedInEveryPath(_ text: String, locale: String, functions: [String]) throws {
+        let environment = Self.environment(locale)
+        let name = "\(locale), \(Self.codePoint(text))"
+        let sandbox = try Sandbox()
+        let bundle = sandbox.root + "/Apps/Nap\(text)Cat.app"
+        try FileManager.default.moveItem(atPath: sandbox.app, toPath: bundle)
+        let run = try sandbox.run("install-channel.sh", [bundle], environment: environment)
+        Self.expectRefusedBeforeAnything(run, sandbox, "the bundle path contains a control character.", name)
+        #expect(sandbox.codesignCalls.isEmpty, "\(name): nothing was verified either")
+
+        let command = "/Users/someone/Nap\(text)Cat.app/" + Self.helperInBundle
+        for function in functions {
+            #expect(try Self.helperTestStatus(function, command, locale: locale) == 1, "\(name): is_napcat_helper takes it")
+        }
+        let registered = try Sandbox()
+        try registered.register(command)
+        let installed = try registered.install(environment: environment)
+        #expect(installed.status == 1 && installed.stderr.contains("another MCP server is registered as \"napcat\"; it was left alone"),
+                "\(name): \(installed.errors)")
+        #expect(registered.claudeArguments == [Self.mcpGet] && !registered.exists(registered.receipt), "\(name): \(registered.claudeArguments)")
+        try FileManager.default.createDirectory(atPath: registered.approvals, withIntermediateDirectories: true)
+        try registered.write(registered.receipt, "version=2\npath=\(command)\n")
+        let uninstalled = try registered.uninstall(environment: environment)
+        #expect(uninstalled.status == 0
+                && uninstalled.lines.contains("left alone: the server registered as \"napcat\" does not run a NapCat helper"),
+                "\(name): \(uninstalled.lines) \(uninstalled.errors)")
+        #expect(!registered.claudeArguments.contains(Self.mcpRemove) && registered.registered == command, "\(name)")
+        // In bytes: a joiner is part of the character before it, which a
+        // search by character would not find alone.
+        for output in [installed, uninstalled] {
+            #expect(Data((output.stdout + output.stderr).utf8).range(of: Data(text.utf8)) == nil, "\(name): the command was printed")
+        }
+    }
+
+    /// A control character is refused byte by byte, the same in every
+    /// locale (the C locale once took C1 for text), in every path
+    /// (expectRefusedInEveryPath). Teeth: printable non-ASCII bundle names
+    /// register and are removed in every locale.
+    @Test func aControlCharacterIsRefusedTheSameInEveryLocale() throws {
+        let functions = try Self.helperFunctions()
         for locale in Self.locales {
             let environment = Self.environment(locale)
             for control in Self.controlCharacters {
-                let name = "\(locale), \(Self.codePoint(control))"
-                let sandbox = try Sandbox()
-                let bundle = sandbox.root + "/Apps/Nap\(control)Cat.app"
-                try FileManager.default.moveItem(atPath: sandbox.app, toPath: bundle)
-                let run = try sandbox.run("install-channel.sh", [bundle], environment: environment)
-                Self.expectRefusedBeforeAnything(run, sandbox, "the bundle path contains a control character.", name)
-                #expect(sandbox.codesignCalls.isEmpty, "\(name): nothing was verified either")
-
-                let command = "/Users/someone/Nap\(control)Cat.app/" + Self.helperInBundle
-                for function in functions {
-                    #expect(try Self.helperTestStatus(function, command, locale: locale) == 1, "\(name): is_napcat_helper takes it")
-                }
-                let registered = try Sandbox()
-                try registered.register(command)
-                let installed = try registered.install(environment: environment)
-                #expect(installed.status == 1 && installed.stderr.contains("another MCP server is registered as \"napcat\"; it was left alone"),
-                        "\(name): \(installed.errors)")
-                #expect(registered.claudeArguments == [Self.mcpGet] && !registered.exists(registered.receipt), "\(name): \(registered.claudeArguments)")
-                try FileManager.default.createDirectory(atPath: registered.approvals, withIntermediateDirectories: true)
-                try registered.write(registered.receipt, "version=2\npath=\(command)\n")
-                let uninstalled = try registered.uninstall(environment: environment)
-                #expect(uninstalled.status == 0
-                        && uninstalled.lines.contains("left alone: the server registered as \"napcat\" does not run a NapCat helper"),
-                        "\(name): \(uninstalled.lines) \(uninstalled.errors)")
-                #expect(!registered.claudeArguments.contains(Self.mcpRemove) && registered.registered == command, "\(name)")
-                for output in [installed, uninstalled] {
-                    #expect(!(output.stdout + output.stderr).contains(control), "\(name): the command was printed")
-                }
+                try Self.expectRefusedInEveryPath(control, locale: locale, functions: functions)
             }
             for text in Self.printableNonASCII {
                 let name = "\(locale), \(Self.codePoint(text))"
@@ -1268,22 +1300,31 @@ struct ChannelInstallScriptTests {
                         "\(name): \(removed.lines) \(removed.errors)")
             }
         }
+    }
+
+    /// A format character that is invisible or reorders the text around it
+    /// is refused byte by byte, as a control character is, under each of
+    /// the locales, in every path (expectRefusedInEveryPath): one outcome,
+    /// refused, where a UTF-8 [[:cntrl:]] took most of them and the C
+    /// locale's none. Teeth: the printable text next to them passes both
+    /// scripts' is_napcat_helper and the installer's has_control_character.
+    @Test(arguments: locales)
+    func anInvisibleOrBidirectionalCharacterIsRefusedInEveryLocale(_ locale: String) throws {
+        #expect(Self.formatCharacters.count == 23, "vacuity: \(Self.formatCharacters.map(Self.codePoint))")
+        let functions = try Self.helperFunctions()
         for text in Self.formatCharacters {
-            var outcomes: [String] = []
-            for locale in Self.locales {
-                let environment = Self.environment(locale)
-                let sandbox = try Sandbox()
-                let bundle = sandbox.root + "/Apps/Nap\(text)Cat.app"
-                try FileManager.default.moveItem(atPath: sandbox.app, toPath: bundle)
-                let path = try sandbox.run("install-channel.sh", [bundle], environment: environment)
-                let command = "/Users/someone/Nap\(text)Cat.app/" + Self.helperInBundle
-                let registered = try Sandbox()
-                try registered.register(command)
-                let installed = try registered.install(environment: environment)
-                let functionStatuses = try functions.map { try Self.helperTestStatus($0, command, locale: locale) }
-                outcomes.append("bundle path \(path.status), registered command \(installed.status), is_napcat_helper \(functionStatuses)")
+            try Self.expectRefusedInEveryPath(text, locale: locale, functions: functions)
+        }
+        let install = try ChannelInstallStructureTests.read(ChannelInstallStructureTests.installPath)
+        let check = try #require(ChannelInstallStructureTests.functionBody("has_control_character() {", in: install)).joined(separator: "\n")
+        for text in Self.formatNeighbours {
+            let name = "\(locale), \(Self.codePoint(text))"
+            let command = "/Users/someone/Nap\(text)Cat.app/" + Self.helperInBundle
+            for function in functions {
+                #expect(try Self.helperTestStatus(function, command, locale: locale) == 0, "\(name): is_napcat_helper refuses it")
             }
-            #expect(Set(outcomes).count == 1, "\(Self.codePoint(text)): \(Array(zip(Self.locales, outcomes)))")
+            #expect(try Self.functionStatus(check, "has_control_character", command, locale: locale) == 1,
+                    "\(name): has_control_character refuses it")
         }
     }
 }

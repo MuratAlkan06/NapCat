@@ -1155,11 +1155,11 @@ is started with the development flag load the channel.
   (`make SIGN_IDENTITY=…`). No override exists.
 - **What the check is not.** The installer verifies the bundle once, when
   it runs. The registration names a path, not the code: Claude Code starts
-  whatever is at that path in every later session, and nothing verifies it
-  again. Anything that can write the bundle can change what runs, as it
-  could by calling `claude mcp add` itself; an in-place update is picked up
-  the same way. What a server may do at the seam is decided there, not by
-  this registration.
+  whatever is at that path in every later session, and nothing re-checks
+  its team or Developer ID signature. Anything that can write the bundle
+  can change what runs, as it could by calling `claude mcp add` itself; an
+  in-place update is picked up the same way. What a server may do at the
+  seam is decided there, not by this registration.
 - **Reading the registration.** `claude mcp get` prints for people, so both
   scripts act on two answers only: a stdio entry's one `Command:` line, or
   the not-found line alone (Claude Code 2.1.326's wording). Any other

@@ -92,14 +92,24 @@ RECEIPT="$APPROVALS_DIR/channel-registration"
 # <bundle> is an absolute path as `pwd -P` prints one (no empty, "." or ".."
 # component, no control character) and its own name ends in .app, after at
 # least one other character. Tested byte by byte, the same in every locale:
-# a control character is a byte below 0x20, DEL (0x7F), or a C1 control as
-# UTF-8 encodes it (C2 80 to C2 9F).
+# a control character is a byte below 0x20, DEL (0x7F), a C1 control as
+# UTF-8 encodes it (C2 80 to C2 9F), or the UTF-8 of a format character
+# that is invisible or reorders the text around it, so that a printed path
+# can look like another: U+00AD (C2 AD), U+061C (D8 9C), U+180E (E1 A0 8E),
+# U+200B to U+200F (E2 80 8B to 8F), U+202A to U+202E (E2 80 AA to AE),
+# U+2060 to U+2064 (E2 81 A0 to A4), U+2066 to U+2069 (E2 81 A6 to A9) and
+# U+FEFF (EF BB BF). A lone byte 0x80 to 0x9F, which is not UTF-8, is not
+# refused: byte by byte it cannot be told from the last byte of a character
+# such as U+0110 (C4 90), whose name would be refused with it.
 is_napcat_helper() {
     local LC_ALL=C
     local bundle="${1%/"$HELPER_IN_BUNDLE"}"
     [ "$bundle/$HELPER_IN_BUNDLE" = "$1" ] || return 1
     case "$bundle" in
-        *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']* | *//* | */./* | */../*) return 1 ;;
+        *[[:cntrl:]]* | *$'\xc2'[$'\x80'-$'\x9f']* | *//* | */./* | */../*) return 1 ;;
+        *$'\xc2\xad'* | *$'\xd8\x9c'* | *$'\xe1\xa0\x8e'* | *$'\xef\xbb\xbf'*) return 1 ;;
+        *$'\xe2\x80'[$'\x8b'-$'\x8f']* | *$'\xe2\x80'[$'\xaa'-$'\xae']*) return 1 ;;
+        *$'\xe2\x81'[$'\xa0'-$'\xa4']* | *$'\xe2\x81'[$'\xa6'-$'\xa9']*) return 1 ;;
         /*) ;;
         *) return 1 ;;
     esac
@@ -136,12 +146,16 @@ fi
 APP="$(cd -P -- "$APP" && pwd -P && echo .)" || die "cannot resolve $APP."
 APP="${APP%??}"
 # Whether $1 holds a control character, tested byte by byte as
-# is_napcat_helper does, the same in every locale: a byte below 0x20, DEL
-# (0x7F), or a C1 control as UTF-8 encodes it (C2 80 to C2 9F).
+# is_napcat_helper does, the same in every locale, for the same bytes: one
+# below 0x20, DEL (0x7F), C1 (C2 80 to C2 9F), and the UTF-8 of the format
+# characters listed there.
 has_control_character() {
     local LC_ALL=C
     case "$1" in
-        *[[:cntrl:]]* | *$'\302'[$'\200'-$'\237']*) return 0 ;;
+        *[[:cntrl:]]* | *$'\xc2'[$'\x80'-$'\x9f']*) return 0 ;;
+        *$'\xc2\xad'* | *$'\xd8\x9c'* | *$'\xe1\xa0\x8e'* | *$'\xef\xbb\xbf'*) return 0 ;;
+        *$'\xe2\x80'[$'\x8b'-$'\x8f']* | *$'\xe2\x80'[$'\xaa'-$'\xae']*) return 0 ;;
+        *$'\xe2\x81'[$'\xa0'-$'\xa4']* | *$'\xe2\x81'[$'\xa6'-$'\xa9']*) return 0 ;;
     esac
     return 1
 }
