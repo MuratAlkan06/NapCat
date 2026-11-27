@@ -18,7 +18,12 @@
 #      build, or another team's, is refused; only then does it read the
 #      bundle's Info.plist (NapCat's bundle identifier and its
 #      NapCatChannelVersion);
-#   3. registers the helper with Claude Code at user scope under the name
+#   3. checks the receipt's folder, BEFORE anything is registered, so that a
+#      refusal here leaves no registration behind: the approvals folder
+#      must be a real directory of yours, not a symlink (it is created if
+#      missing, and its mode forced to 0700), and the receipt in it, if any,
+#      a regular file, not a symlink;
+#   4. registers the helper with Claude Code at user scope under the name
 #      "napcat", through Claude Code's own command line:
 #          claude mcp add --scope user --transport stdio napcat -- <helper>
 #      Idempotent: an entry that already runs this helper is kept, one that
@@ -28,10 +33,10 @@
 #      <bundle>.app an absolute path that has no empty, "." or ".."
 #      component (the only shape this script registers); a command that is
 #      merely close to that is another server;
-#   4. writes a receipt, mode 0600, holding the channel version and the
+#   5. writes the receipt, mode 0600, holding the channel version and the
 #      helper path: ~/Library/Application Support/NapCat/approvals/
-#      channel-registration. It refuses a symlinked folder or receipt;
-#   5. prints the flag each Claude Code session needs to load the channel.
+#      channel-registration (replaced by rename, never written through);
+#   6. prints the flag each Claude Code session needs to load the channel.
 #
 # It never edits Claude Code's configuration files or a shell profile by hand
 # (only Claude Code's own `claude mcp` commands change its configuration),
@@ -184,7 +189,22 @@ FOUND_BUNDLE_IDENTIFIER="$(plutil -extract CFBundleIdentifier raw -o - "$INFO_PL
 CHANNEL_VERSION="$(plutil -extract NapCatChannelVersion raw -o - "$INFO_PLIST" 2> /dev/null)" || CHANNEL_VERSION=""
 [[ "$CHANNEL_VERSION" =~ ^[1-9][0-9]{0,8}$ ]] || die "$APP names no channel version (NapCatChannelVersion in its Info.plist)."
 
-# --- 3. The registration ---
+# --- 3. The receipt's folder, before anything is registered ---
+# The approvals folder is NapCat's seam folder too: a real directory of yours
+# that nobody else can enter, the app's own rule. Checked before Claude Code
+# is called, so that a folder refused here leaves no registration behind.
+[ ! -L "$APPROVALS_DIR" ] || die "$APPROVALS_DIR is a symlink; refusing to write the receipt through it. Nothing was registered."
+mkdir -p "${APPROVALS_DIR%/*}" || die "cannot create ${APPROVALS_DIR%/*}. Nothing was registered."
+[ -d "$APPROVALS_DIR" ] || mkdir -m 700 "$APPROVALS_DIR" || die "cannot create $APPROVALS_DIR. Nothing was registered."
+if [ -L "$APPROVALS_DIR" ] || [ ! -d "$APPROVALS_DIR" ] || [ "$(stat -f %u "$APPROVALS_DIR")" != "$(id -u)" ]; then
+    die "$APPROVALS_DIR is not a directory of yours; refusing to write the receipt there. Nothing was registered."
+fi
+chmod 700 "$APPROVALS_DIR"
+if [ -L "$RECEIPT" ] || { [ -e "$RECEIPT" ] && [ ! -f "$RECEIPT" ]; }; then
+    die "$RECEIPT is a symlink or not a regular file; refusing to write through it. Nothing was registered."
+fi
+
+# --- 4. The registration ---
 CLAUDE_BIN="$(/usr/bin/env PATH="$CALLER_PATH" /usr/bin/which claude 2> /dev/null)" || CLAUDE_BIN=""
 case "$CLAUDE_BIN" in
     /*) [ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="" ;;
@@ -234,19 +254,7 @@ else
     echo "registered: \"$SERVER_NAME\" at user scope, running $HELPER"
 fi
 
-# --- 4. The receipt ---
-# The approvals folder is NapCat's seam folder too: a real directory of yours
-# that nobody else can enter, the app's own rule.
-[ ! -L "$APPROVALS_DIR" ] || die "$APPROVALS_DIR is a symlink; refusing to write the receipt through it."
-mkdir -p "${APPROVALS_DIR%/*}" || die "cannot create ${APPROVALS_DIR%/*}."
-[ -d "$APPROVALS_DIR" ] || mkdir -m 700 "$APPROVALS_DIR" || die "cannot create $APPROVALS_DIR."
-if [ -L "$APPROVALS_DIR" ] || [ ! -d "$APPROVALS_DIR" ] || [ "$(stat -f %u "$APPROVALS_DIR")" != "$(id -u)" ]; then
-    die "$APPROVALS_DIR is not a directory of yours; refusing to write the receipt there."
-fi
-chmod 700 "$APPROVALS_DIR"
-if [ -L "$RECEIPT" ] || { [ -e "$RECEIPT" ] && [ ! -f "$RECEIPT" ]; }; then
-    die "$RECEIPT is a symlink or not a regular file; refusing to write through it."
-fi
+# --- 5. The receipt ---
 RECEIPT_TMP="$(mktemp "$APPROVALS_DIR/.channel-registration.XXXXXXXX")"
 trap 'rm -f "$RECEIPT_TMP"' EXIT
 printf 'version=%s\npath=%s\n' "$CHANNEL_VERSION" "$HELPER" > "$RECEIPT_TMP"
@@ -255,7 +263,7 @@ chmod 600 "$RECEIPT_TMP"
 mv -f "$RECEIPT_TMP" "$RECEIPT"
 echo "receipt:    $RECEIPT (0600; channel version $CHANNEL_VERSION)"
 
-# --- 5. The per-session flag ---
+# --- 6. The per-session flag ---
 echo ""
 echo "Start each Claude Code session that should send its permission prompts to"
 echo "NapCat with this flag (Claude Code asks you to confirm it at start):"

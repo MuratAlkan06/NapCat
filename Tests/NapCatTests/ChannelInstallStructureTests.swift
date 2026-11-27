@@ -662,10 +662,12 @@ struct ChannelInstallStructureTests {
         "codesign --verify --strict -R \"=identifier \\\"$BUNDLE_IDENTIFIER\\\" and $TEAM_REQUIREMENT\" \"$APP\" \\",
         "FOUND_BUNDLE_IDENTIFIER=\"$(plutil -extract CFBundleIdentifier raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || FOUND_BUNDLE_IDENTIFIER=\"\"",
         "CHANNEL_VERSION=\"$(plutil -extract NapCatChannelVersion raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || CHANNEL_VERSION=\"\"",
+        "[ ! -L \"$APPROVALS_DIR\" ] || die \"$APPROVALS_DIR is a symlink; refusing to write the receipt through it. Nothing was registered.\"",
+        "if [ -L \"$APPROVALS_DIR\" ] || [ ! -d \"$APPROVALS_DIR\" ] || [ \"$(stat -f %u \"$APPROVALS_DIR\")\" != \"$(id -u)\" ]; then",
+        "chmod 700 \"$APPROVALS_DIR\"",
+        "if [ -L \"$RECEIPT\" ] || { [ -e \"$RECEIPT\" ] && [ ! -f \"$RECEIPT\" ]; }; then",
         "CURRENT=\"$(registered_command)\" || CURRENT=\"\"",
         "claude_cli mcp add --scope user --transport stdio \"$SERVER_NAME\" -- \"$HELPER\" > /dev/null \\",
-        "[ ! -L \"$APPROVALS_DIR\" ] || die \"$APPROVALS_DIR is a symlink; refusing to write the receipt through it.\"",
-        "if [ -L \"$RECEIPT\" ] || { [ -e \"$RECEIPT\" ] && [ ! -f \"$RECEIPT\" ]; }; then",
         "RECEIPT_TMP=\"$(mktemp \"$APPROVALS_DIR/.channel-registration.XXXXXXXX\")\"",
         "printf 'version=%s\\npath=%s\\n' \"$CHANNEL_VERSION\" \"$HELPER\" > \"$RECEIPT_TMP\"",
         "chmod 600 \"$RECEIPT_TMP\"",
@@ -708,7 +710,7 @@ struct ChannelInstallStructureTests {
         }
         let positions = found.compactMap { $0.count == 1 ? $0[0] : nil }
         if positions.count == installOrder.count, positions != positions.sorted() {
-            failures.append("install-channel.sh: verify, read, register, then the guarded receipt and the flag: \(positions)")
+            failures.append("install-channel.sh: verify, read, check the receipt's folder, register, then the receipt and the flag: \(positions)")
         }
         let removal = codeLines(uninstall)
         let removes = removal.indices.filter { removal[$0].contains("claude_cli mcp remove") }
@@ -744,8 +746,9 @@ struct ChannelInstallStructureTests {
 
     /// Canaries: the bundle name check or the helper's verification
     /// dropped, the Info.plist read before the seal is checked, each team
-    /// check dropped or moved past the registration, each receipt guard or
-    /// the receipt's mode dropped, the receipt written before the
+    /// check dropped or moved past the registration, each receipt-folder
+    /// guard, the folder's or the receipt's mode dropped, a folder or receipt
+    /// guard moved past the registration, the receipt written before the
     /// registration, the flag line dropped; and
     /// an unguarded or a second removal, a folder removed, the receipt's
     /// symlink guard or match dropped, the receipt never read, or removed
@@ -775,6 +778,14 @@ struct ChannelInstallStructureTests {
             ("expected team checked after the registration", install.replacingOccurrences(of: expectedTeam + "\n", with: "")
                 .replacingOccurrences(of: add, with: add + expectedTeam + "\n")),
             ("approvals symlink guard dropped", install.replacingOccurrences(of: Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n", with: "")),
+            ("approvals ownership check dropped", install.replacingOccurrences(of: Self.step("if [ -L \"$APPROVALS_DIR\" ]"), with: "if false; then")),
+            ("approvals mode dropped", install.replacingOccurrences(of: Self.step("chmod 700 ") + "\n", with: "")),
+            ("receipt folder checked after the registration", install
+                .replacingOccurrences(of: Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n", with: "")
+                .replacingOccurrences(of: add, with: add + Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n")),
+            ("receipt checked after the registration", install
+                .replacingOccurrences(of: Self.step("if [ -L \"$RECEIPT\" ]") + "\n", with: "")
+                .replacingOccurrences(of: add, with: add + Self.step("if [ -L \"$RECEIPT\" ]") + "\n")),
             ("receipt symlink guard dropped", install.replacingOccurrences(of: Self.step("if [ -L \"$RECEIPT\" ]"), with: "if false; then")),
             ("receipt mode dropped", install.replacingOccurrences(of: Self.step("chmod 600 ") + "\n", with: "")),
             ("receipt written before the registration", install.replacingOccurrences(of: receiptTemp, with: "")

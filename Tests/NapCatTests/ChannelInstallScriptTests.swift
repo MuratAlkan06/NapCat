@@ -575,6 +575,64 @@ struct ChannelInstallScriptTests {
         }
     }
 
+    // MARK: - The receipt's folder is checked before anything is registered
+
+    /// Every receipt-folder refusal comes before Claude Code is called, so
+    /// it leaves no registration behind (before #193 these checks ran after
+    /// `mcp add`): a symlinked approvals folder, one that is a file, one
+    /// that is not the user's (an `id` stub makes the user someone else),
+    /// and a receipt that is a symlink or a folder. Nothing is written
+    /// through the link either.
+    @Test func aRefusedReceiptFolderLeavesNoRegistrationBehind() throws {
+        typealias Setup = (Sandbox) throws -> Void
+        let parent = { (sandbox: Sandbox) in sandbox.approvals.components(separatedBy: "/").dropLast().joined(separator: "/") }
+        let cases: [(String, Setup, (Sandbox) -> String)] = [
+            ("a symlinked folder", { sandbox in
+                try FileManager.default.createDirectory(atPath: parent(sandbox), withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(atPath: sandbox.root + "/elsewhere", withIntermediateDirectories: true)
+                try FileManager.default.createSymbolicLink(atPath: sandbox.approvals, withDestinationPath: sandbox.root + "/elsewhere")
+            }, { "\($0.approvals) is a symlink; refusing to write the receipt through it. Nothing was registered." }),
+            ("a file where the folder goes", { sandbox in
+                try FileManager.default.createDirectory(atPath: parent(sandbox), withIntermediateDirectories: true)
+                try sandbox.write(sandbox.approvals, "")
+            }, { "cannot create \($0.approvals). Nothing was registered." }),
+            ("a folder that is not the user's", { sandbox in
+                try sandbox.write(sandbox.tools + "/id", Self.idStub, mode: 0o755)
+                try sandbox.write(sandbox.root + "/id-u", "\(getuid() + 4242)\n")
+            }, { "\($0.approvals) is not a directory of yours; refusing to write the receipt there. Nothing was registered." }),
+            ("a symlinked receipt", { sandbox in
+                try FileManager.default.createDirectory(atPath: sandbox.approvals, withIntermediateDirectories: true)
+                try sandbox.write(sandbox.root + "/elsewhere", "")
+                try FileManager.default.createSymbolicLink(atPath: sandbox.receipt, withDestinationPath: sandbox.root + "/elsewhere")
+            }, { "\($0.receipt) is a symlink or not a regular file; refusing to write through it. Nothing was registered." }),
+            ("a folder where the receipt goes", { sandbox in
+                try FileManager.default.createDirectory(atPath: sandbox.receipt, withIntermediateDirectories: true)
+            }, { "\($0.receipt) is a symlink or not a regular file; refusing to write through it. Nothing was registered." }),
+        ]
+        for (name, setup, error) in cases {
+            let sandbox = try Sandbox()
+            try setup(sandbox)
+            let run = try sandbox.install()
+            #expect(run.status == 1, "\(name): status \(run.status)")
+            #expect(run.errors.last == "install-channel: error: " + error(sandbox), "\(name): \(run.errors)")
+            #expect(sandbox.claudeCalls.isEmpty, "\(name): Claude Code was called: \(sandbox.claudeArguments)")
+            #expect(!sandbox.claudeArguments.contains { $0.hasPrefix("mcp add") } && sandbox.registered == nil,
+                    "\(name): a registration was left behind")
+            #expect(!sandbox.exists(sandbox.root + "/elsewhere/channel-registration")
+                    && (sandbox.read(sandbox.root + "/elsewhere").map(\.isEmpty) ?? true), "\(name): written through the link")
+        }
+    }
+
+    /// An approvals folder that exists with a wider mode is forced to 0700.
+    @Test func anExistingApprovalsFolderIsForcedPrivate() throws {
+        let sandbox = try Sandbox()
+        try FileManager.default.createDirectory(atPath: sandbox.approvals, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        #expect(try sandbox.install().status == 0)
+        let mode = try FileManager.default.attributesOfItem(atPath: sandbox.approvals)[.posixPermissions] as? Int
+        #expect(mode == 0o700, "\(String(describing: mode))")
+    }
+
     // MARK: - The uninstaller removes only what the receipt records
 
     /// A NapCat helper the receipt does not record is left alone and
