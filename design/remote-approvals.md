@@ -1066,8 +1066,9 @@ arms anything.
     connections and its peer reader, the seam file's send, write, read and
     descriptor (also by the descriptor's other names: the read sources, a
     source's `handle`, at no line today, and the listener's accepted
-    `client`, #208) and the relay's writer to Claude Code (`emit`) and its
-    open requests (`open`, #210) at today's lines, so a new line of those
+    `client`, #208), the relay's writer to Claude Code (`emit`) and its
+    open requests (`open`, #210), and the channel server's one `read` of
+    standard input (#212) at today's lines, so a new line of those
     files that names one of them fails (a line reaching the socket by none
     of them, through the connection handed on whole or the listener's peer
     reader, is not read itself); the channel server's stream writer and its
@@ -1075,8 +1076,8 @@ arms anything.
     alone (#210), so a second caller fails (one through the relay's own
     `emit` is the relay's word pin's to read); the
     seam connection's writer and reader, the intake's `receive` and its
-    initializer, the channel server's stream type and the relay's two
-    receives are pinned whole (below); the four targets call a C
+    initializer, the channel server's stream type and stdin reader, and the
+    relay's two receives are pinned whole (below); the four targets call a C
     write (`write`, `send` and their kin), and declare a function so named,
     at today's sites alone, and the channel server names `write` on its one
     standard-output line alone; and
@@ -1123,7 +1124,10 @@ arms anything.
     armed flag among them) stored as a `let`, exactly as passed in (#211;
     what the host passes in is not read by that pin),
     the seam connection's `send` and `drain`, the channel server's stream
-    type, and the relay's two receives. A line added on any of them fails
+    type and its stdin reader (`StandardInput.drain`, #212: the reader's
+    initializer and `start` and the server's `main`, which wire its lines
+    to the relay, are not pinned), and the relay's two receives. A line
+    added on any of them fails
     unless the stripper reads it as whitespace or a `//` comment, also
     beside a pinned copy kept in a literal or an inactive block. A raw-text
     lock over the four targets and the phone app keeps out the scalars a
