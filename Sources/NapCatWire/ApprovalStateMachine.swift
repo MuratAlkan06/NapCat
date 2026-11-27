@@ -170,8 +170,9 @@ public enum ApprovalPhase: Equatable, Sendable {
 public enum ApprovalEffect: Equatable, Sendable {
     /// Write the prompt record.
     case saveRecord
-    /// The forward was accepted: the actionable push replaces the plain
-    /// waiting alert for this episode (only now, never before the save).
+    /// The forward was accepted: the prompt push (fixed text, no action)
+    /// replaces the plain waiting alert for this episode (only now, never
+    /// before the save).
     case supersedeWaitingAlert
     /// Resolve the open dialog with this verdict.
     case deliverVerdict(ApprovalWire.Verdict)

@@ -9,7 +9,9 @@ import NapCatWire
 //
 // Fail-dark: nothing in this slice can forward a prompt. Listening only
 // means NapCat hears a wired session's prompts and keeps them local, because
-// the iPhone half that would arm forwarding does not exist yet.
+// no build arms forwarding: arming is the Mac's decision, and it waits on
+// the Mac's live record path and the seam's check of which program listens
+// (#221), among the items owed before arming.
 
 /// Where the Mac side of remote approvals stands.
 enum RemoteApprovalsPhase: Equatable, Sendable {
