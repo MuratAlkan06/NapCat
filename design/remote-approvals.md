@@ -1132,8 +1132,9 @@ is started with the development flag load the channel.
 
 - **The installer** (`scripts/install-channel.sh`, run as the owner's own
   user: never as root, no sudo) registers nothing until every check has
-  passed. The bundle is a real directory named `.app`. The helper's and
-  the app's signatures verify, and both name the same team, the one the
+  passed. The bundle is a real directory, not a symlink, whose name ends
+  in `.app` after at least one other character. The helper's and the
+  app's signatures verify, and both name the same team, the one the
   committed entitlements name; each also satisfies a requirement, for its
   own identifier, that only a Developer ID Application certificate Apple
   issued to that team meets, so an ad-hoc build, an Apple Development
@@ -1165,8 +1166,9 @@ is started with the development flag load the channel.
   answer stops the installer, which never risks a second registration, and
   is an error in the uninstaller, never "nothing to remove". Only the exact
   shape the installer registers counts as another NapCat copy's helper: an
-  absolute path, with no empty, `.` or `..` component, to a bundle named
-  `.app`. A command merely close to it is another server, left alone.
+  absolute path, with no empty, `.` or `..` component, to a bundle whose
+  name ends in `.app` after at least one other character. A command merely
+  close to it is another server, left alone.
 - **The uninstaller** removes the registration only when it runs a NapCat
   helper and the receipt records that same path. A NapCat helper the
   receipt does not record (no receipt, an unreadable one, or another path)
