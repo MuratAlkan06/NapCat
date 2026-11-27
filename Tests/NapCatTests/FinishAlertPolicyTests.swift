@@ -502,6 +502,12 @@ struct FinishAlertPolicyTests {
                         Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                         Step([], now: t + 420, [.finished(minutes: 7)]),
                      ]),
+            Scenario(id: "WW9", note: "a waiting marker rewritten with an EARLIER ts (the clock went back) is one write",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 250, w), now: t + 304, waitingWrites: 1),
+                     ]),
         ]
     }()
 
@@ -680,6 +686,25 @@ struct FinishAlertPolicyTests {
         let each = WaitingPromptCounts(bash: 1, write: 1, edit: 1, notebookEdit: 1, read: 1)
         #expect(FinishAlertPolicy.promptsWithoutEvidence(each, withEvidence: each) == .none)
         #expect(FinishAlertPolicy.promptsWithoutEvidence(each, withEvidence: .none) == each)
+    }
+
+    /// Each kind takes only its own evidence: for every ordered pair of
+    /// different kinds, evidence of one never touches the other.
+    @Test func evidenceNeverCrossesKinds() {
+        let kinds: [WritableKeyPath<WaitingPromptCounts, Int>] = [\.bash, \.write, \.edit, \.notebookEdit, \.read]
+        var pairs = 0
+        for held in kinds {
+            for other in kinds where other != held {
+                var prompts: WaitingPromptCounts = .none
+                prompts[keyPath: held] = 2
+                var evidence: WaitingPromptCounts = .none
+                evidence[keyPath: other] = 2
+                #expect(FinishAlertPolicy.promptsWithoutEvidence(prompts, withEvidence: evidence) == prompts,
+                        "\(held) with evidence of \(other) only")
+                pairs += 1
+            }
+        }
+        #expect(pairs == 20, "vacuity: every ordered pair of kinds")
     }
 
     /// FA-5 × C3 rule 2 AMENDED (2026-10-27): a newer UserPromptSubmit
