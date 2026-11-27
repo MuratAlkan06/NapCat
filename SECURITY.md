@@ -84,7 +84,8 @@ your iCloud private database, every field but the format version
 encrypted, and the Mac asks iCloud to delete it when the pairing ends. A
 deletion that did not go through is tried again at each later launch,
 until it does or a new pairing starts; a reply the iPhone saves after the
-Mac's pairing has ended is not deleted. The pairing code
-on the Mac's screen never leaves it: the record is named after a hash of
-that code, which is how the Mac finds it, and it carries only a proof that
-the phone saw the code. Pair in private while the code is up.
+Mac's pairing has ended can stay in your iCloud (a retry at a later launch
+can remove it). The pairing code on the Mac's screen never leaves it: the
+record is named after a hash of that code, which is how the Mac finds it,
+and it carries only a proof that the phone saw the code. Pair in private
+while the code is up.

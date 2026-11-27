@@ -127,11 +127,14 @@ interactive Claude Code sessions, away from the keyboard.
 - Prompt records are named by random 128-bit IDs.
 - A forwarded prompt can be answered from the phone for a limited window
   (the TTL): 10 minutes in this build, the window the Mac gives every
-  prompt it opens. The Mac keeps any window it is given between 5 minutes
-  and 1 hour; the phone honours the window a record states, up to 1 hour
-  (a record stating a longer one is not shown). The owner's TTL ruling
-  sets a 30-minute default, adjustable on the Mac; it is not built yet and
-  is owed with the live record path.
+  prompt it opens. The Mac's prompt state machine keeps any window it is
+  given between 5 minutes and 1 hour (it raises a shorter one and lowers a
+  longer one to that bound), but its record path still writes every record
+  with the 10-minute TTL and builds none with a longer window; the phone
+  honours the window a record states, up to 1 hour (a record stating a
+  longer one is not shown). The owner's TTL ruling sets a 30-minute
+  default, adjustable on the Mac; it is not built yet and is owed with the
+  live record path.
 - Records live in a dedicated custom zone of the private database, with their
   content fields encrypted.
 - Preview posture: build on Claude Code's development flag for channels (set
@@ -144,7 +147,8 @@ interactive Claude Code sessions, away from the keyboard.
 - **Opt-in.** Dark by default. Forwarding needs the Mac's switch on, a
   paired iPhone (pairing is the iPhone's Mac-visible opt-in) and a live
   record path, which no build has yet. The iPhone's own switch only pauses
-  that iPhone (it stops showing, notifying and answering) and tells the Mac
+  that iPhone (it stops showing and answering, and its pushes end once its
+  prompt subscription is deleted: see "Kill switch") and tells the Mac
   nothing: while it is off, the Mac would still forward.
 - **Trust anchor.** The same iCloud account (private database), hardened by
   CL-1 pairing. Stated limit: whoever can unlock the paired phone and pass its
@@ -185,12 +189,21 @@ interactive Claude Code sessions, away from the keyboard.
   suppression, every remote decision with its verdict, the prompt ID and
   timestamps (the log's own). Never tool input, never the alert topic, never
   raw session IDs. While the feature is unarmed (every build so far), every
-  prompt is logged `suppressed.notArmed`, not by the gate's code.
+  prompt the gate classifies is logged `suppressed.notArmed`, not by the
+  gate's code; a prompt the intake turns away before the gate (a frame its
+  strict reader refuses, another server version or an unconfirmed client, a
+  repeated request, a limit reached, no prompt ID to draw) is logged by its
+  `seam.` code instead.
 - **Kill switch.** Turning the Mac toggle off stops forwarding, retracts the
   pending records and makes in-flight remote decisions ignored. Turning the
-  iPhone's switch off stops that iPhone showing, notifying and answering
-  (its prompt subscription is deleted and its list emptied); it tells the
-  Mac nothing. Quitting NapCat is also a hard stop.
+  iPhone's switch off stops that iPhone showing and answering and empties
+  its list; it tells the Mac nothing. It deletes the prompt subscription,
+  which ends the pushes, only if the switch took effect earlier in the same
+  launch: a failed deletion is retried on each later return to the
+  foreground, pull to refresh, close of Settings or the launch's pairing
+  sheet, or prompt push while the app stays open, and one still owed when
+  the app quits is not retried by a later launch, so that subscription
+  stays and its pushes still come. Quitting NapCat is also a hard stop.
 
 ## Constraints
 
@@ -202,11 +215,11 @@ interactive Claude Code sessions, away from the keyboard.
   one deletion at a launch that still remembers a pairing record a past
   pairing could not delete; a pairing the owner starts looks the record up
   every few seconds until it ends. The phone reads only while its own
-  switch is in effect: when its app is opened or brought forward, on a pull
-  to refresh, as its Settings or pairing sheet closes, or when a prompt
-  push reaches the open app or is tapped (owner ruling: such a read is not
-  idle cost). Per-prompt cost is bounded to that prompt's pushes and record
-  operations.
+  switch is in effect: when its app is opened or brought forward, as its
+  switch is turned on, on a pull to refresh, as Settings or the launch's
+  pairing sheet closes, or when a prompt push reaches the open app or is
+  tapped (owner ruling: such a read is not idle cost). Per-prompt cost is
+  bounded to that prompt's pushes and record operations.
 - Existing hard rules stay intact: the app never invokes sudo for this
   feature, the debug simulator is unaffected, and the six-event busy-hook
   contract is unchanged.
@@ -242,7 +255,8 @@ interactive Claude Code sessions, away from the keyboard.
    answers given at the Mac are not visible to NapCat.
 9. Idle: with the feature on and nothing pending, zero CloudKit operations
    attributable to F4 on both devices over an observation window in which
-   the iPhone app is not opened and no pairing runs.
+   the iPhone app is not opened, no pairing runs, and NapCat is not
+   relaunched while a pairing record is still to be deleted.
 10. Unwired session: prompts behave exactly as today, including the existing
     waiting buzz.
 
@@ -548,9 +562,11 @@ this section points at them.
   a second save is refused as already answered) and carries no signature
   (S3; since S-PAIR-B it carries the paired key's). In S3 only a
   `-NapCatRequest` launch showed a request (a fixture, answered in memory);
-  since #194 a live launch also shows the Mac's prompts, read only, while
-  the phone's switch is in effect (see "The phone's prompt path"). No app
-  source builds the CloudKit decision writer.
+  since #194 a live launch also lists, read only, the prompt records it
+  reads in the approvals zone, each at most until its window closes, while
+  the phone's switch is in effect. No Mac build writes one yet, and the
+  phone cannot check which Mac wrote one (see "The phone's prompt path").
+  No app source builds the CloudKit decision writer.
 - **The records.** Both types live in the approvals zone, with the readable
   fields encrypted as `ApprovalWire` lists them. The readers refuse a record
   whose type, zone, encryption or version differs, and the Mac's refuses a
@@ -697,10 +713,10 @@ arms anything.
   end the Mac tries to delete the pairing record. A deletion that did not go
   through is tried again at each later launch, until it does or a new
   ceremony begins; a reply the phone saves after the Mac's ceremony ended
-  is not deleted. The phone's new key is provisional
-  until its own confirmation, so a stale or stray QR code cannot replace a
-  working pairing. Pair in private: the QR code is a secret while it is on
-  screen.
+  can stay in the owner's iCloud (a retry at a later launch can remove
+  it). The phone's new key is provisional until its own confirmation, so a
+  stale or stray QR code cannot replace a working pairing. Pair in private:
+  the QR code is a secret while it is on screen.
 - **One slot; re-pairing is the recovery.** At most one key is paired, and
   a new pairing replaces it. Unpair on the Mac asks the keychain to delete
   the stored key and stops the feature through the kill switch either way;
@@ -857,8 +873,9 @@ arms anything.
     other road reaches the slot's one write), then the record's deletion is
     asked for. They Don't Match, Cancel, Esc, closing the window, the five
     minutes, a refusal or a failed write each burn the nonce and ask for
-    the record's deletion (one try, and the next launch's cleanup if it
-    did not go through: see "Pairing" above).
+    the record's deletion (one try; if it did not go through, one more at
+    each later launch until it does or a new ceremony begins: see
+    "Pairing" above).
     A ceremony over a paired phone leaves the old key working until the
     new one is written.
   - *The sheet.* Five states: the code (with the countdown and the
@@ -1319,19 +1336,26 @@ is started with the development flag load the channel.
 
 ## The phone's prompt path (#194)
 
-#194 lets the phone receive the Mac's permission prompts, still
-unanswerable: nothing arms on either device, and every answer goes to a
-writer that writes nothing (`UnsentDecisionWriter`), so the prompt screen
-is a preview with no answer buttons, and the inbox refuses an answer
-before it asks for a match.
+#194 lets the phone list, read only, the prompt records it reads in the
+approvals zone, each at most until its window closes, while its switch is
+in effect. No Mac build writes one yet, and the phone cannot check which
+Mac wrote one. Nothing arms on either device, and in a live launch every
+answer goes to a writer that writes nothing (`UnsentDecisionWriter`), so
+the prompt screen is a preview with no answer buttons, and the inbox
+refuses an answer before it asks for a match.
 
 - **The phone's switch** (Settings › Remote approvals, "Prompts on This
   iPhone", off by default; `ApprovalsSwitch`). It takes effect only on a
   phone that holds a committed key, and it gates this phone's side alone:
   the prompt subscription, the reads and the waiting list. Nothing tells
   the Mac (owner ruling: pairing is the Mac-visible half of the opt-in),
-  so off is a local pause; switching it off deletes the prompt
-  subscription and empties the list.
+  so off is a local pause. Switching it off empties the list, and deletes
+  the prompt subscription only if the switch took effect earlier in the
+  same launch; a failed deletion is retried on each later return to the
+  foreground, pull to refresh, close of Settings or the launch's pairing
+  sheet, or prompt push while the app stays open, and one still owed when
+  the app quits stays: its pushes still come, and a later launch does not
+  retry it.
 - **What the live database runs.** `LiveCloudKitApprovalDatabase` checks
   each operation it is handed and runs exactly these: the pairing
   response's create-only save; a decision's create-only save (no app
@@ -1347,13 +1371,14 @@ before it asks for a match.
   Every other record is dropped after its type is checked: its metadata
   (type and name), and any of the six fields it holds, may cross in the
   snapshot and are discarded unread. A failed read changes nothing.
-- **When the phone reads.** At launch, on a return to the foreground, on a
-  pull to refresh, as Settings or the launch's pairing sheet closes, and on
-  a prompt push that reaches the open app or is tapped; never on a timer,
-  and only while the switch is in effect. Until the launch knows the
-  prompt subscription exists (found or made), each read is preceded by its
-  lookup, and by its save when the lookup finds it missing; once switching
-  off has deleted it, the same starts again.
+- **When the phone reads.** At launch, on a return to the foreground, as
+  the switch is turned on, on a pull to refresh, as Settings or the
+  launch's pairing sheet closes, and on a prompt push that reaches the open
+  app or is tapped; never on a timer, and only while the switch is in
+  effect. Until the launch knows the prompt subscription exists (found or
+  made), each read is preceded by its lookup, and by its save when the
+  lookup finds it missing; once switching off has deleted it, the same
+  starts again.
 - **The push.** A query subscription on new PromptRequest records in the
   approvals zone (`ApprovalWire.promptSubscriptionID`). Its push is the
   app's title over fixed words ("A permission prompt is waiting on your

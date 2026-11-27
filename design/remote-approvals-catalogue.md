@@ -16,9 +16,13 @@ Each entry is something a prompt could carry and what happens to it. Nothing
 listed here is ever forwarded: a refused prompt stays fully answerable in the
 terminal. Once the feature is armed, NapCat logs it by its code, as
 `suppressed.gate.` followed by the code; while it is unarmed (every build so
-far), every prompt, refused or not, is logged `suppressed.notArmed` instead
-(see "Precedence"). The log holds what NapCat decided: an answer given at
-the Mac does not reach NapCat, so it is not in the log.
+far), every prompt the gate classifies, refused or not, is logged
+`suppressed.notArmed` instead (see "Precedence"); a prompt the intake turns
+away before the gate (a frame its strict reader refuses, another server
+version or an unconfirmed client, a repeated request, a limit reached, no
+prompt ID to draw) is logged by its `seam.` code. The log holds what
+NapCat decided: an answer given at the Mac does not reach NapCat, so it is
+not in the log.
 The codes are the gate's own:
 `forbidden.<family>`, `localOnly.mcp`, `localOnly.fileEdit`,
 `localOnly.read` and `unclassifiable.<reason>`. In the
@@ -68,8 +72,8 @@ its path's shape are malformed, and a malformed Read keeps its
 `unclassifiable` code; every other Read is `localOnly.read`. NapCat's
 intake then applies its own holds: a topic that exists but could not be read
 keeps every prompt as `forbidden.secretAccess`, and while the feature is
-unarmed (every build so far) each prompt is logged `suppressed.notArmed`
-instead of the gate's code.
+unarmed (every build so far) each prompt the gate classified is logged
+`suppressed.notArmed` instead of the gate's code.
 
 ## The forbidden families
 

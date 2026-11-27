@@ -299,8 +299,8 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
 NapCat has no telemetry and no account. It makes exactly three kinds of
 network request, and the code that may make them lives in four files: the
 ntfy sender, the update check and two CloudKit files (structure tests fail
-if any other file of the app's own sources names URL loading, or any other
-Mac source file imports CloudKit):
+if any other file in `Sources/NapCat` names URL loading, or any other file
+of the four Mac targets imports CloudKit):
 
 - **ntfy** — only for the alerts you switched on (the lid alert, session
   alerts, and the catch-up summary after a dropped connection) and the test
@@ -497,7 +497,9 @@ a bearer credential (anyone who has it can read and post to your feed), and an
 older install's settings may still hold a plaintext copy. The second is the
 paired iPhone's public key (the **NapCat paired iPhone key** item, kept if you
 paired an iPhone in Settings › Claude): not a secret, but what the Mac would
-trust a signed answer by. **Unpair…** in Settings › Claude deletes it too.
+trust a signed answer by. **Unpair…** in Settings › Claude asks the keychain
+to delete it too; if the keychain refuses, the item stays, and
+Settings › Claude still shows the pairing as long as it can read the item.
 
 ## Debug battery simulator
 

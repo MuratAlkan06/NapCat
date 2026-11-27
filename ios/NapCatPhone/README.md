@@ -264,20 +264,26 @@ this iPhone cannot answer one. A device build does this only while
    created only when missing, and tried again at the next read if that
    failed.
 2. Reads one snapshot of the approvals zone, asking for the prompt record's
-   six fields only, at launch, on every return to the foreground, on a pull
-   to refresh, as Settings or the launch's pairing sheet closes, and on a
-   prompt push that reaches the open app or is tapped; never on a timer.
-   A prompt record is read strictly, and any other record is dropped
-   unread. A failed read changes nothing.
+   six fields only, at launch, on every return to the foreground, as
+   **Prompts on This iPhone** is turned on, on a pull to refresh, as
+   Settings or the launch's pairing sheet closes, and on a prompt push that
+   reaches the open app or is tapped; never on a timer. A prompt record is
+   read strictly, and any other record is dropped after its type is
+   checked. A failed read changes nothing.
 3. Lists the prompts under **Waiting** (tool, project and age). A row, or a
    tapped prompt push, opens the prompt as a preview: the tool, the project
    and the input, with no answer on offer.
 
 The prompt push says "A permission prompt is waiting on your Mac." under
-the title "NapCat", with the default sound: nothing of the prompt, and no
-action. Switching **Prompts on This iPhone** off empties the list and
-deletes the subscription; nothing tells the Mac. What the live database
-runs for this path is listed in
+the title "NapCat", with the default sound: nothing of the prompt but its
+record's ID, which opens it, and no action. Switching **Prompts on This
+iPhone** off empties the list; it deletes the subscription only if the
+switch took effect earlier in the same launch, and if that fails it tries
+again on each return to the foreground, pull to refresh, close of Settings
+or the launch's pairing sheet, or prompt push while the app stays open. A
+deletion still owed when the app quits is not retried by a later launch, so
+that subscription stays and its pushes still come. Nothing tells the Mac.
+What the live database runs for this path is listed in
 [design/remote-approvals.md](../../design/remote-approvals.md), "The
 phone's prompt path".
 
