@@ -7,27 +7,53 @@
 # The bundle defaults to /Applications/NapCat.app. Agents must NEVER run this.
 #
 # What it does, in order, stopping at the first failure:
-#   1. checks the bundle path: a real directory, not a symlink;
+#   1. checks the bundle path: a real directory, not a symlink, whose name
+#      ends in .app;
 #   2. verifies the helper, Contents/MacOS/napcat-channel, BEFORE anything else
 #      uses it: `codesign --verify --strict` on the helper, its signing
-#      identifier, then the app's own seal (which covers the helper); only then
-#      does it read the bundle's Info.plist (NapCat's bundle identifier and its
+#      identifier, then the app's own seal (which covers the helper); then the
+#      team: the app and the helper must name the same team, NapCat's own
+#      (TEAM_IDENTIFIER below), and each must satisfy a code requirement for
+#      its own identifier that only a Developer ID Application certificate
+#      Apple issued to that team meets, so an ad-hoc build, an Apple
+#      Development build, or another team's, is refused; only then does it
+#      read the bundle's Info.plist (NapCat's bundle identifier and its
 #      NapCatChannelVersion);
-#   3. registers the helper with Claude Code at user scope under the name
+#   3. checks the receipt's folder, BEFORE anything is registered, so that a
+#      refusal here leaves no registration behind: the approvals folder
+#      must be a real directory of yours, not a symlink (it is created if
+#      missing, and its mode forced to 0700, before Claude Code is found or
+#      read, so a run that stops before registering may leave that folder
+#      behind), and the receipt in it, if any, a regular file, not a symlink;
+#   4. registers the helper with Claude Code at user scope under the name
 #      "napcat", through Claude Code's own command line:
 #          claude mcp add --scope user --transport stdio napcat -- <helper>
 #      Idempotent: an entry that already runs this helper is kept, one that
 #      runs another NapCat copy's helper is replaced, and any other server
-#      named "napcat" is left alone (the script stops);
-#   4. writes a receipt, mode 0600, holding the channel version and the
+#      named "napcat" is left alone (the script stops). Another copy's helper
+#      means exactly <bundle>.app/Contents/MacOS/napcat-channel, with
+#      <bundle>.app an absolute path that has no empty, "." or ".."
+#      component (the only shape this script registers); a command that is
+#      merely close to that is another server. The entry is read with
+#      `claude mcp get napcat`, and only two answers are acted on (a stdio
+#      entry's one Command: line, or Claude Code's not-found line); anything
+#      else stops the script with nothing registered or removed, rather than
+#      risk a second registration;
+#   5. writes the receipt, mode 0600, holding the channel version and the
 #      helper path: ~/Library/Application Support/NapCat/approvals/
-#      channel-registration. It refuses a symlinked folder or receipt;
-#   5. prints the flag each Claude Code session needs to load the channel.
+#      channel-registration (replaced by rename, never written through);
+#   6. prints the flag each Claude Code session needs to load the channel.
 #
 # It never edits Claude Code's configuration files or a shell profile by hand
 # (only Claude Code's own `claude mcp` commands change its configuration),
 # never prints another server's settings, and needs no administrator rights.
 # Undo with ./scripts/uninstall-channel.sh.
+#
+# Exit status: 0 once the helper is registered (or already was) and the
+# receipt is written; 1 when it refuses or a step fails, after one
+# "install-channel: error:" line that says why and what changed (most say
+# "Nothing was registered."); a system command that fails unexpectedly
+# stops it with that command's own non-zero status.
 
 set -euo pipefail
 # Your own PATH, kept only to find and run Claude Code, your own tool (an npm
@@ -45,14 +71,54 @@ die() {
 
 # The registration's name: the server's own MCP name, ApprovalChannel.serverName.
 SERVER_NAME="napcat"
+# The start of the one line `claude mcp get` prints, with status 1, when no
+# server has that name (Claude Code 2.1.326; the hint after it, which may
+# name other servers, goes unread).
+NOT_FOUND_PREFIX="No MCP server named \"$SERVER_NAME\"."
 # The helper's signing identifier: byte-identical to CHANNEL_IDENTIFIER in the
 # Makefile (ChannelInstallStructureTests).
 CHANNEL_IDENTIFIER="com.muratalkan.napcat.channel"
 BUNDLE_IDENTIFIER="com.muratalkan.napcat"
+# NapCat's signing team: byte-identical to com.apple.developer.team-identifier
+# in Resources/NapCat.entitlements (ChannelInstallStructureTests).
+TEAM_IDENTIFIER="HJSC985877"
 HELPER_IN_BUNDLE="Contents/MacOS/napcat-channel"
 # The app's seam folder (SeamPaths.directoryRelativePath); the receipt sits in it.
 APPROVALS_DIR="$HOME/Library/Application Support/NapCat/approvals"
 RECEIPT="$APPROVALS_DIR/channel-registration"
+
+# Whether $1 is a NapCat bundle's channel server at a path of the one shape
+# this script registers: <bundle>/Contents/MacOS/napcat-channel exactly, where
+# <bundle> is an absolute path as `pwd -P` prints one (no empty, "." or ".."
+# component, no control character) and its own name ends in .app, after at
+# least one other character. Tested byte by byte, the same in every locale:
+# a control character is a byte below 0x20, DEL (0x7F), a C1 control as
+# UTF-8 encodes it (C2 80 to C2 9F), or the UTF-8 of one of these format
+# characters, each invisible or reordering the text around it, so that a
+# printed path can look like another: U+00AD (C2 AD), U+061C (D8 9C),
+# U+180E (E1 A0 8E), U+200B to U+200F (E2 80 8B to 8F),
+# U+202A to U+202E (E2 80 AA to AE), U+2060 to U+2064 (E2 81 A0 to A4),
+# U+2066 to U+2069 (E2 81 A6 to A9) and U+FEFF (EF BB BF). A lone byte
+# 0x80 to 0x9F, which is not UTF-8, is not refused: byte by byte it cannot
+# be told from the last byte of a character such as U+0110 (C4 90), whose
+# name would be refused with it.
+is_napcat_helper() {
+    local LC_ALL=C
+    local bundle="${1%/"$HELPER_IN_BUNDLE"}"
+    [ "$bundle/$HELPER_IN_BUNDLE" = "$1" ] || return 1
+    case "$bundle" in
+        *[[:cntrl:]]* | *$'\xc2'[$'\x80'-$'\x9f']* | *//* | */./* | */../*) return 1 ;;
+        *$'\xc2\xad'* | *$'\xd8\x9c'* | *$'\xe1\xa0\x8e'* | *$'\xef\xbb\xbf'*) return 1 ;;
+        *$'\xe2\x80'[$'\x8b'-$'\x8f']* | *$'\xe2\x80'[$'\xaa'-$'\xae']*) return 1 ;;
+        *$'\xe2\x81'[$'\xa0'-$'\xa4']* | *$'\xe2\x81'[$'\xa6'-$'\xa9']*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "${bundle##*/}" in
+        ?*.app) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 [ "$#" -le 1 ] || die "usage: $0 [/path/to/NapCat.app]"
 [ "$(id -u)" -ne 0 ] || die "run this as yourself, not as root: Claude Code keeps one configuration per user."
@@ -75,12 +141,31 @@ if [ -L "$APP" ] || [ ! -d "$APP" ]; then
     die "$APP is not a bundle directory (a symlink is refused)."
 fi
 # The physical path, so the registration names no symlinked folder above it.
-APP="$(cd -P -- "$APP" && pwd -P)" || die "cannot resolve $APP."
+# Command substitution drops trailing newlines, so a bundle name ending in one
+# would resolve to its sibling; the sentinel keeps every byte pwd printed for
+# the control-character test below.
+APP="$(cd -P -- "$APP" && pwd -P && echo .)" || die "cannot resolve $APP."
+APP="${APP%??}"
+# Whether $1 holds a control character, tested byte by byte as
+# is_napcat_helper does, the same in every locale, for the same bytes: one
+# below 0x20, DEL (0x7F), C1 (C2 80 to C2 9F), and the UTF-8 of the format
+# characters listed there.
+has_control_character() {
+    local LC_ALL=C
+    case "$1" in
+        *[[:cntrl:]]* | *$'\xc2'[$'\x80'-$'\x9f']*) return 0 ;;
+        *$'\xc2\xad'* | *$'\xd8\x9c'* | *$'\xe1\xa0\x8e'* | *$'\xef\xbb\xbf'*) return 0 ;;
+        *$'\xe2\x80'[$'\x8b'-$'\x8f']* | *$'\xe2\x80'[$'\xaa'-$'\xae']*) return 0 ;;
+        *$'\xe2\x81'[$'\xa0'-$'\xa4']* | *$'\xe2\x81'[$'\xa6'-$'\xa9']*) return 0 ;;
+    esac
+    return 1
+}
 # The path goes into Claude Code's configuration and a line of the receipt.
-case "$APP" in
-    *[[:cntrl:]]*) die "the bundle path contains a control character." ;;
-esac
+! has_control_character "$APP" || die "the bundle path contains a control character."
 HELPER="$APP/$HELPER_IN_BUNDLE"
+# So the registration is one that uninstall-channel.sh, and a later run of this
+# script, recognise as NapCat's.
+is_napcat_helper "$HELPER" || die "$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered."
 # A short path, so the receipt always fits the 1 KiB NapCat reads of it.
 path_bytes() {
     local LC_ALL=C
@@ -97,6 +182,50 @@ HELPER_SIGNATURE="$(codesign -d --verbose=2 "$HELPER" 2>&1)" || die "codesign ca
 grep -qxF "Identifier=$CHANNEL_IDENTIFIER" <<< "$HELPER_SIGNATURE" \
     || die "$HELPER is not signed as $CHANNEL_IDENTIFIER. Nothing was registered."
 codesign --verify --strict "$APP" || die "$APP fails codesign --verify --strict. Nothing was registered."
+APP_SIGNATURE="$(codesign -d --verbose=2 "$APP" 2>&1)" || die "codesign cannot describe $APP."
+
+# The team a description names: its one TeamIdentifier line when that is an
+# Apple team ID (ten capital letters and digits); nothing for an ad-hoc or
+# unsigned build ("not set") or no such line; status 1 for anything else,
+# or when sed fails. The local LC_ALL sets only this shell's own locale;
+# sed gets its own, so a byte that is not UTF-8 reads the same everywhere.
+signature_team() {
+    local LC_ALL=C team
+    team="$(LC_ALL=C sed -n 's/^TeamIdentifier=//p' <<< "$1")" || return 1
+    case "$team" in
+        "" | "not set") return 0 ;;
+    esac
+    [[ "$team" =~ ^[A-Z0-9]{10}$ ]] || return 1
+    printf '%s\n' "$team"
+}
+
+# How an error names a team, or the lack of one.
+team_label() {
+    if [ -n "$1" ]; then
+        echo "team $1"
+    else
+        echo "no team (an ad-hoc or unsigned build)"
+    fi
+}
+
+HELPER_TEAM="$(signature_team "$HELPER_SIGNATURE")" || die "codesign names a malformed team for $HELPER. Nothing was registered."
+APP_TEAM="$(signature_team "$APP_SIGNATURE")" || die "codesign names a malformed team for $APP. Nothing was registered."
+[ "$HELPER_TEAM" = "$APP_TEAM" ] \
+    || die "$HELPER is signed for $(team_label "$HELPER_TEAM"), but $APP for $(team_label "$APP_TEAM"). Nothing was registered."
+[ "$APP_TEAM" = "$TEAM_IDENTIFIER" ] \
+    || die "$APP and its helper are signed for $(team_label "$APP_TEAM"), not NapCat's team $TEAM_IDENTIFIER. Nothing was registered."
+# Those lines are what each signature claims. Each must also satisfy a
+# requirement anchored at Apple, for its own identifier: a Developer ID
+# Application certificate (the leaf's field 1.2.840.113635.100.6.1.13),
+# issued by Apple's Developer ID Certification Authority (field
+# 1.2.840.113635.100.6.2.6), to NapCat's team, as Apple's TN3127 spells
+# a Developer ID signature. An Apple Development certificate of the same
+# team does not satisfy it.
+TEAM_REQUIREMENT="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM_IDENTIFIER\""
+codesign --verify --strict -R "=identifier \"$CHANNEL_IDENTIFIER\" and $TEAM_REQUIREMENT" "$HELPER" \
+    || die "$HELPER is not signed as $CHANNEL_IDENTIFIER with a Developer ID Application certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
+codesign --verify --strict -R "=identifier \"$BUNDLE_IDENTIFIER\" and $TEAM_REQUIREMENT" "$APP" \
+    || die "$APP is not signed as $BUNDLE_IDENTIFIER with a Developer ID Application certificate Apple issued to team $TEAM_IDENTIFIER. Nothing was registered."
 
 # The bundle is NapCat, and names its channel version (read after the seal
 # that covers Info.plist verified).
@@ -106,7 +235,22 @@ FOUND_BUNDLE_IDENTIFIER="$(plutil -extract CFBundleIdentifier raw -o - "$INFO_PL
 CHANNEL_VERSION="$(plutil -extract NapCatChannelVersion raw -o - "$INFO_PLIST" 2> /dev/null)" || CHANNEL_VERSION=""
 [[ "$CHANNEL_VERSION" =~ ^[1-9][0-9]{0,8}$ ]] || die "$APP names no channel version (NapCatChannelVersion in its Info.plist)."
 
-# --- 3. The registration ---
+# --- 3. The receipt's folder, before anything is registered ---
+# The approvals folder is NapCat's seam folder too: a real directory of yours
+# that nobody else can enter, the app's own rule. Checked before Claude Code
+# is called, so that a folder refused here leaves no registration behind.
+[ ! -L "$APPROVALS_DIR" ] || die "$APPROVALS_DIR is a symlink; refusing to write the receipt through it. Nothing was registered."
+mkdir -p "${APPROVALS_DIR%/*}" || die "cannot create ${APPROVALS_DIR%/*}. Nothing was registered."
+[ -d "$APPROVALS_DIR" ] || mkdir -m 700 "$APPROVALS_DIR" || die "cannot create $APPROVALS_DIR. Nothing was registered."
+if [ -L "$APPROVALS_DIR" ] || [ ! -d "$APPROVALS_DIR" ] || [ "$(stat -f %u "$APPROVALS_DIR")" != "$(id -u)" ]; then
+    die "$APPROVALS_DIR is not a directory of yours; refusing to write the receipt there. Nothing was registered."
+fi
+chmod 700 "$APPROVALS_DIR"
+if [ -L "$RECEIPT" ] || { [ -e "$RECEIPT" ] && [ ! -f "$RECEIPT" ]; }; then
+    die "$RECEIPT is a symlink or not a regular file; refusing to write through it. Nothing was registered."
+fi
+
+# --- 4. The registration ---
 CLAUDE_BIN="$(/usr/bin/env PATH="$CALLER_PATH" /usr/bin/which claude 2> /dev/null)" || CLAUDE_BIN=""
 case "$CLAUDE_BIN" in
     /*) [ -x "$CLAUDE_BIN" ] || CLAUDE_BIN="" ;;
@@ -121,35 +265,44 @@ claude_cli() {
     (cd / && /usr/bin/env PATH="$CALLER_PATH" "$CLAUDE_BIN" "$@")
 }
 
-# The command of the server registered as "napcat": the one "Command:" line
-# `claude mcp get napcat` prints for a stdio server. That output is written
-# for people, not scripts, so anything else (no such line, or more than one)
-# reads as unknown (status 1), and the caller then changes nothing it cannot
-# see. The output itself is never printed: it may hold another server's
-# environment.
+# What `claude mcp get napcat` says of the server registered as "napcat". Its
+# output is written for people, not scripts, so only two answers are read:
+#   - status 0 and exactly one "Command:" line (a stdio server): prints that
+#     command;
+#   - status 1 and nothing but one line that starts with $NOT_FOUND_PREFIX:
+#     prints nothing (no server has the name).
+# Anything else (no Command: line or two, a not-found line among other
+# lines, another status, a format this script predates) is unknown: status
+# 1, and the caller changes nothing. The output itself is never printed: it
+# may hold another server's environment, or name other servers. It is read
+# byte by byte (sed under LC_ALL=C), so a byte that is not UTF-8 reads the
+# same in every locale, and a sed that fails stops the read.
 registered_command() {
-    local output found
-    output="$(claude_cli mcp get "$SERVER_NAME" 2> /dev/null)" || return 1
-    found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
-    case "$found" in
-        "" | *$'\n'*) return 1 ;;
+    local output found status=0
+    output="$(claude_cli mcp get "$SERVER_NAME" 2>&1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+        found="$(LC_ALL=C sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | LC_ALL=C sed 's/[[:space:]]*$//')" || return 1
+        case "$found" in
+            "" | *$'\n'*) return 1 ;;
+        esac
+        printf '%s\n' "$found"
+        return 0
+    fi
+    [ "$status" -eq 1 ] || return 1
+    output="$(LC_ALL=C sed '/^[[:space:]]*$/d' <<< "$output")" || return 1
+    case "$output" in
+        *$'\n'*) return 1 ;;
+        "$NOT_FOUND_PREFIX"*) return 0 ;;
     esac
-    printf '%s\n' "$found"
+    return 1
 }
 
-# Whether $1 is the path of a NapCat bundle's channel server.
-is_napcat_helper() {
-    case "$1" in
-        /*.app/"$HELPER_IN_BUNDLE") return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-CURRENT="$(registered_command)" || CURRENT=""
+CURRENT="$(registered_command)" \
+    || die "cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format). Nothing was registered or removed. Inspect it with: claude mcp get $SERVER_NAME"
 if [ "$CURRENT" = "$HELPER" ]; then
     echo "ok:         \"$SERVER_NAME\" already runs $HELPER (user scope); registration unchanged."
 elif [ -n "$CURRENT" ] && ! is_napcat_helper "$CURRENT"; then
-    die "another MCP server is registered as \"$SERVER_NAME\"; it was left alone and nothing changed. Inspect it with: claude mcp get $SERVER_NAME"
+    die "another MCP server is registered as \"$SERVER_NAME\"; it was left alone and nothing was registered. Inspect it with: claude mcp get $SERVER_NAME"
 else
     if [ -n "$CURRENT" ]; then
         # Another NapCat copy's helper (the app moved, or a second copy).
@@ -157,26 +310,14 @@ else
             || die "could not remove the registration for $CURRENT (is it outside user scope?). Nothing was added."
         echo "removed:    the registration for another NapCat copy, $CURRENT"
     fi
-    # When an entry named "napcat" exists that `claude mcp get` showed no
-    # command for, this add refuses (it already exists) and changes nothing.
+    # Claude Code's own rule backs that reading up: an add refuses a name
+    # that already exists at user scope, and changes nothing.
     claude_cli mcp add --scope user --transport stdio "$SERVER_NAME" -- "$HELPER" > /dev/null \
         || die "claude mcp add refused (its message is above); no receipt was written. Inspect an existing entry with: claude mcp get $SERVER_NAME"
     echo "registered: \"$SERVER_NAME\" at user scope, running $HELPER"
 fi
 
-# --- 4. The receipt ---
-# The approvals folder is NapCat's seam folder too: a real directory of yours
-# that nobody else can enter, the app's own rule.
-[ ! -L "$APPROVALS_DIR" ] || die "$APPROVALS_DIR is a symlink; refusing to write the receipt through it."
-mkdir -p "${APPROVALS_DIR%/*}" || die "cannot create ${APPROVALS_DIR%/*}."
-[ -d "$APPROVALS_DIR" ] || mkdir -m 700 "$APPROVALS_DIR" || die "cannot create $APPROVALS_DIR."
-if [ -L "$APPROVALS_DIR" ] || [ ! -d "$APPROVALS_DIR" ] || [ "$(stat -f %u "$APPROVALS_DIR")" != "$(id -u)" ]; then
-    die "$APPROVALS_DIR is not a directory of yours; refusing to write the receipt there."
-fi
-chmod 700 "$APPROVALS_DIR"
-if [ -L "$RECEIPT" ] || { [ -e "$RECEIPT" ] && [ ! -f "$RECEIPT" ]; }; then
-    die "$RECEIPT is a symlink or not a regular file; refusing to write through it."
-fi
+# --- 5. The receipt ---
 RECEIPT_TMP="$(mktemp "$APPROVALS_DIR/.channel-registration.XXXXXXXX")"
 trap 'rm -f "$RECEIPT_TMP"' EXIT
 printf 'version=%s\npath=%s\n' "$CHANNEL_VERSION" "$HELPER" > "$RECEIPT_TMP"
@@ -185,7 +326,7 @@ chmod 600 "$RECEIPT_TMP"
 mv -f "$RECEIPT_TMP" "$RECEIPT"
 echo "receipt:    $RECEIPT (0600; channel version $CHANNEL_VERSION)"
 
-# --- 5. The per-session flag ---
+# --- 6. The per-session flag ---
 echo ""
 echo "Start each Claude Code session that should send its permission prompts to"
 echo "NapCat with this flag (Claude Code asks you to confirm it at start):"

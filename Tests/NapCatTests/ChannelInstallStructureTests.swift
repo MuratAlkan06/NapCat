@@ -238,6 +238,63 @@ struct ChannelInstallStructureTests {
         #expect(!Self.identifierFailures(files, expected: drifted).isEmpty, "the app's bundle identifier moved alone")
     }
 
+    // MARK: - One team, the release's (#193)
+
+    static let entitlementsPath = "Resources/NapCat.entitlements"
+    static let teamPrefix = "TEAM_IDENTIFIER=\""
+    /// The two Developer ID clauses (TN3127): the issuer is Apple's
+    /// Developer ID Certification Authority, the leaf a Developer ID
+    /// Application certificate.
+    static let developerIDClauses =
+        "certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and "
+    static let teamRequirement =
+        "TEAM_REQUIREMENT=\"anchor apple generic and " + developerIDClauses + "certificate leaf[subject.OU] = \\\"$TEAM_IDENTIFIER\\\"\""
+
+    /// Every violation: the installer defines the team once, as `expected`
+    /// (the team the release is signed for), spells it nowhere else, and
+    /// builds its Apple-anchored requirement from that one definition.
+    static func teamFailures(install: String, expected: String) -> [String] {
+        var failures: [String] = []
+        let defining = lines(install).filter { $0.hasPrefix(teamPrefix) }
+        if defining != [teamPrefix + expected + "\""] {
+            failures.append("install-channel.sh must define the team once as \(expected): \(defining)")
+        }
+        if count(expected, in: install) != 1 {
+            failures.append("install-channel.sh spells \(expected) \(count(expected, in: install)) times; use the variable")
+        }
+        if codeLines(install).filter({ $0 == teamRequirement }).count != 1 {
+            failures.append("install-channel.sh must build its requirement once as \(teamRequirement)")
+        }
+        return failures
+    }
+
+    /// The installer's team is the one the committed entitlements name (the
+    /// release's Developer ID team). Canaries: a drift on either side, a
+    /// second copy, and a requirement that spells the team itself or drops
+    /// its Apple anchor or its Developer ID clauses.
+    @Test func theInstallerPinsTheTeamTheReleaseIsSignedFor() throws {
+        let entitlements = try PropertyListSerialization.propertyList(
+            from: Data(try Self.read(Self.entitlementsPath).utf8), format: nil) as? [String: Any]
+        let team = try #require(entitlements?["com.apple.developer.team-identifier"] as? String)
+        let install = try Self.read(Self.installPath)
+        let failures = Self.teamFailures(install: install, expected: team)
+        #expect(failures.isEmpty, "\(failures)")
+        let drifted = "ABCDE12345"
+        #expect(!Self.teamFailures(install: install, expected: drifted).isEmpty, "the entitlements' team moved alone")
+        let mutants: [(String, String)] = [
+            ("the installer's team drifted", install.replacingOccurrences(of: Self.teamPrefix + team, with: Self.teamPrefix + drifted)),
+            ("a second copy", install.replacingOccurrences(of: "\nexit 0\n", with: "\n# signed for \(team)\nexit 0\n")),
+            ("the requirement spells the team", install.replacingOccurrences(
+                of: "= \\\"$TEAM_IDENTIFIER\\\"\"", with: "= \\\"\(team)\\\"\"")),
+            ("the requirement drops its anchor", install.replacingOccurrences(of: "\"anchor apple generic and ", with: "\"")),
+            ("the requirement drops its Developer ID clauses", install.replacingOccurrences(of: Self.developerIDClauses, with: "")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != install, "canary setup '\(name)': target text must exist")
+            #expect(!Self.teamFailures(install: mutant, expected: team).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
     // MARK: - Info.plist names the server's version
 
     static let versionKey = "NapCatChannelVersion"
@@ -542,7 +599,8 @@ struct ChannelInstallStructureTests {
             "HELPER_IN_BUNDLE=\"Contents/MacOS/\(channel)\"",
             "APPROVALS_DIR=\"$HOME/\(SeamPaths.directoryRelativePath)\"",
             "RECEIPT=\"$APPROVALS_DIR/channel-registration\"",
-            "/*.app/\"$HELPER_IN_BUNDLE\") return 0 ;;",
+            "?*.app) return 0 ;;",
+            "NOT_FOUND_PREFIX=\"No MCP server named \\\"$SERVER_NAME\\\".\"",
         ]
         for (name, script) in [("install-channel.sh", install), ("uninstall-channel.sh", uninstall)] {
             let code = codeLines(script)
@@ -581,8 +639,11 @@ struct ChannelInstallStructureTests {
             ("server renamed in the installer", "SERVER_NAME=\"napcat\"", "SERVER_NAME=\"napcat-approvals\""),
             ("receipt moved", "RECEIPT=\"$APPROVALS_DIR/channel-registration\"", "RECEIPT=\"$APPROVALS_DIR/registration\""),
             ("approvals folder moved", "NapCat/approvals\"", "NapCat/channel\""),
-            ("helper test loosened", "/*.app/\"$HELPER_IN_BUNDLE\") return 0 ;;", "*/\"$HELPER_IN_BUNDLE\") return 0 ;;"),
+            ("helper test loosened", "?*.app) return 0 ;;", "*.app) return 0 ;;"),
+            ("helper test lets a dot-dot through", "*//* | */./* | */../*) return 1 ;;", "*//* | */./*) return 1 ;;"),
             ("claude_cli drifted", "(cd / && /usr/bin/env", "(cd \"$HOME\" && /usr/bin/env"),
+            ("not-found line drifted", "NOT_FOUND_PREFIX=\"No MCP server named", "NOT_FOUND_PREFIX=\"No MCP server found with name"),
+            ("registered_command drifted", "[ \"$status\" -eq 1 ] || return 1", "true"),
         ]
         for (name, target, replacement) in mutants {
             let mutant = install.replacingOccurrences(of: target, with: replacement)
@@ -600,24 +661,68 @@ struct ChannelInstallStructureTests {
     /// The installer's steps, in the order they must appear (and run: no
     /// step is in a function that runs earlier).
     static let installOrder = [
+        "APP=\"$(cd -P -- \"$APP\" && pwd -P && echo .)\" || die \"cannot resolve $APP.\"",
+        "APP=\"${APP%??}\"",
+        "! has_control_character \"$APP\" || die \"the bundle path contains a control character.\"",
+        "is_napcat_helper \"$HELPER\" || die \"$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered.\"",
         "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict. Nothing was registered.\"",
         "grep -qxF \"Identifier=$CHANNEL_IDENTIFIER\" <<< \"$HELPER_SIGNATURE\" \\",
         "codesign --verify --strict \"$APP\" || die \"$APP fails codesign --verify --strict. Nothing was registered.\"",
+        "[ \"$HELPER_TEAM\" = \"$APP_TEAM\" ] \\",
+        "[ \"$APP_TEAM\" = \"$TEAM_IDENTIFIER\" ] \\",
+        "codesign --verify --strict -R \"=identifier \\\"$CHANNEL_IDENTIFIER\\\" and $TEAM_REQUIREMENT\" \"$HELPER\" \\",
+        "codesign --verify --strict -R \"=identifier \\\"$BUNDLE_IDENTIFIER\\\" and $TEAM_REQUIREMENT\" \"$APP\" \\",
         "FOUND_BUNDLE_IDENTIFIER=\"$(plutil -extract CFBundleIdentifier raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || FOUND_BUNDLE_IDENTIFIER=\"\"",
         "CHANNEL_VERSION=\"$(plutil -extract NapCatChannelVersion raw -o - \"$INFO_PLIST\" 2> /dev/null)\" || CHANNEL_VERSION=\"\"",
-        "CURRENT=\"$(registered_command)\" || CURRENT=\"\"",
-        "claude_cli mcp add --scope user --transport stdio \"$SERVER_NAME\" -- \"$HELPER\" > /dev/null \\",
-        "[ ! -L \"$APPROVALS_DIR\" ] || die \"$APPROVALS_DIR is a symlink; refusing to write the receipt through it.\"",
+        "[ ! -L \"$APPROVALS_DIR\" ] || die \"$APPROVALS_DIR is a symlink; refusing to write the receipt through it. Nothing was registered.\"",
+        "if [ -L \"$APPROVALS_DIR\" ] || [ ! -d \"$APPROVALS_DIR\" ] || [ \"$(stat -f %u \"$APPROVALS_DIR\")\" != \"$(id -u)\" ]; then",
+        "chmod 700 \"$APPROVALS_DIR\"",
         "if [ -L \"$RECEIPT\" ] || { [ -e \"$RECEIPT\" ] && [ ! -f \"$RECEIPT\" ]; }; then",
+        "CURRENT=\"$(registered_command)\" \\",
+        "claude_cli mcp add --scope user --transport stdio \"$SERVER_NAME\" -- \"$HELPER\" > /dev/null \\",
         "RECEIPT_TMP=\"$(mktemp \"$APPROVALS_DIR/.channel-registration.XXXXXXXX\")\"",
         "printf 'version=%s\\npath=%s\\n' \"$CHANNEL_VERSION\" \"$HELPER\" > \"$RECEIPT_TMP\"",
         "chmod 600 \"$RECEIPT_TMP\"",
         "mv -f \"$RECEIPT_TMP\" \"$RECEIPT\"",
         "echo \"    claude --dangerously-load-development-channels server:$SERVER_NAME\"",
     ]
-    /// The uninstaller's registration branch: a NapCat helper or nothing.
+    /// The uninstaller's registration branch: a NapCat helper the receipt
+    /// records, or nothing; and the receipt kept while that branch failed.
     static let uninstallGuard = "elif ! is_napcat_helper \"$CURRENT\"; then"
+    static let uninstallRecorded = "RECORDED=\"$(receipt_path)\" || RECORDED=\"\""
+    static let uninstallReceiptGuard = "elif [ \"$RECORDED\" != \"$CURRENT\" ]; then"
     static let uninstallRemove = "elif claude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null; then"
+    /// The receipt step's first branch: a symlinked approvals folder, which
+    /// the installer refuses, is reported, and nothing is read or removed
+    /// through it, even while a registration step failed.
+    static let uninstallApprovalsLink = "if [ -L \"$APPROVALS_DIR\" ]; then"
+    static let uninstallKeep = "elif [ -n \"$KEEP_RECEIPT\" ]; then"
+    /// Each script reads the registration fail-safe: an unknown answer stops
+    /// the installer and is an uninstall error, never an empty command.
+    static let installRead = "CURRENT=\"$(registered_command)\" \\"
+    static let installReadRefusal = "|| die \"cannot read the \\\"$SERVER_NAME\\\" entry: "
+    static let uninstallRead = "elif ! CURRENT=\"$(registered_command)\"; then"
+    static let uninstallReadFailure = "FAILURES+=(\"cannot read the \\\"$SERVER_NAME\\\" entry: "
+    static let failOpenRead = "$(registered_command)\" || CURRENT=\"\""
+    static let uninstallLink = "elif [ -L \"$RECEIPT\" ]; then"
+
+    /// The index of the next `elif`/`else` of the `if` chain that holds
+    /// `code[start]`, skipping any `if … fi` nested in between.
+    static func nextBranch(after start: Int, in code: [String]) -> Int? {
+        var depth = 0
+        for index in code.indices where index > start {
+            let line = code[index]
+            if line.hasPrefix("if ") {
+                depth += 1
+            } else if line == "fi" {
+                if depth == 0 { return nil }
+                depth -= 1
+            } else if depth == 0, line.hasPrefix("elif ") || line == "else" {
+                return index
+            }
+        }
+        return nil
+    }
 
     static func stepFailures(install: String, uninstall: String) -> [String] {
         var failures: [String] = []
@@ -628,21 +733,40 @@ struct ChannelInstallStructureTests {
         }
         let positions = found.compactMap { $0.count == 1 ? $0[0] : nil }
         if positions.count == installOrder.count, positions != positions.sorted() {
-            failures.append("install-channel.sh: verify, read, register, then the guarded receipt and the flag: \(positions)")
+            failures.append("install-channel.sh: verify, read, check the receipt's folder, register, then the receipt and the flag: \(positions)")
         }
         let removal = codeLines(uninstall)
         let removes = removal.indices.filter { removal[$0].contains("claude_cli mcp remove") }
+        // The removal is the branch right after the receipt's: past the
+        // helper test, then the receipt match, with no other branch between.
         guard removes.count == 1, let remove = removes.first, removal[remove] == uninstallRemove,
-              let guardLine = removal.firstIndex(of: uninstallGuard), remove == guardLine + 2,
-              removal[guardLine + 1].hasPrefix("echo ") else {
-            return failures + ["uninstall-channel.sh must remove the registration once, only past \(uninstallGuard)"]
+              let recorded = removal.firstIndex(of: uninstallRecorded),
+              let guardLine = removal.firstIndex(of: uninstallGuard), recorded < guardLine,
+              removal[guardLine + 1].hasPrefix("echo "), removal[guardLine + 2] == uninstallReceiptGuard,
+              nextBranch(after: guardLine + 2, in: removal) == remove else {
+            return failures + ["uninstall-channel.sh must remove the registration once, only past \(uninstallGuard) and \(uninstallReceiptGuard)"]
         }
         if removal.contains(where: { $0.contains("rm -rf") || $0.contains("rmdir") }) {
             failures.append("uninstall-channel.sh removes only the receipt, never a folder")
         }
-        guard let link = removal.firstIndex(of: "if [ -L \"$RECEIPT\" ]; then"),
-              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), link < receipt else {
-            return failures + ["uninstall-channel.sh must refuse a symlinked receipt before removing one"]
+        if let read = code.firstIndex(of: installRead) {
+            if read + 1 >= code.count || !code[read + 1].hasPrefix(installReadRefusal) {
+                failures.append("install-channel.sh must stop when it cannot read the registration")
+            }
+        }
+        let reads = removal.indices.filter { removal[$0] == uninstallRead }
+        if reads.count != 1 || reads[0] + 2 >= removal.count || !removal[reads[0] + 1].hasPrefix(uninstallReadFailure)
+            || removal[reads[0] + 2] != "KEEP_RECEIPT=1" {
+            failures.append("uninstall-channel.sh must report an unreadable registration as an error and keep the receipt")
+        }
+        for (name, lines) in [("install-channel.sh", code), ("uninstall-channel.sh", removal)]
+        where lines.contains(where: { $0.contains(failOpenRead) }) {
+            failures.append("\(name) reads an unknown registration as none")
+        }
+        guard let folder = removal.firstIndex(of: uninstallApprovalsLink),
+              let keep = removal.firstIndex(of: uninstallKeep), let link = removal.firstIndex(of: uninstallLink),
+              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), folder < keep, keep < link, link < receipt else {
+            return failures + ["uninstall-channel.sh must refuse a symlinked approvals folder, keep the receipt while a registration step failed, and refuse a symlinked one, before removing one"]
         }
         return failures
     }
@@ -652,27 +776,68 @@ struct ChannelInstallStructureTests {
         #expect(failures.isEmpty, "\(failures)")
     }
 
-    /// Canaries: the helper's verification dropped, the Info.plist read
-    /// before the seal is checked, each receipt guard or the receipt's mode
-    /// dropped, the receipt written before the registration, the flag line
-    /// dropped; and an unguarded or a second removal, a folder removed, or
-    /// the receipt's symlink guard dropped.
+    /// The one step of `installOrder` that starts with `prefix`.
+    static func step(_ prefix: String) -> String {
+        let steps = installOrder.filter { $0.hasPrefix(prefix) }
+        return steps.count == 1 ? steps[0] : "<\(steps.count) steps start with \(prefix)>"
+    }
+
+    /// Canaries: the bundle path resolved without its sentinel (a trailing
+    /// newline lost), the bundle name check or the helper's verification
+    /// dropped, the Info.plist read before the seal is checked, each team
+    /// check dropped or moved past the registration, each receipt-folder
+    /// guard, the folder's or the receipt's mode dropped, a folder or receipt
+    /// guard moved past the registration, the receipt written before the
+    /// registration, the flag line dropped; and
+    /// an unguarded or a second removal, a folder removed, the receipt's
+    /// symlink guard or match dropped, the receipt never read, or removed
+    /// while a registration step failed, and a symlinked approvals folder
+    /// let through.
     @Test func theStepLockCatchesRegressionMutants() throws {
         let install = try Self.read(Self.installPath)
         let uninstall = try Self.read(Self.uninstallPath)
         try #require(Self.stepFailures(install: install, uninstall: uninstall).isEmpty, "canary baseline must be clean")
-        let verify = Self.installOrder[0] + "\n"
-        let plistRead = Self.installOrder[4] + "\n"
+        let verify = Self.step("codesign --verify --strict \"$HELPER\"") + "\n"
+        let plistRead = Self.step("CHANNEL_VERSION=") + "\n"
+        let teamMatch = Self.step("[ \"$HELPER_TEAM\"")
+        let expectedTeam = Self.step("[ \"$APP_TEAM\"")
+        let helperRequirement = Self.step("codesign --verify --strict -R \"=identifier \\\"$CHANNEL_IDENTIFIER")
+        let appRequirement = Self.step("codesign --verify --strict -R \"=identifier \\\"$BUNDLE_IDENTIFIER")
+        let add = Self.step("claude_cli mcp add ") + "\n"
+        let current = Self.step("CURRENT=") + "\n"
+        let receiptTemp = Self.step("RECEIPT_TMP=") + "\n"
         let installMutants: [(String, String)] = [
+            ("the bundle path resolved without its sentinel", install.replacingOccurrences(
+                of: Self.step("APP=\"$(cd -P") + "\n" + Self.step("APP=\"${APP%") + "\n",
+                with: "APP=\"$(cd -P -- \"$APP\" && pwd -P)\" || die \"cannot resolve $APP.\"\n")),
+            ("an unreadable registration read as none", install.replacingOccurrences(
+                of: Self.installRead + "\n", with: "CURRENT=\"$(registered_command)\" || CURRENT=\"\"\n")),
+            ("an unreadable registration let through", install.replacingOccurrences(
+                of: Self.installRead + "\n", with: "CURRENT=\"$(registered_command)\" \\\n    || true\n")),
+            ("bundle name check dropped", install.replacingOccurrences(of: Self.step("is_napcat_helper ") + "\n", with: "")),
             ("helper verification dropped", install.replacingOccurrences(of: verify, with: "")),
             ("Info.plist read before the seal", install.replacingOccurrences(of: plistRead, with: "")
                 .replacingOccurrences(of: verify, with: plistRead + verify)),
-            ("approvals symlink guard dropped", install.replacingOccurrences(of: Self.installOrder[7] + "\n", with: "")),
-            ("receipt symlink guard dropped", install.replacingOccurrences(of: Self.installOrder[8], with: "if false; then")),
-            ("receipt mode dropped", install.replacingOccurrences(of: Self.installOrder[11] + "\n", with: "")),
-            ("receipt written before the registration", install.replacingOccurrences(of: Self.installOrder[9] + "\n", with: "")
-                .replacingOccurrences(of: Self.installOrder[5] + "\n", with: Self.installOrder[9] + "\n" + Self.installOrder[5] + "\n")),
-            ("flag line dropped", install.replacingOccurrences(of: Self.installOrder[13] + "\n", with: "")),
+            ("team match dropped", install.replacingOccurrences(of: teamMatch, with: "true \\")),
+            ("expected team dropped", install.replacingOccurrences(of: expectedTeam, with: "true \\")),
+            ("helper requirement dropped", install.replacingOccurrences(of: helperRequirement, with: "true \\")),
+            ("app requirement dropped", install.replacingOccurrences(of: appRequirement, with: "true \\")),
+            ("expected team checked after the registration", install.replacingOccurrences(of: expectedTeam + "\n", with: "")
+                .replacingOccurrences(of: add, with: add + expectedTeam + "\n")),
+            ("approvals symlink guard dropped", install.replacingOccurrences(of: Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n", with: "")),
+            ("approvals ownership check dropped", install.replacingOccurrences(of: Self.step("if [ -L \"$APPROVALS_DIR\" ]"), with: "if false; then")),
+            ("approvals mode dropped", install.replacingOccurrences(of: Self.step("chmod 700 ") + "\n", with: "")),
+            ("receipt folder checked after the registration", install
+                .replacingOccurrences(of: Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n", with: "")
+                .replacingOccurrences(of: add, with: add + Self.step("[ ! -L \"$APPROVALS_DIR\"") + "\n")),
+            ("receipt checked after the registration", install
+                .replacingOccurrences(of: Self.step("if [ -L \"$RECEIPT\" ]") + "\n", with: "")
+                .replacingOccurrences(of: add, with: add + Self.step("if [ -L \"$RECEIPT\" ]") + "\n")),
+            ("receipt symlink guard dropped", install.replacingOccurrences(of: Self.step("if [ -L \"$RECEIPT\" ]"), with: "if false; then")),
+            ("receipt mode dropped", install.replacingOccurrences(of: Self.step("chmod 600 ") + "\n", with: "")),
+            ("receipt written before the registration", install.replacingOccurrences(of: receiptTemp, with: "")
+                .replacingOccurrences(of: current, with: receiptTemp + current)),
+            ("flag line dropped", install.replacingOccurrences(of: Self.step("echo \"    claude --dangerously") + "\n", with: "")),
         ]
         for (name, mutant) in installMutants {
             #expect(mutant != install, "canary setup '\(name)': target text must exist")
@@ -683,7 +848,16 @@ struct ChannelInstallStructureTests {
             ("a second removal", uninstall.replacingOccurrences(
                 of: "\nexit 0\n", with: "\nclaude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null\nexit 0\n")),
             ("the folder removed", uninstall.replacingOccurrences(of: "\nexit 0\n", with: "\nrm -rf \"$APPROVALS_DIR\"\nexit 0\n")),
-            ("receipt symlink guard dropped", uninstall.replacingOccurrences(of: "if [ -L \"$RECEIPT\" ]; then", with: "if false; then")),
+            ("receipt symlink guard dropped", uninstall.replacingOccurrences(of: Self.uninstallLink, with: "elif false; then")),
+            ("receipt match dropped", uninstall.replacingOccurrences(of: Self.uninstallReceiptGuard, with: "elif false; then")),
+            ("receipt never read", uninstall.replacingOccurrences(of: Self.uninstallRecorded, with: "RECORDED=\"$CURRENT\"")),
+            ("receipt removed even when a step failed", uninstall.replacingOccurrences(of: Self.uninstallKeep, with: "elif false; then")),
+            ("a symlinked approvals folder let through", uninstall.replacingOccurrences(
+                of: Self.uninstallApprovalsLink, with: "if false; then")),
+            ("an unreadable registration read as none", uninstall.replacingOccurrences(
+                of: Self.uninstallRead, with: "elif false; then\nelse\nCURRENT=\"$(registered_command)\" || CURRENT=\"\"")),
+            ("an unreadable registration not kept", uninstall.replacingOccurrences(
+                of: Self.uninstallRead + "\n", with: Self.uninstallRead + "\n    KEEP_RECEIPT=\"\"\n")),
         ]
         for (name, mutant) in uninstallMutants {
             #expect(mutant != uninstall, "canary setup '\(name)': target text must exist")
