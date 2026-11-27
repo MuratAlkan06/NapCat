@@ -98,9 +98,9 @@ struct ApprovalRecordRoutingTests {
                        + #""dangerouslyDisableSandbox":false}"#,
                    copy: #"{"command":"make test","timeout":120000,"run_in_background":false,"dangerouslyDisableSandbox":false}"#,
                    note: "every checked member kept, in order"),
-        ForwardRow(tool: "Read", relayed: #"{ "file_path": "/Users/someone/project/doc.pdf", "offset": 1, "limit": 200, "pages": "1-3" }"#,
-                   copy: #"{"file_path":"/Users/someone/project/doc.pdf","offset":1,"limit":200,"pages":"1-3"}"#,
-                   note: "a Read, re-serialized"),
+        ForwardRow(tool: "Bash", relayed: #"{ "command": "swift test", "timeout": 600000, "run_in_background": false }"#,
+                   copy: #"{"command":"swift test","timeout":600000,"run_in_background":false}"#,
+                   note: "a number and a boolean, re-serialized"),
     ]
 
     @Test(arguments: forwarded)

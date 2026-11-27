@@ -37,7 +37,7 @@ struct ApprovalSecretsFailClosedTests {
     static let forwardable: [(tool: String, preview: String)] = [
         ("Bash", #"{"command":"git status"}"#),
         ("Bash", #"{"command":"make test"}"#),
-        ("Read", #"{"file_path":"/Users/someone/project/README.md"}"#),
+        ("Bash", #"{"command":"swift test","timeout":120000}"#),
     ]
 
     /// Baseline: with the secrets known (none configured, or the topic),

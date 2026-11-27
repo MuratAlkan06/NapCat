@@ -13,8 +13,8 @@
 // without it (`forwardedPreview`), never the relayed text.
 
 /// The tools the gate classifies (one row each in the tool table). Only the
-/// rows marked `forwards` may leave the Mac: the file-edit tools (Write,
-/// Edit, NotebookEdit) are local-only.
+/// rows marked `forwards` may leave the Mac, and that is Bash alone: the
+/// file-edit tools (Write, Edit, NotebookEdit) and Read are local-only.
 public enum ApprovalTool: String, CaseIterable, Sendable {
     case bash = "Bash"
     case write = "Write"
@@ -72,6 +72,10 @@ public enum ApprovalSuppression: Equatable, Sendable {
     /// The file-edit tools are local-only too: a Write, Edit or NotebookEdit
     /// prompt that passes every other check still stays on the Mac.
     case localOnlyFileEdit
+    /// Read is local-only too, whatever its path (#231): a list of
+    /// locations cannot name every credential file. A Read prompt that
+    /// passes every other check still stays on the Mac.
+    case localOnlyRead
     case unclassifiable(Unclassifiable)
 
     /// A closed-vocabulary code for the audit log (never any prompt text).
@@ -80,6 +84,7 @@ public enum ApprovalSuppression: Equatable, Sendable {
         case .forbidden(let family): return "forbidden.\(family.rawValue)"
         case .localOnlyMCP: return "localOnly.mcp"
         case .localOnlyFileEdit: return "localOnly.fileEdit"
+        case .localOnlyRead: return "localOnly.read"
         case .unclassifiable(let reason): return "unclassifiable.\(reason.rawValue)"
         }
     }
@@ -103,16 +108,16 @@ public enum ApprovalGate {
     public static let maxCommandWords = 64
     /// The longest Bash timeout forwarded, in milliseconds (ten minutes).
     public static let maxTimeoutMilliseconds = 600_000
-    /// The most PDF pages one forwarded Read may name: the Read tool's own
-    /// maximum per request.
+    /// The most PDF pages one Read may name: the Read tool's own maximum per
+    /// request. (No Read is forwarded; these bounds pick its audit code.)
     public static let maxReadPages = 20
-    /// The highest PDF page a forwarded Read may name (five digits).
+    /// The highest PDF page a Read may name (five digits).
     public static let maxReadPage = 99_999
-    /// The furthest line a forwarded Read may start from (ten million). Zero
-    /// is allowed: the Read tool's own schema starts its offset at 0.
+    /// The furthest line a Read may start from (ten million). Zero is
+    /// allowed: the Read tool's own schema starts its offset at 0.
     public static let maxReadOffset = 10_000_000
-    /// The most lines one forwarded Read may ask for (a hundred thousand),
-    /// and at least one.
+    /// The most lines one Read may ask for (a hundred thousand), and at
+    /// least one.
     public static let maxReadLimit = 100_000
     /// The tool-name prefix of every MCP tool.
     public static let mcpPrefix = "mcp__"
@@ -158,8 +163,8 @@ public enum ApprovalGate {
         if let refusal = refusal(members, row) {
             return .suppress(refusal)
         }
-        guard row.forwards else {
-            return .suppress(.localOnlyFileEdit)
+        if let localOnly = row.localOnly {
+            return .suppress(localOnly)
         }
         return .forward(row.tool)
     }
@@ -226,29 +231,36 @@ public enum ApprovalGate {
 
     struct ToolRow: Sendable {
         let tool: ApprovalTool
-        /// Whether a prompt that passes every check may leave the Mac. A row
-        /// that does not forward is still checked in full, so a forbidden
-        /// prompt is logged as its family.
-        let forwards: Bool
+        /// Nil when a prompt that passes every check may leave the Mac;
+        /// otherwise the code such a prompt stays on the Mac with. A row
+        /// with one is still checked in full first, so a forbidden or
+        /// malformed prompt is logged for what it is.
+        let localOnly: ApprovalSuppression?
         let required: [Argument]
         let optional: [Argument]
+
+        /// Whether a prompt that passes every check may leave the Mac.
+        var forwards: Bool { localOnly == nil }
     }
 
     /// The classified tools and their EXACT argument sets: an argument not
     /// listed, a missing required one, or a value of the wrong JSON type
-    /// refuses the prompt. Only Bash and Read forward.
+    /// refuses the prompt. Only Bash forwards; the file-edit tools and Read
+    /// are local-only, each with its own code.
     static let toolTable: [ToolRow] = [
-        ToolRow(tool: .bash, forwards: true, required: [Argument("command", .command)],
+        ToolRow(tool: .bash, localOnly: nil, required: [Argument("command", .command)],
                 optional: [Argument("description", .withheld), Argument("timeout", .milliseconds),
                            Argument("run_in_background", .falseOnly(.unclassifiable(.argumentValue))),
                            Argument("dangerouslyDisableSandbox", .falseOnly(.forbidden(.privilegeEscalation)))]),
-        ToolRow(tool: .write, forwards: false, required: [Argument("file_path", .path), Argument("content", .text)], optional: []),
-        ToolRow(tool: .edit, forwards: false,
+        ToolRow(tool: .write, localOnly: .localOnlyFileEdit, required: [Argument("file_path", .path), Argument("content", .text)],
+                optional: []),
+        ToolRow(tool: .edit, localOnly: .localOnlyFileEdit,
                 required: [Argument("file_path", .path), Argument("old_string", .text), Argument("new_string", .text)],
                 optional: [Argument("replace_all", .bool)]),
-        ToolRow(tool: .notebookEdit, forwards: false, required: [Argument("notebook_path", .path), Argument("new_source", .text)],
+        ToolRow(tool: .notebookEdit, localOnly: .localOnlyFileEdit,
+                required: [Argument("notebook_path", .path), Argument("new_source", .text)],
                 optional: [Argument("cell_id", .text), Argument("cell_type", .text), Argument("edit_mode", .text)]),
-        ToolRow(tool: .read, forwards: true, required: [Argument("file_path", .path)],
+        ToolRow(tool: .read, localOnly: .localOnlyRead, required: [Argument("file_path", .path)],
                 optional: [Argument("offset", .wholeNumber(0...maxReadOffset)), Argument("limit", .wholeNumber(1...maxReadLimit)),
                            Argument("pages", .pageRange)]),
     ]
@@ -503,12 +515,14 @@ public enum ApprovalGate {
     /// What a file tool's path may not hold, checked after the families so a
     /// forbidden path holding one is still logged as its family: a space,
     /// and the double quote (#159). The phone draws the gate's copy of a
-    /// Read verbatim, as JSON, and every member boundary there holds a
+    /// prompt verbatim, as JSON, and every member boundary there holds a
     /// double quote; a path's own quote is drawn as `\"` and could pass for
     /// the end of the path and the start of another member. Without it (and
     /// without a backslash, refused first) a path draws no quote at all, so
     /// its braces, brackets, commas and colons only ever read as part of the
-    /// one quoted path, and they stay allowed: real paths hold them.
+    /// one quoted path, and they stay allowed: real paths hold them. Since
+    /// #231 no file tool forwards (Read was the last), so this only picks
+    /// the code a path tool's prompt is kept with.
     static let pathBytesRefusedAfterFamilies: [UInt8] = [UInt8(ascii: " "), UInt8(ascii: "\"")]
 
     /// A file tool's path: absolute, printable ASCII without a backslash (so

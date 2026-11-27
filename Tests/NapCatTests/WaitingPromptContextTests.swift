@@ -208,9 +208,10 @@ struct WaitingPromptContextTests {
         harness.receive("defgh", tool: "mcp__webhook__reply", preview: #"{"text":"hi"}"#, from: 2)
         harness.receive("efghi", tool: "Write", preview: #"{"file_path":"/Users/someone/project/notes.md","content":"x"}"#,
                         from: 2)
+        harness.receive("fghij", preview: #"{"command":"make test"}"#, from: 2)
         let within = ApprovalIntake.waitingContextSeconds
-        #expect(harness.intake.recentForwardableTools(within: within).sorted { $0.rawValue < $1.rawValue } == [.bash, .read],
-                "the forbidden, the MCP and the file-edit prompts are never counted")
+        #expect(harness.intake.recentForwardableTools(within: within) == [.bash, .bash],
+                "the forbidden, the Read, the MCP and the file-edit prompts are never counted")
         #expect(harness.sink.saved.isEmpty, "counting is not forwarding")
 
         harness.intake.connectionClosed(2)
@@ -218,6 +219,49 @@ struct WaitingPromptContextTests {
 
         harness.now += within + 1
         #expect(harness.intake.recentForwardableTools(within: within).isEmpty, "an older prompt is not this wait's")
+    }
+
+    /// No Read is ever counted (#231), armed or not, whatever its path: the
+    /// waiting push names only the prompts the gate could let leave the
+    /// Mac, and no Read is one. Its kind and word stay in the closed table
+    /// (like Write's), so only the count changes: a wait on Reads alone
+    /// reads as a plain waiting push.
+    @Test(arguments: [false, true])
+    func aReadIsNeverCounted(_ armed: Bool) {
+        let harness = IntakeHarness()
+        harness.armed = armed
+        let previews = [#"{"file_path":"/Users/someone/project/notes.md"}"#, #"{"file_path":"/Users/someone/.sometool-token"}"#,
+                        #"{"file_path":"/tmp/a.txt","offset":0,"limit":10}"#]
+        for (preview, request) in zip(previews, IntakeHarness.requestIDs(previews.count)) {
+            harness.receive(request, tool: "Read", preview: preview, from: 1)
+        }
+        let within = ApprovalIntake.waitingContextSeconds
+        #expect(harness.intake.prompts.count == previews.count, "vacuity: every Read was heard")
+        #expect(harness.intake.recentForwardableTools(within: within).isEmpty)
+        let readsOnly = WaitingPromptCounts(harness.intake.recentForwardableTools(within: within))
+        #expect(readsOnly == .none)
+        #expect(LidGuardPolicy.messageBody(kind: .needsAttention(minutes: 3, stillWorking: 0, prompts: readsOnly), clockTime: "09:41")
+                == "Claude is waiting for you — 3 min in", "Reads alone: the plain push")
+        harness.receive("zzzzz", preview: #"{"command":"git diff"}"#, from: 1)
+        let withBash = WaitingPromptCounts(harness.intake.recentForwardableTools(within: within))
+        #expect(withBash == WaitingPromptCounts(bash: 1), "control: a listed command beside them is counted")
+        #expect(LidGuardPolicy.messageBody(kind: .needsAttention(minutes: 3, stillWorking: 0, prompts: withBash), clockTime: "09:41")
+                == "Claude is waiting for you — 3 min in — 1 Bash permission prompt", "only the Bash prompt is named")
+    }
+
+    /// Through the toggle and the real seam: a Read the wired session
+    /// relays is heard and kept, and the push counts only the Bash prompt.
+    @Test func theToggleNeverCountsARead() throws {
+        let world = try ApprovalsWorld()
+        world.controller.setEnabled(true)
+        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Read",
+                                                   preview: #"{"file_path":"/Users/someone/project/notes.md"}"#))
+        #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil, "the Read was heard")
+        #expect(world.controller.waitingPrompts() == .none, "a Read is never counted")
+        world.prompt("bcdef", preview: #"{"command":"git status"}"#)
+        #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil)
+        #expect(world.controller.waitingPrompts() == WaitingPromptCounts(bash: 1), "control: the Bash prompt is")
+        world.controller.setEnabled(false)
     }
 
     // MARK: - The toggle answers only while listening

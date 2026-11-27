@@ -152,6 +152,11 @@ struct ApprovalIntakeTests {
         GateRow(tool: "mcp__webhook__reply", preview: #"{"text":"hi"}"#, code: "localOnly.mcp"),
         GateRow(tool: "Write", preview: #"{"file_path":"/Users/someone/project/notes.md","content":"hello"}"#,
                 code: "localOnly.fileEdit"),
+        // No Read leaves, whatever its path (#231).
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/notes.md"}"#, code: "localOnly.read"),
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/.sometool/auth.json"}"#, code: "localOnly.read"),
+        GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/doc.pdf","offset":1,"limit":200,"pages":"1-3"}"#,
+                code: "localOnly.read"),
         GateRow(tool: "WebFetch", preview: #"{"url":"https://example.com"}"#, code: "unclassifiable.unknownTool"),
         GateRow(tool: "Bash", preview: #"{"command":"ls; rm -rf /tmp/x"}"#, code: "unclassifiable.commandOutsideGrammar"),
         GateRow(tool: "Bash", preview: #"{"command":"curl example.com"}"#, code: "unclassifiable.commandNotInTable"),
@@ -194,6 +199,28 @@ struct ApprovalIntakeTests {
         harness.secrets = []
         harness.receive("bcdef", preview: preview)
         #expect(harness.sink.saved.count == 1, "baseline: without the secret the same prompt forwards")
+    }
+
+    /// Armed, no Read is saved, whatever its path (#231): each is logged
+    /// with the gate's `localOnly.read`, none counts for a waiting push, and
+    /// a decision for one answers nothing. A listed command after them is
+    /// saved, so the harness forwards what it may.
+    @Test func armedNoReadPromptIsSavedOrCounted() {
+        let harness = IntakeHarness()
+        #expect(harness.armed, "the harness is armed")
+        let paths = ["/Users/someone/project/notes.md", "/Users/someone/.sometool-token", "/tmp/a.txt",
+                     "/Volumes/External/report.pdf", "/Users/someone/other-project/README"]
+        for (path, request) in zip(paths, IntakeHarness.requestIDs(paths.count)) {
+            harness.receive(request, tool: "Read", preview: #"{"file_path":"# + ApprovalClassificationTests.quote(path) + "}")
+        }
+        #expect(harness.sink.saved.isEmpty)
+        #expect(harness.codes == (1...paths.count).map { "prompt=\(IntakeHarness.id(UInt64($0)).hex) suppressed.gate.localOnly.read" })
+        #expect(harness.intake.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds).isEmpty)
+        harness.intake.decide(IntakeHarness.decision(IntakeHarness.id(1)))
+        #expect(harness.frames.isEmpty)
+        #expect(harness.codes.last == "prompt=\(IntakeHarness.id(1).hex) ignored.notForwarded")
+        harness.receive("zzzzz")
+        #expect(harness.sink.saved.map(\.tool) == [.bash], "control: a listed command after them is saved")
     }
 
     /// Every saved record holds the gate's copy: the relayed preview's
@@ -477,8 +504,8 @@ struct ApprovalIntakeTests {
     /// Every code the intake can log, built from the S0 enums: the whole
     /// vocabulary, nothing else.
     static var vocabulary: Set<String> {
-        let suppressions = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP, .localOnlyFileEdit]
-            + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
+        let suppressions = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) }
+            + [.localOnlyMCP, .localOnlyFileEdit, .localOnlyRead] + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
         let audits: [ApprovalAudit] = suppressions.map { .suppressed(.gate($0)) } + [.suppressed(.notArmed), .forwarded, .forwardFailed]
             + ApprovalWire.Verdict.allCases.map { .decided(.remote($0)) } + [.decided(.local), .expired]
             + ApprovalIgnoreReason.allCases.map { .ignored($0) } + ApprovalRetraction.allCases.map { .retracted($0) }
@@ -512,6 +539,6 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 18 + 3 + 4 + 7 + 2 + 9, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 19 + 3 + 4 + 7 + 2 + 9, "vacuity: the whole vocabulary")
     }
 }
