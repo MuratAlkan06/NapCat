@@ -146,8 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sender: sender,
             connectivity: ConnectivityWiring.makeInterface(debugBattery: isDebugBattery),
             stayAwakeMirror: sleepController.observedMirror,
-            // F4 slice S2: while remote approvals are on, the waiting buzz
-            // carries the counts of the prompts wired sessions just relayed.
+            // F4: while remote approvals are on and listening, the waiting
+            // buzz carries the counts of the prompts wired sessions just
+            // relayed, and the alert lane learns how many of them carry
+            // evidence that the phone's own prompt push covers them (nothing
+            // in the app sets that evidence yet).
             waitingPrompts: { approvals?.waitingPrompts() ?? .none }
         )
         self.finishAlert = finishAlert

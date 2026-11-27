@@ -28,8 +28,12 @@ protocol ApprovalRecordSink: AnyObject {
     func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int)
     /// Delete the prompt record (and its decision, if any).
     func retract(_ id: PromptID)
-    /// The forward was accepted: the prompt push (fixed text, no action)
-    /// replaces this episode's plain waiting alert.
+    /// The forward was accepted. That alone drops no plain waiting alert:
+    /// the alert lane drops one only for a change holding one waiting write
+    /// whose read finds exactly one new prompt, with evidence that the
+    /// phone's prompt push (fixed text, no action) covers it: its record
+    /// accepted, the prompt still open on the phone, and the phone's prompt
+    /// subscription found (`ApprovalIntake.Entry.hasPushEvidence`).
     func supersedeWaitingAlert(_ id: PromptID)
 }
 
@@ -128,6 +132,42 @@ extension ApprovalClassification {
     }
 }
 
+/// Where one waiting alert's read of the intake left off
+/// (`ApprovalIntake.waitingPromptRead`): the intake's own clock at that
+/// read and how many prompts of that second the read saw, never a prompt's
+/// ID. Its storage is private to this file: elsewhere a mark comes only
+/// from a read, and the caller keeps it and hands it back. A read also
+/// accepts no mark at all (nil), and then every prompt in its window is new
+/// to it.
+struct PromptRelayMark: Equatable, Sendable {
+    fileprivate let second: Int
+    fileprivate let seen: Int
+}
+
+/// What one waiting alert reads of the intake: tool kinds and counts only,
+/// never a prompt's ID, preview, request or session.
+struct WaitingPromptRead: Equatable, Sendable {
+    /// The tools of the prompts the gate would forward that opened in the
+    /// window the read was given, from sessions still connected: what the
+    /// waiting push counts.
+    let recent: [ApprovalTool]
+    /// Of `recent`, over the same window, the tools of those with evidence
+    /// that the phone's own prompt push covers them
+    /// (`ApprovalIntake.Entry.hasPushEvidence`).
+    let recentWithEvidence: [ApprovalTool]
+    /// The prompts relayed after the read that left the mark this read was
+    /// given, and in the last `ApprovalIntake.newPromptSeconds`, whatever the
+    /// gate made of them.
+    let newPrompts: Int
+    /// Of `newPrompts`, the ones known to have that evidence. One of the
+    /// mark's own second that the earlier read did not see is new here but
+    /// never counted as having it: the mark cannot say which of that second's
+    /// prompts it is.
+    let newPromptsWithEvidence: Int
+    /// Where this read left off: the next read is handed it.
+    let mark: PromptRelayMark
+}
+
 /// The prompts relayed over the seam, one lifecycle each. Confined to the
 /// seam's queue (the host's).
 final class ApprovalIntake {
@@ -142,6 +182,18 @@ final class ApprovalIntake {
         /// the Mac, or its session has ended). Slice S2: what a waiting buzz
         /// may count — never its preview.
         var forwardable: ApprovalTool? = nil
+        /// Whether the Mac found the phone's prompt subscription when it
+        /// saved this prompt's record: the record path's finding, set through
+        /// `noteSubscriptionFound`. Nothing in the app calls that yet (the
+        /// record path is not live), so in the app it stays false.
+        var subscriptionFound = false
+
+        /// The evidence that the phone's own prompt push covers this prompt:
+        /// CloudKit accepted its record (the lifecycle is `.forwarded`) and
+        /// the Mac found the phone's prompt subscription. A prompt the gate
+        /// keeps, one not armed, a save that failed or is still in flight,
+        /// and one answered, expired or withdrawn have none.
+        var hasPushEvidence: Bool { subscriptionFound && lifecycle.phase == .forwarded }
     }
 
     /// Slice S2: how far back a waiting buzz looks for the prompts that
@@ -149,6 +201,10 @@ final class ApprovalIntake {
     /// the same dialog within a second; the buzz is folded after the finish
     /// alert's 2 s debounce.
     static let waitingContextSeconds = 30
+    /// How far back a waiting alert looks for the prompts relayed since its
+    /// previous read: the ones its waiting write may stand for. A starting
+    /// value, a third of the counts' window.
+    static let newPromptSeconds = 10
 
     /// Prompts held at once, finished ones included until their TTL ends;
     /// a prompt beyond them stays local.
@@ -279,10 +335,48 @@ final class ApprovalIntake {
 
     /// Slice S2: the tools of the prompts the gate would forward that opened
     /// in the last `seconds`, from sessions still connected — what a waiting
-    /// buzz may count. Kinds only, never a preview.
+    /// buzz may count. Kinds only, never a preview. The `recent` of a read
+    /// handed no mark, so it counts exactly as `waitingPromptRead` does.
     func recentForwardableTools(within seconds: Int) -> [ApprovalTool] {
+        waitingPromptRead(after: nil, within: seconds).recent
+    }
+
+    /// One waiting alert's read (`WaitingPromptRead`), at one reading of the
+    /// clock. Of the prompts that opened in the last `seconds`: the tools of
+    /// those the gate would forward, from sessions still connected, and of
+    /// those the tools of the ones with evidence (`Entry.hasPushEvidence`).
+    /// Of the prompts relayed after the read that left `mark` (nil: any) and
+    /// in the last `newPromptSeconds`, whatever the gate made of them and
+    /// whether or not their session is still connected: how many, and how
+    /// many of them are known to have evidence. The mark holds that read's
+    /// second and how many prompts of it the read saw, so the rest of that
+    /// second, relayed after it, is new to this read; which of that second's
+    /// prompts they are the mark cannot say, so they count as new and never
+    /// as having evidence (they can keep an alert, never fold one). So, each
+    /// read handed the mark the one before it returned, a prompt is new to
+    /// one read at most. The read changes nothing here: the caller keeps the
+    /// mark it returns.
+    func waitingPromptRead(after mark: PromptRelayMark?, within seconds: Int) -> WaitingPromptRead {
         let moment = now()
-        return prompts.values.filter { moment - $0.lifecycle.createdAt <= seconds }.compactMap(\.forwardable)
+        let after: Int = mark?.second ?? Int.min
+        let recent = prompts.values.filter { moment - $0.lifecycle.createdAt <= seconds && $0.forwardable != nil }
+        let window = prompts.values.filter { moment - $0.lifecycle.createdAt <= Self.newPromptSeconds }
+        let relayed = window.filter { $0.lifecycle.createdAt > after }
+        // None once the mark's second is past the window.
+        let rest: Int = max(0, window.filter { $0.lifecycle.createdAt == after }.count - (mark?.seen ?? 0))
+        return WaitingPromptRead(recent: recent.compactMap(\.forwardable),
+                                 recentWithEvidence: recent.filter(\.hasPushEvidence).compactMap(\.forwardable),
+                                 newPrompts: relayed.count + rest, newPromptsWithEvidence: relayed.filter(\.hasPushEvidence).count,
+                                 mark: PromptRelayMark(second: moment, seen: window.filter { $0.lifecycle.createdAt == moment }.count))
+    }
+
+    /// The record path's finding for one held prompt: the Mac found the
+    /// phone's prompt subscription when it saved the prompt's record. With
+    /// CloudKit's acceptance it is that prompt's evidence for a waiting alert
+    /// (`Entry.hasPushEvidence`); it changes nothing else. Nothing in the
+    /// app calls it yet: the record path that will is not live.
+    func noteSubscriptionFound(_ id: PromptID) {
+        prompts[id]?.subscriptionFound = true
     }
 
     /// The Mac toggle went off: every open prompt is withdrawn.

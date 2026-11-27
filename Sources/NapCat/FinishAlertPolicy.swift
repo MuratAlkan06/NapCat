@@ -124,6 +124,26 @@ struct FinishAlertObservation: Equatable, Sendable {
     let waitingWrites: Int
 }
 
+/// F4: what one read of the seam's recent prompts tells the alert lane
+/// (`RemoteApprovalsController.waitingPrompts`): Int counts only, never a
+/// prompt's ID, preview or session. `.none` while remote approvals are off
+/// or not listening, and for a diff the lane does not read for.
+struct WaitingPromptContext: Equatable, Sendable {
+    /// Per kind, the prompts the gate would forward that opened in the last
+    /// 30 s, from sessions still connected: what a waiting push counts.
+    var counts = WaitingPromptCounts.none
+    /// Of `counts`, per kind, the prompts with evidence that the phone's own
+    /// prompt push covers them, over the same 30 s.
+    var countsWithEvidence = WaitingPromptCounts.none
+    /// The prompts relayed since the previous read and in the last 10 s,
+    /// whatever the gate made of them.
+    var newPrompts = 0
+    /// Of `newPrompts`, the ones known to have that evidence.
+    var newPromptsWithEvidence = 0
+
+    static let none = WaitingPromptContext()
+}
+
 /// Hook v7: what one marker's RAW `ep` text says about its episode start.
 /// Log-safe by construction: `.invalid` never carries the raw value.
 enum EpisodeStartReading: Equatable, Sendable {
@@ -150,7 +170,8 @@ struct FinishAlertDigest: Equatable, Sendable {
     /// The LATEST observation's `stillWorking` (fresh tracked count).
     var stillWorking = 0
     /// F4 slice S2: the prompt counts of the LATEST folded waiting event (the
-    /// seam's recent prompts, read once per diff) — `.none` without one.
+    /// seam's recent prompts, read once per diff, less those with evidence
+    /// that the phone's own push covers them) — `.none` without one.
     var prompts = WaitingPromptCounts.none
     /// Epoch of the FIRST folded event — the retry age anchor. Meaningful
     /// only when `!isEmpty`.
@@ -541,6 +562,27 @@ enum FinishAlertPolicy {
         let held: Int = max(0, count)
         let taken: Int = min(max(0, withEvidence), held)
         return held - taken
+    }
+
+    /// The singleton rule applied to one diff, read once for it (`context`):
+    /// what the controller folds into the digest. When the rule yields
+    /// (`waitingBuzzYieldsToPromptPush`), the diff's waiting events are
+    /// dropped and every finish is kept, in order, and `folded` counts the
+    /// waiting events dropped: none for a diff that has none (its waiting
+    /// write was a rewrite or a suppressed transition, no event, so its one
+    /// prompt is only used up). `prompts` is what a waiting event
+    /// that still goes out counts: the counts less those with evidence
+    /// (`promptsWithoutEvidence`). With no evidence nothing changes: every
+    /// event is kept, and `prompts` is the counts as read.
+    static func promptPushFold(events: [FinishAlertEvent], waitingWrites: Int, context: WaitingPromptContext)
+        -> (events: [FinishAlertEvent], folded: Int, prompts: WaitingPromptCounts) {
+        let prompts: WaitingPromptCounts = promptsWithoutEvidence(context.counts, withEvidence: context.countsWithEvidence)
+        guard waitingBuzzYieldsToPromptPush(waitingWrites: waitingWrites, newPrompts: context.newPrompts,
+                                            newPromptsWithEvidence: context.newPromptsWithEvidence) else {
+            return (events, 0, prompts)
+        }
+        let kept: [FinishAlertEvent] = events.filter { if case .waiting = $0 { return false }; return true }
+        return (kept, events.count - kept.count, prompts)
     }
 
     // MARK: Outbox + retry (normative tables)

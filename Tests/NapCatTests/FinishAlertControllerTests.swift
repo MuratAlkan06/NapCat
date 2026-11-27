@@ -196,7 +196,10 @@ final class FinishAlertHarness {
     let controller: FinishAlertController
     private(set) var changeCount = 0
 
-    init(sender: MessageSender, connectivity: ConnectivitySimulator? = nil) throws {
+    /// `waitingPrompts`: the seam's answer for a diff with a waiting write
+    /// (F4, #216); `.none`, the default, is remote approvals off.
+    init(sender: MessageSender, connectivity: ConnectivitySimulator? = nil,
+         waitingPrompts: @escaping () -> WaitingPromptContext = { .none }) throws {
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("napcat-finishalert-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -216,7 +219,8 @@ final class FinishAlertHarness {
             now: { clock.value },
             connectivity: connectivity,
             stayAwakeOn: { stayAwake.value },
-            minimumRunSeconds: { runFloor.value }
+            minimumRunSeconds: { runFloor.value },
+            waitingPrompts: waitingPrompts
         )
         controller.setChangeHandler { [weak self] in self?.changeCount += 1 }
     }
@@ -265,9 +269,10 @@ final class FinishAlertHarness {
 func withFinishAlertHarness(
     sender: MessageSender = RecordingMessageSender(),
     connectivity: ConnectivitySimulator? = nil,
+    waitingPrompts: @escaping () -> WaitingPromptContext = { .none },
     _ body: (FinishAlertHarness) async throws -> Void
 ) async throws {
-    let harness = try FinishAlertHarness(sender: sender, connectivity: connectivity)
+    let harness = try FinishAlertHarness(sender: sender, connectivity: connectivity, waitingPrompts: waitingPrompts)
     defer { harness.cleanup() }
     try await body(harness)
 }

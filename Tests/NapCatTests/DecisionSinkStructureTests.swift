@@ -264,8 +264,7 @@ struct DecisionSinkStructureTests {
     ]
     static let withIntakeSites: [String: [String: Int]] = [
         ApprovalChannelStructureTests.hostFile: ["func withIntake<Result>(_ body: (ApprovalIntake) -> Result) -> Result? {": 1],
-        ApprovalChannelStructureTests.toggleFile: [
-            "let tools = host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? []": 1],
+        ApprovalChannelStructureTests.toggleFile: [toggleDoorLine: 1],
     ]
     static let hostIntakeSites: [String: Int] = [
         "private var intake: ApprovalIntake?": 1,
@@ -947,11 +946,11 @@ struct DecisionSinkStructureTests {
     // MARK: - f, continued. The door, plain; the intake's type, its frame writer, the host's writes and the connection's type, at their sites
 
     /// Every line naming the intake's type in the four targets: its own
-    /// declaration, the toggle's one constant, and the host's lines.
+    /// declaration, the toggle's door line (its one constant), and the
+    /// host's lines.
     static let intakeTypeSites: [String: [String: Int]] = [
         ApprovalChannelStructureTests.intakeFile: ["final class ApprovalIntake {": 1],
-        ApprovalChannelStructureTests.toggleFile: [
-            "let tools = host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? []": 1],
+        ApprovalChannelStructureTests.toggleFile: [toggleDoorLine: 1],
         ApprovalChannelStructureTests.hostFile: [
             "private var connections: [ApprovalIntake.ConnectionKey: SeamConnection] = [:]": 1,
             "private var idleTimers: [ApprovalIntake.ConnectionKey: DispatchSourceTimer] = [:]": 1,
@@ -1131,6 +1130,65 @@ struct DecisionSinkStructureTests {
         for (pattern, probe) in probes {
             #expect(Self.hits(pattern, in: probe), "'\(pattern)' does not match '\(probe)'")
         }
+    }
+
+    // MARK: - f, continued. The toggle's one door line (#216)
+
+    /// The toggle's one line through the door, in both tables above: a
+    /// waiting alert's one read of the intake, handed the mark the toggle
+    /// keeps.
+    static let toggleDoorLine: String =
+        "let prompts = host.withIntake { $0.waitingPromptRead(after: mark, within: ApprovalIntake.waitingContextSeconds) }"
+    /// The line it replaced (#216), for the canary that puts it back.
+    static let formerToggleDoorLine: String =
+        "let tools = host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? []"
+
+    /// The toggle reaches the intake on one line, the waiting alert's read,
+    /// and nothing else does (#216). The former line put back, the line
+    /// doubled, a second door call in the toggle, and the read made from
+    /// another file, through the door or on an intake it was handed, are each
+    /// caught by the door's site pin or by the intake's type pin, as their
+    /// text says; the whole pins read each as the tree.
+    @Test func theTogglesOneDoorLineIsTheWaitingAlertsRead() throws {
+        let sources: Sources = try Self.uncutSources()
+        let toggle: String = ApprovalChannelStructureTests.toggleFile
+        let indented: String = "        " + Self.toggleDoorLine + "\n"
+        #expect(ApprovalChannelStructureTests.count(indented, in: Self.text(toggle, in: sources)) == 1,
+                "vacuity: the door line is in the toggle once")
+        #expect(Self.sinkFailures(sources).isEmpty && Self.intakeTypeFailures(sources).isEmpty)
+        let menu: String = "MenuStateModel.swift"
+        // Which pins each canary must trip: the sinks' (the door's site pin
+        // is read there) and the intake's type pin.
+        let mutants: [(name: String, mutant: Sources, door: Bool, type: Bool)] = [
+            ("the former line put back", Self.mutate(sources, toggle) {
+                $0.replacingOccurrences(of: indented, with: "        " + Self.formerToggleDoorLine + "\n") }, true, true),
+            ("the line doubled", Self.mutate(sources, toggle) { $0.replacingOccurrences(of: indented, with: indented + indented) },
+             true, true),
+            ("a second door call in the toggle", Self.mutate(sources, toggle) {
+                $0.replacingOccurrences(of: indented, with: indented + "        _ = host.withIntake { $0.prompts.count }\n") }, true, false),
+            ("the read through the door from another file", Self.mutate(sources, menu) {
+                $0 + "\nfunc zz(_ host: ApprovalSeamHost) -> Int? { host.withIntake { $0.waitingPromptRead(after: nil, within: 30).newPrompts } }" },
+             true, false),
+            ("the read on an intake handed to another file", Self.mutate(sources, menu) {
+                $0 + "\nfunc zz(_ intake: ApprovalIntake) -> Int { intake.waitingPromptRead(after: nil, within: 30).newPrompts }" },
+             false, true),
+        ]
+        let wholeTree: [String] = Self.wholeFailures(sources, Self.allWholePins)
+        for (name, mutant, door, type) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(Self.sinkFailures(mutant).isEmpty != door, "canary '\(name)': the door's site pin read it \(door ? "as the tree" : "as a change")")
+            #expect(Self.intakeTypeFailures(mutant).isEmpty != type, "canary '\(name)': the type pin read it \(type ? "as the tree" : "as a change")")
+            #expect(Self.wholeFailures(mutant, Self.allWholePins) == wholeTree, "canary '\(name)' is the site pins' to catch")
+        }
+        // Over-match controls: names that only contain the door's, and a
+        // whole-line comment naming the former line.
+        let controls: Sources = Self.mutate(sources, toggle) {
+            $0 + "\nlet withIntakeReads = 0, waitingPromptReads = 1"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// was: " + Self.formerToggleDoorLine)
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.sinkFailures(controls).isEmpty && Self.intakeTypeFailures(controls).isEmpty,
+                "over-match: \(Self.sinkFailures(controls)) \(Self.intakeTypeFailures(controls))")
     }
 
     /// D5b's anchor (the head of the intake's `receive` checks) and its plant,
