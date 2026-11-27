@@ -7,8 +7,8 @@ import Testing
 /// #193: the two channel scripts, RUN, each time in a sandbox of its own
 /// and never against this machine. A run executes a copy of the committed
 /// script whose one changed line is the PATH pin, which gains the
-/// sandbox's `tools` folder in front, so `codesign` (and `id`, where a test
-/// plants one) are stubs. HOME is the sandbox's own folder. The caller's
+/// sandbox's `tools` folder in front, so `codesign` (and `id` or `sed`, where
+/// a test plants one) are stubs. HOME is the sandbox's own folder. The caller's
 /// PATH is the sandbox's `bin`, holding a stub `claude` that records every
 /// call and keeps its one registration in a file, followed by system
 /// folders that hold no `claude`. Nothing here reads or writes the real
@@ -189,6 +189,11 @@ struct ChannelInstallScriptTests {
             try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path)
         }
 
+        /// The same, for bytes that need not be UTF-8.
+        func write(_ path: String, bytes: Data) throws {
+            try bytes.write(to: URL(fileURLWithPath: path))
+        }
+
         func read(_ path: String) -> String? { try? String(contentsOfFile: path, encoding: .utf8) }
 
         func exists(_ path: String) -> Bool {
@@ -259,8 +264,9 @@ struct ChannelInstallScriptTests {
         }
 
         /// Runs a copy of scripts/<name> whose PATH pin gains `tools` in
-        /// front: the only line changed.
-        func run(_ name: String, _ arguments: [String] = []) throws -> Run {
+        /// front: the only line changed. `environment` adds to the child's
+        /// (a locale).
+        func run(_ name: String, _ arguments: [String] = [], environment: [String: String] = [:]) throws -> Run {
             let original = try ChannelInstallStructureTests.read("scripts/" + name)
             let pin = SetupScriptTests.pinnedPathLine
             try #require(original.components(separatedBy: pin).count == 2, "\(name) must hold exactly one PATH pin")
@@ -278,6 +284,7 @@ struct ChannelInstallScriptTests {
             process.arguments = [copy] + arguments
             process.currentDirectoryURL = URL(fileURLWithPath: root)
             process.environment = ["HOME": home, "PATH": bin + ":/usr/bin:/bin", "NAPCAT_TEST_SANDBOX": root]
+                .merging(environment) { _, added in added }
             process.standardInput = FileHandle.nullDevice
             let outHandle = try #require(FileHandle(forWritingAtPath: out))
             let errHandle = try #require(FileHandle(forWritingAtPath: err))
@@ -293,8 +300,12 @@ struct ChannelInstallScriptTests {
         }
 
         /// The installer's run for this sandbox's bundle.
-        func install() throws -> Run { try run("install-channel.sh", [app]) }
-        func uninstall() throws -> Run { try run("uninstall-channel.sh") }
+        func install(environment: [String: String] = [:]) throws -> Run {
+            try run("install-channel.sh", [app], environment: environment)
+        }
+        func uninstall(environment: [String: String] = [:]) throws -> Run {
+            try run("uninstall-channel.sh", environment: environment)
+        }
     }
 
     static let helperInBundle = "Contents/MacOS/napcat-channel"
@@ -967,5 +978,198 @@ struct ChannelInstallScriptTests {
                 #expect(!(output.stdout + output.stderr).contains(hint), "\(hint): the hint was printed")
             }
         }
+    }
+
+    // MARK: - Every locale reads the same
+
+    /// The locales the locale tests run both scripts under: C, and the
+    /// UTF-8 locale a Mac's Terminal sets, in which sed stops at the first
+    /// byte that is not UTF-8 ("illegal byte sequence").
+    static let locales = ["C", "en_US.UTF-8"]
+    static func environment(_ locale: String) -> [String: String] { ["LANG": locale] }
+
+    /// A byte that is never UTF-8.
+    static let badByte = Data([0xFF])
+    static func bytes(_ text: String) -> Data { Data(text.utf8) }
+
+    /// Scripts the stub's next `mcp get` answers, in bytes.
+    static func script(_ sandbox: Sandbox, status: Int32, stdout: Data, stderr: Data) throws {
+        try sandbox.write(sandbox.root + "/claude/get-status", "\(status)\n")
+        try sandbox.write(sandbox.root + "/claude/get-stdout", bytes: stdout)
+        try sandbox.write(sandbox.root + "/claude/get-stderr", bytes: stderr)
+    }
+
+    /// What `locale` does in a child bash on this Mac: "<characters in é>
+    /// <whether a sed regex reads a line holding badByte>". The C locale
+    /// counts two and reads it; the UTF-8 one counts one and fails.
+    static func localeProbe(_ locale: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", #"printf '\xff\n' | /usr/bin/sed -n 's/^[[:space:]]*x//p' > /dev/null 2>&1 && sed=reads || sed=fails; "#
+                             + #"s=$'\xc3\xa9'; printf '%s %s' "${#s}" "$sed""#]
+        process.environment = ["PATH": "/usr/bin:/bin", "LANG": locale]
+        process.standardInput = FileHandle.nullDevice
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    /// The two answers a UTF-8 locale once read short, because the scripts
+    /// used what sed had printed before it stopped at a byte that is not
+    /// UTF-8: two Command: lines with such a byte between them (read as one
+    /// Command: line), and the not-found line with such a line after it
+    /// (read as the not-found line alone).
+    static func answersWithABadByte(_ helper: String) -> [(name: String, status: Int32, stdout: Data, stderr: Data)] {
+        [("two Command: lines", 0, bytes("napcat:\n  Type: stdio\n  Command: \(helper)\n  Environment:\n    X=") + badByte
+            + bytes("\n  Command: \(helper)\n"), Data()),
+         ("the not-found line and another", 1, Data(),
+          bytes("No MCP server named \"napcat\". Run `claude mcp add` to add one.\n") + badByte + bytes(" warning\n"))]
+    }
+
+    /// Both answers are unknown in every locale: the installer stops, with
+    /// only `mcp get` called (no `mcp add`, no `mcp remove`) and nothing
+    /// written; the uninstaller exits 1, removes nothing and keeps the
+    /// receipt. Each names the helper the sandbox would register, the case
+    /// a short read took for "unchanged" or for no registration.
+    @Test func anAnswerWithAByteThatIsNotUTF8ChangesNothingInEveryLocale() throws {
+        let (utf8, c) = (try Self.localeProbe("en_US.UTF-8"), try Self.localeProbe("C"))
+        #expect(utf8 == "1 fails" && c == "2 reads", "vacuity: the UTF-8 locale reaches a child bash, and its sed stops at the byte")
+        for locale in Self.locales {
+            for shape in Self.answersWithABadByte("").indices {
+                let install = try Sandbox()
+                let answer = Self.answersWithABadByte(install.helper)[shape]
+                let name = "\(locale), \(answer.name)"
+                try Self.script(install, status: answer.status, stdout: answer.stdout, stderr: answer.stderr)
+                let installed = try install.install(environment: Self.environment(locale))
+                #expect(installed.status == 1, "\(name): installer status \(installed.status)")
+                #expect(installed.errors.count == 1 && installed.stderr.contains("install-channel: error: cannot read the \"napcat\" "
+                                                                                 + "entry: claude mcp get answered in a way this script "
+                                                                                 + "does not recognise"), "\(name): \(installed.errors)")
+                #expect(install.claudeArguments == [Self.mcpGet], "\(name): \(install.claudeArguments)")
+                #expect(install.registered == nil && !install.exists(install.receipt), "\(name): the installer wrote something")
+
+                let uninstall = try Sandbox()
+                #expect(try uninstall.install().status == 0, "\(name): setup")
+                let registered = Self.answersWithABadByte(uninstall.helper)[shape]
+                try Self.script(uninstall, status: registered.status, stdout: registered.stdout, stderr: registered.stderr)
+                let run = try uninstall.uninstall(environment: Self.environment(locale))
+                #expect(run.status == 1, "\(name): uninstaller status \(run.status)")
+                #expect(run.stderr.contains("cannot read the \"napcat\" entry: claude mcp get answered in a way this script does not "
+                                            + "recognise"), "\(name): \(run.errors)")
+                #expect(!run.lines.contains { $0.hasPrefix("ok: no ") || $0.hasPrefix("removed: ") || $0.hasPrefix("Done.") },
+                        "\(name): \(run.lines)")
+                #expect(!uninstall.claudeArguments.contains(Self.mcpRemove) && uninstall.registered == uninstall.helper,
+                        "\(name): \(uninstall.claudeArguments)")
+                #expect(uninstall.exists(uninstall.receipt)
+                        && run.lines.contains("kept: \(uninstall.receipt), for the registration step reported below"),
+                        "\(name): the receipt must be kept: \(run.lines)")
+            }
+        }
+    }
+
+    /// Teeth: input the scripts act on, with a byte that is not UTF-8
+    /// where it changes nothing, reads the same in every locale (a UTF-8
+    /// sed stopped at it): codesign descriptions with it in a line before
+    /// TeamIdentifier register; a stdio entry with it in the line before
+    /// Command: is unchanged; a receipt with a line holding it still
+    /// records the path, so the uninstaller removes both; and the not-found
+    /// line with it in its hint is no registration.
+    @Test func aByteThatIsNotUTF8ElsewhereReadsTheSameInEveryLocale() throws {
+        for locale in Self.locales {
+            let environment = Self.environment(locale)
+            let signed = try Sandbox()
+            for role in [Role.app, .helper] {
+                let path = signed.root + "/codesign/\(role.rawValue)-description"
+                let description = try #require(signed.read(path))
+                try signed.write(path, bytes: Self.bytes("Authority=NapCat ") + Self.badByte + Self.bytes("\n" + description))
+            }
+            let first = try signed.install(environment: environment)
+            #expect(first.status == 0 && first.lines.contains(Self.registeredLine(signed.helper)), "\(locale), signature: \(first.errors)")
+
+            let answered = try Sandbox()
+            #expect(try answered.install(environment: environment).status == 0, "\(locale): setup")
+            try Self.script(answered, status: 0,
+                            stdout: Self.bytes("napcat:\n  Scope: User config (available in all your projects)\n  Status: ") + Self.badByte
+                                + Self.bytes(" Connected\n  Type: stdio\n  Command: \(answered.helper)\n  Args: \n"), stderr: Data())
+            let again = try answered.install(environment: environment)
+            #expect(again.status == 0 && again.lines.contains(Self.unchangedLine(answered.helper)), "\(locale), stdio entry: \(again.errors)")
+            let receipt = try #require(answered.read(answered.receipt))
+            try answered.write(answered.receipt, bytes: Self.bytes(receipt + "note=") + Self.badByte + Self.bytes("\n"))
+            let removed = try answered.uninstall(environment: environment)
+            #expect(removed.status == 0 && removed.lines.contains("removed: \(answered.receipt)")
+                    && removed.lines.contains("removed: the \"napcat\" registration (user scope) for \(answered.helper)"),
+                    "\(locale), receipt: \(removed.lines) \(removed.errors)")
+            try Self.script(answered, status: 1, stdout: Data(),
+                            stderr: Self.bytes("No MCP server named \"napcat\". Did you mean \"nap") + Self.badByte + Self.bytes("\"?\n"))
+            let none = try answered.uninstall(environment: environment)
+            #expect(none.status == 0 && none.lines.contains("ok: no \"napcat\" registration; nothing to remove"),
+                    "\(locale), not-found line: \(none.lines) \(none.errors)")
+            let added = try answered.install(environment: environment)
+            #expect(added.status == 0 && added.lines.contains(Self.registeredLine(answered.helper)), "\(locale), not-found line: \(added.errors)")
+            #expect(answered.claudeArguments == [Self.mcpGet, Self.mcpAdd(answered.helper), Self.mcpGet, Self.mcpGet, Self.mcpRemove,
+                                                 Self.mcpGet, Self.mcpGet, Self.mcpAdd(answered.helper)], "\(locale): \(answered.claudeArguments)")
+        }
+    }
+
+    /// A stub `sed` that does its work, then fails when its input holds
+    /// "napcat-test-sed-fails".
+    static let failingSedStub = #"""
+    #!/bin/bash
+    input="$(/bin/cat; echo .)"
+    input="${input%.}"
+    printf '%s' "$input" | /usr/bin/sed "$@" || exit
+    case "$input" in
+        *napcat-test-sed-fails*) exit 2 ;;
+    esac
+
+    """#
+
+    /// A sed that fails while it reads stops the read with nothing
+    /// changed, even when what it printed looks whole: a stdio entry naming
+    /// this helper and the not-found line stop the installer (only `mcp
+    /// get` called) and are an uninstall error (nothing removed, the
+    /// receipt kept); a helper description stops the installer before
+    /// anything. Teeth: with nothing for it to fail on, the stub registers.
+    @Test func aSedThatFailsStopsTheRead() throws {
+        let marker = "napcat-test-sed-fails"
+        func answers(_ helper: String) -> [(String, Int32, String, String)] {
+            [("a stdio entry", 0, "napcat:\n  Type: stdio\n  Command: \(helper)\n  Args: \(marker)\n", ""),
+             ("the not-found line", 1, "", "No MCP server named \"napcat\". \(marker)\n")]
+        }
+        for index in answers("").indices {
+            let install = try Sandbox()
+            try install.write(install.tools + "/sed", Self.failingSedStub, mode: 0o755)
+            let (name, status, stdout, stderr) = answers(install.helper)[index]
+            try Self.script(install, status: status, stdout: stdout, stderr: stderr)
+            let installed = try install.install()
+            #expect(installed.status == 1 && installed.stderr.contains("cannot read the \"napcat\" entry"), "\(name): \(installed.errors)")
+            #expect(install.claudeArguments == [Self.mcpGet], "\(name): \(install.claudeArguments)")
+            #expect(install.registered == nil && !install.exists(install.receipt), "\(name): the installer wrote something")
+
+            let uninstall = try Sandbox()
+            #expect(try uninstall.install().status == 0, "\(name): setup")
+            try uninstall.write(uninstall.tools + "/sed", Self.failingSedStub, mode: 0o755)
+            let (_, registeredStatus, registeredStdout, registeredStderr) = answers(uninstall.helper)[index]
+            try Self.script(uninstall, status: registeredStatus, stdout: registeredStdout, stderr: registeredStderr)
+            let run = try uninstall.uninstall()
+            #expect(run.status == 1 && run.stderr.contains("cannot read the \"napcat\" entry"), "\(name): \(run.errors)")
+            #expect(!uninstall.claudeArguments.contains(Self.mcpRemove) && uninstall.registered == uninstall.helper, "\(name)")
+            #expect(uninstall.exists(uninstall.receipt), "\(name): the receipt must be kept")
+        }
+        let described = try Sandbox()
+        try described.write(described.tools + "/sed", Self.failingSedStub, mode: 0o755)
+        let path = described.root + "/codesign/helper-description"
+        try described.write(path, try #require(described.read(path)) + "Authority=\(marker)\n")
+        Self.expectRefusedBeforeAnything(try described.install(), described,
+                                         "codesign names a malformed team for \(described.helper). Nothing was registered.",
+                                         "a helper description")
+        let plain = try Sandbox()
+        try plain.write(plain.tools + "/sed", Self.failingSedStub, mode: 0o755)
+        let registered = try plain.install()
+        #expect(registered.status == 0 && registered.lines.contains(Self.registeredLine(plain.helper)), "teeth: \(registered.errors)")
     }
 }

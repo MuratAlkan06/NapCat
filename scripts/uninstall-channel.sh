@@ -91,12 +91,14 @@ claude_cli() {
 # Anything else (no Command: line or two, a not-found line among other
 # lines, another status, a format this script predates) is unknown: status
 # 1, and the caller changes nothing. The output itself is never printed: it
-# may hold another server's environment, or name other servers.
+# may hold another server's environment, or name other servers. It is read
+# byte by byte (sed under LC_ALL=C), so a byte that is not UTF-8 reads the
+# same in every locale, and a sed that fails stops the read.
 registered_command() {
     local output found status=0
     output="$(claude_cli mcp get "$SERVER_NAME" 2>&1)" || status=$?
     if [ "$status" -eq 0 ]; then
-        found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
+        found="$(LC_ALL=C sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | LC_ALL=C sed 's/[[:space:]]*$//')" || return 1
         case "$found" in
             "" | *$'\n'*) return 1 ;;
         esac
@@ -104,7 +106,7 @@ registered_command() {
         return 0
     fi
     [ "$status" -eq 1 ] || return 1
-    output="$(sed '/^[[:space:]]*$/d' <<< "$output")"
+    output="$(LC_ALL=C sed '/^[[:space:]]*$/d' <<< "$output")" || return 1
     case "$output" in
         *$'\n'*) return 1 ;;
         "$NOT_FOUND_PREFIX"*) return 0 ;;
@@ -132,7 +134,8 @@ is_napcat_helper() {
 }
 
 # The helper path the receipt records: its one "path=" line, read from at
-# most its first 1 KiB, as NapCat reads it. Status 1 (nothing printed) when
+# most its first 1 KiB, as NapCat reads it, byte by byte (sed under
+# LC_ALL=C, the same in every locale). Status 1 (nothing printed) when
 # the approvals folder is a symlink, the receipt is missing, a symlink or
 # not a regular file, or it holds no single path line.
 receipt_path() {
@@ -140,7 +143,7 @@ receipt_path() {
     if [ -L "$APPROVALS_DIR" ] || [ -L "$RECEIPT" ] || [ ! -f "$RECEIPT" ]; then
         return 1
     fi
-    found="$(head -c 1024 "$RECEIPT" | sed -n 's/^path=//p')" || return 1
+    found="$(head -c 1024 "$RECEIPT" | LC_ALL=C sed -n 's/^path=//p')" || return 1
     case "$found" in
         "" | *$'\n'*) return 1 ;;
     esac

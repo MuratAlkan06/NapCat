@@ -160,10 +160,12 @@ APP_SIGNATURE="$(codesign -d --verbose=2 "$APP" 2>&1)" || die "codesign cannot d
 
 # The team a description names: its one TeamIdentifier line when that is an
 # Apple team ID (ten capital letters and digits); nothing for an ad-hoc or
-# unsigned build ("not set") or no such line; status 1 for anything else.
+# unsigned build ("not set") or no such line; status 1 for anything else,
+# or when sed fails. The local LC_ALL sets only this shell's own locale;
+# sed gets its own, so a byte that is not UTF-8 reads the same everywhere.
 signature_team() {
     local LC_ALL=C team
-    team="$(sed -n 's/^TeamIdentifier=//p' <<< "$1")"
+    team="$(LC_ALL=C sed -n 's/^TeamIdentifier=//p' <<< "$1")" || return 1
     case "$team" in
         "" | "not set") return 0 ;;
     esac
@@ -246,12 +248,14 @@ claude_cli() {
 # Anything else (no Command: line or two, a not-found line among other
 # lines, another status, a format this script predates) is unknown: status
 # 1, and the caller changes nothing. The output itself is never printed: it
-# may hold another server's environment, or name other servers.
+# may hold another server's environment, or name other servers. It is read
+# byte by byte (sed under LC_ALL=C), so a byte that is not UTF-8 reads the
+# same in every locale, and a sed that fails stops the read.
 registered_command() {
     local output found status=0
     output="$(claude_cli mcp get "$SERVER_NAME" 2>&1)" || status=$?
     if [ "$status" -eq 0 ]; then
-        found="$(sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | sed 's/[[:space:]]*$//')"
+        found="$(LC_ALL=C sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' <<< "$output" | LC_ALL=C sed 's/[[:space:]]*$//')" || return 1
         case "$found" in
             "" | *$'\n'*) return 1 ;;
         esac
@@ -259,7 +263,7 @@ registered_command() {
         return 0
     fi
     [ "$status" -eq 1 ] || return 1
-    output="$(sed '/^[[:space:]]*$/d' <<< "$output")"
+    output="$(LC_ALL=C sed '/^[[:space:]]*$/d' <<< "$output")" || return 1
     case "$output" in
         *$'\n'*) return 1 ;;
         "$NOT_FOUND_PREFIX"*) return 0 ;;
