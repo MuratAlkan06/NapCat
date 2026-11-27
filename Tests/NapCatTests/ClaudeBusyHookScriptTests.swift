@@ -180,6 +180,11 @@ struct ClaudeBusyHookScriptTests {
     /// Runs an ARBITRARY hook script (the shipped one, or a mutated copy for a
     /// canary) under the same HOME/PATH discipline as `runHook`.
     private func runScript(_ scriptURL: URL, json: String, home: URL) -> RunResult {
+        runScript(scriptURL, bytes: Data(json.utf8), home: home)
+    }
+
+    /// `runScript` with raw stdin bytes (a payload that is not valid UTF-8).
+    private func runScript(_ scriptURL: URL, bytes: Data, home: URL) -> RunResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [scriptURL.path]
@@ -190,7 +195,7 @@ struct ClaudeBusyHookScriptTests {
         process.standardError = FileHandle.nullDevice
         try? process.run()
         do {
-            try HookChildStdin.write(Data(json.utf8), to: stdin.fileHandleForWriting)
+            try HookChildStdin.write(bytes, to: stdin.fileHandleForWriting)
         } catch {
             Issue.record("writing the hook's stdin failed: \(error)")
         }
@@ -2390,6 +2395,534 @@ struct ClaudeBusyHookScriptTests {
             let parsed = ClaudeActivityPolicy.parseMarker(waitForRewrite(marker, event: "waiting"))
             #expect(parsed != nil && parsed?.ep != String(start),
                     "without the carry-over read the episode start is lost (so the carry-over test has teeth)")
+        }
+    }
+
+    // MARK: - Hook v8: the final-message check (silent — one closed word in hook.log)
+
+    /// `text` as a JSON string literal, the way a payload carries it
+    /// (JSONSerialization escapes it; non-ASCII stays UTF-8).
+    nonisolated static func jsonString(_ text: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [text]),
+              let array = String(data: data, encoding: .utf8) else { return "null" }
+        return String(array.dropFirst().dropLast())
+    }
+
+    /// A payload for `event` carrying `last_assistant_message` as the raw
+    /// JSON literal `message` and `background_tasks` as raw JSON (nil omits
+    /// a field), plus any `extra` raw fields.
+    private func finalMessageJSON(_ event: String, _ session: String, message: String?,
+                                  backgroundTasks: String?, extra: [String] = []) -> String {
+        var fields = [#""hook_event_name":"\#(event)""#, #""session_id":"\#(session)""#] + extra
+        if let backgroundTasks { fields.append(#""background_tasks":\#(backgroundTasks)"#) }
+        if let message { fields.append(#""last_assistant_message":\#(message)"#) }
+        return "{" + fields.joined(separator: ",") + "}"
+    }
+
+    /// hook.log's check lines.
+    private func askCheckLines(_ home: URL) -> [String] {
+        hookLog(home).split(separator: "\n").map(String.init).filter { $0.contains(" ask-check ") }
+    }
+
+    /// One whole check line, timestamp included: the log's own line style.
+    private func isAskCheckLine(_ line: String, session: String, result: String) -> Bool {
+        let pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} "
+            + "ask-check session=\(session) result=\(result)$"
+        return line.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// The checked path: a Stop with background work still running KEEPS the
+    /// marker exactly as before (the same v1 grammar, the episode start
+    /// carried over) and appends ONE check line right after its keep line.
+    @Test func aStopKeptForBackgroundWorkLogsWhetherItsMessageAsks() {
+        withHome { home in
+            let session = "a8000001-0101-4abc-8def-000000000101"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let primed = ClaudeActivityPolicy.parseMarker((try? String(contentsOf: marker, encoding: .utf8)) ?? "")
+            let message = Self.jsonString("All three reviews are running.\n\nShall I merge the docs change now?")
+            let result = runHook(json: finalMessageJSON("Stop", session, message: message,
+                                                        backgroundTasks: Self.runningTask), home: home)
+            #expect(result.exitCode == 0 && result.stdout.isEmpty)
+            let contents = waitForMarkerEvent(marker, event: "Stop")
+            let pattern = "^v1 ts=[0-9]+ event=Stop pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
+            #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                    "kept marker \(String(reflecting: contents)), in the unchanged grammar")
+            #expect(primed?.ep != nil && ClaudeActivityPolicy.parseMarker(contents)?.ep == primed?.ep,
+                    "the episode start is carried over, as before")
+            let lines = hookLog(home).split(separator: "\n").map(String.init)
+            #expect(lines.count == 3, "set, keep, check — got \(lines)")
+            #expect(lines.count == 3
+                        && lines[1].contains(" keep session=\(session) event=Stop reason=background-task-running pid=")
+                        && lines[1].hasSuffix(" src=unknown"), "the keep line is unchanged: \(lines)")
+            #expect(lines.count == 3 && isAskCheckLine(lines[2], session: session, result: "asks"), "\(lines)")
+        }
+    }
+
+    /// The other words, and the escapes the stdin mapping rewrites: each run
+    /// KEEPS the marker as before and logs exactly one check line — `no` for
+    /// a string that does not ask (an empty one too), `absent` for no field
+    /// or a JSON null, `unreadable` for a value that is not a string.
+    @Test func theCheckHasOneWordForEveryShapeOfTheField() {
+        let rows: [(message: String?, result: String)] = [
+            (Self.jsonString("All three reviews are running; I will report back."), "no"),
+            (Self.jsonString(""), "no"),
+            (nil, "absent"),
+            ("null", "absent"),
+            ("42", "unreadable"),
+            ("true", "unreadable"),
+            (#"["Shall I merge it?"]"#, "unreadable"),
+            (#"{"text":"Shall I merge it?"}"#, "unreadable"),
+            // A NUL escape becomes `#` before the gate (hook v6): nothing is
+            // spliced, and a `#` after the mark is not a closing character.
+            (#""Ready to ship\u0000 it?""#, "asks"),
+            (#""Ship it?\u0000""#, "no"),
+            // A lone surrogate escape becomes U+FFFD before the gate.
+            (#""Cut \ud83d here.\nShip it?""#, "asks"),
+            (#""Ship it?\ud83d""#, "no"),
+        ]
+        for row in rows {
+            withHome { home in
+                let session = "a8000002-0102-4abc-8def-000000000102"
+                primeMarker(session, home: home)
+                let marker = markerDir(home).appendingPathComponent(session)
+                let result = runHook(json: finalMessageJSON("Stop", session, message: row.message,
+                                                            backgroundTasks: Self.runningTask), home: home)
+                let label = row.message ?? "<no field>"
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(label)")
+                #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "), "\(label): kept as before")
+                let lines = hookLog(home).split(separator: "\n").map(String.init)
+                #expect(lines.count == 3 && isAskCheckLine(lines[2], session: session, result: row.result),
+                        "\(label) must log result=\(row.result), got \(lines)")
+            }
+        }
+    }
+
+    /// A payload the stdin gate refuses never reaches the check (invalid
+    /// UTF-8 in the message; a message so long that the payload is cut at
+    /// the 256 KiB cap): the event is ignored exactly as before, the marker
+    /// is left byte-identical, and there is no check line. A message just
+    /// under the cap is checked; the shell reads only its end.
+    @Test func aPayloadTheGateRefusesIsIgnoredAsBeforeAndABigOneIsChecked() {
+        let session = "a8000003-0103-4abc-8def-000000000103"
+        func payload(_ message: Data) -> Data {
+            var data = Data((#"{"hook_event_name":"Stop","session_id":"\#(session)","#
+                + #""background_tasks":\#(Self.runningTask),"last_assistant_message":""#).utf8)
+            data.append(message)
+            data.append(Data(#""}"#.utf8))
+            return data
+        }
+        let refused: [(name: String, bytes: Data)] = [
+            ("invalid UTF-8", payload(Data("Shall I merge it".utf8) + Data([0xFF]) + Data("?".utf8))),
+            ("cut at the cap", payload(Data((String(repeating: "y", count: 270_000) + "?").utf8))),
+        ]
+        for (name, bytes) in refused {
+            withHome { home in
+                primeMarker(session, home: home)
+                let marker = markerDir(home).appendingPathComponent(session)
+                let before = FileManager.default.contents(atPath: marker.path)
+                let result = runScript(Self.hookScriptURL, bytes: bytes, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(name)")
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(before != nil && FileManager.default.contents(atPath: marker.path) == before,
+                        "\(name): the marker is left as it was")
+                let log = hookLog(home)
+                #expect(log.hasSuffix(" ignore reason=stdin-not-json\n") && askCheckLines(home).isEmpty,
+                        "\(name): \(String(reflecting: log))")
+            }
+        }
+        withHome { home in
+            let big = Self.jsonString(String(repeating: "y", count: 200_000) + "\nShall I continue?")
+            let result = runHook(json: finalMessageJSON("Stop", session, message: big,
+                                                        backgroundTasks: Self.runningTask), home: home)
+            #expect(result.exitCode == 0 && result.stdout.isEmpty)
+            let lines = askCheckLines(home)
+            #expect(lines.count == 1 && isAskCheckLine(lines[0], session: session, result: "asks"), "\(lines)")
+        }
+    }
+
+    /// What a run did to the marker.
+    private enum MarkerOutcome { case rewritten(String), cleared, spared, absent }
+
+    /// Only a Stop kept for background work is checked. The same asking
+    /// message on every other path: each reconciles exactly as before, with
+    /// its one usual log line, and no run writes a check line.
+    @Test func onlyAStopKeptForBackgroundWorkIsChecked() {
+        let session = "a8000004-0104-4abc-8def-000000000104"
+        let asking = Self.jsonString("Shall I merge it?")
+        let running = Self.runningTask, done = Self.doneTask
+        func stopLike(_ event: String, _ tasks: String?) -> String {
+            finalMessageJSON(event, session, message: asking, backgroundTasks: tasks)
+        }
+        func note(_ type: String, _ tasks: String?) -> String {
+            finalMessageJSON("Notification", session, message: asking, backgroundTasks: tasks,
+                             extra: [#""notification_type":"\#(type)""#])
+        }
+        let s = session
+        let cases: [(name: String, prior: String?, json: String, outcome: MarkerOutcome, logged: String)] = [
+            ("Stop, task finished", "UserPromptSubmit", stopLike("Stop", done), .cleared,
+             " clear session=\(s) event=Stop"),
+            ("Stop, no task", "UserPromptSubmit", stopLike("Stop", "[]"), .cleared, " clear session=\(s) event=Stop"),
+            ("Stop, no task field", "UserPromptSubmit", stopLike("Stop", nil), .cleared,
+             " clear session=\(s) event=Stop"),
+            ("SubagentStop after Stop, task running", "Stop", stopLike("SubagentStop", running),
+             .rewritten("SubagentStop"),
+             " keep session=\(s) event=SubagentStop phase=poststop reason=background-task-running pid="),
+            ("SubagentStop after Stop, last task", "Stop", stopLike("SubagentStop", done), .cleared,
+             " clear session=\(s) event=SubagentStop phase=poststop"),
+            ("SubagentStop mid-turn, task running", "UserPromptSubmit", stopLike("SubagentStop", running),
+             .rewritten("Notification"),
+             " keep session=\(s) event=SubagentStop phase=inflight reason=main-turn-in-flight pid="),
+            ("SessionEnd, task running", "Stop", stopLike("SessionEnd", running), .rewritten("SessionEnd"),
+             " keep session=\(s) event=SessionEnd reason=background-task-running pid="),
+            ("StopFailure, task running", "UserPromptSubmit", stopLike("StopFailure", running),
+             .rewritten("StopFailure"),
+             " keep session=\(s) event=StopFailure reason=background-task-running pid="),
+            ("idle_prompt mid-turn, task running", "UserPromptSubmit", note("idle_prompt", running),
+             .rewritten("Notification"),
+             " keep session=\(s) event=Notification type=idle_prompt phase=inflight reason=background-task-running pid="),
+            ("permission_prompt after Stop", "Stop", note("permission_prompt", nil),
+             .rewritten(ClaudeBusyConstants.waitingAfterStopEventToken),
+             " keep session=\(s) event=Notification type=permission_prompt phase=poststop reason=waiting-on-user pid="),
+            ("idle_prompt after Stop", "Stop", note("idle_prompt", nil), .spared,
+             " ignore reason=poststop-clear-notification session=\(s) type=idle_prompt pid="),
+            ("UserPromptSubmit", nil, stopLike("UserPromptSubmit", running), .rewritten("UserPromptSubmit"),
+             " set session=\(s) pid="),
+            ("Stop, task running, bad session", nil,
+             finalMessageJSON("Stop", "not-a-session", message: asking, backgroundTasks: running), .absent,
+             " ignore reason=bad-session event=Stop"),
+        ]
+        for c in cases {
+            withHome { home in
+                let marker = markerDir(home).appendingPathComponent(session)
+                if let prior = c.prior { plantMarker(prior, at: marker) }
+                let planted = FileManager.default.contents(atPath: marker.path)
+                let result = runHook(json: c.json, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(c.name)")
+                switch c.outcome {
+                case .rewritten(let token):
+                    #expect(waitForRewrite(marker, event: token).contains("event=\(token) "), "\(c.name): kept as before")
+                case .cleared:
+                    #expect(waitForFile(marker, present: false), "\(c.name): cleared as before")
+                case .spared:
+                    Thread.sleep(forTimeInterval: 0.15)
+                    #expect(planted != nil && FileManager.default.contents(atPath: marker.path) == planted,
+                            "\(c.name): left untouched as before")
+                case .absent:
+                    Thread.sleep(forTimeInterval: 0.15)
+                    #expect(sessionShapedFiles(in: markerDir(home)).isEmpty, "\(c.name): no marker")
+                }
+                let lines = hookLog(home).split(separator: "\n").map(String.init)
+                #expect(lines.count == 1 && lines[0].contains(c.logged), "\(c.name): its one usual line, got \(lines)")
+                #expect(askCheckLines(home).isEmpty, "\(c.name): no check line")
+            }
+        }
+    }
+
+    /// Text no log line or marker can hold by chance: capital letters only,
+    /// from a fixed seed (a log line never has eight capitals in a row).
+    nonisolated static func distinctive(_ count: Int, seed: UInt32) -> String {
+        var state = seed
+        return String((0..<count).map { _ -> Character in
+            state = state &* 1_664_525 &+ 1_013_904_223
+            return Character(UnicodeScalar(UInt8(65 + (state >> 24) % 26)))
+        })
+    }
+
+    /// Every regular file under `root`, hidden ones included, with its bytes.
+    private func everyFile(under root: URL) -> [(path: String, data: Data)] {
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
+        else { return [] }
+        var files: [(path: String, data: Data)] = []
+        for case let url as URL in walker {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let data = FileManager.default.contents(atPath: url.path) else { continue }
+            files.append((url.path, data))
+        }
+        return files
+    }
+
+    /// Privacy: no byte of the final message is written anywhere. Distinctive
+    /// messages (one that asks, one that does not, one far past the bound,
+    /// one ending in a code block, one in multi-byte text) go through the
+    /// checked path, then a SubagentStop and a plain end of turn with the
+    /// same text; afterwards no file under the test HOME — hook.log, the
+    /// markers, any temp file — holds a message or any 8-character piece of
+    /// one, and no temp file is left.
+    @Test func theFinalMessageIsNeverWrittenAnywhere() {
+        let d = Self.distinctive
+        let messages = [
+            "QUOKKA \(d(24, 1)) MARMALADE, shall we vanquish the \(d(12, 2)) gizmo?",
+            "\(d(40, 3)) obsidian lanterns hum at dusk.\n\(d(30, 4)).",
+            d(1_500, 5) + "\n" + d(30, 6) + "?",
+            "Run this one?\n```sh\n\(d(20, 7))\n```",
+            "全部終わりましたか \(d(16, 8))？",
+        ]
+        withHome { home in
+            for (index, text) in messages.enumerated() {
+                let session = "a800000\(index)-0106-4abc-8def-000000000106"
+                let message = Self.jsonString(text)
+                let marker = markerDir(home).appendingPathComponent(session)
+                primeMarker(session, home: home)
+                _ = runHook(json: finalMessageJSON("Stop", session, message: message,
+                                                   backgroundTasks: Self.runningTask), home: home)
+                #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "))
+                _ = runHook(json: finalMessageJSON("SubagentStop", session, message: message,
+                                                   backgroundTasks: Self.runningTask), home: home)
+                #expect(waitForMarkerEvent(marker, event: "SubagentStop").contains("event=SubagentStop "))
+                if index.isMultiple(of: 2) {
+                    _ = runHook(json: finalMessageJSON("Stop", session, message: message,
+                                                       backgroundTasks: Self.doneTask), home: home)
+                    #expect(waitForFile(marker, present: false))
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+            #expect(askCheckLines(home).count == messages.count, "non-vacuity: every checked Stop logged its word")
+            let files = everyFile(under: home)
+            #expect(files.contains { $0.path.hasSuffix("/" + ClaudeBusyConstants.logFileName) }, "the walk sees hook.log")
+            var leaks: [String] = []
+            for text in messages {
+                let characters = Array(text)
+                for start in 0...(characters.count - 8) {
+                    let piece = Data(String(characters[start..<(start + 8)]).utf8)
+                    for file in files where file.data.range(of: piece) != nil {
+                        leaks.append("\(String(reflecting: String(characters[start..<(start + 8)]))) in \(file.path)")
+                    }
+                }
+            }
+            #expect(leaks.isEmpty, "message text written to disk: \(leaks.prefix(5))")
+            let temp = ((try? FileManager.default.contentsOfDirectory(atPath: markerDir(home).path)) ?? [])
+                .filter { $0.hasPrefix(".payload.") || $0.hasPrefix(".marker.") }
+            #expect(temp.isEmpty, "no temp file is left: \(temp)")
+        }
+    }
+
+    /// One row of the judgement table: a final message, through the shipped
+    /// hook on a Stop kept for background work, and the word it must log.
+    struct AskRow: CustomTestStringConvertible, Sendable {
+        let id: String
+        let note: String
+        /// The `last_assistant_message` value, as a JSON literal.
+        let message: String
+        let result: String
+        var testDescription: String { "\(id): \(note) → \(result)" }
+    }
+
+    /// The check's bounds, pinned to the script below.
+    nonisolated static let askTailBytes = 400, askTailLines = 3
+
+    /// The rule, row by row — including the bound (the last 400 bytes; a line
+    /// counts by its end) and the known false positives and negatives the
+    /// script's comment lists.
+    nonisolated static let askRows: [AskRow] = {
+        func row(_ id: String, _ note: String, _ text: String, _ result: String) -> AskRow {
+            AskRow(id: id, note: note, message: jsonString(text), result: result)
+        }
+        func a(_ count: Int) -> String { String(repeating: "a", count: count) }
+        let euros = String(repeating: "€", count: 200)  // 600 bytes: the cut lands inside a character
+        return [
+            row("Q1", "a plain question", "Shall I go ahead?", "asks"),
+            row("Q2", "trailing spaces, a tab, a CR and blank lines", "Shall I go ahead?  \t\r\n\n \n", "asks"),
+            row("Q3", "a closing quote", #"He asked "is it done?""#, "asks"),
+            row("Q4", "a closing parenthesis", "(is that ok?)", "asks"),
+            row("Q5", "bold", "**Merge now?**", "asks"),
+            row("Q6", "italic, in a list item", "- _Ship it?_", "asks"),
+            row("Q7", "curly double quotes", "She said “ready?”", "asks"),
+            row("Q8", "a curly single quote", "It reads ’really?’", "asks"),
+            row("Q9", "a short sign-off after the question", "Which option do you want?\n\nThanks.", "asks"),
+            row("Q10", "two lines after the question", "Which one?\n1. A\n2. B", "asks"),
+            row("Q11", "the full-width question mark", "全部終わりましたか？", "asks"),
+            row("Q12", "full-width, in full-width parentheses", "（続けますか？）", "asks"),
+            row("Q13", "full-width, in corner brackets", "「進めますか？」", "asks"),
+            row("Q14", "a question above a closing code block", "Ready to run this?\n```sh\nmake test\n```", "asks"),
+            row("Q15", "a question above two code blocks", "Is this right?\n```\na\n```\n```\nb\n```", "asks"),
+            row("N1", "a statement", "All done.", "no"),
+            row("N2", "an empty message", "", "no"),
+            row("N3", "a question mid-line", "What next? Nothing, all done.", "no"),
+            row("N4", "the question only inside the closing code block", "Here it is:\n```swift\nlet x = a?\n```", "no"),
+            row("N5", "the question inside a tilde block", "Here:\n~~~\nwhy?\n~~~", "no"),
+            row("N6", "the question in an earlier code block", "a\n```\nb?\n```\n```\nc\n```", "no"),
+            row("N7", "nothing but a code block", "```\nonly code?\n```", "no"),
+            row("N8", "three lines after the question", "Which one?\n1. A\n2. B\n3. C", "no"),
+            row("B1", "the mark is byte \(askTailBytes) from the end", "Shall I?\n" + a(askTailBytes - 2), "asks"),
+            row("B2", "the mark is byte \(askTailBytes + 1) from the end", "Shall I?\n" + a(askTailBytes - 1), "no"),
+            row("B3", "a full-width mark wholly inside the bound", "Proceed？\n" + a(askTailBytes - 4), "asks"),
+            row("B4", "a full-width mark the bound cuts through", "Proceed？\n" + a(askTailBytes - 3), "no"),
+            row("B5", "a question far past the bound", "Shall I continue?\n" + String(repeating: "x", count: 1_000), "no"),
+            row("B6", "a long head, the question at the end", String(repeating: "y", count: 5_000) + "\nShall I go on?", "asks"),
+            row("B7", "multi-byte text cut mid-character, then a question", euros + "\nContinuer ?", "asks"),
+            row("B8", "multi-byte text cut mid-character, no question", euros + "\nContinuer.", "no"),
+            row("B9", "a closing fence whose opening fence is past the bound",
+                "Here:\n```\n" + String(repeating: "q?\n", count: 200) + "```", "no"),
+            row("P1", "known false positive: a rhetorical question, then its answer",
+                "Why did it fail?\nThe cache was stale.\nFixed.", "asks"),
+            row("P2", "known false positive: a code span ending in ?", "The helper is `ready?`", "asks"),
+            row("F1", "known false negative: (y/n) after the mark", "Want me to do it? (y/n)", "no"),
+            row("F2", "known false negative: an emoji after the mark", "Ship it? 🚀", "no"),
+        ]
+    }()
+
+    @Test(arguments: askRows)
+    func theJudgementTable(_ row: AskRow) {
+        withHome { home in
+            let session = "a8000005-0105-4abc-8def-000000000105"
+            let result = runHook(json: finalMessageJSON("Stop", session, message: row.message,
+                                                        backgroundTasks: Self.runningTask), home: home)
+            #expect(result.exitCode == 0 && result.stdout.isEmpty)
+            let lines = askCheckLines(home)
+            #expect(lines.count == 1 && isAskCheckLine(lines[0], session: session, result: row.result),
+                    "\(row.id) must log result=\(row.result), got \(lines)")
+        }
+    }
+
+    @Test func theTableCoversBothWordsAndThePinnedBounds() throws {
+        #expect(Self.askRows.count == 36 && Set(Self.askRows.map(\.id)).count == 36, "vacuity guard")
+        #expect(Set(Self.askRows.map(\.result)) == ["asks", "no"])
+        let lines = try Self.read(Self.hookScriptURL).split(separator: "\n").map(String.init)
+        #expect(lines.filter { $0.hasPrefix("ASK_TAIL_BYTES=") } == ["ASK_TAIL_BYTES=\(Self.askTailBytes)"])
+        #expect(lines.filter { $0.hasPrefix("ASK_TAIL_LINES=") } == ["ASK_TAIL_LINES=\(Self.askTailLines)"])
+        #expect(Self.askTailBytes == 400 && Self.askTailLines == 3, "the contract values of this check")
+    }
+
+    /// Pure lint (reusable for canaries): where the final message may be
+    /// read, and what may come of it.
+    ///  1. The field is named on exactly two code lines, both in
+    ///     `final_message_check`: the string extraction, piped straight into
+    ///     the `tail -c` bound, and the type probe, whose output goes to
+    ///     /dev/null. No code line names the transcript.
+    ///  2. `final_message_check` is called once, from main(), on exactly the
+    ///     Stop + background-work + valid-session guard line, inside the
+    ///     payload window (after its mktemp, before its last removal); and
+    ///     `asked` is set nowhere else but its reset.
+    ///  3. `ask-check` is logged on exactly one code line: the closed-word
+    ///     arm of `case "$asked" in`, inside the background-task keep branch.
+    ///  4. The check's two functions write nothing: no mktemp, tee, echo, log
+    ///     or `>>`, every redirect goes to /dev/null, and every printf prints
+    ///     one of the four closed words, literally.
+    static func finalMessageCheckFailures(_ script: String) -> [String] {
+        let code = script.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        let check = functionBody("final_message_check", in: script)
+        let judge = functionBody("tail_asks", in: script)
+        let main = functionBody("main", in: script)
+        guard !check.isEmpty, !judge.isEmpty, !main.isEmpty else {
+            return ["final_message_check, tail_asks and main must exist (lint would be vacuous)"]
+        }
+        var failures: [String] = []
+
+        let extraction = #"t=$(set -o pipefail; plutil -extract last_assistant_message raw -expect string -o - "$1" 2>/dev/null | tail -c "$((ASK_TAIL_BYTES + 1))" | LC_ALL=C /usr/bin/tr '\000' '#') || {"#
+        let probe = #"if plutil -extract last_assistant_message raw -o - "$1" >/dev/null 2>&1; then"#
+        let naming = code.filter { $0.contains("last_assistant_message") }
+        if naming != [extraction, probe] {
+            failures.append("the field must be named on the extraction and the probe line only, got \(naming)")
+        }
+        if !(check.contains(extraction) && check.contains(probe)) {
+            failures.append("the extraction and the probe must sit in final_message_check")
+        }
+        if code.contains(where: { $0.contains("transcript") }) { failures.append("a code line names the transcript") }
+
+        let guardLine = #"[ "$event" = Stop ] && [ "$bg_running" = yes ] && valid_session "$session" && asked=$(final_message_check "$payload")"#
+        let calls = code.filter { $0.contains("final_message_check") && $0 != "final_message_check() {" }
+        if calls != [guardLine] { failures.append("one call, on the Stop + background-work guard line; got \(calls)") }
+        if let call = main.firstIndex(of: guardLine),
+           let mktemp = main.firstIndex(where: { $0.hasPrefix("payload=$(mktemp ") }),
+           let removal = main.lastIndex(of: #"rm -f "$payload" 2>/dev/null"#) {
+            if !(mktemp < call && call < removal) { failures.append("the check must run inside the payload window") }
+        } else {
+            failures.append("the guard line, the payload's mktemp or its removal is missing from main")
+        }
+        let sets = code.filter { $0.contains("asked=") }
+        if sets != [#"asked="""#, guardLine] { failures.append("asked is set by its reset and the guard only; got \(sets)") }
+
+        let logLine = #"asks|no|absent|unreadable) log "ask-check session=$session result=$asked" ;;"#
+        let logs = code.filter { $0.contains("ask-check") }
+        if logs != [logLine] { failures.append("ask-check must be logged on the closed-word line only, got \(logs)") }
+        if let keep = main.firstIndex(of: #"elif [ "$bg_running" = yes ]; then"#), let at = main.firstIndex(of: logLine) {
+            let next = main[(keep + 1)...].firstIndex { $0.hasPrefix("elif ") || $0 == "else" } ?? main.endIndex
+            if !(keep < at && at < next) { failures.append("the check line must sit in the background-task keep branch") }
+            if at == 0 || main[at - 1] != #"case "$asked" in"# {
+                failures.append(#"the check line must be the arm of `case "$asked" in`"#)
+            }
+        } else {
+            failures.append("the keep branch or the check line is missing from main")
+        }
+
+        for (name, body) in [("final_message_check", check), ("tail_asks", judge)] {
+            for line in body {
+                for token in ["mktemp", "tee ", "echo", "log ", ">>"] where line.contains(token) {
+                    failures.append("'\(token)' in \(name): \(line)")
+                }
+                let unredirected = ["2>/dev/null", ">/dev/null", "2>&1"]
+                    .reduce(line) { $0.replacingOccurrences(of: $1, with: "") }
+                if unredirected.contains(">") { failures.append("a redirect in \(name): \(line)") }
+                let printfs = line.components(separatedBy: "printf").count - 1
+                let closed = line.components(separatedBy: " ").indices.filter { index in
+                    let words = line.components(separatedBy: " ")
+                    guard words[index] == "printf", index + 1 < words.count else { return false }
+                    return ["asks", "asks;", "no", "no;", "absent", "absent;", "unreadable", "unreadable;"]
+                        .contains(words[index + 1])
+                }.count
+                if printfs != closed { failures.append("a printf of anything but a closed word in \(name): \(line)") }
+            }
+        }
+        return failures
+    }
+
+    @Test func theFinalMessageIsReadAndLoggedOnlyWhereTheContractSays() throws {
+        let failures = Self.finalMessageCheckFailures(try Self.read(Self.hookScriptURL))
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    /// Canaries: every rule of the lint above catches its mutant.
+    @Test func finalMessageCheckLintCatchesMutants() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        try #require(Self.finalMessageCheckFailures(original).isEmpty, "canary baseline must be clean")
+        let guardLine = #"  [ "$event" = Stop ] && [ "$bg_running" = yes ] && valid_session "$session" && asked=$(final_message_check "$payload")"#
+            + "\n"
+        let block = "        case \"$asked\" in\n"
+            + #"          asks|no|absent|unreadable) log "ask-check session=$session result=$asked" ;;"# + "\n"
+            + "        esac\n"
+        let clearLog = #"        log "clear session=$session event=$event$tinfo$pinfo""# + "\n"
+        let payloadGone = "  trap - EXIT TERM INT\n\n  if ! valid_session"
+        let judged = "  tail_asks \"$t\"\n"
+        let mutants: [(String, (String) -> String)] = [
+            ("checked on SubagentStop too", {
+                $0.replacingOccurrences(of: #"&& [ "$bg_running" = yes ] && valid_session"#,
+                                        with: #"|| [ "$event" = SubagentStop ] && [ "$bg_running" = yes ] && valid_session"#)
+            }),
+            ("checked with no background work", {
+                $0.replacingOccurrences(of: #" && [ "$bg_running" = yes ] && valid_session"#, with: " && valid_session")
+            }),
+            ("checked after the payload is gone", {
+                $0.replacingOccurrences(of: guardLine, with: "")
+                    .replacingOccurrences(of: payloadGone, with: "  trap - EXIT TERM INT\n" + guardLine + "\n  if ! valid_session")
+            }),
+            ("a second read of the field", {
+                $0.replacingOccurrences(of: guardLine, with: guardLine
+                    + #"  plutil -extract last_assistant_message raw -o - "$payload" >/dev/null 2>&1"# + "\n")
+            }),
+            ("the transcript read", {
+                $0.replacingOccurrences(of: guardLine, with: guardLine
+                    + #"  plutil -extract transcript_path raw -o - "$payload" >/dev/null 2>&1"# + "\n")
+            }),
+            ("logged on a clear", {
+                $0.replacingOccurrences(of: block, with: "").replacingOccurrences(of: clearLog, with: clearLog + block)
+            }),
+            ("any word logged", { $0.replacingOccurrences(of: "asks|no|absent|unreadable) log", with: "*) log") }),
+            ("a snippet logged", { $0.replacingOccurrences(of: judged, with: judged + "  log \"ask-check tail=${t: -12}\"\n") }),
+            ("the judgement prints the line", {
+                $0.replacingOccurrences(of: "printf asks; return 0", with: #"printf 'asks %s' "$line"; return 0"#)
+            }),
+            ("the end written to a file", {
+                $0.replacingOccurrences(of: judged, with: judged + "  printf '%s' \"$t\" >\"$STATE_DIR/.payload.tail\"\n")
+            }),
+            ("asked set elsewhere", { $0.replacingOccurrences(of: block, with: "        asked=$event\n" + block) }),
+        ]
+        for (name, transform) in mutants {
+            let mutant = transform(original)
+            #expect(mutant != original, "canary setup '\(name)'")
+            #expect(!Self.finalMessageCheckFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
     }
 
