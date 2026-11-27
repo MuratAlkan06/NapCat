@@ -299,8 +299,8 @@ mechanism macOS offers: **sudoers entries with exact argument matching.**
 NapCat has no telemetry and no account. It makes exactly three kinds of
 network request, and the code that may make them lives in four files: the
 ntfy sender, the update check and two CloudKit files (structure tests fail
-if any other file in `Sources/NapCat` names URL loading, or any other file
-of the four Mac targets imports CloudKit):
+if any other file of the four Mac targets names URL loading or imports
+CloudKit):
 
 - **ntfy** — only for the alerts you switched on (the lid alert, session
   alerts, and the catch-up summary after a dropped connection) and the test

@@ -1496,7 +1496,8 @@ struct LidGuardStructureTests {
     // MARK: - Symbol confinement
 
     /// THE NETWORKING ALLOWLIST (issue #111 amendment — explicit, three names):
-    /// the only Sources files that may reference the URL Loading System. The
+    /// the only files of the four Mac targets that may reference the URL
+    /// Loading System, all three in Sources/NapCat. The
     /// ntfy sender (B2/Track C publishes), the CloudKit sender (F3 stage 1 —
     /// it names CloudKit only and needs no URL loading at all, but is a
     /// sanctioned networking file), and the update check's GitHub client
@@ -1506,6 +1507,26 @@ struct LidGuardStructureTests {
     /// confinement: ConnectivityStructureTests — a path monitor that opens no
     /// connection — so none of these three may import it either.)
     static let networkingFiles = ["NtfyMessageSender.swift", "CloudKitMessageSender.swift", "GitHubReleaseChecker.swift"]
+
+    /// The lock reads all four Mac targets (#236): Sources/NapCat by file
+    /// name, as `swiftSources()` reads it, and the other three
+    /// (`ApprovalChannelStructureTests.directories`, Package.swift's four
+    /// targets: `thePackageManifestIsTodaysTargetList` keeps the manifest to
+    /// them) by path from the repository root, so no file there matches an
+    /// allowlist name, whatever it is called.
+    static let networkingOtherTargets = ApprovalChannelStructureTests.directories.filter { $0 != "Sources/NapCat" }
+
+    /// Every Swift file of the other three Mac targets (each folder is flat:
+    /// `everyFolderALockListsIsFlat`), comment-stripped as `swiftSources()`
+    /// strips, named by its path ("Sources/NapCatSeam/SeamSocket.swift").
+    static func otherTargetSources() throws -> [(name: String, text: String)] {
+        let root = repoRoot()
+        return try networkingOtherTargets.flatMap { directory -> [(name: String, text: String)] in
+            let url = root.appendingPathComponent(directory)
+            let names = try FileManager.default.contentsOfDirectory(atPath: url.path).filter { $0.hasSuffix(".swift") }.sorted()
+            return try names.map { (directory + "/" + $0, codeOnly(try String(contentsOf: url.appendingPathComponent($0), encoding: .utf8))) }
+        }
+    }
 
     /// What "references the URL Loading System" means: the session, the
     /// request, and every task kind. Matched case-sensitively in
@@ -1543,9 +1564,15 @@ struct LidGuardStructureTests {
     }
 
     @Test func urlLoadingIsConfinedToTheThreeSanctionedFiles() throws {
-        let sources = try Self.swiftSources()
+        let others = try Self.otherTargetSources()
+        let sources = try Self.swiftSources() + others
         #expect(Self.networkingConfinementFailures(sources).isEmpty, "\(Self.networkingConfinementFailures(sources))")
         #expect(Self.networkingFiles.count == 3, "the allowlist is explicit: three names")
+        // All four Mac targets are read, the other three by path (vacuity:
+        // each of them holds a file the scan sees).
+        #expect(ApprovalChannelStructureTests.directories.count == 4 && Self.networkingOtherTargets.count == 3, "the four Mac targets")
+        #expect(Set(others.map { $0.name.split(separator: "/").dropLast().joined(separator: "/") }) == Set(Self.networkingOtherTargets),
+                "vacuity: every other Mac target is read, each file named by its path")
 
         func mutate(_ name: String, _ transform: (String) -> String) -> [(name: String, text: String)] {
             sources.map { $0.name == name ? ($0.name, transform($0.text)) : $0 }
@@ -1574,6 +1601,19 @@ struct LidGuardStructureTests {
             ("H9, multi-line: a session in a //-led interpolation line", mutate("SettingsPanes.swift") {
                 $0 + Self.codeOnly("\nprivate func h9m() -> String {\n    switch /\"\"\"/ { default: break }\n    let s = \"\"\"\n"
                     + "    // \\(URLSession.shared)\n    \"\"\"\n    switch /\"\"\"/ { default: break }\n    return s\n}") }),
+            // #236: a use in each of the other three Mac targets, a new file
+            // there, and a file there under a sanctioned name.
+            ("the seam opens a session", mutate("Sources/NapCatSeam/SeamSocket.swift") {
+                $0 + "\nlet canary = URLSession(configuration: .ephemeral)" }),
+            ("the channel server opens a session", mutate("Sources/NapCatChannel/ChannelServer.swift") {
+                $0 + "\nlet canary = URLSession(configuration: .ephemeral)" }),
+            ("the relay builds a request", mutate("Sources/NapCatChannel/ChannelRelay.swift") {
+                $0 + "\nlet canary = URLRequest(url: u)" }),
+            ("the wire opens a session", mutate("Sources/NapCatWire/ApprovalWire.swift") {
+                $0 + "\nlet canary = URLSession(configuration: .ephemeral)" }),
+            ("a new file in another target", sources + [("Sources/NapCatSeam/SeamFetcher.swift", "let canary = s.dataTask(with: r)")]),
+            ("a sanctioned name in another target", sources + [("Sources/NapCatChannel/NtfyMessageSender.swift",
+                                                                "let canary = URLSession(configuration: .ephemeral)")]),
         ]
         for (name, mutant) in canaries {
             #expect(!Self.networkingConfinementFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")

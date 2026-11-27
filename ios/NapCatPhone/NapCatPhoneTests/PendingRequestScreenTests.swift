@@ -69,7 +69,7 @@ import UIKit
         #expect(text(.sent(.deny)) == "Sent — Deny is saved; your Mac hasn't confirmed it")
         #expect(text(.answered) == "Answered — an answer to this prompt was already saved")
         #expect(text(.expired) == "Expired — only your Mac can answer it now")
-        #expect(text(.withdrawn) == "Withdrawn — your Mac took this prompt back")
+        #expect(text(.withdrawn) == "Withdrawn — this prompt was taken back")
         #expect(PendingRequestScreen.allowTitle(.faceID) == "Allow with Face ID")
         #expect(PendingRequestScreen.allowTitle(.touchID) == "Allow with Touch ID")
         #expect(PendingRequestScreen.denyTitle(.faceID) == "Deny with Face ID")

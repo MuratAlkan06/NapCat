@@ -1414,6 +1414,6 @@ buttons, and the inbox refuses an answer before it asks for a match.
   starts again.
 - **The push.** A query subscription on new PromptRequest records in the
   approvals zone (`ApprovalWire.promptSubscriptionID`). Its push is the
-  app's title over fixed words ("A permission prompt is waiting on your
-  Mac.") with the default sound: no record field, no action and no silent
+  app's title over fixed words ("A permission prompt is waiting.") with
+  the default sound: no record field, no action and no silent
   wake. Tapping it opens that prompt once the inbox holds it.

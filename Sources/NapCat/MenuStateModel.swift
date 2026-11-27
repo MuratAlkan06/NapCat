@@ -1523,10 +1523,12 @@ final class MenuStateModel: ObservableObject {
     /// The Remote approvals row's caption (canon C2: a fragment, state word
     /// first, no row-title prefix). Off is a choice (nominal). On, it is
     /// honest about this build: NapCat listens and keeps every prompt on
-    /// the Mac, because the iPhone half cannot answer yet — calm info, so it
-    /// shows under the row while on. A socket that could not be opened is a
-    /// warning: switched on, but not even listening — said in user words,
-    /// with the next step (every menu or Settings open tries again).
+    /// the Mac, because the Mac never arms forwarding (its one seam host is
+    /// built unarmed); the line also says the iPhone app cannot answer yet,
+    /// which holds too — calm info, so it shows under the row while on. A
+    /// socket that could not be opened is a warning: switched on, but not
+    /// even listening — said in user words, with the next step (every menu
+    /// or Settings open tries again).
     /// #205: listening with no iPhone paired (`hold`), the row says to
     /// pair one first, and where — calm info like local only, since nothing
     /// is wrong; a socket that could not be opened still shows first.
