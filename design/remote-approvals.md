@@ -1066,11 +1066,14 @@ arms anything.
     connections and its peer reader, the seam file's send, write, read and
     descriptor (also by the descriptor's other names: the read sources, a
     source's `handle`, at no line today, and the listener's accepted
-    `client`, #208) and the relay's writer to Claude Code (`emit`) at
-    today's lines, so a new line of those files that names one of them
-    fails (a line reaching the socket by none of them, through the
-    connection handed on whole or the listener's peer reader, is not read
-    itself); the
+    `client`, #208) and the relay's writer to Claude Code (`emit`) and its
+    open requests (`open`, #210) at today's lines, so a new line of those
+    files that names one of them fails (a line reaching the socket by none
+    of them, through the connection handed on whole or the listener's peer
+    reader, is not read itself); the channel server's stream writer and its
+    type, named in the four targets at its one call and their declarations
+    alone (#210), so a second caller fails (one through the relay's own
+    `emit` is the relay's word pin's to read); the
     seam connection's writer and reader, the intake's `receive`, the channel
     server's stream type and the relay's two receives are pinned whole
     (below); the four targets call a C write (`write`, `send` and their
