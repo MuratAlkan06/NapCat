@@ -53,18 +53,21 @@ import Testing
 ///    writes are pinned at today's site, the connection type is named at
 ///    today's sites alone in the four targets, the host names its
 ///    connections and its peer reader at today's lines, the seam file its
-///    send, its write, its read and its descriptor, and the relay its writer
-///    to Claude Code (`emit`), so a new line of those files that names one
-///    of them fails; the seam connection's writer (`send`) and reader
-///    (`drain`) are pinned whole (#197), and so are the channel server's
-///    stream type (`StandardStreams`) and the relay's two `receive`s, the
-///    last writes before Claude Code (#199), so nothing is added to any of
-///    them. A line elsewhere in the seam file that reaches the socket by
-///    another name (its read source) is not read itself, and k. and n. read
-///    the writers they list by their spelled names only: a write to that
-///    socket, there or in code it is handed to, in a spelling neither reads
-///    (n. says which) or through a file API and a path, is not caught by
-///    them;
+///    send, its write, its read and its descriptor, also by the
+///    descriptor's other names (#208: the read sources, a source's
+///    `handle`, at no line today, and the listener's accepted `client`),
+///    and the relay its writer to Claude Code (`emit`), so a new line of
+///    those files that names one of them fails; the seam connection's
+///    writer (`send`) and reader (`drain`) are pinned whole (#197), and so
+///    are the channel server's stream type (`StandardStreams`) and the
+///    relay's two `receive`s, the last writes before Claude Code (#199), so
+///    nothing is added to any of them. A line of the seam file that reaches
+///    the socket by none of those names (the connection handed on whole, or
+///    the descriptor through the peer reader the listener is given) is not
+///    read itself, and k. and n. read the writers they list by their
+///    spelled names only: a write to that socket, there or in code it is
+///    handed to, in a spelling neither reads (n. says which) or through a
+///    file API and a path, is not caught by them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -1457,6 +1460,35 @@ struct DecisionSinkStructureTests {
     static let seamReadSites: [String: Int] = [
         "let count = read(descriptor, &buffer, buffer.count)": 1,
     ]
+    /// The seam descriptor's other names (#208), at today's lines: the read
+    /// sources of the connection and the listener (`source`; a source's
+    /// `handle` is its descriptor, named at no line today) and the
+    /// listener's accepted descriptor before it becomes a connection
+    /// (`client`).
+    static let seamSourceSites: [String: Int] = [
+        "guard isOpen, source == nil else { return }": 1,
+        "guard let source else { return }": 1,
+        "guard source == nil else { return true }": 1,
+        "if let source {": 2,
+        "let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)": 2,
+        "private var source: DispatchSourceRead?": 2,
+        "public var isListening: Bool { source != nil }": 1,
+        "self.source = nil": 1,
+        "self.source = source": 4,
+        "source.cancel()": 3,
+        "source.resume()": 2,
+        "source.setCancelHandler { Darwin.close(descriptor) }": 2,
+        "source.setEventHandler {": 1,
+        "source.setEventHandler { [weak self] in self?.drain() }": 1,
+    ]
+    static let seamClientSites: [String: Int] = [
+        "Darwin.close(client)": 1,
+        "guard SeamSocket.configureConnected(client), SeamPeerPolicy.accepts(peer, ownUID: ownUID), let peer else {": 1,
+        "guard client >= 0 else { return }": 1,
+        "let client = Darwin.accept(descriptor, nil, nil)": 1,
+        "let peer = peerReader(client)": 1,
+        "onConnection(SeamConnection(descriptor: client, peer: peer, queue: queue, stallTimeout: stallTimeout))": 1,
+    ]
     /// Every line of the seam file naming a descriptor.
     static let seamDescriptorSites: [String: Int] = [
         "&& flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0": 1,
@@ -1516,6 +1548,9 @@ struct DecisionSinkStructureTests {
         (ApprovalChannelStructureTests.seamFile, #"\bwrite\b"#, seamWriteSites),
         (ApprovalChannelStructureTests.seamFile, #"\bread\b"#, seamReadSites),
         (ApprovalChannelStructureTests.seamFile, #"\bdescriptor\b"#, seamDescriptorSites),
+        (ApprovalChannelStructureTests.seamFile, #"\bsource\b"#, seamSourceSites),
+        (ApprovalChannelStructureTests.seamFile, #"\bhandle\b"#, [:]),
+        (ApprovalChannelStructureTests.seamFile, #"\bclient\b"#, seamClientSites),
         (ApprovalChannelStructureTests.relayFile, #"\bemit\b"#, relayEmitSites),
     ]
 
@@ -1526,8 +1561,8 @@ struct DecisionSinkStructureTests {
         for pin in connectionWordPins {
             failures += PairingStructureTests.appSiteFailures(pin.pattern, in: sources.filter { $0.name == pin.file },
                                                               allowed: [pin.file: pin.allowed],
-                                                              rule: "a connection, its peer reader, its reads and writes and the relay's writer are named at "
-                                                                  + "today's lines alone")
+                                                              rule: "a connection, its peer reader, the seam's descriptor by each of its names, its reads and "
+                                                                  + "writes and the relay's writer are named at today's lines alone")
         }
         return unique(failures)
     }
@@ -1589,8 +1624,9 @@ struct DecisionSinkStructureTests {
     /// A new line of the host, the seam file or the relay that names a
     /// connection's writer, or the relay's own, fails: the host names its
     /// connections and its peer reader at today's lines, the seam file its
-    /// send, its write, its read (#197) and its descriptor, and the relay its
-    /// `emit`. The re-check's residual plants, verbatim, as the disk would
+    /// send, its write, its read (#197) and its descriptor (by its other
+    /// names too, #208), and the relay its `emit`. The re-check's residual
+    /// plants, verbatim, as the disk would
     /// hold them: a writer reached through the connection type's own body
     /// (RES1), through a descriptor (RES2) and through an inferred type
     /// (RES3). Each is caught by these pins; RES1 and RES2, which call a
@@ -1865,6 +1901,81 @@ struct DecisionSinkStructureTests {
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never read(descriptor, &buffer, n)"))
         }
         #expect(Self.connectionWordFailures(readControls).isEmpty, "over-match: \(Self.connectionWordFailures(readControls))")
+    }
+
+    // MARK: - f, continued. The seam descriptor's other names (#208)
+
+    /// Where the connection stores its line handler, in `start` (outside
+    /// the pinned bodies), and the road #207's verification found around
+    /// the pinned reader, as inert text (never compiled): the handler
+    /// wrapped there …
+    static let handlerStored: String = "        self.onLine = onLine\n"
+    static let handlerWrapped: String = "        self.onLine = { [weak self] line in\n            onLine(line)\n            self?.zzAnswer(line)\n        }\n"
+    /// … so each line also reaches a new member of the connection's type,
+    /// which hands it on with the read source's descriptor.
+    static let sourceMember: String = "    private func zzAnswer(_ line: [UInt8]) {\n        ZZOut.answer(line, on: source?.handle)\n    }\n\n"
+
+    /// The seam file names its descriptor's other names at today's lines
+    /// (#208): the read sources, a source's descriptor (`handle`, at no line
+    /// today) and the listener's accepted descriptor. The road #207's
+    /// verification found, as inert text — the connection's line handler
+    /// wrapped where `start` stores it, each line handed to a new member with
+    /// the read source's descriptor — is caught by these word pins alone;
+    /// every other pin of this suite reads it as the tree.
+    @Test func theSeamDescriptorsOtherNamesAreNamedAtTodaysLines() throws {
+        let sources: Sources = try Self.uncutSources()
+        #expect(Self.connectionWordFailures(sources).isEmpty, "\(Self.connectionWordFailures(sources))")
+        let seam: String = ApprovalChannelStructureTests.seamFile
+        let resumed: String = "        source.resume()\n    }\n\n    private func drain() {\n"
+        let accepted: String = "            let client = Darwin.accept(descriptor, nil, nil)\n"
+        let listening: String = "    public var isListening: Bool { source != nil }\n"
+        let anchors: [String] = [Self.handlerStored, Self.seamCloseHead, resumed, accepted, listening]
+        let seamText: String = Self.text(seam, in: sources)
+        for anchor in anchors {
+            let found: Int = ApprovalChannelStructureTests.count(anchor, in: seamText)
+            #expect(found == 1, "vacuity: '\(anchor.prefix(50))' is in the seam file once")
+        }
+        let rows: [String] = Self.connectionWordPins.filter { $0.file == seam }.map(\.pattern)
+        #expect([#"\bsource\b"#, #"\bhandle\b"#, #"\bclient\b"#].allSatisfy { rows.contains($0) }, "vacuity: the seam file reads the three names")
+        let road: Sources = Self.mutate(sources, seam) {
+            $0.replacingOccurrences(of: Self.handlerStored, with: Self.handlerWrapped)
+                .replacingOccurrences(of: Self.seamCloseHead, with: Self.sourceMember + Self.seamCloseHead)
+        }
+        #expect(road.map { $0.text } != sources.map { $0.text }, "the road did not apply")
+        #expect(!Self.connectionWordFailures(road).isEmpty, "the road was NOT caught by the descriptor's names")
+        let others: [String] = Self.othersCatching(road, besides: "connection words", baseline: Self.pinBaseline(sources))
+        #expect(others.isEmpty, "the road is the connection words' to catch, but \(others) caught it too")
+        // One canary per name, and spelled apart: the read source handed on
+        // as it starts, a source's descriptor read in the listener, the
+        // accepted descriptor handed on, the read source backticked or
+        // behind a block comment, and a source's descriptor by a key path.
+        let member: (String) -> Sources = { line in
+            Self.mutate(sources, seam) { $0.replacingOccurrences(of: Self.seamCloseHead, with: line + Self.seamCloseHead) }
+        }
+        let mutants: [(String, Sources)] = [
+            ("the read source handed on as it starts", Self.mutate(sources, seam) {
+                $0.replacingOccurrences(of: resumed, with: "        source.resume()\n        zzKeep(source)\n    }\n\n    private func drain() {\n") }),
+            ("a source's descriptor read in the listener", Self.mutate(sources, seam) {
+                $0.replacingOccurrences(of: listening, with: listening + "    func zz(_ s: DispatchSourceRead) -> UInt { s.handle }\n") }),
+            ("the accepted descriptor handed on", Self.mutate(sources, seam) {
+                $0.replacingOccurrences(of: accepted, with: accepted + "            zzKeep(client)\n") }),
+            ("the read source backticked", member("    func zz() { zzKeep(self.`source`) }\n")),
+            ("the read source behind a block comment", member("    func zz() { zzKeep(self./* x */source) }\n")),
+            ("a source's descriptor by a key path", member("    static let zz = \\DispatchSourceRead.handle\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.connectionWordFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned words (the
+        // file's own `DispatchSource`, `handler` and `isListening` among them
+        // already), and a whole-line comment naming them.
+        let controls: Sources = Self.mutate(sources, seam) {
+            $0.appending("\nlet sources = 0, sourceCount = 1, resource = 2, handles = 3, handled = 4, fileHandle = 5, clients = 6, clientCount = 7"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never source?.handle, never zzKeep(client)"))
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.connectionWordFailures(controls).isEmpty, "over-match: \(Self.connectionWordFailures(controls))")
     }
 
     // MARK: - f, continued. The channel server's last writes, whole (#199)

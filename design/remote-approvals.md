@@ -1064,8 +1064,13 @@ arms anything.
     sites, the host's connection writes at today's site, the connection
     type named at today's sites alone, and the host's words for its
     connections and its peer reader, the seam file's send, write, read and
-    descriptor and the relay's writer to Claude Code (`emit`) at today's
-    lines, so a new line of those files that names one of them fails; the
+    descriptor (also by the descriptor's other names: the read sources, a
+    source's `handle`, at no line today, and the listener's accepted
+    `client`, #208) and the relay's writer to Claude Code (`emit`) at
+    today's lines, so a new line of those files that names one of them
+    fails (a line reaching the socket by none of them, through the
+    connection handed on whole or the listener's peer reader, is not read
+    itself); the
     seam connection's writer and reader, the intake's `receive`, the channel
     server's stream type and the relay's two receives are pinned whole
     (below); the four targets call a C write (`write`, `send` and their
