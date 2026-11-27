@@ -28,7 +28,7 @@ struct ApprovalChannelTests {
         let doc = try String(contentsOf: Self.designDocURL, encoding: .utf8)
         let failures = Self.versionStampFailures(doc, expected: ApprovalChannel.serverVersion)
         #expect(failures.isEmpty, "\(failures)")
-        #expect(ApprovalChannel.serverVersion == 2, "the contract value since #150")
+        #expect(ApprovalChannel.serverVersion == 3, "the contract value since #221")
         #expect(ApprovalChannel.serverVersionStampPrefix == "napcat-channel-version: ")
     }
 
@@ -137,7 +137,7 @@ struct ApprovalChannelTests {
                                                inputPreview: #"{"file_path":"/a/b","old_string":"x","new_string":"y"}"#)
         let client = ChannelClient(name: "claude-code", version: "2.1.326")
         let prompt = try #require(ApprovalChannel.promptFrame(request, client: client))
-        #expect(prompt == #"{"frame":"prompt","v":2,"request":"qwert","tool":"Edit","preview":"{\"file_path\":\"/a/b\",\"old_string\":\"x\",\"new_string\":\"y\"}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#)
+        #expect(prompt == #"{"frame":"prompt","v":2,"request":"qwert","tool":"Edit","preview":"{\"file_path\":\"/a/b\",\"old_string\":\"x\",\"new_string\":\"y\"}","server":3,"client":"claude-code","clientVersion":"2.1.326"}"#)
         #expect(ApprovalChannel.frame(Array(prompt.utf8)) == .prompt(request, server: ApprovalChannel.serverVersion, client: client))
         for verdict in ApprovalWire.Verdict.allCases {
             let line = ApprovalChannel.verdictFrame(id, verdict)

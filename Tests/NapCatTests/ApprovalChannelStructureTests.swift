@@ -266,6 +266,252 @@ struct ApprovalChannelStructureTests {
         }
     }
 
+    // MARK: - No answer goes back until the listener is identified (#221)
+
+    /// The relay's strict read of a verdict frame (a refused one closes the
+    /// link), the guard that withholds every verdict, and the open check.
+    static let seamRead: String = "        guard case .verdict(let requestID, let verdict)? = ApprovalChannel.frame(line) else {\n"
+        + "            note(.frameRefused)\n            link?.close()\n            return\n        }\n"
+    static let answerGuard: String = "        guard ApprovalChannel.passesAnswersBack else {\n            note(.verdictWithheld)\n"
+        + "            return\n        }\n"
+    static let openCheck: String = "        guard open.remove(requestID) != nil else {\n"
+    /// The wire's switch, as declared: a constant, false.
+    static let answerSwitch: String = "public static let passesAnswersBack = false"
+    /// The relay's one read of it.
+    static let answerRead: String = "guard ApprovalChannel.passesAnswersBack else {"
+
+    /// The seam's peer check reads the listener's user, not which program it
+    /// is, so the server passes no answer back: the relay withholds every
+    /// verdict right after its strict read, ahead of the open check (which
+    /// the one verdict notification follows directly, `verdictSiteFailures`),
+    /// so no path from a seam frame to that write passes it; the switch is
+    /// declared once, a false constant, and named in the four targets there
+    /// and in that guard alone, so it is not flipped, shadowed or read
+    /// another way; and the relay reaches Claude Code only through the
+    /// writer it is handed (it names none of the server's own streams).
+    static func answerGuardFailures(_ sources: Sources) -> [String] {
+        var failures: [String] = []
+        let relay = text(relayFile, in: sources)
+        if count(answerGuard, in: relay) != 1 || count(seamRead + answerGuard + openCheck, in: relay) != 1 {
+            failures.append("the relay must withhold every verdict right after its strict read, before the open check (#221)")
+        }
+        failures += PairingStructureTests.appSiteFailures(#"\bpassesAnswersBack\b"#, in: sources,
+                                                          allowed: ["ApprovalChannel.swift": [answerSwitch: 1], relayFile: [answerRead: 1]],
+                                                          rule: "the answer switch is declared false once and read by the relay's guard alone (#221)")
+        for token in ["StandardStreams", "writeLine", "STDOUT_FILENO", "STDERR_FILENO"] where relay.contains(token) {
+            failures.append("'\(token)' in \(relayFile) — the relay writes to Claude Code only through the writer it is handed")
+        }
+        return failures
+    }
+
+    @Test func theServerPassesNoAnswerBackUntilTheListenerIsIdentified() throws {
+        let sources = try Self.sources()
+        #expect(Self.answerGuardFailures(sources).isEmpty, "\(Self.answerGuardFailures(sources))")
+        let relay: String = Self.text(Self.relayFile, in: sources)
+        let wire: String = Self.text("ApprovalChannel.swift", in: sources)
+        let emitted: String = "        emit(ApprovalChannel.verdictNotification("
+        let relayed: String = "        open.insert(request.requestID)\n        note(.relayed)\n"
+        for anchor in [Self.seamRead, Self.answerGuard, Self.openCheck, emitted, relayed] {
+            #expect(Self.count(anchor, in: relay) == 1, "vacuity: '\(anchor.prefix(50))' is in the relay once")
+        }
+        #expect(Self.count(Self.answerSwitch, in: wire) == 1, "vacuity: the switch is declared in the wire")
+        let relayMutant: (String, String) -> Sources = { old, new in
+            Self.mutate(sources, Self.relayFile) { $0.replacingOccurrences(of: old, with: new) }
+        }
+        let wireMutant: (String) -> Sources = { new in
+            Self.mutate(sources, "ApprovalChannel.swift") { $0.replacingOccurrences(of: Self.answerSwitch, with: new) }
+        }
+        let mutants: [(String, Sources)] = [
+            ("the guard dropped", relayMutant(Self.answerGuard, "")),
+            ("the guard inverted", relayMutant(Self.answerRead, "guard !ApprovalChannel.passesAnswersBack else {")),
+            ("the guard passed by anything", relayMutant(Self.answerRead, "guard ApprovalChannel.passesAnswersBack || true else {")),
+            ("the guard moved past the open check", Self.mutate(relayMutant(Self.answerGuard + Self.openCheck, Self.openCheck), Self.relayFile) {
+                $0.replacingOccurrences(of: emitted, with: Self.answerGuard + emitted) }),
+            ("the guard ahead of the strict read", Self.mutate(relayMutant(Self.seamRead + Self.answerGuard, Self.seamRead), Self.relayFile) {
+                $0.replacingOccurrences(of: Self.seamRead, with: Self.answerGuard + Self.seamRead) }),
+            ("the switch flipped to true", wireMutant("public static let passesAnswersBack = true")),
+            ("the switch made a variable", wireMutant("public static var passesAnswersBack = false")),
+            ("the switch made computed", wireMutant("public static var passesAnswersBack: Bool { true }")),
+            ("the switch's value hidden behind an expression", wireMutant("public static let passesAnswersBack = false || true")),
+            ("the switch declared twice behind #if", wireMutant("#if DEBUG\n    public static let passesAnswersBack = true\n    #else\n    "
+                + Self.answerSwitch + "\n    #endif")),
+            ("the switch shadowed in the relay's module", Self.mutate(sources, Self.serverFile) {
+                $0 + "\nextension ApprovalChannel { static var passesAnswersBack: Bool { true } }" }),
+            ("the switch read somewhere else", Self.mutate(sources, Self.intakeFile) {
+                $0 + "\nlet zzAnswers = ApprovalChannel.passesAnswersBack || true" }),
+            ("a second write to Claude Code through the server's stream", relayMutant(relayed, relayed + "        StandardStreams.writeLine(frame)\n")),
+            ("the server's stream handed to the relay", relayMutant(relayed, relayed + "        let zz: (String) -> Void = StandardStreams.writeLine\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.answerGuardFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: blanks around the declaration's line, and
+        // names that only contain the switch's.
+        let controls: Sources = Self.mutate(wireMutant("\t" + Self.answerSwitch + "   "), Self.hostFile) {
+            $0 + "\nlet zzPassesAnswersBackCount = 0, passesAnswersBackward = 1"
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.answerGuardFailures(controls).isEmpty, "over-match: \(Self.answerGuardFailures(controls))")
+        // A type in the relay's module named like the wire's, answering any
+        // member by dynamic lookup, that never spells the switch: the guard
+        // and the switch's sites are as they were, so this lock reads it as
+        // the tree; the borrowed-name pin, alone, catches it.
+        let lookup: String = "\n@dynamicMemberLookup\nenum ApprovalChannel {\n    static subscript(dynamicMember name: String) -> Bool { true }\n}\n"
+        let uncut: Sources = try DecisionSinkStructureTests.uncutSources()
+        let looked: Sources = Self.mutate(uncut, Self.serverFile) { $0 + lookup }
+        #expect(Self.answerGuardFailures(Self.mutate(sources, Self.serverFile) { $0 + lookup }).isEmpty, "the lookup type names no switch")
+        let catching: [String] = DecisionSinkStructureTests.othersCatching(looked, besides: "",
+                                                                           baseline: DecisionSinkStructureTests.pinBaseline(uncut))
+        #expect(catching == ["borrowed names"], "the lookup type is the borrowed-name pin's alone to catch: \(catching) caught it")
+    }
+
+    // MARK: - The server's output stream is handed to the relay once (#221)
+
+    /// The channel server's entry point, whole, from its attribute to its
+    /// type's closing brace (so no member joins it): the server's queue, the
+    /// socket path, the one relay (handed the output stream as its `emit`,
+    /// and a connector that hands each seam line to it alone) and the reader
+    /// of standard input. No test runs `main` (it ends in `dispatchMain`),
+    /// so this pin is what reads it.
+    static let serverMainWhole: String = [
+        "@main enum ChannelServer {", #"private static let logger = Logger(subsystem: "com.muratalkan.napcat", category: "channel")"#,
+        "static func main() {", "signal(SIGPIPE, SIG_IGN)", #"let queue = DispatchQueue(label: "com.muratalkan.napcat.channel")"#,
+        "let socketPath = SeamPaths.homeDirectory().map(SeamPaths.socketPath(home:))", streamHandoff,
+        "guard let socketPath, let connection = SeamClient.connect(socketPath: socketPath, queue: queue) else { return nil }",
+        "connection.start(onLine: onFrame, onClose: onClose)", "return connection",
+        #"}, note: { logger.info("relay: \($0.rawValue, privacy: .public)") })"#,
+        "let input = StandardInput(queue: queue) { relay.receive(stdinLine: $0) }", "input.start()", "dispatchMain()", "}", "}",
+    ].joined(separator: " ")
+    static let serverMainPin: DecisionSinkStructureTests.WholePin = (serverFile, #"\bfunc\s+main\b"#, serverMainWhole)
+    /// The one line that hands the server's output stream to the relay.
+    static let streamHandoff: String = "let relay = ChannelRelay(emit: StandardStreams.writeLine, connect: { onFrame, onClose in"
+    /// The output stream's type and its writer, by name, in the four
+    /// targets: at the type's declaration, the writer's, and the handoff
+    /// alone (which names both).
+    static let streamWordPattern: String = #"\b(?:StandardStreams|writeLine)\b"#
+    static let streamWordSites: [String: [String: Int]] = [
+        serverFile: ["enum StandardStreams {": 1, "static func writeLine(_ line: String) {": 1, streamHandoff: 2],
+    ]
+
+    /// `sources`: `DecisionSinkStructureTests.uncutSources()`. The entry
+    /// point is declared once and is exactly as pinned, in every scan copy.
+    static func serverMainFailures(_ sources: Sources) -> [String] {
+        DecisionSinkStructureTests.wholeFailures(sources, [serverMainPin])
+    }
+
+    /// `sources`: `DecisionSinkStructureTests.uncutSources()`. The output
+    /// stream is named at today's lines alone, in every scan copy.
+    static func streamWordFailures(_ sources: Sources) -> [String] {
+        DecisionSinkStructureTests.absent(streamWordSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(streamWordPattern, in: sources, allowed: streamWordSites,
+                                                    rule: "the server's output stream is declared once and handed to the relay once (#221)")
+    }
+
+    /// The relay withholds every verdict, but it reads only the lines the
+    /// server's `main` hands it, and no test runs `main`: so `main` is
+    /// pinned whole, and the output stream is named at today's lines alone.
+    /// A connector that also writes each seam line to Claude Code (by name,
+    /// through a local alias, or by a second relay) is caught by both pins;
+    /// any other statement in `main` (a C write, a stdio stream, `print`, a
+    /// standard file handle, or one that writes nothing) by the whole pin,
+    /// the writers among them by the C-write or descriptor-writer lock too;
+    /// the stream named outside `main`, by the word pin; a writer outside
+    /// `main`, by those two locks.
+    @Test func theServersOutputStreamIsHandedToTheRelayOnce() throws {
+        let sources: Sources = try DecisionSinkStructureTests.uncutSources()
+        #expect(Self.serverMainFailures(sources).isEmpty, "\(Self.serverMainFailures(sources))")
+        #expect(Self.streamWordFailures(sources).isEmpty, "\(Self.streamWordFailures(sources))")
+        let server: String = Self.text(Self.serverFile, in: sources)
+        let handoff: String = "        " + Self.streamHandoff + "\n"
+        let started: String = "            connection.start(onLine: onFrame, onClose: onClose)\n"
+        let dispatched: String = "        dispatchMain()\n"
+        let logged: String = "    private static let logger = Logger(subsystem: \"com.muratalkan.napcat\", category: \"channel\")\n"
+        let queued: String = "        let queue = DispatchQueue(label: \"com.muratalkan.napcat.channel\")\n"
+        let readIn: String = "        let count = read(STDIN_FILENO, &buffer, buffer.count)\n"
+        for anchor in [handoff, started, dispatched, logged, queued, readIn] {
+            #expect(Self.count(anchor, in: server) == 1, "vacuity: '\(anchor.prefix(50))' is in the server once")
+        }
+        #expect(ApprovalRecordPathStructureTests.siteTally(Self.streamWordPattern, in: server) == Self.streamWordSites[Self.serverFile],
+                "vacuity: the words are read at today's three lines, the handoff naming both")
+        let planted: (String, String) -> Sources = { anchor, replacement in
+            Self.mutate(sources, Self.serverFile) { $0.replacingOccurrences(of: anchor, with: replacement) }
+        }
+        let inMain: (String) -> Sources = { line in planted(dispatched, line + dispatched) }
+        let appended: (String) -> Sources = { text in Self.mutate(sources, Self.serverFile) { $0 + text } }
+        let tapped: String = "            connection.start(onLine: { onFrame($0); StandardStreams.writeLine(String(decoding: $0, as: UTF8.self)) }, "
+            + "onClose: onClose)\n"
+        let aliased: Sources = Self.mutate(sources, Self.serverFile) {
+            $0.replacingOccurrences(of: handoff, with: "        let out = StandardStreams.writeLine\n" + handoff)
+                .replacingOccurrences(of: started, with: "            connection.start(onLine: { onFrame($0); out(String(decoding: $0, as: UTF8.self)) }, "
+                                      + "onClose: onClose)\n")
+        }
+        let decoy: Sources = Self.mutate(planted(started, "            _ = write(1, \"{}\\n\", 3)\n" + started), Self.serverFile) {
+            $0 + "\nlet zzDecoy = #\"" + Self.serverMainWhole + "\"#\n"
+        }
+        // Which of the two pins catches each, and which existing lock
+        // besides ("" for none).
+        let mutants: [(name: String, planted: Sources, whole: Bool, words: Bool, also: String)] = [
+            ("the connector writing each seam line to the output stream", planted(started, tapped), true, true, ""),
+            ("the same through a local alias", aliased, true, true, ""),
+            ("a second relay handed the output stream", inMain("        let zzRelay = ChannelRelay(emit: StandardStreams.writeLine, "
+                + "connect: { _, _ in nil }, note: { _ in })\n"), true, true, ""),
+            ("the one handoff handed a wrapper", planted("ChannelRelay(emit: StandardStreams.writeLine,",
+                                                         "ChannelRelay(emit: { StandardStreams.writeLine($0); zzTap($0) },"), true, true, ""),
+            ("the writer backticked in main", inMain("        StandardStreams.`writeLine`(\"{}\")\n"), true, true, ""),
+            ("the writer behind a block comment in main", inMain("        StandardStreams./* x */writeLine(\"{}\")\n"), true, true, ""),
+            ("the handoff repeated in another function", appended("\nenum ZZ {\n    static func zz() {\n        " + Self.streamHandoff
+                + "\n            nil\n        }, note: { _ in })\n    }\n}\n"), false, true, ""),
+            ("the output stream aliased beside the entry point", appended("\ntypealias ZZOut = StandardStreams\n"), false, true, ""),
+            ("a direct write to standard output in main", inMain("        _ = write(STDOUT_FILENO, \"{}\\n\", 3)\n"), true, false, "C writes"),
+            ("a write to descriptor 1 in the connector", planted(started, "            _ = write(1, \"{}\\n\", 3)\n" + started), true, false,
+             "C writes"),
+            ("fputs to standard output in main", inMain("        fputs(\"{}\\n\", stdout)\n"), true, false, "descriptor writers"),
+            ("print in main", inMain("        print(\"{}\")\n"), true, false, "descriptor writers"),
+            ("the standard output handle in main", inMain("        FileHandle.standardOutput.write(Data(\"{}\\n\".utf8))\n"), true, false,
+             "descriptor writers"),
+            ("a direct write to standard output in the input reader", planted(readIn, readIn + "        _ = write(STDOUT_FILENO, \"{}\\n\", 3)\n"),
+             false, false, "C writes"),
+            ("fputs to standard output in the input reader", planted(readIn, readIn + "        fputs(\"{}\\n\", stdout)\n"), false, false,
+             "descriptor writers"),
+            ("a statement in main that writes nothing", inMain("        _ = 0\n"), true, false, ""),
+            ("a harmless edit in main, the queue's label", planted(queued, queued.replacingOccurrences(of: ".channel\"", with: ".channel.zz\"")),
+             true, false, ""),
+            ("a member added to the entry point's type", planted(logged, logged + "    static let zz = 0\n"), true, false, ""),
+            ("the pinned entry point kept in a literal, the real one changed", decoy, true, true, "C writes"),
+        ]
+        for (name, mutant, whole, words, also) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(Self.serverMainFailures(mutant).isEmpty != whole, "canary '\(name)': the whole pin \(whole ? "missed it" : "read it")")
+            #expect(Self.streamWordFailures(mutant).isEmpty != words, "canary '\(name)': the word pin \(words ? "missed it" : "read it")")
+            if !also.isEmpty {
+                let lock = DecisionSinkStructureTests.sourcePins.filter { $0.name == also }
+                #expect(lock.count == 1 && lock.allSatisfy { !$0.failures(mutant).isEmpty }, "canary '\(name)' was NOT caught by the \(also) lock")
+            }
+        }
+        // Over-match controls: whitespace and comments inside `main` (no
+        // trailing comment on a line the word pin reads: those lines are
+        // read as written), a comment above the entry point, a body outside
+        // it, and names that only contain the stream's words.
+        let guarded: String = "            guard let socketPath, let connection = SeamClient.connect(socketPath: socketPath, queue: queue) else { return nil }\n"
+        let started2: String = "        input.start()\n"
+        for anchor in [readIn, guarded, started2, "@main\n"] {
+            #expect(Self.count(anchor, in: server) == 1, "vacuity: '\(anchor.prefix(50))' is in the server once")
+        }
+        let controls: Sources = Self.mutate(sources, Self.serverFile) {
+            $0.replacingOccurrences(of: guarded, with: "            guard let socketPath,\n\t\t\t\t  let connection = SeamClient.connect(socketPath: socketPath, "
+                                    + "queue: queue) else { return nil }\n")
+                .replacingOccurrences(of: started2, with: "\n\t\t// stdin last\n        input.start()   // then wait\n\n")
+                .replacingOccurrences(of: "@main\n", with: "/// zz\n@main\n")
+                .replacingOccurrences(of: readIn, with: "        let count: Int = read(STDIN_FILENO, &buffer, buffer.count)\n")
+                + "\nstruct StandardStreamsLog {}\nenum ZZStandardStreams { static let writeLines = 0, rewriteLine = 1, writeLineCount = 2 }"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never StandardStreams.writeLine(frame)")
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.serverMainFailures(controls).isEmpty, "over-match: \(Self.serverMainFailures(controls))")
+        #expect(Self.streamWordFailures(controls).isEmpty, "over-match: \(Self.streamWordFailures(controls))")
+    }
+
     // MARK: - The gate classifies every prompt before its lifecycle opens
 
     /// The intake's strict read of a frame, its server and client bound.

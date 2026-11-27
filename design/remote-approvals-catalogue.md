@@ -3,8 +3,9 @@
 Status: regenerated in slice S1 (issue #125) from the test rows, which are
 normative, and revised in slice S-GATE (issue #145), for Read's arguments
 (issue #149) and for the path alphabet (issue #159), each of which only made
-the gate stricter, and for seam frame version 2 (issue #150), which made the
-seam stricter.
+the gate stricter, for seam frame version 2 (issue #150), which made the
+seam stricter, and for withheld verdicts (issue #221), which made the server
+stricter.
 `Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
 gate entry below and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
 `ApprovalSeamTests`, `ApprovalIntakeTests`) pin the seam and server entries;
@@ -251,11 +252,14 @@ What is refused before the gate ever sees a prompt, or after:
   refused by NapCat's intake before the gate, logged
   `seam.serverVersionRefused` or `seam.clientRefused`, and closes the
   connection; no prompt ID is drawn and nothing is saved.
-- **Verdicts:** for a request the server never relayed, already answered, or
-  open on a link that has since closed, a verdict is dropped. On NapCat's
-  side only a valid, signed decision inside the TTL for a forwarded prompt
-  becomes a verdict frame; an unsigned, wrong-version, early, late, duplicate
-  or retracted one is ignored and logged with its reason.
+- **Verdicts:** since #221 the server drops every verdict frame its strict
+  reader accepts, for an open request too (`relay: verdictWithheld`): it
+  passes no answer back to Claude Code until the seam checks which program
+  listens. Once it does, a verdict for a request the server never relayed,
+  already answered, or open on a link that has since closed is dropped. On
+  NapCat's side only a valid, signed decision inside the TTL for a forwarded
+  prompt becomes a verdict frame; an unsigned, wrong-version, early, late,
+  duplicate or retracted one is ignored and logged with its reason.
 - **Peers:** another user by socket credentials or by audit token, or
   credentials that cannot be read, are closed before a byte is read. A
   socket outside a private directory, a symlink or any other kind of file at
