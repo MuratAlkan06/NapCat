@@ -544,18 +544,19 @@ under "Install and register" below). NapCat only reads those markers (cross-chec
 against the live process list, fail-open so it never falsely reports "idle").
 
 **What the hook reads and keeps.** Claude Code passes the hook each event's
-details as JSON; for some events they include the text of your prompt or of
-Claude's final message. The hook copies them to a private temporary file in
-the marker folder, takes the few fields it uses, and deletes the file before it
-exits (a copy left behind by a run that was killed is deleted by a later run).
-What stays is the marker and short status lines in the folder's `hook.log`,
-which hold no prompt or message text. Since hook version 8, one of those
-fields can be the final message: when a turn ends while background work is still
-running, the hook looks at the last 400 bytes of Claude's final message, on the
-Mac, to judge whether the turn ended with a question, and logs one word for it
-(`asks`, `no`, `absent` or `unreadable`). It keeps none of the text, and nothing
-acts on that word yet. On every other event, and when a turn ends with nothing
-left running, it does not look at the message.
+details as JSON; for some events they include text such as your prompt, Claude's
+final message, or the command lines of background tasks. The hook copies them to
+a private temporary file in the marker folder, takes the few fields it uses, and
+deletes the file before it exits (a run that was killed can leave its copy
+behind; the next run more than a minute later deletes it, but not while
+detection is paused). What stays is the marker and short status lines in the
+folder's `hook.log`, which hold no prompt or message text. Since hook version 8,
+one of those fields can be the final message: when a turn ends while background
+work is still running, the hook looks at the last 400 bytes of Claude's final
+message, on the Mac, to judge whether the turn ended with a question, and logs
+one word for it (`asks`, `no`, `absent` or `unreadable`). It keeps none of the
+text, and nothing acts on that word yet. On every other event, and when a turn
+ends with nothing left running, it does not look at the message.
 
 ### Install and register — BY HAND
 
