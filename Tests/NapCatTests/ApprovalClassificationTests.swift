@@ -1498,18 +1498,46 @@ struct ApprovalClassificationTests {
 
     // MARK: - Audit vocabulary
 
+    /// Every suppression the gate can return, one per audit code.
+    static let everySuppression: [ApprovalSuppression] = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) }
+        + [.localOnlyMCP, .localOnlyFileEdit, .localOnlyRead] + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
+
     @Test func auditCodesAreAClosedVocabulary() {
         #expect(ApprovalSuppression.forbidden(.secretAccess).auditCode == "forbidden.secretAccess")
         #expect(ApprovalSuppression.localOnlyMCP.auditCode == "localOnly.mcp")
         #expect(ApprovalSuppression.localOnlyFileEdit.auditCode == "localOnly.fileEdit")
         #expect(ApprovalSuppression.localOnlyRead.auditCode == "localOnly.read")
         #expect(ApprovalSuppression.unclassifiable(.unknownTool).auditCode == "unclassifiable.unknownTool")
-        let all = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP, .localOnlyFileEdit, .localOnlyRead]
-            + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
+        let all = Self.everySuppression
         #expect(Set(all.map(\.auditCode)).count == all.count, "codes are distinct")
         for code in all.map(\.auditCode) {
             #expect(code.unicodeScalars.allSatisfy { CharacterSet.letters.contains($0) || $0 == "." }, "\(code)")
         }
+    }
+
+    /// The refusal catalogue names every code the gate logs (an
+    /// `unclassifiable` one in full or by its reason alone, as the
+    /// catalogue's lists do), names no code the gate does not have, and its
+    /// list of the codes names every local-only one. (Only the vocabulary:
+    /// the catalogue's rows are not compared with the gate's.)
+    @Test func theCatalogueNamesExactlyTheGatesCodes() throws {
+        let catalogue = try String(contentsOf: LidGuardStructureTests.repoRoot()
+            .appendingPathComponent("design/remote-approvals-catalogue.md"), encoding: .utf8)
+        let codes = Self.everySuppression.map(\.auditCode)
+        for (suppression, code) in zip(Self.everySuppression, codes) {
+            var named = catalogue.contains("`\(code)`")
+            if case .unclassifiable(let reason) = suppression { named = named || catalogue.contains("`\(reason.rawValue)`") }
+            #expect(named, "the catalogue never names \(code)")
+        }
+        let cited = Set(ApprovalRecordPathStructureTests.matches(#"(?<![A-Za-z0-9_])(?:forbidden|localOnly|unclassifiable)\.[A-Za-z]+"#,
+                                                                  in: catalogue))
+        #expect(!cited.isEmpty && cited.isSubset(of: codes), "codes the gate does not have: \(cited.subtracting(codes).sorted())")
+        let anchor = try #require(catalogue.range(of: "The codes are the gate's own:"), "the catalogue's list of the codes")
+        let rest = catalogue[anchor.upperBound...]
+        let list = String(rest[..<(rest.range(of: "\n\n")?.lowerBound ?? rest.endIndex)])
+        let listed = Set(ApprovalRecordPathStructureTests.matches(#"`(?:forbidden|localOnly|unclassifiable)\.[^`]+`"#, in: list))
+        let expected = Set(["`forbidden.<family>`", "`unclassifiable.<reason>`"] + codes.filter { $0.hasPrefix("localOnly.") }.map { "`\($0)`" })
+        #expect(listed == expected, "the catalogue's list of the codes: \(listed.sorted())")
     }
 
     // MARK: - The strict preview reader
@@ -1544,7 +1572,8 @@ struct ApprovalClassificationTests {
 
     /// THERE IS NO DEFAULT-FORWARD BRANCH: `.forward(` is constructed exactly
     /// once, after the table lookup whose miss refuses; no switch has a
-    /// catch-all; and the description never reaches the gate.
+    /// catch-all; no row forwards by omission; and the description never
+    /// reaches the gate.
     @Test func theGateHasNoDefaultForwardBranch() throws {
         let code = try Self.gateCode()
         #expect(Self.defaultForwardFailures(code).isEmpty, "\(Self.defaultForwardFailures(code))")
@@ -1556,6 +1585,19 @@ struct ApprovalClassificationTests {
     /// table (never a code fixed here).
     static let localOnlyRefusal = "if let localOnly = row.localOnly {\n            return .suppress(localOnly)\n        }\n"
         + "        return .forward(row.tool)"
+    /// A row forwards when its local-only code is nil, so no row may forward
+    /// by leaving its code out: the member is declared on exactly this line,
+    /// a `let` with no default (a `var` optional gets an implicit `nil`, and
+    /// the memberwise init would then let a row omit it).
+    static let localOnlyDeclaration = "        let localOnly: ApprovalSuppression?"
+    /// Whole words, however they are spaced: `localOnly: nil` is written
+    /// once (the Bash row), and the code is never a `var` or given a default
+    /// (on the member or on an init's parameter).
+    static let omissionPins: [(pattern: String, expected: Int, rule: String)] = [
+        (#"(?<![A-Za-z0-9_])localOnly\s*:\s*nil(?![A-Za-z0-9_])"#, 1, "`localOnly: nil` is written once, in the Bash row"),
+        (#"(?<![A-Za-z0-9_])var\s+localOnly(?![A-Za-z0-9_])"#, 0, "the row's local-only code is never a `var`"),
+        (#"(?<![A-Za-z0-9_])localOnly\s*:\s*ApprovalSuppression\?\s*="#, 0, "the row's local-only code has no default"),
+    ]
 
     static func defaultForwardFailures(_ code: String) -> [String] {
         var failures: [String] = []
@@ -1571,6 +1613,16 @@ struct ApprovalClassificationTests {
         }
         if !code.contains(localOnlyRefusal) {
             failures.append("the single forward must follow the row's local-only guard directly")
+        }
+        for pin in omissionPins {
+            let found = ApprovalRecordPathStructureTests.matches(pin.pattern, in: code).count
+            if found != pin.expected { failures.append("\(pin.rule) (found \(found))") }
+        }
+        let declarations = code.split(separator: "\n", omittingEmptySubsequences: false).filter {
+            $0.hasPrefix(localOnlyDeclaration) && $0.dropFirst(localOnlyDeclaration.count).allSatisfy { $0 == " " || $0 == "\t" }
+        }
+        if declarations.count != 1 {
+            failures.append("the row's local-only code must be declared once, exactly as `\(localOnlyDeclaration)` (found \(declarations.count))")
         }
         if !code.contains("public static func classify(toolName: String, inputPreview: String, secrets: [String] = [])") {
             failures.append("classify's parameters changed (the description must never be an input)")
@@ -1590,11 +1642,39 @@ struct ApprovalClassificationTests {
             code.replacingOccurrences(of: "        if let localOnly = row.localOnly {\n            return .suppress(localOnly)\n        }\n",
                                       with: ""),
             code.replacingOccurrences(of: "            return .suppress(localOnly)\n", with: "            return .suppress(.localOnlyFileEdit)\n"),
+            // A row that forwards by omission (#231): a second row written
+            // with no code, spaced or not; the member made a `var`, given a
+            // default, or both with the Bash row leaving its code out; an
+            // init that defaults the code; and the member made a `var`
+            // beside a decoy of its declaration line.
+            code.replacingOccurrences(of: "ToolRow(tool: .read, localOnly: .localOnlyRead,", with: "ToolRow(tool: .read, localOnly: nil,"),
+            code.replacingOccurrences(of: "ToolRow(tool: .read, localOnly: .localOnlyRead,", with: "ToolRow(tool: .read, localOnly:nil,"),
+            code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: "        var localOnly: ApprovalSuppression?\n"),
+            code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: Self.localOnlyDeclaration + " = nil\n"),
+            code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: "        var localOnly: ApprovalSuppression? = nil\n")
+                .replacingOccurrences(of: "ToolRow(tool: .bash, localOnly: nil, ", with: "ToolRow(tool: .bash, "),
+            code.replacingOccurrences(of: "        var forwards: Bool {", with: "        init(tool: ApprovalTool, localOnly: ApprovalSuppression? = nil, "
+                + "required: [Argument], optional: [Argument]) {\n            self.tool = tool\n            self.localOnly = localOnly\n"
+                + "            self.required = required\n            self.optional = optional\n        }\n        var forwards: Bool {"),
+            code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: "        var localOnly: ApprovalSuppression?\n")
+                + "\nfunc zz() {\n" + Self.localOnlyDeclaration + "\n}\n",
         ]
         for mutant in mutants {
             #expect(mutant != code, "canary setup")
             #expect(!Self.defaultForwardFailures(mutant).isEmpty, "a mutant was NOT caught")
         }
+        // Over-match controls: a trailing comment on the declaration line, a
+        // comment naming what the omission pins look for, and names that
+        // only contain the pinned ones.
+        let raw = try String(contentsOf: WireContractTests.wireDirectory().appendingPathComponent("ApprovalClassification.swift"),
+                             encoding: .utf8)
+        let controls = LidGuardStructureTests.codeOnly(
+            raw.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: Self.localOnlyDeclaration + "  // nil: the row forwards\n")
+                + "\n// A row with `localOnly: nil` forwards; a `var localOnly` would let a row omit it.\n"
+                + "let zz_localOnly: nil, zz = (localOnlyCode: nil, localOnly: nilCode)\n"
+                + "struct ZZ { var localOnlyNote: ApprovalSuppression? = nil }\n")
+        #expect(controls != code, "the controls applied")
+        #expect(Self.defaultForwardFailures(controls).isEmpty, "over-match: \(Self.defaultForwardFailures(controls))")
     }
 
     /// A shell, an interpreter, a wrapper that runs its arguments, or a
