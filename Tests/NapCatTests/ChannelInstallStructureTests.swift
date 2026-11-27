@@ -655,6 +655,9 @@ struct ChannelInstallStructureTests {
     /// The installer's steps, in the order they must appear (and run: no
     /// step is in a function that runs earlier).
     static let installOrder = [
+        "APP=\"$(cd -P -- \"$APP\" && pwd -P && echo .)\" || die \"cannot resolve $APP.\"",
+        "APP=\"${APP%??}\"",
+        "*[[:cntrl:]]*) die \"the bundle path contains a control character.\" ;;",
         "is_napcat_helper \"$HELPER\" || die \"$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered.\"",
         "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict. Nothing was registered.\"",
         "grep -qxF \"Identifier=$CHANNEL_IDENTIFIER\" <<< \"$HELPER_SIGNATURE\" \\",
@@ -768,7 +771,8 @@ struct ChannelInstallStructureTests {
         return steps.count == 1 ? steps[0] : "<\(steps.count) steps start with \(prefix)>"
     }
 
-    /// Canaries: the bundle name check or the helper's verification
+    /// Canaries: the bundle path resolved without its sentinel (a trailing
+    /// newline lost), the bundle name check or the helper's verification
     /// dropped, the Info.plist read before the seal is checked, each team
     /// check dropped or moved past the registration, each receipt-folder
     /// guard, the folder's or the receipt's mode dropped, a folder or receipt
@@ -791,6 +795,9 @@ struct ChannelInstallStructureTests {
         let current = Self.step("CURRENT=") + "\n"
         let receiptTemp = Self.step("RECEIPT_TMP=") + "\n"
         let installMutants: [(String, String)] = [
+            ("the bundle path resolved without its sentinel", install.replacingOccurrences(
+                of: Self.step("APP=\"$(cd -P") + "\n" + Self.step("APP=\"${APP%") + "\n",
+                with: "APP=\"$(cd -P -- \"$APP\" && pwd -P)\" || die \"cannot resolve $APP.\"\n")),
             ("an unreadable registration read as none", install.replacingOccurrences(
                 of: Self.installRead + "\n", with: "CURRENT=\"$(registered_command)\" || CURRENT=\"\"\n")),
             ("an unreadable registration let through", install.replacingOccurrences(

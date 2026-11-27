@@ -125,7 +125,11 @@ if [ -L "$APP" ] || [ ! -d "$APP" ]; then
     die "$APP is not a bundle directory (a symlink is refused)."
 fi
 # The physical path, so the registration names no symlinked folder above it.
-APP="$(cd -P -- "$APP" && pwd -P)" || die "cannot resolve $APP."
+# Command substitution drops trailing newlines, so a bundle name ending in one
+# would resolve to its sibling; the sentinel keeps every byte pwd printed for
+# the control-character test below.
+APP="$(cd -P -- "$APP" && pwd -P && echo .)" || die "cannot resolve $APP."
+APP="${APP%??}"
 # The path goes into Claude Code's configuration and a line of the receipt.
 case "$APP" in
     *[[:cntrl:]]*) die "the bundle path contains a control character." ;;

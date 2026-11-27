@@ -576,6 +576,32 @@ struct ChannelInstallScriptTests {
         }
     }
 
+    /// A bundle name that ends in a newline is refused by the control-
+    /// character test, by both routes that once lost the newline (command
+    /// substitution drops trailing newlines, so the path resolved to its
+    /// sibling, a symlink to the real bundle that was never tested as one):
+    /// the name itself, and a symlink to it given as `<link>/.`. Each is
+    /// refused before anything, with no `mcp add`; the plain path to the
+    /// same bundle, in the same sandbox, still registers.
+    @Test func aBundleNameEndingInANewlineIsRefusedBeforeAnything() throws {
+        for route in ["the name itself", "a symlink to it, as <link>/."] {
+            let sandbox = try Sandbox()
+            let folder = sandbox.root + "/drop"
+            let named = folder + "/NapCat.app\n"
+            try FileManager.default.createDirectory(atPath: named, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: folder + "/NapCat.app", withDestinationPath: sandbox.app)
+            try FileManager.default.createSymbolicLink(atPath: folder + "/link", withDestinationPath: named)
+            let path = route == "the name itself" ? named : folder + "/link/."
+            let run = try sandbox.run("install-channel.sh", [path])
+            Self.expectRefusedBeforeAnything(run, sandbox, "the bundle path contains a control character.", route)
+            #expect(!sandbox.claudeArguments.contains { $0.hasPrefix("mcp add") }, "\(route): \(sandbox.claudeArguments)")
+            #expect(sandbox.codesignCalls.isEmpty, "\(route): nothing was verified either")
+            let plain = try sandbox.install()
+            #expect(plain.status == 0 && plain.lines.contains(Self.registeredLine(sandbox.helper)), "\(route): \(plain.errors)")
+            #expect(sandbox.registered == sandbox.helper, "\(route): the plain path")
+        }
+    }
+
     // MARK: - The receipt's folder is checked before anything is registered
 
     /// Every receipt-folder refusal comes before Claude Code is called, so
