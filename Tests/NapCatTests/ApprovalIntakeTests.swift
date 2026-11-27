@@ -654,6 +654,24 @@ struct ApprovalIntakeTests {
         #expect(fourth.recentWithEvidence == [.bash, .bash], "the counts' evidence is read as before")
     }
 
+    /// A prompt relayed later in a read's own second is new to the next read
+    /// only within `newPromptSeconds`, like any other: a next read 11 seconds
+    /// later finds it new no more, though it is still held and counted.
+    @Test func aPromptLaterInAReadsOwnSecondAgesOutOfTheWindow() {
+        let harness = IntakeHarness()
+        let within = ApprovalIntake.waitingContextSeconds
+        let first = harness.intake.waitingPromptRead(after: nil, within: within)
+        #expect(first.newPrompts == 0, "vacuity: the read sees no prompt")
+        harness.receive("abcde")
+        harness.now += ApprovalIntake.newPromptSeconds
+        #expect(harness.intake.waitingPromptRead(after: first.mark, within: within).newPrompts == 1,
+                "vacuity: a next read 10 seconds later finds it new")
+        harness.now += 1
+        let next = harness.intake.waitingPromptRead(after: first.mark, within: within)
+        #expect(next.newPrompts == 0, "11 seconds later it is past the window")
+        #expect(next.recent == [.bash], "vacuity: still held and counted; only the 10-second window drops it")
+    }
+
     /// New prompts are those of the last `newPromptSeconds` (exactly that
     /// still counts). The counts and their evidence share the window the
     /// read is handed: a prompt's evidence covers it for as long as it is
