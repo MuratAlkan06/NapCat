@@ -2,10 +2,10 @@
 
 Status: regenerated in slice S1 (issue #125) from the test rows, which are
 normative, and revised in slice S-GATE (issue #145), for Read's arguments
-(issue #149) and for the path alphabet (issue #159), each of which only made
-the gate stricter, for seam frame version 2 (issue #150), which made the
-seam stricter, and for withheld verdicts (issue #221), which made the server
-stricter.
+(issue #149), for the path alphabet (issue #159) and for Read prompts kept
+on the Mac (issue #231), each of which only made the gate stricter, for seam
+frame version 2 (issue #150), which made the seam stricter, and for withheld
+verdicts (issue #221), which made the server stricter.
 `Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
 gate entry below and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
 `ApprovalSeamTests`, `ApprovalIntakeTests`) pin the seam and server entries;
@@ -15,14 +15,57 @@ where a row and this note differ, the row wins. Companion to
 Each entry is something a prompt could carry and what happens to it. Nothing
 listed here is ever forwarded: a refused prompt stays fully answerable in the
 terminal and is only logged, by its code. The codes are the gate's own:
-`forbidden.<family>`, `localOnly.mcp`, `localOnly.fileEdit` and
-`unclassifiable.<reason>`. In the
+`forbidden.<family>`, `localOnly.mcp`, `localOnly.fileEdit`,
+`localOnly.read` and `unclassifiable.<reason>`. In the
 examples, `~` stands for an absolute home directory and `<topic>` for the
 alert topic; the tests use synthetic values for both.
 
+What can leave the Mac at all is a Bash prompt whose whole command is one of
+the listed commands (see "Bash: listed commands only"). No other tool
+forwards: MCP tools, the file-edit tools and Read are local-only, each with
+its own code.
+
+## Precedence
+
+The gate checks a prompt in this order and logs the first code it meets:
+
+1. The tool name's shape (`unclassifiable.malformedToolName`), then the
+   preview's size (`unclassifiable.previewTooLarge`).
+2. The alert topic, its storage names and the relay's credential
+   placeholder, in the tool name or anywhere in the raw preview
+   (`forbidden.secretAccess`), then the relay's other placeholders in the
+   raw preview (`unclassifiable.previewNotFaithful`).
+3. One strict JSON object (`unclassifiable.previewNotStrictJSON`).
+4. Every decoded string, keys included: the topic, its names and the
+   credential placeholder (`forbidden.secretAccess`), then the other
+   placeholders (`unclassifiable.previewNotFaithful`), then hidden text
+   (`unclassifiable.hiddenText`).
+5. MCP tools (`localOnly.mcp`), then a tool the table does not list
+   (`unclassifiable.unknownTool`).
+6. The tool's row: a key it does not list (`unknownArgument`), a missing
+   required one (`missingArgument`), then every value. A forbidden family
+   found in any value wins (`forbidden.<family>`: a location in a path; in
+   Bash a substring, and, in a command the grammar reads, a command or a
+   word); otherwise the first refusal in the preview's order
+   (`argumentKind`, `argumentValue`, `pathNotCanonical`,
+   `commandOutsideGrammar`, `commandNotInTable`).
+7. The row's local-only code: `localOnly.fileEdit` for Write, Edit and
+   NotebookEdit, `localOnly.read` for Read.
+8. Only then, and only for Bash, the forward.
+
+So a Read that names the alert topic is `forbidden.secretAccess`, a Read of a
+forbidden location keeps its family's code, a malformed Read keeps its
+`unclassifiable` code, and every other Read is `localOnly.read`. NapCat's
+intake then applies its own holds: a topic that exists but could not be read
+keeps every prompt as `forbidden.secretAccess`, and while the feature is
+unarmed (every build so far) each prompt is logged `suppressed.notArmed`
+instead of the gate's code.
+
 ## The forbidden families
 
-Checked first, for every tool, by path, by command and by substring.
+Checked by path, by command and by substring, in the order "Precedence"
+gives: the alert topic for every prompt, the rest in the tool's row, before
+any local-only code.
 
 - **`forbidden.privilegeEscalation`**
   - `sudo` in any case, path or position: `sudo ls`, `SUDO ls`,
@@ -95,11 +138,18 @@ not a listed command.
 | Paths | `..` and empty components; and any word naming a forbidden location is that family (`ls /etc`, `git add ../../.ssh`) |
 | Encoding | look-alikes and non-ASCII (a no-break space, fullwidth letters, a Cyrillic letter in a command name, an em dash), zero-width characters (`unclassifiable.hiddenText`), an empty or blank command, more than 2,048 bytes, 8 commands or 64 words, a NUL escape (`unclassifiable.previewNotStrictJSON`) |
 
-## Read: a path and plain numbers
+## Read: local-only, a path and plain numbers
 
-Read forwards a canonical path outside every forbidden location (see
-"Paths" below) and, since issue #149, its optional arguments only in the
-shapes the Read tool writes:
+No Read is forwarded, whatever its path (issue #231): a list of locations
+cannot name every credential file. Claude Code does not ask before a Read
+inside a session's working directories, and folders you trust beyond those
+belong in Claude Code's own settings (an allow rule or an added directory),
+which NapCat never edits. A Read prompt is still checked in full: one
+that names the alert topic or a forbidden location keeps that code (see
+"Precedence"), a malformed one its `unclassifiable` code, and one that
+passes every check is `localOnly.read`. The checks take a canonical path
+(see "Paths" below) and, since issue #149, its optional arguments only in
+the shapes the Read tool writes:
 
 - `pages` absent, or a PDF page range: one page (`"3"`) or a range
   (`"1-5"`, `"10-20"`), pages counted from 1 up to 99,999, the first no later
@@ -110,8 +160,8 @@ shapes the Read tool writes:
 Each is written plainly: ASCII digits only, with no sign, fraction, exponent,
 space or leading zero, and the one hyphen of a range. Anything else there is
 `unclassifiable.argumentValue`. `pages` was free text the model writes and
-the phone shows, the channel the Bash description was closed for; now a
-forwarded Read is a canonical path and plain numbers, nothing else.
+the phone showed, the channel the Bash description was closed for; a Read
+that passes is a canonical path and plain numbers, nothing else.
 
 | Class | Refused examples |
 | :- | :- |
@@ -125,8 +175,9 @@ forwarded Read is a canonical path and plain numbers, nothing else.
 
 ### The path alphabet
 
-Since issue #159, a path forwards only when every character is printable
-ASCII from `!` to `~` other than the double quote `"` and the backslash `\`.
+Since issue #159, a path passes the path check only when every character is
+printable ASCII from `!` to `~` other than the double quote `"` and the
+backslash `\`.
 That leaves 92 characters: letters, digits and
 `` ! # $ % & ' ( ) * + , - . / : ; < = > ? @ [ ] ^ _ ` { | } ~ ``. Every
 other character is refused, as one of three codes:
@@ -150,8 +201,8 @@ a forbidden path holding either one is still logged as its family
 
 Why the double quote:
 
-- The phone shows the gate's copy of a Read verbatim, as JSON, in a
-  monospaced face: `{"file_path":"…","offset":…}`.
+- The phone shows the gate's copy of a forwarded prompt verbatim, as JSON,
+  in a monospaced face; a Read's copy was `{"file_path":"…","offset":…}`.
 - Every boundary between its members holds a double quote.
 - The copy writes a quote inside a path as `\"`. So the path
   `/tmp/a","limit":1` would be drawn `{"file_path":"/tmp/a\",\"limit\":1"}`,
@@ -173,6 +224,10 @@ None of this widens what an Allow authorizes. An Allow still covers only the
 named tool on that exact path, so this rule protects what the phone
 displays, not what can run.
 
+Since issue #231 no tool with a path forwards (the file-edit tools never
+did, and Read no longer does), so today these rules only decide which code
+such a prompt is kept with.
+
 ## Every other tool and shape (fail closed)
 
 - **Tool names:** only `Bash`, `Write`, `Edit`, `NotebookEdit` and `Read`,
@@ -182,7 +237,10 @@ displays, not what can run.
 - **File-edit tools** (`Write`, `Edit`, `NotebookEdit`) are local-only since
   slice S-GATE: each prompt is still checked in full, so a forbidden or
   malformed one is logged for what it is, and one that passes every check is
-  `localOnly.fileEdit`. Only `Bash` and `Read` can forward.
+  `localOnly.fileEdit`.
+- **Read** is local-only since issue #231, whatever its path, the same way:
+  one that passes every check is `localOnly.read` (see "Read" above). Only
+  `Bash` can forward.
 - **MCP tools** (`mcp__…`) are `localOnly.mcp` in the MVP, whatever their
   arguments.
 - **The preview** must be one strict JSON object of at most 32 KiB and at

@@ -145,10 +145,13 @@ struct RemoteApprovalsPresentationTests {
     }
 
     /// The words: what it does today, the one change it makes you can see,
-    /// what never leaves the Mac, that the terminal keeps working, and that
-    /// off is the kill switch. Never the alert topic's lane (ntfy carries no
-    /// approval semantics). Honest while OFF: no switch name and no hint
-    /// sentence promises the iPhone half this build does not have.
+    /// what would stay on the Mac (what the gate recognizes, named as a
+    /// fixed list, and every Read, whatever file it names), that the
+    /// terminal keeps working, and that off is the kill switch. Never the
+    /// alert topic's lane (ntfy carries no approval semantics). Honest
+    /// while OFF: no switch name and no hint sentence promises the iPhone
+    /// half this build does not have. Honest about the gate: no absolute
+    /// "never leave" that a list could not keep.
     @Test func theCopy() {
         #expect(MenuStateModel.remoteApprovalsToggleTitle == "Remote approvals")
         #expect(MenuStateModel.remoteApprovalsSettingsToggleTitle == "Mac-only preview",
@@ -157,13 +160,20 @@ struct RemoteApprovalsPresentationTests {
         let hint = MenuStateModel.remoteApprovalsHint
         #expect(hint == "NapCat listens for permission prompts from Claude Code sessions set up for it, and keeps "
                 + "every one on this Mac. A waiting push can count some of them by kind (“— 1 Bash permission "
-                + "prompt”); privileged, settings, and secret prompts are never counted, and would never leave this "
-                + "Mac even if a later version let the iPhone app answer. The terminal dialog always stays "
-                + "answerable. Off withdraws every prompt at once.")
+                + "prompt”). Prompts NapCat's gate recognizes as privileged, settings or secret — a fixed list of "
+                + "commands and locations — are never counted, and would stay on this Mac even if a later version let "
+                + "the iPhone app answer. Read prompts are never counted either, and would stay on this Mac too, "
+                + "whatever file they name. The terminal dialog always stays answerable. Off withdraws every prompt "
+                + "at once.")
         for phrase in ["keeps every one on this Mac", "A waiting push can count some of them", "1 Bash permission prompt",
-                       "privileged, settings, and secret prompts are never counted", "never leave this Mac",
-                       "even if a later version", "terminal dialog always stays answerable", "Off withdraws every prompt"] {
+                       "recognizes as privileged, settings or secret", "a fixed list of commands and locations",
+                       "are never counted, and would stay on this Mac", "even if a later version",
+                       "Read prompts are never counted either", "whatever file they name",
+                       "terminal dialog always stays answerable", "Off withdraws every prompt"] {
             #expect(hint.contains(phrase), "the hint must say '\(phrase)'")
+        }
+        for overclaim in ["never leave", "privileged, settings, and secret prompts are never counted"] {
+            #expect(!hint.contains(overclaim), "the hint must not say '\(overclaim)'")
         }
         // The promise must not come back: no present-tense iPhone answering
         // in the names, the hint or the pair-first caption.

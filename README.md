@@ -748,8 +748,13 @@ silences both pushes, and the row says so.
   many permission prompts wired sessions just opened, and their tool kind from
   a fixed list ("— 1 Bash permission prompt") — never a command, a path or any
   other text from the session. Only prompts the safety gate could ever let
-  leave the Mac are counted: privileged, settings, and secret prompts never
-  are.
+  leave the Mac are counted, and today those are only Bash prompts whose
+  whole command is one of a short list of build and status commands (the list
+  is in [design/remote-approvals-catalogue.md](design/remote-approvals-catalogue.md)).
+  A Read prompt is never counted, whatever file it names, since a list cannot
+  name every credential file; nor is a prompt the gate recognizes as
+  privileged, settings or secret from its fixed list of commands and
+  locations.
   Both publish at ntfy priority `high`, tagged `white_check_mark`
   (finished) or `raised_hand` (waiting).
 - **Settings › Alerts shows the outcome of the last session alert** under
