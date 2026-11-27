@@ -148,7 +148,7 @@ struct WaitingPromptContextTests {
             makeWatcher: { factory.make($0) }, scheduler: scheduler, now: { Double(H.t0) },
             waitingPrompts: {
                 provider.reads += 1
-                return provider.counts
+                return WaitingPromptContext(counts: provider.counts)
             })
         try await body(controller, store, scheduler, factory, sender)
     }
@@ -257,10 +257,10 @@ struct WaitingPromptContextTests {
         world.stdin(RelayHarness.permissionRequest("abcde", tool: "Read",
                                                    preview: #"{"file_path":"/Users/someone/project/notes.md"}"#))
         #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil, "the Read was heard")
-        #expect(world.controller.waitingPrompts() == .none, "a Read is never counted")
+        #expect(world.controller.waitingPrompts().counts == .none, "a Read is never counted")
         world.prompt("bcdef", preview: #"{"command":"git status"}"#)
         #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil)
-        #expect(world.controller.waitingPrompts() == WaitingPromptCounts(bash: 1), "control: the Bash prompt is")
+        #expect(world.controller.waitingPrompts().counts == WaitingPromptCounts(bash: 1), "control: the Bash prompt is")
         world.controller.setEnabled(false)
     }
 
@@ -276,7 +276,7 @@ struct WaitingPromptContextTests {
         #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil)
         world.prompt("bcdef", preview: #"{"command":"sudo ls"}"#)
         #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil)
-        #expect(world.controller.waitingPrompts() == WaitingPromptCounts(bash: 1), "the sudo prompt is never counted")
+        #expect(world.controller.waitingPrompts().counts == WaitingPromptCounts(bash: 1), "the sudo prompt is never counted")
 
         world.controller.setEnabled(false)
         #expect(world.controller.waitingPrompts() == .none, "the kill switch silences the counts too")
@@ -299,7 +299,7 @@ struct WaitingPromptContextTests {
         world.controller.setEnabled(true)
         world.prompt("abcde")
         #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil)
-        #expect(world.controller.waitingPrompts() == WaitingPromptCounts(bash: 1))
+        #expect(world.controller.waitingPrompts().counts == WaitingPromptCounts(bash: 1))
         world.controller.setEnabled(false)
         let before = clockReads.all.count
         #expect(world.controller.waitingPrompts() == .none)

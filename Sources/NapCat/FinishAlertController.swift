@@ -128,11 +128,12 @@ final class FinishAlertController {
     /// Read at EVERY marker diff — never cached — so a change in the ntfy
     /// settings applies to the next diff, with no restart and no re-arm.
     private let readMinimumRunSeconds: () -> Int
-    /// F4 slice S2: the permission prompts wired sessions just relayed, as
-    /// counts per kind (`RemoteApprovalsController.waitingPrompts`; `.none`
-    /// while remote approvals are off). Read only for a diff that folds a
-    /// waiting event.
-    private let waitingPrompts: () -> WaitingPromptCounts
+    /// F4: what one read of the seam says about the permission prompts wired
+    /// sessions just relayed (`RemoteApprovalsController.waitingPrompts`;
+    /// `.none` while remote approvals are off or not listening): counts per
+    /// kind, and how many of them have evidence that the phone's own prompt
+    /// push covers them. Read only for a diff that folds a waiting event.
+    private let waitingPrompts: () -> WaitingPromptContext
 
     // MARK: State (main actor only)
 
@@ -215,7 +216,7 @@ final class FinishAlertController {
         connectivity: ConnectivityInterface? = nil,
         stayAwakeOn: @escaping () -> Bool = { false },
         minimumRunSeconds: @escaping () -> Int = { FinishAlertTuning.minimumRunSeconds },
-        waitingPrompts: @escaping () -> WaitingPromptCounts = { .none }
+        waitingPrompts: @escaping () -> WaitingPromptContext = { .none }
     ) {
         self.store = store
         self.markerDirURL = markerDirURL
@@ -248,7 +249,7 @@ final class FinishAlertController {
         connectivity: ConnectivityInterface,
         stayAwakeMirror: ObservedStayAwakeMirror,
         defaults: UserDefaults = .standard,
-        waitingPrompts: @escaping () -> WaitingPromptCounts = { .none }
+        waitingPrompts: @escaping () -> WaitingPromptContext = { .none }
     ) -> FinishAlertController? {
         guard FinishAlertPolicy.finishAlertMayBeConstructed(debugBattery: debugBattery) else { return nil }
         guard let lidGuard, let sender else { return nil }
@@ -416,7 +417,7 @@ final class FinishAlertController {
             // F4 slice S2: the prompt context is read once, and only for a
             // diff with a waiting event (zero hops otherwise).
             let prompts = events.contains { if case .waiting = $0 { return true }; return false }
-                ? waitingPrompts() : .none
+                ? waitingPrompts().counts : .none
             for event in events {
                 digest.fold(event, stillWorking: observation.stillWorking, prompts: prompts, at: observedAt)
             }

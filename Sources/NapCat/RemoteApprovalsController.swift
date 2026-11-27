@@ -71,6 +71,10 @@ final class RemoteApprovalsController {
     /// nothing outside this file can start it again behind the switch
     /// (lint-locked; tests see the host through their own factory).
     private var host: ApprovalSeamHost?
+    /// Where the last read for a waiting alert left off (`waitingPrompts`),
+    /// handed back at the next read, so a prompt is new to one read at most.
+    /// Kept here, on the main actor; opaque, never a prompt's ID.
+    private var relayMark: PromptRelayMark?
 
     /// `readStored` / `writeStored` are the stored toggle
     /// (`DefaultsKey.remoteApprovalsEnabled` in the app): the read is the
@@ -141,13 +145,24 @@ final class RemoteApprovalsController {
     var finding: ChannelPolicyFinding? { state.finding }
 
     /// What a waiting buzz may say about the permission prompts wired
-    /// sessions just relayed: counts per kind of those the gate would
-    /// forward, opened in the last `ApprovalIntake.waitingContextSeconds`.
-    /// Nothing while not listening — off, the host is never even reached.
-    func waitingPrompts() -> WaitingPromptCounts {
+    /// sessions just relayed, and what the alert lane needs to tell whether
+    /// the phone's own prompt push covers a wait: one read of the intake
+    /// (`ApprovalIntake.waitingPromptRead`), as counts only. Per kind, those
+    /// the gate would forward that opened in the last
+    /// `ApprovalIntake.waitingContextSeconds`, and of those the ones with
+    /// evidence; how many prompts were relayed since the previous read and
+    /// in the last `ApprovalIntake.newPromptSeconds`, and how many of those
+    /// have evidence. Every read moves the mark on. Nothing while not
+    /// listening — off, the host is never even reached, and the mark stays.
+    func waitingPrompts() -> WaitingPromptContext {
         guard state.phase == .listening, let host else { return .none }
-        let tools = host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? []
-        return WaitingPromptCounts(tools)
+        let mark = relayMark
+        let prompts = host.withIntake { $0.waitingPromptRead(after: mark, within: ApprovalIntake.waitingContextSeconds) }
+        guard let prompts else { return .none }
+        relayMark = prompts.mark
+        return WaitingPromptContext(counts: WaitingPromptCounts(prompts.recent),
+                                    countsWithEvidence: WaitingPromptCounts(prompts.recentWithEvidence),
+                                    newPrompts: prompts.newPrompts, newPromptsWithEvidence: prompts.newPromptsWithEvidence)
     }
 
     /// Called (on the main actor) after every change the menu renders.

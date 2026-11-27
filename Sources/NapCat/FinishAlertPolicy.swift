@@ -124,6 +124,26 @@ struct FinishAlertObservation: Equatable, Sendable {
     let waitingWrites: Int
 }
 
+/// F4: what one read of the seam's recent prompts tells the alert lane
+/// (`RemoteApprovalsController.waitingPrompts`): Int counts only, never a
+/// prompt's ID, preview or session. `.none` while remote approvals are off
+/// or not listening, and for a diff the lane does not read for.
+struct WaitingPromptContext: Equatable, Sendable {
+    /// Per kind, the prompts the gate would forward that opened in the last
+    /// 30 s, from sessions still connected: what a waiting push counts.
+    var counts = WaitingPromptCounts.none
+    /// Of `counts`, per kind, the prompts with evidence that the phone's own
+    /// prompt push covers them, over the same 30 s.
+    var countsWithEvidence = WaitingPromptCounts.none
+    /// The prompts relayed since the previous read and in the last 10 s,
+    /// whatever the gate made of them.
+    var newPrompts = 0
+    /// Of `newPrompts`, the ones with that evidence.
+    var newPromptsWithEvidence = 0
+
+    static let none = WaitingPromptContext()
+}
+
 /// Hook v7: what one marker's RAW `ep` text says about its episode start.
 /// Log-safe by construction: `.invalid` never carries the raw value.
 enum EpisodeStartReading: Equatable, Sendable {
