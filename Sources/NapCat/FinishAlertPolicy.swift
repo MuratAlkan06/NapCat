@@ -6,7 +6,8 @@ import Foundation
 // batch digest, the outbox and retry tables,
 // and the arming/display predicates — plus alert-channel healing (issue #23):
 // the offline-hold state machine, its arming predicate, the held digest's max
-// age and the lost-connection restore push.
+// age and the lost-connection restore push — and the F4 rule for when a
+// waiting buzz yields to the phone's own prompt push (counts only).
 // I/O-free by construction — no filesystem, no timers, no network, no
 // subprocess, no logging, no defaults reads. `FinishAlertStructureTests` locks
 // that (canary-proven), and `FinishAlertPolicyTests` exercises every rule as a
@@ -106,6 +107,21 @@ struct FinishAlertObservation: Equatable, Sendable {
     /// an `ep` the policy rejected (`EpisodeStartReading.invalid`) — they fell
     /// back to the pre-v7 anchor. A count for the controller's log line only.
     let invalidEpisodeStarts: Int
+    /// F4: how many present ids WROTE a waiting marker (either waiting token)
+    /// in this diff, one each at most — the first input of
+    /// `FinishAlertPolicy.waitingBuzzYieldsToPromptPush`. Counted:
+    /// - every transition into waiting (from a non-waiting token, or a new id
+    ///   already waiting), whatever rule 4 of `observe` then makes of it: a
+    ///   `.waiting` event, or a suppression under the run floor or for a
+    ///   clock jump;
+    /// - a waiting marker rewritten while waiting, never an event: its ts
+    ///   differs from the one last observed, or its token changed between
+    ///   the two waiting tokens.
+    /// Not counted: a waiting marker read again with the same ts and token
+    /// (a rewrite in the same second, as the diff sees it, is no write), any
+    /// non-waiting marker, and a disappearance. The arm-time baseline counts
+    /// nothing.
+    let waitingWrites: Int
 }
 
 /// Hook v7: what one marker's RAW `ep` text says about its episode start.
@@ -334,6 +350,8 @@ enum FinishAlertPolicy {
     /// `minimumRunSeconds` is the ONE floor of rules 3 and 4 — the finish and
     /// the waiting buzz share it (`runSuppression`). The controller passes the
     /// user's live setting (issue #34); it defaults to the 60 s constant.
+    /// The diff's waiting writes are counted beside rule 4
+    /// (`FinishAlertObservation.waitingWrites`); counting changes no event.
     static func observe(
         previous: [String: TrackedSession],
         current: [IdentifiedBusyMarker],
@@ -347,16 +365,20 @@ enum FinishAlertPolicy {
         var events: [FinishAlertEvent] = []
         var suppressed: [FinishAlertSuppression] = []
         var invalidEpisodeStarts = 0
+        var waitingWrites = 0
 
         for id in present.keys.sorted() {
             guard let marker = present[id] else { continue }
             let isWaiting = isWaitingEvent(marker.event)
             var session: TrackedSession
             let isTransitionToWaiting: Bool
+            var isWaitingRewrite = false
             if let prior = previous[id] {
                 session = prior
                 let wasWaiting = isWaitingEvent(prior.lastEvent)
                 if wasWaiting && !isWaiting { session.waitingBuzzed = false }
+                let markerChanged: Bool = marker.ts != prior.lastTs || marker.event != prior.lastEvent
+                isWaitingRewrite = wasWaiting && isWaiting && markerChanged
                 session.lastTs = marker.ts
                 session.lastEvent = marker.event
                 isTransitionToWaiting = isWaiting && !wasWaiting
@@ -365,6 +387,7 @@ enum FinishAlertPolicy {
                 if episodeStart(marker.ep, now: now) == .invalid { invalidEpisodeStarts += 1 }
                 isTransitionToWaiting = isWaiting
             }
+            if isTransitionToWaiting || isWaitingRewrite { waitingWrites += 1 }
 
             if isTransitionToWaiting && !session.waitingBuzzed {
                 let duration = now - session.firstSeen
@@ -397,7 +420,7 @@ enum FinishAlertPolicy {
         }.count
         return FinishAlertObservation(tracked: observed, events: events,
                                       suppressed: suppressed, stillWorking: stillWorking,
-                                      invalidEpisodeStarts: invalidEpisodeStarts)
+                                      invalidEpisodeStarts: invalidEpisodeStarts, waitingWrites: waitingWrites)
     }
 
     // MARK: Episode start (hook v7 `ep`)
@@ -472,6 +495,52 @@ enum FinishAlertPolicy {
     private static func uniqueMarkers(_ current: [IdentifiedBusyMarker]) -> [String: BusyMarker] {
         Dictionary(current.map { ($0.sessionID, $0.marker) },
                    uniquingKeysWith: { first, second in second.ts > first.ts ? second : first })
+    }
+
+    // MARK: One buzz for one permission wait (F4)
+
+    /// The singleton rule. A diff's plain waiting buzz yields to the phone's
+    /// own prompt push only when the diff holds exactly ONE waiting write
+    /// (`FinishAlertObservation.waitingWrites`), exactly ONE prompt was
+    /// relayed since the previous read (`newPrompts`), and that one prompt
+    /// carries the caller's evidence that the phone's push covers it
+    /// (`newPromptsWithEvidence`). Anything else keeps the buzz: two writes
+    /// or none, two prompts or none, a prompt without evidence, and counts
+    /// that cannot all hold at once (more evidence than prompts, a negative
+    /// count). Exact equality is the whole rule; nothing is clamped first,
+    /// so an inconsistent input never yields.
+    static func waitingBuzzYieldsToPromptPush(waitingWrites: Int, newPrompts: Int,
+                                              newPromptsWithEvidence: Int) -> Bool {
+        waitingWrites == 1 && newPrompts == 1 && newPromptsWithEvidence == 1
+    }
+
+    /// The per-kind counts a waiting buzz's phrase is built from
+    /// (`LidGuardPolicy.promptsPhrase`), less the prompts whose evidence says
+    /// the phone's own push covers them: a buzz that still goes out names
+    /// only the prompts the phone may not have shown. A kind loses at most
+    /// what it holds, so every kind, and so the total, is clamped at zero;
+    /// an evidence count below zero takes nothing. With no evidence the
+    /// counts come back exactly as given, and the phrase built from them is
+    /// today's, byte for byte.
+    static func promptsWithoutEvidence(_ prompts: WaitingPromptCounts,
+                                       withEvidence: WaitingPromptCounts) -> WaitingPromptCounts {
+        guard withEvidence != .none else { return prompts }
+        var left: WaitingPromptCounts = prompts
+        left.bash = countLessEvidence(prompts.bash, withEvidence.bash)
+        left.write = countLessEvidence(prompts.write, withEvidence.write)
+        left.edit = countLessEvidence(prompts.edit, withEvidence.edit)
+        left.notebookEdit = countLessEvidence(prompts.notebookEdit, withEvidence.notebookEdit)
+        left.read = countLessEvidence(prompts.read, withEvidence.read)
+        return left
+    }
+
+    /// One kind of `promptsWithoutEvidence`: what it holds (a count below
+    /// zero holds nothing) less at most all of it. Never below zero, never
+    /// added to, and it cannot overflow.
+    private static func countLessEvidence(_ count: Int, _ withEvidence: Int) -> Int {
+        let held: Int = max(0, count)
+        let taken: Int = min(max(0, withEvidence), held)
+        return held - taken
     }
 
     // MARK: Outbox + retry (normative tables)
