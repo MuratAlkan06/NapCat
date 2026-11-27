@@ -106,6 +106,7 @@ struct FinishAlertPolicyTests {
         #expect(observation.suppressed == row.suppressed, "\(row.id)")
         #expect(observation.tracked.isEmpty, "\(row.id): a disappeared session is never tracked again")
         #expect(observation.stillWorking == 0, "\(row.id)")
+        #expect(observation.waitingWrites == 0, "\(row.id): a disappearance is no waiting write")
     }
 
     // MARK: - FA-1 transition detection
@@ -211,9 +212,12 @@ struct FinishAlertPolicyTests {
         let now: Int
         let events: [FinishAlertEvent]
         let suppressed: [FinishAlertSuppression]
+        /// F4: the step's expected `waitingWrites` (0 unless a row says).
+        let waitingWrites: Int
         init(_ markers: [IdentifiedBusyMarker], now: Int, _ events: [FinishAlertEvent] = [],
-             suppressed: [FinishAlertSuppression] = []) {
+             suppressed: [FinishAlertSuppression] = [], waitingWrites: Int = 0) {
             self.markers = markers; self.now = now; self.events = events; self.suppressed = suppressed
+            self.waitingWrites = waitingWrites
         }
     }
 
@@ -297,7 +301,7 @@ struct FinishAlertPolicyTests {
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 600, "Stop"), now: t + 602),
                         Step(m1(t + 1_200, ups), now: t + 1_202),        // a background subagent reported back
-                        Step(m1(t + 1_500, w), now: t + 1_502, [.waiting(minutes: 25)]),
+                        Step(m1(t + 1_500, w), now: t + 1_502, [.waiting(minutes: 25)], waitingWrites: 1),
                      ]),
             Scenario(id: "E3", note: "an episode boundary still re-anchors: disappear ⇒ finish; reappear as UPS ⇒ new exact anchor",
                      baseline: nil, steps: [
@@ -305,60 +309,60 @@ struct FinishAlertPolicyTests {
                         Step(m1(t + 300, ups), now: t + 302),
                         Step([], now: t + 600, [.finished(minutes: 10)]),
                         Step(m1(t + 700, ups), now: t + 702),
-                        Step(m1(t + 880, w), now: t + 882, [.waiting(minutes: 3)]),   // from t + 700, exact
+                        Step(m1(t + 880, w), now: t + 882, [.waiting(minutes: 3)], waitingWrites: 1),   // from t + 700, exact
                         Step([], now: t + 1_000, [.finished(minutes: 5)]),
                      ]),
             Scenario(id: "E4", note: "waiting → UPS (the user answered) clears the dedupe, keeps the anchor; a 2nd wait buzzes with episode minutes",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                         Step(m1(t + 360, ups), now: t + 362),
                         Step(m1(t + 600, "Notification"), now: t + 602),
-                        Step(m1(t + 900, w), now: t + 902, [.waiting(minutes: 15)]),
-                        Step(m1(t + 960, w), now: t + 962),
+                        Step(m1(t + 900, w), now: t + 902, [.waiting(minutes: 15)], waitingWrites: 1),
+                        Step(m1(t + 960, w), now: t + 962, waitingWrites: 1),
                         Step([], now: t + 1_200, [.finished(minutes: 20)]),
                      ]),
             // MARK: FA-11 — waiting buzz
             Scenario(id: "W1", note: "UPS → waiting ⇒ exactly one buzz",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                      ]),
             Scenario(id: "W2", note: "rewrite spam (waiting, newer ts) ⇒ no re-buzz",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
-                        Step(m1(t + 400, w), now: t + 402),
-                        Step(m1(t + 500, w), now: t + 502),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 400, w), now: t + 402, waitingWrites: 1),
+                        Step(m1(t + 500, w), now: t + 502, waitingWrites: 1),
                      ]),
             Scenario(id: "W3", note: "dedupe cleared by disappearance; the id's next turn is a new episode",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                         Step([], now: t + 600, [.finished(minutes: 10)]),
                         Step(m1(t + 700, ups), now: t + 702),
-                        Step(m1(t + 800, w), now: t + 802, [.waiting(minutes: 1)]),
+                        Step(m1(t + 800, w), now: t + 802, [.waiting(minutes: 1)], waitingWrites: 1),
                      ]),
             Scenario(id: "W4", note: "waiting → Notification → waiting ⇒ second buzz",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                         Step(m1(t + 400, "Notification"), now: t + 402),
-                        Step(m1(t + 600, w), now: t + 602, [.waiting(minutes: 10)]),
+                        Step(m1(t + 600, w), now: t + 602, [.waiting(minutes: 10)], waitingWrites: 1),
                      ]),
             Scenario(id: "W5", note: "a newer UPS clears the dedupe (leaving waiting) but keeps the episode anchor",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                         Step(m1(t + 400, ups), now: t + 402),
-                        Step(m1(t + 520, w), now: t + 520, [.waiting(minutes: 8)]),
+                        Step(m1(t + 520, w), now: t + 520, [.waiting(minutes: 8)], waitingWrites: 1),
                      ]),
             Scenario(id: "W6", note: "floor: waiting 10 s in ⇒ suppressed; later rewrites never buzz the episode",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 10, w), now: t + 10, suppressed: [.underMinimumRun]),
-                        Step(m1(t + 100, w), now: t + 100),
-                        Step(m1(t + 200, w), now: t + 200),
+                        Step(m1(t + 10, w), now: t + 10, suppressed: [.underMinimumRun], waitingWrites: 1),
+                        Step(m1(t + 100, w), now: t + 100, waitingWrites: 1),
+                        Step(m1(t + 200, w), now: t + 200, waitingWrites: 1),
                      ]),
             // W7–W8 (the hard-coded 59 / 60 s waiting-floor rows) moved to
             // `floorRows` (issue #34), checked at several floors.
@@ -372,23 +376,23 @@ struct FinishAlertPolicyTests {
                      ]),
             Scenario(id: "W10", note: "new id first seen as waiting, fresh ⇒ inexact anchor, suppressed by the floor",
                      baseline: nil, steps: [
-                        Step(m1(t, w), now: t + 2, suppressed: [.underMinimumRun]),
-                        Step(m1(t + 100, w), now: t + 102),
+                        Step(m1(t, w), now: t + 2, suppressed: [.underMinimumRun], waitingWrites: 1),
+                        Step(m1(t + 100, w), now: t + 102, waitingWrites: 1),
                      ]),
             Scenario(id: "W11", note: "new id first seen as waiting, older ts ⇒ buzz with minutes nil (inexact)",
                      baseline: nil, steps: [
-                        Step(m1(t, w), now: t + 600, [.waiting(minutes: nil)]),
+                        Step(m1(t, w), now: t + 600, [.waiting(minutes: nil)], waitingWrites: 1),
                      ]),
             Scenario(id: "W12", note: "already waiting at arm time ⇒ no buzz for that episode",
                      baseline: m1(t, w), steps: [
-                        Step(m1(t + 300, w), now: t + 302),
+                        Step(m1(t + 300, w), now: t + 302, waitingWrites: 1),
                         Step(m1(t + 400, "Notification"), now: t + 402),
-                        Step(m1(t + 500, w), now: t + 502, [.waiting(minutes: nil)]),   // anchor from a waiting marker
+                        Step(m1(t + 500, w), now: t + 502, [.waiting(minutes: nil)], waitingWrites: 1),   // anchor from a waiting marker
                      ]),
             Scenario(id: "W13", note: "negative run (clock went back) ⇒ clockJump, no buzz",
                      baseline: nil, steps: [
                         Step(m1(t + 1_000, ups), now: t),
-                        Step(m1(t + 5, w), now: t + 5, suppressed: [.clockJump]),
+                        Step(m1(t + 5, w), now: t + 5, suppressed: [.clockJump], waitingWrites: 1),
                      ]),
             Scenario(id: "W14", note: "baseline disappearances are alerted only after arming",
                      baseline: m1(t, ups), steps: [
@@ -399,30 +403,30 @@ struct FinishAlertPolicyTests {
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 600, "Stop"), now: t + 602),
-                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)]),
-                        Step(m1(t + 720, was), now: t + 722),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)], waitingWrites: 1),
+                        Step(m1(t + 720, was), now: t + 722, waitingWrites: 1),
                      ]),
             Scenario(id: "W16", note: "waiting → waiting-after-stop is NOT a new episode (no second buzz)",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
-                        Step(m1(t + 400, was), now: t + 402),
-                        Step(m1(t + 500, w), now: t + 502),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 400, was), now: t + 402, waitingWrites: 1),
+                        Step(m1(t + 500, w), now: t + 502, waitingWrites: 1),
                      ]),
             Scenario(id: "W17", note: "waiting-after-stop → Stop clears the dedupe; the next wait buzzes again",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
                         Step(m1(t + 600, "Stop"), now: t + 602),
-                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)]),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)], waitingWrites: 1),
                         Step(m1(t + 700, "Stop"), now: t + 702),
-                        Step(m1(t + 900, was), now: t + 902, [.waiting(minutes: 15)]),
+                        Step(m1(t + 900, was), now: t + 902, [.waiting(minutes: 15)], waitingWrites: 1),
                      ]),
             Scenario(id: "W18", note: "B-2 hook keep: waiting → Notification (subagent ended mid-turn) → waiting ⇒ second buzz",
                      baseline: nil, steps: [
                         Step(m1(t, ups), now: t + 2),
-                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)]),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
                         Step(m1(t + 360, "Notification"), now: t + 362),
-                        Step(m1(t + 480, w), now: t + 482, [.waiting(minutes: 8)]),
+                        Step(m1(t + 480, w), now: t + 482, [.waiting(minutes: 8)], waitingWrites: 1),
                      ]),
         ]
     }()
@@ -433,7 +437,274 @@ struct FinishAlertPolicyTests {
         for (index, (step, observation)) in zip(scenario.steps, observations).enumerated() {
             #expect(observation.events == step.events, "\(scenario.id) step \(index + 1): events")
             #expect(observation.suppressed == step.suppressed, "\(scenario.id) step \(index + 1): suppressed")
+            #expect(observation.waitingWrites == step.waitingWrites, "\(scenario.id) step \(index + 1): waiting writes")
         }
+    }
+
+    // MARK: - F4: the diff's waiting writes
+
+    /// What counts as a waiting write, beyond the rows above (each of which
+    /// now states its own count): a marker read again unchanged is none, a
+    /// same-second swap between the two waiting tokens is one, a transition
+    /// counts whatever its ts, and every session of a diff counts on its own.
+    /// Row ids are LOCKED.
+    static let waitingWriteScenarios: [Scenario] = {
+        let t: Int = Self.t0, ups: String = Self.ups, w: String = Self.waiting
+        let was: String = ClaudeBusyConstants.waitingAfterStopEventToken
+        let a: String = Self.s1, b: String = Self.s2, c: String = Self.s3
+        return [
+            Scenario(id: "WW1", note: "a waiting marker read again with the same ts and token is no write",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 300, w), now: t + 304),
+                        Step(m1(t + 300, w), now: t + 900),
+                     ]),
+            Scenario(id: "WW2", note: "the two waiting tokens swapped in the same second: one write, never a buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 300, was), now: t + 303, waitingWrites: 1),
+                        Step(m1(t + 300, was), now: t + 305),
+                     ]),
+            Scenario(id: "WW3", note: "a transition into waiting counts at the same ts: only a rewrite needs a change",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, "Stop"), now: t + 302),
+                        Step(m1(t + 300, was), now: t + 304, [.waiting(minutes: 5)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "WW4", note: "waiting at arm time and read again unchanged: none; a new ts: one, still no buzz",
+                     baseline: m1(t, w), steps: [
+                        Step(m1(t, w), now: t + 30),
+                        Step(m1(t + 40, w), now: t + 42, waitingWrites: 1),
+                     ]),
+            Scenario(id: "WW5", note: "two sessions enter waiting in one diff: two writes",
+                     baseline: nil, steps: [
+                        Step([marker(a, t, ups), marker(b, t, ups)], now: t + 2),
+                        Step([marker(a, t + 300, w), marker(b, t + 300, w)], now: t + 302,
+                             [.waiting(minutes: 5), .waiting(minutes: 5)], waitingWrites: 2),
+                     ]),
+            Scenario(id: "WW6", note: "an alerting transition beside one under the floor: two writes, one buzz",
+                     baseline: nil, steps: [
+                        Step([marker(a, t, ups)], now: t + 2),
+                        Step([marker(a, t + 300, w), marker(b, t + 300, w)], now: t + 302,
+                             [.waiting(minutes: 5)], suppressed: [.underMinimumRun], waitingWrites: 2),
+                     ]),
+            Scenario(id: "WW7", note: "one waiting write beside a finish and a non-waiting rewrite: one",
+                     baseline: nil, steps: [
+                        Step([marker(a, t, ups), marker(b, t, ups), marker(c, t, ups)], now: t + 2),
+                        Step([marker(a, t + 300, w), marker(b, t + 300, "Notification")], now: t + 302,
+                             [.waiting(minutes: 5), .finished(minutes: 5)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "WW8", note: "a waiting session that disappears is no write",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step([], now: t + 420, [.finished(minutes: 7)]),
+                     ]),
+            Scenario(id: "WW9", note: "a waiting marker rewritten with an EARLIER ts (the clock went back) is one write",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 250, w), now: t + 304, waitingWrites: 1),
+                     ]),
+        ]
+    }()
+
+    @Test(arguments: waitingWriteScenarios)
+    func waitingWriteTable(_ scenario: Scenario) {
+        scenarioTable(scenario)
+    }
+
+    // MARK: - F4: the singleton rule (one buzz for one permission wait)
+
+    struct YieldRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let waitingWrites: Int
+        let newPrompts: Int
+        let withEvidence: Int
+        let yields: Bool
+        var testDescription: String { "\(id) → \(yields ? "yields" : "buzzes")" }
+    }
+
+    /// Row ids are LOCKED. Only Y1 yields; every inconsistent input buzzes.
+    static let yieldRows: [YieldRow] = [
+        YieldRow(id: "Y1 one write, one new prompt, with evidence", waitingWrites: 1, newPrompts: 1, withEvidence: 1,
+                 yields: true),
+        YieldRow(id: "Y2 two writes", waitingWrites: 2, newPrompts: 1, withEvidence: 1, yields: false),
+        YieldRow(id: "Y3 two prompts, both with evidence", waitingWrites: 1, newPrompts: 2, withEvidence: 2, yields: false),
+        YieldRow(id: "Y4 two prompts, one with evidence", waitingWrites: 1, newPrompts: 2, withEvidence: 1, yields: false),
+        YieldRow(id: "Y5 no prompt", waitingWrites: 1, newPrompts: 0, withEvidence: 0, yields: false),
+        YieldRow(id: "Y6 one prompt without evidence", waitingWrites: 1, newPrompts: 1, withEvidence: 0, yields: false),
+        YieldRow(id: "Y7 no write", waitingWrites: 0, newPrompts: 1, withEvidence: 1, yields: false),
+        YieldRow(id: "Y8 evidence without a prompt", waitingWrites: 1, newPrompts: 0, withEvidence: 1, yields: false),
+        YieldRow(id: "Y9 more evidence than prompts", waitingWrites: 1, newPrompts: 1, withEvidence: 2, yields: false),
+        YieldRow(id: "Y10 negative writes", waitingWrites: -1, newPrompts: 1, withEvidence: 1, yields: false),
+        YieldRow(id: "Y11 negative prompts", waitingWrites: 1, newPrompts: -1, withEvidence: 1, yields: false),
+        YieldRow(id: "Y12 negative evidence", waitingWrites: 1, newPrompts: 1, withEvidence: -1, yields: false),
+        YieldRow(id: "Y13 Int.min everywhere", waitingWrites: Int.min, newPrompts: Int.min, withEvidence: Int.min,
+                 yields: false),
+        YieldRow(id: "Y14 Int.max everywhere", waitingWrites: Int.max, newPrompts: Int.max, withEvidence: Int.max,
+                 yields: false),
+        YieldRow(id: "Y15 Int.max writes", waitingWrites: Int.max, newPrompts: 1, withEvidence: 1, yields: false),
+    ]
+
+    @Test(arguments: yieldRows)
+    func singletonRuleTable(_ row: YieldRow) {
+        let yields: Bool = FinishAlertPolicy.waitingBuzzYieldsToPromptPush(
+            waitingWrites: row.waitingWrites, newPrompts: row.newPrompts, newPromptsWithEvidence: row.withEvidence)
+        #expect(yields == row.yields, "\(row.id)")
+    }
+
+    /// The whole small grid, each input −1…3: exactly ONE cell yields.
+    @Test func exactlyOneCellOfTheGridYields() {
+        let values: [Int] = [-1, 0, 1, 2, 3]
+        var yielding: [[Int]] = []
+        var cells = 0
+        for writes in values {
+            for prompts in values {
+                for evidence in values {
+                    cells += 1
+                    let yields: Bool = FinishAlertPolicy.waitingBuzzYieldsToPromptPush(
+                        waitingWrites: writes, newPrompts: prompts, newPromptsWithEvidence: evidence)
+                    if yields { yielding.append([writes, prompts, evidence]) }
+                }
+            }
+        }
+        #expect(cells == 125, "vacuity: the whole grid is walked")
+        #expect(yielding == [[1, 1, 1]], "one write, one new prompt, that prompt with evidence — nothing else")
+    }
+
+    // MARK: - F4: a buzz that still goes out leaves out prompts with evidence
+
+    /// With no evidence the counts, and so the words, are exactly today's for
+    /// every existing waiting-buzz body row (the S2 rows and the Track C
+    /// rows, whose expected strings stay where they are).
+    @Test func noEvidenceLeavesEveryExistingWaitingBodyAsItWas() {
+        let s2Rows: [(kind: LidGuardMessageKind, expected: String)] =
+            WaitingPromptContextTests.bodyRows.map { ($0.kind, $0.expected) }
+        let trackCRows: [(kind: LidGuardMessageKind, expected: String)] =
+            LidGuardPolicyTests.needsAttentionRows.map { ($0.kind, $0.expected) }
+        let rows: [(kind: LidGuardMessageKind, expected: String)] = s2Rows + trackCRows
+        var checked = 0
+        for row in rows {
+            guard case .needsAttention(let minutes, let stillWorking, let prompts) = row.kind else { continue }
+            let left: WaitingPromptCounts = FinishAlertPolicy.promptsWithoutEvidence(prompts, withEvidence: .none)
+            #expect(left == prompts, "\(row.expected)")
+            let rebuilt: LidGuardMessageKind = .needsAttention(minutes: minutes, stillWorking: stillWorking, prompts: left)
+            #expect(LidGuardPolicy.messageBody(kind: rebuilt, clockTime: "09:41") == row.expected)
+            checked += 1
+        }
+        #expect(checked == rows.count && rows.count >= 16, "vacuity: every row is a waiting buzz, and both tables are read")
+    }
+
+    /// … and for every count in the grid, each kind 0…2.
+    @Test func noEvidenceLeavesEveryCountAsItWas() {
+        let range: ClosedRange<Int> = 0...2
+        var checked = 0
+        for bash in range {
+            for write in range {
+                for edit in range {
+                    for notebookEdit in range {
+                        for read in range {
+                            let counts = WaitingPromptCounts(bash: bash, write: write, edit: edit,
+                                                             notebookEdit: notebookEdit, read: read)
+                            let left: WaitingPromptCounts = FinishAlertPolicy.promptsWithoutEvidence(counts,
+                                                                                                     withEvidence: .none)
+                            #expect(left == counts)
+                            #expect(LidGuardPolicy.promptsPhrase(left) == LidGuardPolicy.promptsPhrase(counts))
+                            checked += 1
+                        }
+                    }
+                }
+            }
+        }
+        #expect(checked == 243, "vacuity: the whole grid is walked")
+    }
+
+    struct LessEvidenceRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let prompts: WaitingPromptCounts
+        let withEvidence: WaitingPromptCounts
+        let expected: WaitingPromptCounts
+        /// `LidGuardPolicy.promptsPhrase` of `expected`, spelled out.
+        let phrase: String?
+        var testDescription: String { id }
+    }
+
+    /// Row ids are LOCKED.
+    static let lessEvidenceRows: [LessEvidenceRow] = [
+        LessEvidenceRow(id: "L1 the one prompt has evidence", prompts: WaitingPromptCounts(bash: 1),
+                        withEvidence: WaitingPromptCounts(bash: 1), expected: .none, phrase: nil),
+        LessEvidenceRow(id: "L2 one of two of a kind", prompts: WaitingPromptCounts(bash: 2),
+                        withEvidence: WaitingPromptCounts(bash: 1), expected: WaitingPromptCounts(bash: 1),
+                        phrase: "1 Bash permission prompt"),
+        LessEvidenceRow(id: "L3 mixed kinds, one kind left", prompts: WaitingPromptCounts(bash: 1, write: 2),
+                        withEvidence: WaitingPromptCounts(bash: 1), expected: WaitingPromptCounts(write: 2),
+                        phrase: "2 Write permission prompts"),
+        LessEvidenceRow(id: "L4 mixed kinds stay mixed", prompts: WaitingPromptCounts(bash: 2, edit: 1),
+                        withEvidence: WaitingPromptCounts(bash: 1), expected: WaitingPromptCounts(bash: 1, edit: 1),
+                        phrase: "2 permission prompts"),
+        LessEvidenceRow(id: "L5 more evidence than the kind holds clamps at zero", prompts: WaitingPromptCounts(read: 1),
+                        withEvidence: WaitingPromptCounts(read: 3), expected: .none, phrase: nil),
+        LessEvidenceRow(id: "L6 evidence of a kind not counted takes nothing", prompts: WaitingPromptCounts(write: 1),
+                        withEvidence: WaitingPromptCounts(notebookEdit: 2), expected: WaitingPromptCounts(write: 1),
+                        phrase: "1 Write permission prompt"),
+        LessEvidenceRow(id: "L7 more evidence than every kind holds",
+                        prompts: WaitingPromptCounts(bash: 1, write: 1, edit: 1, notebookEdit: 1, read: 1),
+                        withEvidence: WaitingPromptCounts(bash: 2, write: 2, edit: 2, notebookEdit: 2, read: 2),
+                        expected: .none, phrase: nil),
+        LessEvidenceRow(id: "L8 evidence below zero takes nothing", prompts: WaitingPromptCounts(edit: 2),
+                        withEvidence: WaitingPromptCounts(edit: -1), expected: WaitingPromptCounts(edit: 2),
+                        phrase: "2 Edit permission prompts"),
+        LessEvidenceRow(id: "L9 Int.max evidence", prompts: WaitingPromptCounts(bash: 3),
+                        withEvidence: WaitingPromptCounts(bash: Int.max), expected: .none, phrase: nil),
+        LessEvidenceRow(id: "L10 Int.min evidence takes nothing", prompts: WaitingPromptCounts(bash: 3),
+                        withEvidence: WaitingPromptCounts(bash: Int.min), expected: WaitingPromptCounts(bash: 3),
+                        phrase: "3 Bash permission prompts"),
+        LessEvidenceRow(id: "L11 nothing counted, evidence anyway", prompts: .none,
+                        withEvidence: WaitingPromptCounts(bash: 1), expected: .none, phrase: nil),
+        LessEvidenceRow(id: "L12 a count below zero holds nothing", prompts: WaitingPromptCounts(bash: -1, write: 2),
+                        withEvidence: WaitingPromptCounts(write: 1), expected: WaitingPromptCounts(write: 1),
+                        phrase: "1 Write permission prompt"),
+    ]
+
+    @Test(arguments: lessEvidenceRows)
+    func promptsWithEvidenceAreLeftOut(_ row: LessEvidenceRow) {
+        let left: WaitingPromptCounts = FinishAlertPolicy.promptsWithoutEvidence(row.prompts, withEvidence: row.withEvidence)
+        #expect(left == row.expected, "\(row.id)")
+        #expect(LidGuardPolicy.promptsPhrase(left) == row.phrase, "\(row.id)")
+        let kinds: [Int] = [left.bash, left.write, left.edit, left.notebookEdit, left.read]
+        #expect(kinds.allSatisfy { $0 >= 0 } && left.total >= 0, "\(row.id): clamped at zero per kind and in total")
+    }
+
+    /// Every kind is subtracted, and a sixth kind fails this count until it
+    /// has its own line in `promptsWithoutEvidence`.
+    @Test func everyKindIsSubtracted() {
+        #expect(Mirror(reflecting: WaitingPromptCounts.none).children.count == 5,
+                "a new kind needs its own line in promptsWithoutEvidence, and a row here")
+        let each = WaitingPromptCounts(bash: 1, write: 1, edit: 1, notebookEdit: 1, read: 1)
+        #expect(FinishAlertPolicy.promptsWithoutEvidence(each, withEvidence: each) == .none)
+        #expect(FinishAlertPolicy.promptsWithoutEvidence(each, withEvidence: .none) == each)
+    }
+
+    /// Each kind takes only its own evidence: for every ordered pair of
+    /// different kinds, evidence of one never touches the other.
+    @Test func evidenceNeverCrossesKinds() {
+        let kinds: [WritableKeyPath<WaitingPromptCounts, Int>] = [\.bash, \.write, \.edit, \.notebookEdit, \.read]
+        var pairs = 0
+        for held in kinds {
+            for other in kinds where other != held {
+                var prompts: WaitingPromptCounts = .none
+                prompts[keyPath: held] = 2
+                var evidence: WaitingPromptCounts = .none
+                evidence[keyPath: other] = 2
+                #expect(FinishAlertPolicy.promptsWithoutEvidence(prompts, withEvidence: evidence) == prompts,
+                        "\(held) with evidence of \(other) only")
+                pairs += 1
+            }
+        }
+        #expect(pairs == 20, "vacuity: every ordered pair of kinds")
     }
 
     /// FA-5 × C3 rule 2 AMENDED (2026-10-27): a newer UserPromptSubmit
@@ -465,13 +736,16 @@ struct FinishAlertPolicyTests {
                                               now: Self.t0 + 10)
         #expect(early.tracked[Self.s1]?.waitingBuzzed == false)
         #expect(early.tracked[Self.s1]?.lastEvent == Self.waiting)
+        #expect(early.waitingWrites == 1, "a suppressed transition is still one write")
         let late = FinishAlertPolicy.observe(previous: start, current: Self.m1(Self.t0 + 60, Self.waiting),
                                              now: Self.t0 + 60)
         #expect(late.tracked[Self.s1]?.waitingBuzzed == true)
         #expect(late.tracked[Self.s1]?.firstSeen == Self.t0, "a waiting rewrite never moves the anchor")
+        #expect(late.waitingWrites == 1)
         let resumed = FinishAlertPolicy.observe(previous: late.tracked, current: Self.m1(Self.t0 + 90, "Notification"),
                                                 now: Self.t0 + 90)
         #expect(resumed.tracked[Self.s1]?.waitingBuzzed == false, "leaving waiting ends the episode")
+        #expect(resumed.waitingWrites == 0, "leaving waiting is no waiting write")
     }
 
     /// B-2: the dedupe flag treats BOTH waiting tokens as one episode — a
@@ -550,6 +824,7 @@ struct FinishAlertPolicyTests {
         #expect(observation.events == (row.sent ? [.finished(minutes: row.minutes)] : []), "\(row.id)")
         #expect(observation.suppressed == (row.sent ? [] : [.underMinimumRun]), "\(row.id)")
         #expect(observation.tracked.isEmpty, "\(row.id)")
+        #expect(observation.waitingWrites == 0, "\(row.id)")
         Self.expectTheDefaultFloorMatches(row, observation) {
             FinishAlertPolicy.observe(previous: gone, current: [], now: Self.t0)
         }
@@ -566,6 +841,7 @@ struct FinishAlertPolicyTests {
         #expect(observation.events == (row.sent ? [.waiting(minutes: row.minutes)] : []), "\(row.id)")
         #expect(observation.suppressed == (row.sent ? [] : [.underMinimumRun]), "\(row.id)")
         #expect(observation.tracked[Self.s1]?.waitingBuzzed == row.sent, "\(row.id)")
+        #expect(observation.waitingWrites == 1, "\(row.id): sent or under the floor, the transition is one write")
         Self.expectTheDefaultFloorMatches(row, observation) {
             FinishAlertPolicy.observe(previous: busy, current: waiting, now: Self.t0)
         }
@@ -585,6 +861,7 @@ struct FinishAlertPolicyTests {
                                                     minimumRunSeconds: 120)
         #expect(observation.events == [.finished(minutes: 2)], "s2 finished over the floor")
         #expect(observation.suppressed == [.underMinimumRun, .clockJump], "s1 waiting under it; s3 a clock jump")
+        #expect(observation.waitingWrites == 1, "s1's suppressed transition is the one waiting write")
     }
 
     /// The ONE clamp rule for a stored `finishAlertMinimumRunSeconds` value:
@@ -698,10 +975,12 @@ struct FinishAlertPolicyTests {
         #expect(observation.invalidEpisodeStarts == 3)
         #expect(observation.suppressed == [.underMinimumRun], "s4: new id already waiting, 60 s floor not met")
         #expect(observation.events.isEmpty)
+        #expect(observation.waitingWrites == 1, "s4, the one new id already waiting")
 
         // Counted once, at first sight: the same markers again count nothing.
         let again = FinishAlertPolicy.observe(previous: observation.tracked, current: current, now: t + 30)
         #expect(again.invalidEpisodeStarts == 0)
+        #expect(again.waitingWrites == 0, "s4 read again with the same ts and token is no write")
         #expect(FinishAlertPolicy.invalidEpisodeStartCount(in: [], now: t) == 0)
         #expect(FinishAlertPolicy.invalidEpisodeStartCount(in: [Self.marker(Self.s1, t, Self.ups)], now: t) == 0,
                 "an absent ep (hook v6) is the normal fallback, never counted")
