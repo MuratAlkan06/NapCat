@@ -502,6 +502,26 @@ It builds controls only: nothing can be forwarded yet.
   prompts the gate would forward are counted, as counts per tool kind: never
   a command, path or preview, and never a prompt the gate keeps. Off, or for
   an unwired session, the push is unchanged.
+  Since #216 that one read also gives the alert lane what it needs to tell
+  whether the phone's own prompt push covers a wait. The lane asks for it
+  once for each change it reads in the marker directory that holds a waiting
+  write (a session newly waiting, whether or not that alerts, or a waiting
+  marker rewritten), and once as Session alerts arm; the read reaches the
+  seam only while the toggle is on and listening. Besides the counts it
+  returns how many prompts were relayed since the previous read and in the
+  last 10 seconds, whatever the gate made of them, and how many of those, and
+  of the counted ones, carry evidence: CloudKit accepted the prompt's record
+  and the Mac found the phone's prompt subscription. What crosses from the
+  seam is tool kinds, counts and an opaque mark the toggle keeps, never a
+  prompt ID, preview or session; each read moves the mark on, so a prompt is
+  new to one read at most (one relayed in a read's own second, after it, is
+  new to none). When a change holds exactly one waiting write and the read
+  finds exactly one new prompt, with evidence, its plain waiting push, if it
+  has one, is dropped; the finish pushes in it still go out. A waiting push
+  that does go out leaves the prompts with evidence out of its count.
+  Nothing in the app sets that evidence yet (the record path that will is
+  not live, and the host is never armed), so no push is dropped and every
+  push reads as before.
 - **Hardening.** A topic that exists but could not be read keeps every prompt
   local. The host holds at most 64 servers and, per server, 64 of its 256
   prompts; part of a frame left unfinished for 5 seconds closes the link, and
@@ -598,8 +618,11 @@ this section points at them.
   against either CloudKit environment.
 - **Next.** Before any forward is real: a database for the store (the
   schema is deployed), the writer's outcome reaching the prompt's lifecycle (the
-  prompt stays `saving` until then, so no decision can count), the waiting
-  buzz superseded by the alert lane, the project label, and signed
+  prompt stays `saving` until then, so no decision can count), the
+  evidence the alert lane needs before it drops a waiting push (that
+  outcome, and the Mac finding the phone's prompt subscription as it saves
+  the record; the alert lane's side is wired, see the waiting buzz bullet),
+  the project label, and signed
   decisions (CL-1) before any decision counts. Also owed before arming:
   - Retraction is best-effort: a failed one is only audited. Fix it before
     arming: retry or sweep, delete the prompt record apart from its
