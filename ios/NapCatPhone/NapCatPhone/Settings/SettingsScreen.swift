@@ -46,10 +46,13 @@ struct SettingsScreen: View {
     }
     nonisolated static let approvalsHeader = "Remote approvals"
     nonisolated static let approvalsLabel = "Prompts on This iPhone"
-    /// What the switch does today, on a paired phone: the prompts are listed
-    /// and announced here; answering from here is not on yet.
-    nonisolated static let approvalsPairedFooter = "Shows permission prompts from your paired Mac and notifies you "
-        + "when one is waiting. You can't answer from iPhone yet — answer on your Mac."
+    /// What the switch does today, on a paired phone: the prompts that reach
+    /// it through iCloud are listed and announced here, with no claim about
+    /// which Mac sent them (nothing on the phone checks that); answering from
+    /// here is not on yet.
+    nonisolated static let approvalsPairedFooter = "Shows permission prompts that reach this iPhone through your iCloud, "
+        + "and notifies you when one is waiting. This iPhone can't check which Mac sent a prompt. "
+        + "You can't answer from iPhone yet — answer on your Mac."
     /// On an unpaired phone, whose switch is off and cannot be set: pairing
     /// comes first, in the row above.
     nonisolated static let approvalsUnpairedFooter = "Pair this iPhone with your Mac above to see its permission prompts here."

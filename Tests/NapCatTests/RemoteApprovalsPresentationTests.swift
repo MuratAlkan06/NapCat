@@ -146,7 +146,8 @@ struct RemoteApprovalsPresentationTests {
 
     /// The words: what it does today, the one change it makes you can see,
     /// what would stay on the Mac (what the gate recognizes, named as a
-    /// fixed list, and every Read, whatever file it names), that the
+    /// fixed list, and every Read, whatever file it names), that the gate
+    /// reads the prompt and not what a command goes on to do, that the
     /// terminal keeps working, and that off is the kill switch. Never the
     /// alert topic's lane (ntfy carries no approval semantics). Honest
     /// while OFF: no switch name and no hint sentence promises the iPhone
@@ -163,12 +164,13 @@ struct RemoteApprovalsPresentationTests {
                 + "prompt”). Prompts NapCat's gate recognizes as privileged, settings or secret — a fixed list of "
                 + "commands and locations — are never counted, and would stay on this Mac even if a later version let "
                 + "the iPhone app answer. Read prompts are never counted either, and would stay on this Mac too, "
-                + "whatever file they name. The terminal dialog always stays answerable. Off withdraws every prompt "
-                + "at once.")
+                + "whatever file they name. The gate reads the prompt, not what a command goes on to do. The terminal "
+                + "dialog always stays answerable. Off withdraws every prompt at once.")
         for phrase in ["keeps every one on this Mac", "A waiting push can count some of them", "1 Bash permission prompt",
                        "recognizes as privileged, settings or secret", "a fixed list of commands and locations",
                        "are never counted, and would stay on this Mac", "even if a later version",
                        "Read prompts are never counted either", "whatever file they name",
+                       "The gate reads the prompt, not what a command goes on to do",
                        "terminal dialog always stays answerable", "Off withdraws every prompt"] {
             #expect(hint.contains(phrase), "the hint must say '\(phrase)'")
         }

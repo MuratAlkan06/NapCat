@@ -16,8 +16,11 @@ import NapCatWire
 /// Where NapCat writes a forwarded prompt's record: CloudKit, through the
 /// record path's store (`CloudKitApprovalRecords`, slice S3, built only by
 /// tests in that slice). Nothing reaches it while the feature is unarmed,
-/// which it always is until the iPhone half lands (the S2 host is built never
-/// armed, with a sink that writes nothing).
+/// which every build is: arming is the Mac's decision, and it waits on the
+/// Mac's live record path and the seam's check of which program listens
+/// (still owed; #221 holds every answer until then), among the items owed
+/// before arming (the S2 host is built never armed, with a sink that writes
+/// nothing).
 protocol ApprovalRecordSink: AnyObject {
     /// Write the prompt record: the tool the gate forwarded and the gate's
     /// own copy of the preview (`ApprovalGate.forwardedPreview`: no
@@ -25,8 +28,8 @@ protocol ApprovalRecordSink: AnyObject {
     func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int)
     /// Delete the prompt record (and its decision, if any).
     func retract(_ id: PromptID)
-    /// The forward was accepted: the actionable push replaces this episode's
-    /// plain waiting alert.
+    /// The forward was accepted: the prompt push (fixed text, no action)
+    /// replaces this episode's plain waiting alert.
     func supersedeWaitingAlert(_ id: PromptID)
 }
 
@@ -170,11 +173,13 @@ final class ApprovalIntake {
     /// logged with the reason) instead of as unknown.
     private(set) var prompts: [PromptID: Entry] = [:]
 
-    /// `armed`: whether the feature is enabled on both devices (always false
-    /// until the iPhone half lands). `secrets`: strings that must never leave the
-    /// Mac (the alert topic) — nil while one exists that could not be read,
-    /// and then every prompt stays local (fail closed). `now`: monotonic
-    /// seconds.
+    /// `armed`: whether forwarding is armed, which the Mac alone decides (its
+    /// toggle, a paired iPhone and a live record path; the iPhone's own
+    /// switch tells the Mac nothing). The app builds its host with
+    /// `armed: { false }`: no build arms it yet. `secrets`: strings that
+    /// must never leave the Mac (the alert topic) — nil while one exists
+    /// that could not be read, and then every prompt stays local (fail
+    /// closed). `now`: monotonic seconds.
     init(armed: @escaping () -> Bool, secrets: @escaping () -> [String]?, newPromptID: @escaping () -> PromptID?,
          now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,
          closeConnection: @escaping (ConnectionKey) -> Void, audit: @escaping (ApprovalAuditEvent) -> Void) {

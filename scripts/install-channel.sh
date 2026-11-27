@@ -166,7 +166,8 @@ HELPER="$APP/$HELPER_IN_BUNDLE"
 # So the registration is one that uninstall-channel.sh, and a later run of this
 # script, recognise as NapCat's.
 is_napcat_helper "$HELPER" || die "$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered."
-# A short path, so the receipt always fits the 1 KiB NapCat reads of it.
+# A short path, so the receipt always fits the 1 KiB NapCat will read of it
+# (no NapCat build reads the receipt yet).
 path_bytes() {
     local LC_ALL=C
     echo "${#1}"

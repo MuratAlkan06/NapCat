@@ -2,10 +2,13 @@
 
 The iPhone half of F3: it shows the alerts NapCat on the Mac sends. A
 **device build** reads them from the owner's private iCloud database (the
-one the Mac writes) and gets a push for each new one. **Simulator builds,
-previews and tests use fixture data only.** They never build a CloudKit
-container, so they still build and run without code signing. See
-[Live alerts](#live-alerts-device-builds).
+one the Mac writes) and gets a push for each new one. For remote
+approvals it also pairs with the Mac and, while its own switch is on,
+lists the permission prompts it finds in that database, read only: it
+cannot answer them yet. **Simulator builds, previews and tests use fixture
+data only.** They never build a CloudKit container, so they still build and
+run without code signing. See [Live alerts](#live-alerts-device-builds) and
+[Live prompts](#live-prompts-device-builds).
 
 ## Requirements
 
@@ -147,13 +150,19 @@ It is one standard grouped form in the current palette:
   iPhone…** (a Mac already paired) in NapCat's Settings › Claude, then scan
   the code it shows and confirm with Face ID or Touch ID (the footer names
   the one this iPhone has). A launch with a request fixture has no row.
+- **Remote approvals** (shown with Pairing): **Prompts on This iPhone**,
+  this iPhone's own switch, off by default and kept across launches. It can
+  be set only on a paired iPhone; on an unpaired one it shows off and its
+  footer says to pair first. It tells the Mac nothing: off pauses this
+  iPhone only (see [Live prompts](#live-prompts-device-builds)).
 - **About**: the version and build, read from the app's Info.plist, and a
   link to the [project site](https://muratalkan06.github.io/NapCat/).
 
 Settings works only on what it is handed and on the Info.plist. It makes no
 iCloud or network calls of its own, and a test scans its source to keep it
 that way; the pairing it opens writes its one record to iCloud through the
-live pairing it is handed.
+live pairing it is handed, and the switch it sets is handed on to the
+inbox, which does the reading.
 
 ## Live alerts (device builds)
 
@@ -244,6 +253,40 @@ device run shows `push subscription not created (code 12)`, do this:
 Which environment a dev-signed build actually reaches is recorded in #94
 once the device run measures it.
 
+## Live prompts (device builds)
+
+Remote approvals are not armed: the Mac forwards no prompt yet, and
+this iPhone cannot answer one. A device build does this only while
+**Prompts on This iPhone** is on and the iPhone is paired:
+
+1. Makes sure the prompt push subscription exists: looked up by its fixed
+   ID (`ApprovalWire.promptSubscriptionID`) before the launch's first read,
+   created only when missing, and tried again at the next read if that
+   failed.
+2. Reads one snapshot of the approvals zone, asking for the prompt record's
+   six fields only, at launch, on every return to the foreground, as
+   **Prompts on This iPhone** is turned on, on a pull to refresh, as
+   Settings or the launch's pairing sheet closes, and on a prompt push that
+   reaches the open app or is tapped; never on a timer. A prompt record is
+   read strictly, and any other record is dropped after its type is
+   checked. A failed read changes nothing.
+3. Lists the prompts under **Waiting** (tool, project and age). A row, or a
+   tapped prompt push, opens the prompt as a preview: the tool, the project
+   and the input, with no answer on offer.
+
+The prompt push says "A permission prompt is waiting on your Mac." under
+the title "NapCat", with the default sound: nothing of the prompt but its
+record's ID, which opens it, and no action. Switching **Prompts on This
+iPhone** off empties the list; it deletes the subscription only if the
+switch took effect earlier in the same launch, and if that fails it tries
+again on each return to the foreground, pull to refresh, close of Settings
+or the launch's pairing sheet, or prompt push while the app stays open. A
+deletion still owed when the app quits is not retried by a later launch, so
+that subscription stays and its pushes still come. Nothing tells the Mac.
+What the live database runs for this path is listed in
+[design/remote-approvals.md](../../design/remote-approvals.md), "The
+phone's prompt path".
+
 ## How the project is put together
 
 - `project.yml` is the [XcodeGen](https://github.com/yonaskolb/XcodeGen)
@@ -265,7 +308,7 @@ once the device run measures it.
 - `NapCatPhone/PrivacyInfo.xcprivacy` is the app's privacy manifest: no
   tracking, no collected data, and the one required-reason API the app
   uses, `UserDefaults` (reason CA92.1: it reads its own launch arguments
-  and keeps the chosen palette).
+  and keeps the chosen palette and the Remote approvals switch).
   A test scans the app's code and NapCatWire for every required-reason API
   category and fails if the manifest declares more or fewer than it finds.
 - Versions: the app has its own version line, independent of the Mac app.

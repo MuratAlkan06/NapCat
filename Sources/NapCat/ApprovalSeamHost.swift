@@ -3,13 +3,16 @@ import NapCatSeam
 import NapCatWire
 import os
 
-// F4 slice S1: NapCat's end of the seam — the authenticated listener and the
-// intake behind it. Design: design/remote-approvals.md.
+// Remote approvals, slice S1: NapCat's end of the seam — the listener, which
+// checks that each peer runs as this user (not yet which program it is), and
+// the intake behind it. Design: design/remote-approvals.md.
 //
 // Built and started ONLY behind the Mac toggle (slice S2:
 // RemoteApprovalsController, lint-locked) and stopped by its kill switch;
-// with the toggle off no socket exists, a channel server finds nothing to
-// connect to, and every prompt stays local. The S2 host is built never armed
+// with the toggle off NapCat has no socket, so a channel server finds
+// nothing of NapCat's to connect to (another program of this user could
+// listen at the path; this build's channel server, version 3, passes no
+// verdict back to Claude Code, #221). The S2 host is built never armed
 // (fail-dark). Its queue is the intake's: every frame, close and event runs
 // there.
 

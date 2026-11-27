@@ -93,10 +93,12 @@ enum DefaultsKey {
     // MARK: F4 slice S2 — remote approvals (the only key it adds)
 
     /// The Mac's remote-approvals toggle (Bool, default false). Only a stored
-    /// `true` reads as on (`RemoteApprovalsPolicy.enabled(stored:)`); turning
-    /// it off is the kill switch. On, NapCat listens for wired sessions'
-    /// permission prompts; nothing is forwarded until the iPhone half of the
-    /// feature exists and is switched on too.
+    /// `true` (or a 1, which bridges to it) reads as on
+    /// (`RemoteApprovalsPolicy.enabled(stored:searched:)`); turning it off is
+    /// the kill switch. On, NapCat listens for wired sessions' permission
+    /// prompts; nothing is forwarded until forwarding is armed, which needs
+    /// this toggle, a paired iPhone and a live record path (no build arms it
+    /// yet). The iPhone's own switch tells the Mac nothing.
     static let remoteApprovalsEnabled = "remoteApprovalsEnabled"
 
     // MARK: F4 slice S-PAIR-C1 — the pairing ceremony (the only key it adds;

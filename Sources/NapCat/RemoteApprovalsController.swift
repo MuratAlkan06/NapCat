@@ -17,12 +17,15 @@ import NapCatWire
 // FAIL-DARK: the host is built never armed and its record sink writes
 // nothing, so a prompt heard here is classified, audited and kept on this
 // Mac. No CloudKit record operation exists in this slice; forwarding becomes
-// possible only when the iPhone half lands (a later slice amends this file
-// and its lint deliberately).
+// possible only when the Mac arms it (the Mac's decision alone, not the
+// iPhone's), which waits on the Mac's live record path and the seam's check
+// of which program listens (still owed; #221 holds every answer until then),
+// among the items owed before arming (a later slice amends this file and
+// its lint deliberately).
 
-/// The seam's record sink in this slice: it writes NOTHING. There is no
-/// CloudKit record operation before the iPhone half exists — and since the
-/// host is never armed, the intake never asks this sink to save anyway.
+/// The seam's record sink in this slice: it writes NOTHING. No prompt record
+/// is written before the Mac's live record path exists — and since the host
+/// is never armed, the intake never asks this sink to save anyway.
 final class FailDarkApprovalRecords: ApprovalRecordSink {
     func save(_ id: PromptID, tool: ApprovalTool, inputPreview: String, expiresAt: Int) {}
     func retract(_ id: PromptID) {}
@@ -118,7 +121,9 @@ final class RemoteApprovalsController {
     }
 
     /// The ONE construction of the seam host: never armed, and its record
-    /// sink writes nothing (fail-dark until the iPhone half exists).
+    /// sink writes nothing (fail-dark until the Mac arms forwarding, which
+    /// waits on, among other items, its live record path and the seam's
+    /// check of which program listens).
     /// Its closures run on the seam's queue, hence `@Sendable`.
     nonisolated static func failDarkHost(socketPath: String, secrets: @escaping @Sendable () -> [String]?,
                                          audit: @escaping @Sendable (ApprovalAuditEvent) -> Void = ApprovalAuditLog.record,

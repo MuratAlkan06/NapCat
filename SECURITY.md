@@ -68,17 +68,24 @@ devices showed, and when it was paired, as text. It asks for no
 synchronization, so iCloud Keychain never carries it off this Mac.
 
 It is not a secret, but it is what the Mac would trust a signed answer by,
-so its integrity matters: it is written only when you confirm, on the Mac,
-that both devices show the same code, and a new pairing replaces it in one
-write. **Unpair…** in Settings › Claude deletes it and turns Remote
-approvals off. `scripts/uninstall.sh` deletes it too, as you and without
-printing it. Like the topic, it is guarded against other apps by the
-keychain's access prompt, which is not a wall against software already
-running as you.
+so its integrity matters: NapCat writes it only when you confirm, on the
+Mac, that both devices show the same code, and a new pairing replaces it in
+one write. **Unpair…** in Settings › Claude asks the keychain to delete it
+and turns Remote approvals off either way. If the keychain refuses, the
+item stays: Settings › Claude re-reads it, so a pairing still there still
+shows as long as the item can be read, and NapCat logs
+`pairing.unpairFailed`. `scripts/uninstall.sh` deletes it too, as you and
+without printing it. The keychain's access prompt guards reading this item,
+not replacing it: software already running as you can replace it without a
+prompt, so the key is as trustworthy as your user account, no more.
 
 While a pairing is under way, the iPhone's reply travels as one record in
 your iCloud private database, every field but the format version
-encrypted, and the Mac deletes it when the pairing ends. The pairing code
-on the Mac's screen never leaves it: the record is named after a hash of
-that code, which is how the Mac finds it, and it carries only a proof that
-the phone saw the code. Pair in private while the code is up.
+encrypted, and the Mac asks iCloud to delete it when the pairing ends. A
+deletion that did not go through is tried again at each later launch,
+until it does or a new pairing starts; a reply the iPhone saves after the
+Mac's pairing has ended can stay in your iCloud (a retry at a later launch
+can remove it). The pairing code on the Mac's screen never leaves it: the
+record is named after a hash of that code, which is how the Mac finds it,
+and it carries only a proof that the phone saw the code. Pair in private
+while the code is up.

@@ -5,10 +5,12 @@ import os
 import Security
 
 /// SECOND SANCTIONED NETWORKING FILE (F3 stage 1, deliberate lint amendment):
-/// the ONLY file that may import CloudKit or name a CloudKit symbol, and the
-/// only one that reads this process's own entitlements. HTTP stays where it
-/// was — `URLSession`/`URLRequest` remain confined to NtfyMessageSender.swift
-/// (`LidGuardStructureTests` enforces both).
+/// one of the two files that may import CloudKit (the other is the record
+/// path's CloudKitApprovalRecords.swift, held to its own list of CloudKit
+/// names), and the only one that reads this process's own entitlements.
+/// HTTP is not here: `URLSession`/`URLRequest` are used only by
+/// NtfyMessageSender.swift and GitHubReleaseChecker.swift
+/// (`LidGuardStructureTests` confines both kinds of networking).
 ///
 /// It writes one alert as one record into the owner's PRIVATE CloudKit
 /// database (default zone of `AlertWire.containerIdentifier`):

@@ -29,9 +29,9 @@ SIGN_IDENTITY := -
 # unentitled (the app's entitlement probe then keeps it on ntfy). When set, the
 # profile is installed as Contents/embedded.provisionprofile before signing and
 # codesign gets --entitlements. Never commit a .provisionprofile.
-# Ad-hoc signing with either one set (on the command line or in the
-# environment) is refused: AMFI kills an ad-hoc binary that claims restricted
-# entitlements as soon as it launches.
+# With SIGN_IDENTITY=- (the default, ad hoc), setting either one (on the
+# command line or in the environment) is refused: AMFI kills an ad-hoc binary
+# that claims restricted entitlements as soon as it launches.
 ENTITLEMENTS ?=
 PROVISIONING_PROFILE ?=
 

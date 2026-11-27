@@ -14,7 +14,16 @@ where a row and this note differ, the row wins. Companion to
 
 Each entry is something a prompt could carry and what happens to it. Nothing
 listed here is ever forwarded: a refused prompt stays fully answerable in the
-terminal and is only logged, by its code. The codes are the gate's own:
+terminal. Once the feature is armed, NapCat logs it by its code, as
+`suppressed.gate.` followed by the code; while it is unarmed (every build so
+far), every prompt the gate classifies, refused or not, is logged
+`suppressed.notArmed` instead (see "Precedence"); a prompt the intake turns
+away before the gate (a frame its strict reader refuses, another server
+version or an unconfirmed client, a repeated request, a limit reached, no
+prompt ID to draw) is logged by its `seam.` code. The log holds what
+NapCat decided: an answer given at the Mac does not reach NapCat, so it is
+not in the log.
+The codes are the gate's own:
 `forbidden.<family>`, `localOnly.mcp`, `localOnly.fileEdit`,
 `localOnly.read` and `unclassifiable.<reason>`. In the
 examples, `~` stands for an absolute home directory and `<topic>` for the
@@ -63,8 +72,8 @@ its path's shape are malformed, and a malformed Read keeps its
 `unclassifiable` code; every other Read is `localOnly.read`. NapCat's
 intake then applies its own holds: a topic that exists but could not be read
 keeps every prompt as `forbidden.secretAccess`, and while the feature is
-unarmed (every build so far) each prompt is logged `suppressed.notArmed`
-instead of the gate's code.
+unarmed (every build so far) each prompt the gate classified is logged
+`suppressed.notArmed` instead of the gate's code.
 
 ## The forbidden families
 
@@ -108,9 +117,12 @@ they name.
     `.git-credentials`, `.npmrc`, `.pypirc`, `.pgpass`, `.password-store`,
     `~/.config/gh`, `~/.config/gcloud`, `.env` and `.env.*`, `credentials`,
     `credentials.json`, `*.pem`, `*.p12`, `*.pfx`, `*.p8`, `*.key`, `*.kdbx`.
-  - The alert topic: `<topic>` itself anywhere in the prompt, the name of its
-    keychain account, its retired defaults key and NapCat's old defaults file,
-    for every tool (in a Write's content too).
+  - The alert topic: `<topic>` itself, the name of its keychain account and
+    its retired defaults key, anywhere in the prompt, for every tool (in a
+    Write's content too). NapCat's old defaults file
+    (`com.muratalkan.napcat.plist`) is a location rule only: it is caught
+    in a path, or in a word of a Bash command read as a path (see
+    "Precedence"), not in other text such as a Write's content.
   - The relay placeholders in `ApprovalGate.maskMarkers`, anywhere in the
     preview, the same way (see "Relay placeholders" below).
 
@@ -130,7 +142,8 @@ The positive grammar still runs first, as a refusal filter only: printable
 ASCII, plain words joined by standalone `&&`, `||`, `|` or `;`. Each class
 below is refused, as `unclassifiable.commandOutsideGrammar` when the grammar
 cannot read it and `unclassifiable.commandNotInTable` when it reads but is
-not a listed command.
+not a listed command, unless a forbidden family found in the command comes
+first (see "Precedence").
 
 | Class | Refused examples |
 | :- | :- |
@@ -143,7 +156,7 @@ not a listed command.
 | Globbing and expansion characters | `*`, `?`, `[…]`, `{a,b}`, `~user`, `~+`, `~` inside a word, `=cmd`, `^`, `#` comments, parentheses |
 | Wrappers and interpreters | variable assignments (`FOO=bar ls`, `PATH=/tmp ls`), `env`, `command`, `builtin`, `exec`, `eval`, `nice`, `nohup`, `time`, `timeout`, `xargs`, `sh -c`, `bash -c`, `zsh -c`, `python3 -c`, `node -e`, `perl -e`, `awk`, `source` and `.`, absolute or relative command paths, `cd`, `find -delete`, a command name in the wrong case |
 | Options | anything not listed, including the ones that can run code or rewrite history: `git -c`, `git -C`, `--porcelain=v2`, `git commit --amend`, `--no-verify`, `git push`, `git diff --output=…`, `make -f`, `make SHELL=…`, `make --eval=…`, `grep -r`/`-R`/`--include`/`-f`, `ls -R`, `--`, unbounded or malformed counts (`head -n 9999999`, `head -n20`), `tail -f`, `npm install`, `swift run`, wrong operand counts |
-| Paths | `..` and empty components; and any word naming a forbidden location is that family (`ls /etc`, `git add ../../.ssh`) |
+| Paths | a word with a `..` or an empty component (`commandOutsideGrammar`); a word naming a forbidden location is that family (`ls /etc`), but in each simple command only the words after its name and before its first word with a `..` or an empty component are read as paths (see "Precedence"); a substring in `ApprovalGate.commandNeedles` is its family wherever it stands (`git add ../../.ssh` is `forbidden.secretAccess` by its `.ssh`) |
 | Encoding | look-alikes and non-ASCII (a no-break space, fullwidth letters, a Cyrillic letter in a command name, an em dash), zero-width characters (`unclassifiable.hiddenText`), an empty or blank command, more than 2,048 bytes, 8 commands or 64 words, a NUL escape (`unclassifiable.previewNotStrictJSON`) |
 
 The gate reads the prompt, not what a command goes on to do. A listed
@@ -247,7 +260,9 @@ decide which code such a prompt is kept with.
 - **Tool names:** only `Bash`, `Write`, `Edit`, `NotebookEdit` and `Read`,
   exactly. Unknown tools (`WebFetch`, `Glob`, `Task`), the wrong case, a
   space, a look-alike letter or more than 64 bytes are
-  `unclassifiable.unknownTool` or `unclassifiable.malformedToolName`.
+  `unclassifiable.unknownTool` or `unclassifiable.malformedToolName` (an
+  unknown tool's own code comes after the checks "Precedence" puts first,
+  as an MCP tool's does).
 - **File-edit tools** (`Write`, `Edit`, `NotebookEdit`) are local-only since
   slice S-GATE: each prompt is still checked in full, so a forbidden or
   malformed one is logged for what it is, and one that passes every check is
@@ -256,7 +271,9 @@ decide which code such a prompt is kept with.
   one that passes every check is `localOnly.read` (see "Read" above). Only
   `Bash` can forward.
 - **MCP tools** (`mcp__…`) are `localOnly.mcp` in the MVP, whatever their
-  arguments.
+  arguments name, unless a check that comes first in "Precedence" (the
+  tool name's shape, the preview's size or form, the alert topic, a relay
+  placeholder, hidden text) gives its own code.
 - **The preview** must be one strict JSON object of at most 32 KiB and at
   most 3,000 code points as relayed:
   empty, plain text, an array or a string, truncated, trailing text or comma,
