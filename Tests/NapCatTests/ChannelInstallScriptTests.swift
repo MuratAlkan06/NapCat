@@ -453,4 +453,203 @@ struct ChannelInstallScriptTests {
         }
         #expect(try realStatus("=anchor apple generic and and") == 1, "vacuity: a syntax error is status 1")
     }
+
+    // MARK: - Which command is a NapCat copy's helper
+
+    /// The test #193 replaced: any absolute path ending in
+    /// .app/Contents/MacOS/napcat-channel.
+    static let looseHelperTest = """
+        is_napcat_helper() {
+            case "$1" in
+                /*.app/"$HELPER_IN_BUNDLE") return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+        """
+
+    /// Commands the loose test took for a NapCat copy's helper, and the new
+    /// one does not: a "..", "." or empty component, a bundle named just
+    /// ".app", and control characters (a tab, a terminal escape).
+    static let looselyShapedHelpers = [
+        "/Users/someone/../other/NapCat.app/Contents/MacOS/napcat-channel",
+        "/../NapCat.app/Contents/MacOS/napcat-channel",
+        "/Users/someone/./NapCat.app/Contents/MacOS/napcat-channel",
+        "//NapCat.app/Contents/MacOS/napcat-channel",
+        "/Users//someone/NapCat.app/Contents/MacOS/napcat-channel",
+        "/Users/someone/.app/Contents/MacOS/napcat-channel",
+        "/.app/Contents/MacOS/napcat-channel",
+        "/Users/someone/Nap\tCat.app/Contents/MacOS/napcat-channel",
+        "/Users/someone/Nap\u{1B}[2KCat.app/Contents/MacOS/napcat-channel",
+    ]
+    /// Both tests take these.
+    static let napcatHelpers = [
+        "/Applications/NapCat.app/Contents/MacOS/napcat-channel",
+        "/NapCat.app/Contents/MacOS/napcat-channel",
+        "/Users/someone/Apps/NapCat copy.app/Contents/MacOS/napcat-channel",
+        "/Volumes/Backup/x.app/Contents/MacOS/napcat-channel",
+    ]
+    /// Neither test takes these.
+    static let otherCommands = [
+        "", "napcat-channel", "NapCat.app/Contents/MacOS/napcat-channel",
+        "/Applications/NapCat/Contents/MacOS/napcat-channel",
+        "/Applications/NapCat.APP/Contents/MacOS/napcat-channel",
+        "/Applications/NapCat.app/Contents/MacOS/napcat-channel2",
+        "/Applications/NapCat.app/Contents/MacOS/napcat-channel/",
+        "/Applications/NapCat.app/Contents/Resources/napcat-channel",
+        "/usr/local/bin/napcat-channel", "/usr/bin/env",
+    ]
+
+    /// Status of `function` (an `is_napcat_helper` text) on one command,
+    /// in a bare bash: 0 = a NapCat copy's helper.
+    static func helperTestStatus(_ function: String, _ command: String) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", "HELPER_IN_BUNDLE=\"\(helperInBundle)\"\n" + function + "\nis_napcat_helper \"$1\"",
+                             "is_napcat_helper", command]
+        process.environment = ["PATH": "/usr/bin:/bin"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    /// The installer's own `is_napcat_helper` (the uninstaller's is the same
+    /// text, ChannelInstallStructureTests) takes exactly the shape the
+    /// installer registers; the loose test it replaced took every one of the
+    /// loosely shaped commands (teeth).
+    @Test func onlyTheShapeTheInstallerRegistersIsANapCatHelper() throws {
+        let install = try ChannelInstallStructureTests.read(ChannelInstallStructureTests.installPath)
+        let function = try #require(ChannelInstallStructureTests.functionBody("is_napcat_helper() {", in: install))
+            .joined(separator: "\n")
+        for command in Self.looselyShapedHelpers {
+            #expect(try Self.helperTestStatus(function, command) == 1, "\(String(reflecting: command)) is taken")
+            #expect(try Self.helperTestStatus(Self.looseHelperTest, command) == 0,
+                    "vacuity: the loose test took \(String(reflecting: command))")
+        }
+        for command in Self.napcatHelpers {
+            #expect(try Self.helperTestStatus(function, command) == 0, "\(String(reflecting: command)) is refused")
+        }
+        for command in Self.otherCommands {
+            #expect(try Self.helperTestStatus(function, command) == 1, "\(String(reflecting: command)) is taken")
+            #expect(try Self.helperTestStatus(Self.looseHelperTest, command) == 1, "vacuity: \(String(reflecting: command))")
+        }
+    }
+
+    /// A "napcat" entry whose command is loosely shaped is another server:
+    /// the installer stops, removes nothing, adds nothing, writes no
+    /// receipt. The same entry with a well-shaped other copy is replaced.
+    @Test func aLooselyShapedRegistrationIsAnotherServerAndIsLeftAlone() throws {
+        for command in Self.looselyShapedHelpers {
+            let sandbox = try Sandbox()
+            try sandbox.register(command)
+            let run = try sandbox.install()
+            #expect(run.status == 1, "\(String(reflecting: command)): status \(run.status)")
+            #expect(run.stderr.contains("another MCP server is registered as \"napcat\"; it was left alone and nothing changed."),
+                    "\(String(reflecting: command)): \(run.errors)")
+            #expect(sandbox.claudeArguments == [Self.mcpGet], "\(String(reflecting: command)): \(sandbox.claudeArguments)")
+            #expect(sandbox.registered == command && !sandbox.exists(sandbox.receipt))
+        }
+        let sandbox = try Sandbox()
+        let other = "/Applications/NapCat.app/Contents/MacOS/napcat-channel"
+        try sandbox.register(other)
+        let run = try sandbox.install()
+        #expect(run.status == 0, "\(run.errors)")
+        #expect(run.lines.contains("removed:    the registration for another NapCat copy, \(other)"), "\(run.lines)")
+        #expect(run.lines.contains(Self.registeredLine(sandbox.helper)), "\(run.lines)")
+        #expect(sandbox.claudeArguments == [Self.mcpGet, Self.mcpRemove, Self.mcpAdd(sandbox.helper)])
+        #expect(sandbox.registered == sandbox.helper)
+    }
+
+    /// A bundle whose name does not end in .app would be registered at a
+    /// path neither script takes for NapCat's: refused before anything.
+    @Test func aBundleNotNamedDotAppIsRefusedBeforeAnything() throws {
+        for name in ["NapCat", ".app", "NapCat.app.bak"] {
+            let sandbox = try Sandbox()
+            let bundle = sandbox.root + "/Apps/" + name
+            try FileManager.default.moveItem(atPath: sandbox.app, toPath: bundle)
+            let run = try sandbox.run("install-channel.sh", [bundle])
+            Self.expectRefusedBeforeAnything(run, sandbox, "\(bundle) is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered.", name)
+            #expect(sandbox.codesignCalls.isEmpty, "\(name): nothing was verified either")
+        }
+    }
+
+    // MARK: - The uninstaller removes only what the receipt records
+
+    /// A NapCat helper the receipt does not record is left alone and
+    /// reported, status 1, with the command that removes it: no receipt, a
+    /// receipt naming another copy, one with no path line or two, an empty
+    /// one, and a symlink to a receipt that does record it. The receipt, if
+    /// any, is kept, so a later run can still match it.
+    @Test func aRegistrationTheReceiptDoesNotRecordIsLeftAloneAndReported() throws {
+        typealias Receipt = (Sandbox) throws -> Void
+        let cases: [(String, Receipt, String)] = [
+            ("no receipt", { _ in }, "but no readable receipt records it"),
+            ("another copy's receipt", { try $0.write($0.receipt, "version=2\npath=/Applications/NapCat.app/Contents/MacOS/napcat-channel\n") },
+             "but the receipt records /Applications/NapCat.app/Contents/MacOS/napcat-channel"),
+            ("no path line", { try $0.write($0.receipt, "version=2\n") }, "but no readable receipt records it"),
+            ("two path lines", { try $0.write($0.receipt, "version=2\npath=\($0.helper)\npath=\($0.helper)\n") },
+             "but no readable receipt records it"),
+            ("an empty receipt", { try $0.write($0.receipt, "") }, "but no readable receipt records it"),
+            ("a symlinked receipt", { sandbox in
+                let real = sandbox.root + "/elsewhere"
+                try sandbox.write(real, "version=2\npath=\(sandbox.helper)\n")
+                try FileManager.default.createSymbolicLink(atPath: sandbox.receipt, withDestinationPath: real)
+            }, "but no readable receipt records it"),
+        ]
+        for (name, receipt, reason) in cases {
+            let sandbox = try Sandbox()
+            try FileManager.default.createDirectory(atPath: sandbox.approvals, withIntermediateDirectories: true)
+            try sandbox.register(sandbox.helper)
+            try receipt(sandbox)
+            let before = sandbox.exists(sandbox.receipt)
+            let run = try sandbox.uninstall()
+            #expect(run.status == 1, "\(name): status \(run.status)")
+            #expect(run.stderr.contains("left alone: \"napcat\" runs \(sandbox.helper), \(reason)"), "\(name): \(run.errors)")
+            #expect(run.stderr.contains("remove it with: claude mcp remove napcat --scope user"), "\(name): \(run.errors)")
+            #expect(!sandbox.claudeArguments.contains(Self.mcpRemove), "\(name): \(sandbox.claudeArguments)")
+            #expect(sandbox.registered == sandbox.helper, "\(name): the registration was removed")
+            #expect(sandbox.exists(sandbox.receipt) == before, "\(name): the receipt must be kept")
+            #expect(!before || run.lines.contains("kept: \(sandbox.receipt), for the registration step reported below"),
+                    "\(name): \(run.lines)")
+        }
+    }
+
+    /// The receipt is kept whenever the registration may still be there: no
+    /// claude on the PATH, and a removal Claude Code refused. A later run
+    /// with both fixed removes the registration and the receipt.
+    @Test func theReceiptIsKeptWhileTheRegistrationMayRemain() throws {
+        let sandbox = try Sandbox()
+        #expect(try sandbox.install().status == 0)
+        try FileManager.default.moveItem(atPath: sandbox.bin + "/claude", toPath: sandbox.root + "/claude-away")
+        let missing = try sandbox.uninstall()
+        #expect(missing.status == 1 && missing.stderr.contains("cannot find the claude command on your PATH"), "\(missing.errors)")
+        #expect(sandbox.exists(sandbox.receipt) && sandbox.registered == sandbox.helper)
+        try FileManager.default.moveItem(atPath: sandbox.root + "/claude-away", toPath: sandbox.bin + "/claude")
+        try sandbox.write(sandbox.root + "/claude/remove-fails", "")
+        let refused = try sandbox.uninstall()
+        #expect(refused.status == 1 && refused.stderr.contains("could not remove the \"napcat\" registration for \(sandbox.helper)"),
+                "\(refused.errors)")
+        #expect(sandbox.exists(sandbox.receipt) && sandbox.registered == sandbox.helper)
+        try FileManager.default.removeItem(atPath: sandbox.root + "/claude/remove-fails")
+        let fixed = try sandbox.uninstall()
+        #expect(fixed.status == 0, "\(fixed.errors)")
+        #expect(!sandbox.exists(sandbox.receipt) && sandbox.registered == nil)
+    }
+
+    /// Another server named "napcat" is left alone, status 0 (it is not the
+    /// installer's), and NapCat's own receipt, which no longer names the
+    /// registration, is removed.
+    @Test func anotherServerIsLeftAloneByTheUninstaller() throws {
+        let sandbox = try Sandbox()
+        #expect(try sandbox.install().status == 0)
+        try sandbox.register("/usr/local/bin/some-server")
+        let run = try sandbox.uninstall()
+        #expect(run.status == 0, "\(run.errors)")
+        #expect(run.lines.contains("left alone: the server registered as \"napcat\" does not run a NapCat helper"), "\(run.lines)")
+        #expect(!run.stdout.contains("/usr/local/bin/some-server"), "another server's command is never printed")
+        #expect(!sandbox.claudeArguments.contains(Self.mcpRemove) && sandbox.registered == "/usr/local/bin/some-server")
+        #expect(!sandbox.exists(sandbox.receipt))
+    }
 }

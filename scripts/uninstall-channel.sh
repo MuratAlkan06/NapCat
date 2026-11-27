@@ -9,17 +9,28 @@
 #   1. the Claude Code registration named "napcat", at user scope, removed
 #      through Claude Code's own command line
 #          claude mcp remove napcat --scope user
-#      ONLY when it runs a NapCat bundle's channel server
-#      (<bundle>.app/Contents/MacOS/napcat-channel); any other server named
-#      "napcat" is left alone;
+#      ONLY when it runs a NapCat bundle's channel server at a path of the
+#      one shape the installer registers
+#      (<bundle>.app/Contents/MacOS/napcat-channel; see is_napcat_helper)
+#      AND the receipt records that same path. Any other server named
+#      "napcat" is left alone. A NapCat helper the receipt does not record
+#      (no receipt, an unreadable one, or one naming another path) is left
+#      alone too, and reported as an error: this script cannot show the
+#      installer registered it, so it names the command that removes it;
 #   2. the receipt, ~/Library/Application Support/NapCat/approvals/
 #      channel-registration (a symlink there is reported, never followed).
+#      It is kept while a registration step above fails, so that a later
+#      run can still match the registration against it.
 # The approvals folder itself stays: it is NapCat's seam folder too.
 #
 # Idempotent and error-collecting: every step is attempted, and it is safe to
 # run when nothing was installed. It never edits Claude Code's configuration
 # files or a shell profile by hand, never prints another server's settings,
 # and needs no administrator rights.
+#
+# Exit status: 0 when nothing the installer made is left (or none was
+# there); 1 for a wrong argument, as root, or when any step failed or was
+# left undone, each listed under "uninstall-channel finished WITH ERRORS".
 
 set -euo pipefail
 # Your own PATH, kept only to find and run Claude Code, your own tool (an npm
@@ -76,32 +87,75 @@ registered_command() {
     printf '%s\n' "$found"
 }
 
-# Whether $1 is the path of a NapCat bundle's channel server.
+# Whether $1 is a NapCat bundle's channel server at a path of the one shape
+# this script registers: <bundle>/Contents/MacOS/napcat-channel exactly, where
+# <bundle> is an absolute path as `pwd -P` prints one (no empty, "." or ".."
+# component, no control character) and its own name ends in .app, after at
+# least one other character.
 is_napcat_helper() {
-    case "$1" in
-        /*.app/"$HELPER_IN_BUNDLE") return 0 ;;
+    local bundle="${1%/"$HELPER_IN_BUNDLE"}"
+    [ "$bundle/$HELPER_IN_BUNDLE" = "$1" ] || return 1
+    case "$bundle" in
+        *[[:cntrl:]]* | *//* | */./* | */../*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "${bundle##*/}" in
+        ?*.app) return 0 ;;
         *) return 1 ;;
     esac
 }
 
+# The helper path the receipt records: its one "path=" line, read from at
+# most its first 1 KiB, as NapCat reads it. Status 1 (nothing printed) when
+# the receipt is missing, a symlink or not a regular file, or holds no
+# single path line.
+receipt_path() {
+    local found
+    if [ -L "$RECEIPT" ] || [ ! -f "$RECEIPT" ]; then
+        return 1
+    fi
+    found="$(head -c 1024 "$RECEIPT" | sed -n 's/^path=//p')" || return 1
+    case "$found" in
+        "" | *$'\n'*) return 1 ;;
+    esac
+    printf '%s\n' "$found"
+}
+
+# Set when a registration may be left that the receipt still names.
+KEEP_RECEIPT=""
 if [ -z "$CLAUDE_BIN" ]; then
     FAILURES+=("cannot find the claude command on your PATH; if 'claude mcp get $SERVER_NAME' shows a NapCat helper, remove it with: claude mcp remove $SERVER_NAME --scope user")
+    KEEP_RECEIPT=1
 else
     CURRENT="$(registered_command)" || CURRENT=""
+    RECORDED="$(receipt_path)" || RECORDED=""
     if [ -z "$CURRENT" ]; then
         echo "ok: no \"$SERVER_NAME\" registration with a command to read; nothing to remove"
         echo "    (if 'claude mcp list' still shows $SERVER_NAME, inspect it with: claude mcp get $SERVER_NAME)"
     elif ! is_napcat_helper "$CURRENT"; then
         echo "left alone: the server registered as \"$SERVER_NAME\" does not run a NapCat helper"
+    elif [ "$RECORDED" != "$CURRENT" ]; then
+        if [ -z "$RECORDED" ]; then
+            FAILURES+=("left alone: \"$SERVER_NAME\" runs $CURRENT, but no readable receipt records it, so this script cannot show the installer registered it; if it is yours, remove it with: claude mcp remove $SERVER_NAME --scope user")
+        else
+            FAILURES+=("left alone: \"$SERVER_NAME\" runs $CURRENT, but the receipt records $RECORDED; if it is yours, remove it with: claude mcp remove $SERVER_NAME --scope user")
+        fi
+        KEEP_RECEIPT=1
     elif claude_cli mcp remove "$SERVER_NAME" --scope user > /dev/null; then
         echo "removed: the \"$SERVER_NAME\" registration (user scope) for $CURRENT"
     else
         FAILURES+=("could not remove the \"$SERVER_NAME\" registration for $CURRENT (its message is above); is it outside user scope? Inspect it with: claude mcp get $SERVER_NAME")
+        KEEP_RECEIPT=1
     fi
 fi
 
 # --- 2. The receipt ---
-if [ -L "$RECEIPT" ]; then
+if [ -n "$KEEP_RECEIPT" ]; then
+    if [ -e "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
+        echo "kept: $RECEIPT, for the registration step reported below"
+    fi
+elif [ -L "$RECEIPT" ]; then
     FAILURES+=("$RECEIPT is a symlink, which the installer never writes; left alone, check it and remove it by hand")
 elif [ -f "$RECEIPT" ]; then
     if rm -f "$RECEIPT"; then

@@ -593,7 +593,7 @@ struct ChannelInstallStructureTests {
             "HELPER_IN_BUNDLE=\"Contents/MacOS/\(channel)\"",
             "APPROVALS_DIR=\"$HOME/\(SeamPaths.directoryRelativePath)\"",
             "RECEIPT=\"$APPROVALS_DIR/channel-registration\"",
-            "/*.app/\"$HELPER_IN_BUNDLE\") return 0 ;;",
+            "?*.app) return 0 ;;",
         ]
         for (name, script) in [("install-channel.sh", install), ("uninstall-channel.sh", uninstall)] {
             let code = codeLines(script)
@@ -632,7 +632,8 @@ struct ChannelInstallStructureTests {
             ("server renamed in the installer", "SERVER_NAME=\"napcat\"", "SERVER_NAME=\"napcat-approvals\""),
             ("receipt moved", "RECEIPT=\"$APPROVALS_DIR/channel-registration\"", "RECEIPT=\"$APPROVALS_DIR/registration\""),
             ("approvals folder moved", "NapCat/approvals\"", "NapCat/channel\""),
-            ("helper test loosened", "/*.app/\"$HELPER_IN_BUNDLE\") return 0 ;;", "*/\"$HELPER_IN_BUNDLE\") return 0 ;;"),
+            ("helper test loosened", "?*.app) return 0 ;;", "*.app) return 0 ;;"),
+            ("helper test lets a dot-dot through", "*//* | */./* | */../*) return 1 ;;", "*//* | */./*) return 1 ;;"),
             ("claude_cli drifted", "(cd / && /usr/bin/env", "(cd \"$HOME\" && /usr/bin/env"),
         ]
         for (name, target, replacement) in mutants {
@@ -651,6 +652,7 @@ struct ChannelInstallStructureTests {
     /// The installer's steps, in the order they must appear (and run: no
     /// step is in a function that runs earlier).
     static let installOrder = [
+        "is_napcat_helper \"$HELPER\" || die \"$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered.\"",
         "codesign --verify --strict \"$HELPER\" || die \"$HELPER fails codesign --verify --strict. Nothing was registered.\"",
         "grep -qxF \"Identifier=$CHANNEL_IDENTIFIER\" <<< \"$HELPER_SIGNATURE\" \\",
         "codesign --verify --strict \"$APP\" || die \"$APP fails codesign --verify --strict. Nothing was registered.\"",
@@ -670,9 +672,32 @@ struct ChannelInstallStructureTests {
         "mv -f \"$RECEIPT_TMP\" \"$RECEIPT\"",
         "echo \"    claude --dangerously-load-development-channels server:$SERVER_NAME\"",
     ]
-    /// The uninstaller's registration branch: a NapCat helper or nothing.
+    /// The uninstaller's registration branch: a NapCat helper the receipt
+    /// records, or nothing; and the receipt kept while that branch failed.
     static let uninstallGuard = "elif ! is_napcat_helper \"$CURRENT\"; then"
+    static let uninstallRecorded = "RECORDED=\"$(receipt_path)\" || RECORDED=\"\""
+    static let uninstallReceiptGuard = "elif [ \"$RECORDED\" != \"$CURRENT\" ]; then"
     static let uninstallRemove = "elif claude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null; then"
+    static let uninstallKeep = "if [ -n \"$KEEP_RECEIPT\" ]; then"
+    static let uninstallLink = "elif [ -L \"$RECEIPT\" ]; then"
+
+    /// The index of the next `elif`/`else` of the `if` chain that holds
+    /// `code[start]`, skipping any `if … fi` nested in between.
+    static func nextBranch(after start: Int, in code: [String]) -> Int? {
+        var depth = 0
+        for index in code.indices where index > start {
+            let line = code[index]
+            if line.hasPrefix("if ") {
+                depth += 1
+            } else if line == "fi" {
+                if depth == 0 { return nil }
+                depth -= 1
+            } else if depth == 0, line.hasPrefix("elif ") || line == "else" {
+                return index
+            }
+        }
+        return nil
+    }
 
     static func stepFailures(install: String, uninstall: String) -> [String] {
         var failures: [String] = []
@@ -687,17 +712,21 @@ struct ChannelInstallStructureTests {
         }
         let removal = codeLines(uninstall)
         let removes = removal.indices.filter { removal[$0].contains("claude_cli mcp remove") }
+        // The removal is the branch right after the receipt's: past the
+        // helper test, then the receipt match, with no other branch between.
         guard removes.count == 1, let remove = removes.first, removal[remove] == uninstallRemove,
-              let guardLine = removal.firstIndex(of: uninstallGuard), remove == guardLine + 2,
-              removal[guardLine + 1].hasPrefix("echo ") else {
-            return failures + ["uninstall-channel.sh must remove the registration once, only past \(uninstallGuard)"]
+              let recorded = removal.firstIndex(of: uninstallRecorded),
+              let guardLine = removal.firstIndex(of: uninstallGuard), recorded < guardLine,
+              removal[guardLine + 1].hasPrefix("echo "), removal[guardLine + 2] == uninstallReceiptGuard,
+              nextBranch(after: guardLine + 2, in: removal) == remove else {
+            return failures + ["uninstall-channel.sh must remove the registration once, only past \(uninstallGuard) and \(uninstallReceiptGuard)"]
         }
         if removal.contains(where: { $0.contains("rm -rf") || $0.contains("rmdir") }) {
             failures.append("uninstall-channel.sh removes only the receipt, never a folder")
         }
-        guard let link = removal.firstIndex(of: "if [ -L \"$RECEIPT\" ]; then"),
-              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), link < receipt else {
-            return failures + ["uninstall-channel.sh must refuse a symlinked receipt before removing one"]
+        guard let keep = removal.firstIndex(of: uninstallKeep), let link = removal.firstIndex(of: uninstallLink),
+              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), keep < link, link < receipt else {
+            return failures + ["uninstall-channel.sh must keep the receipt while a registration step failed, and refuse a symlinked one, before removing one"]
         }
         return failures
     }
@@ -713,12 +742,14 @@ struct ChannelInstallStructureTests {
         return steps.count == 1 ? steps[0] : "<\(steps.count) steps start with \(prefix)>"
     }
 
-    /// Canaries: the helper's verification dropped, the Info.plist read
-    /// before the seal is checked, each team check dropped or moved past the
-    /// registration, each receipt guard or the receipt's mode dropped, the
-    /// receipt written before the registration, the flag line dropped; and
-    /// an unguarded or a second removal, a folder removed, or the receipt's
-    /// symlink guard dropped.
+    /// Canaries: the bundle name check or the helper's verification
+    /// dropped, the Info.plist read before the seal is checked, each team
+    /// check dropped or moved past the registration, each receipt guard or
+    /// the receipt's mode dropped, the receipt written before the
+    /// registration, the flag line dropped; and
+    /// an unguarded or a second removal, a folder removed, the receipt's
+    /// symlink guard or match dropped, the receipt never read, or removed
+    /// while a registration step failed.
     @Test func theStepLockCatchesRegressionMutants() throws {
         let install = try Self.read(Self.installPath)
         let uninstall = try Self.read(Self.uninstallPath)
@@ -733,6 +764,7 @@ struct ChannelInstallStructureTests {
         let current = Self.step("CURRENT=") + "\n"
         let receiptTemp = Self.step("RECEIPT_TMP=") + "\n"
         let installMutants: [(String, String)] = [
+            ("bundle name check dropped", install.replacingOccurrences(of: Self.step("is_napcat_helper ") + "\n", with: "")),
             ("helper verification dropped", install.replacingOccurrences(of: verify, with: "")),
             ("Info.plist read before the seal", install.replacingOccurrences(of: plistRead, with: "")
                 .replacingOccurrences(of: verify, with: plistRead + verify)),
@@ -758,7 +790,10 @@ struct ChannelInstallStructureTests {
             ("a second removal", uninstall.replacingOccurrences(
                 of: "\nexit 0\n", with: "\nclaude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null\nexit 0\n")),
             ("the folder removed", uninstall.replacingOccurrences(of: "\nexit 0\n", with: "\nrm -rf \"$APPROVALS_DIR\"\nexit 0\n")),
-            ("receipt symlink guard dropped", uninstall.replacingOccurrences(of: "if [ -L \"$RECEIPT\" ]; then", with: "if false; then")),
+            ("receipt symlink guard dropped", uninstall.replacingOccurrences(of: Self.uninstallLink, with: "elif false; then")),
+            ("receipt match dropped", uninstall.replacingOccurrences(of: Self.uninstallReceiptGuard, with: "elif false; then")),
+            ("receipt never read", uninstall.replacingOccurrences(of: Self.uninstallRecorded, with: "RECORDED=\"$CURRENT\"")),
+            ("receipt removed even when a step failed", uninstall.replacingOccurrences(of: Self.uninstallKeep, with: "if false; then")),
         ]
         for (name, mutant) in uninstallMutants {
             #expect(mutant != uninstall, "canary setup '\(name)': target text must exist")

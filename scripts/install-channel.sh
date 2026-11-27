@@ -7,7 +7,8 @@
 # The bundle defaults to /Applications/NapCat.app. Agents must NEVER run this.
 #
 # What it does, in order, stopping at the first failure:
-#   1. checks the bundle path: a real directory, not a symlink;
+#   1. checks the bundle path: a real directory, not a symlink, whose name
+#      ends in .app;
 #   2. verifies the helper, Contents/MacOS/napcat-channel, BEFORE anything else
 #      uses it: `codesign --verify --strict` on the helper, its signing
 #      identifier, then the app's own seal (which covers the helper); then the
@@ -22,7 +23,11 @@
 #          claude mcp add --scope user --transport stdio napcat -- <helper>
 #      Idempotent: an entry that already runs this helper is kept, one that
 #      runs another NapCat copy's helper is replaced, and any other server
-#      named "napcat" is left alone (the script stops);
+#      named "napcat" is left alone (the script stops). Another copy's helper
+#      means exactly <bundle>.app/Contents/MacOS/napcat-channel, with
+#      <bundle>.app an absolute path that has no empty, "." or ".."
+#      component (the only shape this script registers); a command that is
+#      merely close to that is another server;
 #   4. writes a receipt, mode 0600, holding the channel version and the
 #      helper path: ~/Library/Application Support/NapCat/approvals/
 #      channel-registration. It refuses a symlinked folder or receipt;
@@ -67,6 +72,25 @@ HELPER_IN_BUNDLE="Contents/MacOS/napcat-channel"
 APPROVALS_DIR="$HOME/Library/Application Support/NapCat/approvals"
 RECEIPT="$APPROVALS_DIR/channel-registration"
 
+# Whether $1 is a NapCat bundle's channel server at a path of the one shape
+# this script registers: <bundle>/Contents/MacOS/napcat-channel exactly, where
+# <bundle> is an absolute path as `pwd -P` prints one (no empty, "." or ".."
+# component, no control character) and its own name ends in .app, after at
+# least one other character.
+is_napcat_helper() {
+    local bundle="${1%/"$HELPER_IN_BUNDLE"}"
+    [ "$bundle/$HELPER_IN_BUNDLE" = "$1" ] || return 1
+    case "$bundle" in
+        *[[:cntrl:]]* | *//* | */./* | */../*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "${bundle##*/}" in
+        ?*.app) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 [ "$#" -le 1 ] || die "usage: $0 [/path/to/NapCat.app]"
 [ "$(id -u)" -ne 0 ] || die "run this as yourself, not as root: Claude Code keeps one configuration per user."
 case "$HOME" in
@@ -94,6 +118,9 @@ case "$APP" in
     *[[:cntrl:]]*) die "the bundle path contains a control character." ;;
 esac
 HELPER="$APP/$HELPER_IN_BUNDLE"
+# So the registration is one that uninstall-channel.sh, and a later run of this
+# script, recognise as NapCat's.
+is_napcat_helper "$HELPER" || die "$APP is not a bundle whose name ends in .app, as NapCat.app does. Nothing was registered."
 # A short path, so the receipt always fits the 1 KiB NapCat reads of it.
 path_bytes() {
     local LC_ALL=C
@@ -186,14 +213,6 @@ registered_command() {
         "" | *$'\n'*) return 1 ;;
     esac
     printf '%s\n' "$found"
-}
-
-# Whether $1 is the path of a NapCat bundle's channel server.
-is_napcat_helper() {
-    case "$1" in
-        /*.app/"$HELPER_IN_BUNDLE") return 0 ;;
-        *) return 1 ;;
-    esac
 }
 
 CURRENT="$(registered_command)" || CURRENT=""
