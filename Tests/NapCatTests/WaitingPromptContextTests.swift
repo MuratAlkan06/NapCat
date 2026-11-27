@@ -167,19 +167,19 @@ struct WaitingPromptContextTests {
             store.put(H.s1, ts: H.t0 - 720)
             store.put(H.s2, ts: H.t0 - 1200)
             controller.reconcile()
-            #expect(provider.reads == 0, "arming reads nothing")
+            #expect(provider.reads == 1, "arming reads once, so no prompt relayed before it is new to a later diff")
 
             store.put(H.s1, ts: H.t0, event: H.waiting)
             await settle(factory, scheduler)
             #expect(sender.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1,
                                                                  prompts: WaitingPromptCounts(bash: 1))])
-            #expect(provider.reads == 1, "one read for the waiting diff")
+            #expect(provider.reads == 2, "one read for the waiting diff")
             #expect(LidGuardPolicy.messageBody(kind: sender.sends[0].kind, clockTime: "09:41")
                     == "Claude is waiting for you — 12 min in — 1 Bash permission prompt — 1 other still working")
 
             store.remove(H.s2)
             await settle(factory, scheduler)
-            #expect(provider.reads == 1, "a finish-only diff never reads the seam")
+            #expect(provider.reads == 2, "a finish-only diff never reads the seam")
         }
     }
 

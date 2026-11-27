@@ -170,7 +170,8 @@ struct FinishAlertDigest: Equatable, Sendable {
     /// The LATEST observation's `stillWorking` (fresh tracked count).
     var stillWorking = 0
     /// F4 slice S2: the prompt counts of the LATEST folded waiting event (the
-    /// seam's recent prompts, read once per diff) — `.none` without one.
+    /// seam's recent prompts, read once per diff, less those with evidence
+    /// that the phone's own push covers them) — `.none` without one.
     var prompts = WaitingPromptCounts.none
     /// Epoch of the FIRST folded event — the retry age anchor. Meaningful
     /// only when `!isEmpty`.
@@ -561,6 +562,27 @@ enum FinishAlertPolicy {
         let held: Int = max(0, count)
         let taken: Int = min(max(0, withEvidence), held)
         return held - taken
+    }
+
+    /// The singleton rule applied to one diff, read once for it (`context`):
+    /// what the controller folds into the digest. When the rule yields
+    /// (`waitingBuzzYieldsToPromptPush`), the diff's waiting events are
+    /// dropped and every finish is kept, in order, and `folded` counts the
+    /// waiting events dropped: none for a diff that has none (its waiting
+    /// write was a rewrite or a suppressed transition, no event, so its one
+    /// prompt is only used up). `prompts` is what a waiting event
+    /// that still goes out counts: the counts less those with evidence
+    /// (`promptsWithoutEvidence`). With no evidence nothing changes: every
+    /// event is kept, and `prompts` is the counts as read.
+    static func promptPushFold(events: [FinishAlertEvent], waitingWrites: Int, context: WaitingPromptContext)
+        -> (events: [FinishAlertEvent], folded: Int, prompts: WaitingPromptCounts) {
+        let prompts: WaitingPromptCounts = promptsWithoutEvidence(context.counts, withEvidence: context.countsWithEvidence)
+        guard waitingBuzzYieldsToPromptPush(waitingWrites: waitingWrites, newPrompts: context.newPrompts,
+                                            newPromptsWithEvidence: context.newPromptsWithEvidence) else {
+            return (events, 0, prompts)
+        }
+        let kept: [FinishAlertEvent] = events.filter { if case .waiting = $0 { return false }; return true }
+        return (kept, events.count - kept.count, prompts)
     }
 
     // MARK: Outbox + retry (normative tables)

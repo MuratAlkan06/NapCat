@@ -132,7 +132,8 @@ final class FinishAlertController {
     /// sessions just relayed (`RemoteApprovalsController.waitingPrompts`;
     /// `.none` while remote approvals are off or not listening): counts per
     /// kind, and how many of them have evidence that the phone's own prompt
-    /// push covers them. Read only for a diff that folds a waiting event.
+    /// push covers them. Read once for each diff with a waiting write, and
+    /// once as the lane arms.
     private let waitingPrompts: () -> WaitingPromptContext
 
     // MARK: State (main actor only)
@@ -335,6 +336,10 @@ final class FinishAlertController {
         let markers = store.identifiedMarkers()
         let armedAt = Int(now())
         tracked = FinishAlertPolicy.baseline(current: markers, now: armedAt)
+        // F4: no prompt relayed before this arm is new to a diff of it: one
+        // read, after the baseline, moves the seam's mark past them all (it
+        // reaches the seam only while remote approvals listen).
+        _ = waitingPrompts()
         Self.logger.notice("finish alert: armed, tracking \(self.tracked.count, privacy: .public) session(s)")
         logUnusableEpisodeStarts(FinishAlertPolicy.invalidEpisodeStartCount(in: markers, now: armedAt))
         notifyChanged()
@@ -408,18 +413,26 @@ final class FinishAlertController {
         latestStillWorking = observation.stillWorking
         logSuppressed(observation.suppressed)
         logUnusableEpisodeStarts(observation.invalidEpisodeStarts)
-        let events = observation.events
+        if !observation.events.isEmpty {
+            Self.logger.notice("finish alert: \(observation.events.count, privacy: .public) alert event(s) observed")
+        }
+        // F4: the prompt context is read once, and only for a diff with a
+        // waiting write (zero hops otherwise): a transition that alerts, one
+        // under the floor, or a waiting rewrite. So each such read moves the
+        // seam's mark past the prompts it saw, whether or not the rule
+        // yields. The policy drops the diff's waiting events only when it
+        // does, and never a finish.
+        let context: WaitingPromptContext = observation.waitingWrites > 0 ? waitingPrompts() : .none
+        let fold = FinishAlertPolicy.promptPushFold(events: observation.events, waitingWrites: observation.waitingWrites,
+                                                    context: context)
+        logFoldedWaitingAlerts(fold.folded)
+        let events = fold.events
         if !events.isEmpty {
-            Self.logger.notice("finish alert: \(events.count, privacy: .public) alert event(s) observed")
             // A held digest past its max age is dropped BEFORE the new events
             // join it, so they are never dropped with it.
             expireHeldIfNeeded()
-            // F4 slice S2: the prompt context is read once, and only for a
-            // diff with a waiting event (zero hops otherwise).
-            let prompts = events.contains { if case .waiting = $0 { return true }; return false }
-                ? waitingPrompts().counts : .none
             for event in events {
-                digest.fold(event, stillWorking: observation.stillWorking, prompts: prompts, at: observedAt)
+                digest.fold(event, stillWorking: observation.stillWorking, prompts: fold.prompts, at: observedAt)
             }
         }
         // Healing re-gates on the new tracked count AFTER the fold: an alert
@@ -448,6 +461,14 @@ final class FinishAlertController {
     private func logUnusableEpisodeStarts(_ count: Int) {
         guard count > 0 else { return }
         Self.logger.notice("finish alert: \(count, privacy: .public) unusable episode start(s), run minutes use the app's own anchor")
+    }
+
+    /// F4: waiting alerts dropped because the phone's own prompt push covers
+    /// their wait. Logged as a COUNT only — never a session id or anything
+    /// about the prompt.
+    private func logFoldedWaitingAlerts(_ count: Int) {
+        guard count > 0 else { return }
+        Self.logger.notice("finish alert: \(count, privacy: .public) waiting alert(s) folded into the phone's prompt push")
     }
 
     // MARK: - Outbox
