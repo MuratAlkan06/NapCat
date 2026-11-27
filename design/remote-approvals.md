@@ -23,11 +23,11 @@ The single owner of this Mac and iPhone (same iCloud account), running
 interactive Claude Code sessions, away from the keyboard.
 
 1. Claude Code opens a permission dialog in a session on the Mac.
-2. The phone gets an actionable notification: tool name, input preview and
-   originating project.
-3. The owner taps Deny (works from the lock screen) or opens the app and taps
-   Allow (biometric, in-app only; see CL-3). Since the uniform-signing
-   ruling (below), both answers are in-app and ask for the biometric match.
+2. The phone gets a push in fixed words, with no action on it; the app
+   shows the tool name, input preview and originating project.
+3. The owner opens the app and taps Allow or Deny. Both answers are in-app
+   and ask for the biometric match (CL-3, widened to Deny by the
+   uniform-signing ruling, below).
 4. The Mac resolves the real, open dialog with that decision within seconds,
    and the session continues.
 5. If the owner does nothing, or is at the Mac, the terminal dialog behaves
@@ -54,17 +54,18 @@ interactive Claude Code sessions, away from the keyboard.
 ## Scope (MVP)
 
 - Prompt forwarding: an open permission dialog becomes a record in the
-  existing CloudKit private container, a phone push with an actionable
-  notification, and an in-app list of pending prompts.
+  existing CloudKit private container, a phone push in fixed words (no
+  action on it), and an in-app list of pending prompts.
 - Decision return: the phone writes a decision record and the Mac resolves the
   dialog. One-shot decisions only, each bound to one prompt.
 - A Mac-side category gate deciding which prompts may leave the Mac at all.
 - Several pending prompts, listed individually and labelled by project; a
   decision affects only its own prompt.
-- Opt-in toggles on both devices (default OFF) and a kill switch.
+- Opt-in on the Mac (its toggle, default OFF) and by pairing an iPhone; the
+  iPhone's own switch (default OFF) pauses that iPhone only; a kill switch.
 - Audit logging on the Mac.
 - A forwarded prompt replaces the plain waiting buzz for that episode: one
-  actionable push, not two notifications.
+  prompt push, not two notifications.
 
 ## Non-goals
 
@@ -124,7 +125,13 @@ interactive Claude Code sessions, away from the keyboard.
   restricted to this user (peer credentials and audit token, on both ends).
   It does not yet check which program is on the other end.
 - Prompt records are named by random 128-bit IDs.
-- A forwarded prompt lives at most 10 minutes (the TTL).
+- A forwarded prompt can be answered from the phone for a limited window
+  (the TTL): 10 minutes in this build, the window the Mac gives every
+  prompt it opens. The Mac keeps any window it is given between 5 minutes
+  and 1 hour; the phone honours the window a record states, up to 1 hour
+  (a record stating a longer one is not shown). The owner's TTL ruling
+  sets a 30-minute default, adjustable on the Mac; it is not built yet and
+  is owed with the live record path.
 - Records live in a dedicated custom zone of the private database, with their
   content fields encrypted.
 - Preview posture: build on Claude Code's development flag for channels (set
@@ -134,8 +141,11 @@ interactive Claude Code sessions, away from the keyboard.
 
 ## Security requirements
 
-- **Opt-in on both sides.** Dark by default; it must be enabled on the Mac and
-  on the phone before anything is forwarded.
+- **Opt-in.** Dark by default. Forwarding needs the Mac's switch on, a
+  paired iPhone (pairing is the iPhone's Mac-visible opt-in) and a live
+  record path, which no build has yet. The iPhone's own switch only pauses
+  that iPhone (it stops showing, notifying and answering) and tells the Mac
+  nothing: while it is off, the Mac would still forward.
 - **Trust anchor.** The same iCloud account (private database), hardened by
   CL-1 pairing. Stated limit: whoever can unlock the paired phone and pass its
   biometric check holds Allow and Deny (since the uniform-signing ruling;
@@ -160,54 +170,79 @@ interactive Claude Code sessions, away from the keyboard.
   real path and contents.
 - **Timeouts.** An unanswered forwarded prompt does nothing: the local dialog
   stays open, never auto-approved and never auto-denied. A decision that
-  arrives after local resolution or after the TTL is ignored and logged.
-- **Race.** The first decision wins, local or remote; the other is discarded
-  and logged. Local always keeps full capability.
+  arrives after the TTL is ignored and logged. NapCat cannot see an answer
+  given at the Mac, so a valid remote decision that arrives inside the TTL
+  after one is still accepted: its verdict frame is sent and logged
+  `decided.remote.<verdict>`, a line that means sent, not applied. Claude
+  Code drops a verdict for a dialog already answered, and in this build the
+  channel server passes no verdict back at all (#221).
+- **Race.** Claude Code applies whichever answer reaches it first and drops
+  the other (in this build only the terminal's reaches it, #221). NapCat
+  cannot see answers given at the Mac (the relay carries no such signal),
+  so only remote decisions appear in its log. Local always keeps full
+  capability.
 - **Audit trail** (a new Mac log category): every forwarded prompt, every gate
-  suppression, every decision with its origin (local or remote) and verdict,
-  the prompt ID and timestamps. Never tool input, never the alert topic, never
-  raw session IDs.
+  suppression, every remote decision with its verdict, the prompt ID and
+  timestamps (the log's own). Never tool input, never the alert topic, never
+  raw session IDs. While the feature is unarmed (every build so far), every
+  prompt is logged `suppressed.notArmed`, not by the gate's code.
 - **Kill switch.** Turning the Mac toggle off stops forwarding, retracts the
   pending records and makes in-flight remote decisions ignored. Turning the
-  phone toggle off stops showing and answering. Quitting NapCat is also a hard
-  stop.
+  iPhone's switch off stops that iPhone showing, notifying and answering
+  (its prompt subscription is deleted and its list emptied); it tells the
+  Mac nothing. Quitting NapCat is also a hard stop.
 
 ## Constraints
 
 - CloudKit container `iCloud.com.muratalkan.napcat`, private database,
   existing rails only.
-- Zero idle cost: no polling, no CloudKit traffic and no battery draw from
-  this feature on either device while no prompt is pending. Per-prompt cost is
-  bounded to that prompt's pushes and record operations.
+- Zero idle cost: while no prompt is pending and no pairing is under way,
+  no polling and no background traffic from this feature on either
+  device. The Mac then makes no CloudKit request for it, apart from
+  one deletion at a launch that still remembers a pairing record a past
+  pairing could not delete; a pairing the owner starts looks the record up
+  every few seconds until it ends. The phone reads only while its own
+  switch is in effect: when its app is opened or brought forward, on a pull
+  to refresh, as its Settings or pairing sheet closes, or when a prompt
+  push reaches the open app or is tapped (owner ruling: such a read is not
+  idle cost). Per-prompt cost is bounded to that prompt's pushes and record
+  operations.
 - Existing hard rules stay intact: the app never invokes sudo for this
   feature, the debug simulator is unaffected, and the six-event busy-hook
   contract is unchanged.
 - Any channel registration installs through user-run rails like the existing
-  hook installer, version-stamped and surfaced like the hook stamp.
+  hook installer, version-stamped and surfaced like the hook stamp. Status:
+  the installer writes a version-stamped receipt (slice I1a, below), but
+  NapCat does not read the receipt yet; showing the registration in
+  Settings › Claude is a later slice.
 
 ## Acceptance criteria
 
 1. Fresh install, defaults: nothing is ever forwarded; behaviour is identical
    to the release before F4.
-2. Both toggles on, wired session: a permission dialog produces one actionable
-   phone push within a few seconds, showing the tool name, preview and project
-   label.
+2. Mac toggle on, a paired iPhone with its switch on, wired session: a
+   permission dialog produces one phone push within a few seconds; the app
+   shows the tool name, preview and project label.
 3. Allow on the phone (after authentication) resolves the Mac dialog as allow;
    Deny resolves it as deny; the terminal dialog was answerable the whole
    time.
 4. A forbidden-category prompt is never forwarded, stays answerable locally,
    and the suppression is logged.
 5. Unanswered prompt: no automatic action, ever; the local dialog is
-   unaffected; late, stale or duplicate decisions are ignored and logged.
+   unaffected; late, stale or duplicate decisions are ignored and logged; a
+   decision for a dialog already answered at the Mac is sent, then dropped
+   by Claude Code.
 6. Two pending prompts (same or different sessions) are listed separately;
    answering one leaves the other open and unchanged.
 7. Kill switch while a prompt is pending: the pending records are retracted
    within seconds, and a later phone decision has no effect and is logged as
    ignored.
-8. Audit: entries exist for every forward, suppression and decision, with
-   origin and verdict, and contain no tool input, topic or session IDs.
+8. Audit: entries exist for every forward, suppression and remote decision,
+   with its verdict, and contain no tool input, topic or session IDs;
+   answers given at the Mac are not visible to NapCat.
 9. Idle: with the feature on and nothing pending, zero CloudKit operations
-   attributable to F4 on both devices over an observation window.
+   attributable to F4 on both devices over an observation window in which
+   the iPhone app is not opened and no pairing runs.
 10. Unwired session: prompts behave exactly as today, including the existing
     waiting buzz.
 
@@ -404,7 +439,8 @@ It builds controls only: nothing can be forwarded yet.
 - **The toggle.** One stored setting, off by default; only a stored `true`
   turns it on, so a missing or junk value never arms anything. Since #205 it
   is read from NapCat's own defaults domain: on only when that domain holds
-  a Bool `true` and the defaults search list reads one too. A value anywhere
+  a `true` (a Bool `true`, or a number equal to 1, which reads as the Bool
+  it bridges to) and the defaults search list reads one too. A value anywhere
   else (a launch argument, a per-host value, the global domain, a registered
   default) never turns it on; one that outranks NapCat's own (a launch
   argument, a managed setting, a per-host value written with
@@ -424,8 +460,10 @@ It builds controls only: nothing can be forwarded yet.
 - **Behind the toggle only.** Until the first switch-on nothing exists: no
   host, no socket or socket directory, no listener, no probe, no timer. Once
   off completes, no socket, listener, connection, probe or timer remains; the
-  stopped host and the empty private (0700) socket directory stay, by design
-  (the host still answers a late decision for a withdrawn prompt). On, NapCat
+  stopped host and the private (0700) socket directory stay, by design (the
+  host still answers a late decision for a withdrawn prompt). The directory
+  then holds no socket, but since slice I1a it can hold the channel
+  installer's receipt. On, NapCat
   builds the seam host once and listens; the managed-settings probe runs
   while on (at enable, and when the menu or Settings opens) and Settings ›
   Claude shows its reading, there only: in this slice no reading changes what
@@ -434,9 +472,11 @@ It builds controls only: nothing can be forwarded yet.
   record sink that writes nothing; it stays private to the toggle, its
   listener and intake are built only inside it, and only the toggle's state
   machine starts it or runs the probe.
-- **Fail-dark.** On, NapCat hears a wired session's prompts, classifies and
-  audits them, and keeps every one on the Mac; the row says so ("Local only —
-  the iPhone app cannot answer prompts yet"), and while no iPhone is paired
+- **Fail-dark.** On, NapCat hears a wired session's prompts, classifies them,
+  logs each one the gate reads as `suppressed.notArmed` (the host is never
+  armed, so the log does not show the gate's code), and keeps every one on
+  the Mac; the row says so ("Local only — the iPhone app cannot answer
+  prompts yet"), and while no iPhone is paired
   it says to pair one first ("Not paired — pair your iPhone in Settings ›
   Claude", #205). No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
@@ -493,8 +533,10 @@ this section points at them.
   read for it, and a read claim does nothing else. Only tests build the
   store: the app's host keeps the sink that writes nothing.
 - **The phone** (`ios/NapCatPhone`). `RequestInbox` holds each request's
-  window: until the Mac's expiry, and never longer than the TTL after the
-  phone first saw it. Expired and withdrawn are terminal. The request screen
+  window: until the Mac's expiry, and never longer than the record's own
+  window after the phone first saw it (since #194; before it, the TTL). A
+  record stating a window longer than the wire's one hour is not shown.
+  Expired and withdrawn are terminal. The request screen
   shows the tool, the project and the input verbatim, every whitespace
   character drawn as a mark so a wrapped line never hides a space or passes
   for a line break (`VisibleWhitespace`), in a box that scrolls past a third
@@ -504,13 +546,18 @@ this section points at them.
   window right before the one write. A saved answer reads "Sent", never
   "Allowed". The decision record is named after its prompt (one per prompt:
   a second save is refused as already answered) and carries no signature
-  (S3; since S-PAIR-B it carries the paired key's). Only a
-  `-NapCatRequest` launch shows a request (a fixture, answered in memory);
-  no app source builds the CloudKit decision writer.
+  (S3; since S-PAIR-B it carries the paired key's). In S3 only a
+  `-NapCatRequest` launch showed a request (a fixture, answered in memory);
+  since #194 a live launch also shows the Mac's prompts, read only, while
+  the phone's switch is in effect (see "The phone's prompt path"). No app
+  source builds the CloudKit decision writer.
 - **The records.** Both types live in the approvals zone, with the readable
-  fields encrypted as `ApprovalWire` lists them. The readers on both sides
-  refuse a record whose type, zone, field set, encryption or version
-  differs.
+  fields encrypted as `ApprovalWire` lists them. The readers refuse a record
+  whose type, zone, encryption or version differs, and the Mac's refuses a
+  field it does not know. The Mac reads a decision without a signature as
+  an unsigned claim, which the verifier refuses; the phone asks for the
+  prompt's six fields only, so it never reads a seventh, and refuses a
+  prompt missing any of them.
 - **Locks.** `ApprovalRecordPathStructureTests` (Mac) and
   `RecordPathStructureTests` (phone), each with planted canaries: the record
   path names nothing of the verdict API (on the Mac, but the intake's
@@ -595,8 +642,9 @@ arms anything.
   ECDSA P-256 over SHA-256 of these bytes; the decision record's encrypted
   `signature` field carries the raw 64-byte form, and the deployed
   PromptDecision schema is unchanged. `prompt` binds a decision to one
-  single-use prompt; `decided` is whole seconds, for the audit trail only
-  (freshness is still judged on the Mac's clock against the TTL); `shown`
+  single-use prompt; `decided` is whole seconds, signed; the Mac checks
+  only that it is a whole second in range, and does not log it (freshness
+  is still judged on the Mac's clock against the TTL); `shown`
   is the digest of the prompt copy the phone displayed.
 - **What the phone displayed.** `shown` is SHA-256 of the three fields the
   owner decides on, `napcat-shown-v1` and then each of `toolName`,
@@ -645,14 +693,20 @@ arms anything.
   owner confirms that both devices show the same fingerprint (SHA-256 of
   the public key, at least 12 hex digits, computed on each side; no
   fingerprint travels on the wire). A mismatch, a second response, a
-  decline or the end of the window burns the nonce, and the pairing record
-  is deleted at every ceremony end. The phone's new key is provisional
+  decline or the end of the window burns the nonce, and at every ceremony
+  end the Mac tries to delete the pairing record. A deletion that did not go
+  through is tried again at each later launch, until it does or a new
+  ceremony begins; a reply the phone saves after the Mac's ceremony ended
+  is not deleted. The phone's new key is provisional
   until its own confirmation, so a stale or stray QR code cannot replace a
   working pairing. Pair in private: the QR code is a secret while it is on
   screen.
 - **One slot; re-pairing is the recovery.** At most one key is paired, and
-  a new pairing replaces it. Unpair on the Mac deletes the stored key and
-  stops the feature through the kill switch. Re-enrolling Face ID
+  a new pairing replaces it. Unpair on the Mac asks the keychain to delete
+  the stored key and stops the feature through the kill switch either way;
+  if the keychain refuses, the key stays (Settings › Claude re-reads the
+  slot, so a pairing still there still shows) and the `pairing` log says
+  `pairing.unpairFailed`. Re-enrolling Face ID
   invalidates the phone's key in hardware; the phone then unpairs itself
   and asks to pair again. A new or restored phone arrives unpaired (Secure
   Enclave keys never leave their device). Each case is recovered by the
@@ -782,7 +836,8 @@ arms anything.
     named the data-protection keychain; an ad-hoc `make` build has no
     keychain entitlement to use it, and the property the design needs
     holds here. A pairing replaces the item in place, in one write, so the
-    Mac holds the old key or the new one, never a mix; Unpair deletes it.
+    Mac holds the old key or the new one, never a mix; Unpair asks the
+    keychain to delete it (a refused deletion leaves it in place).
     A stored text in any other form reads as no pairing.
   - *The ceremony* (`PairingCeremonyState`, a pure state machine, and
     `PairingController`, its shell). Pair iPhone… in Settings › Claude
@@ -799,9 +854,11 @@ arms anything.
     passes is frozen: the QR never returns, and any later poll that reads
     anything else (another response, or none) refuses too. The owner
     compares the codes; only Codes Match writes the key (lint-locked: no
-    other road reaches the slot's one write), then the record is deleted.
-    They Don't Match, Cancel, Esc, closing the window, the five minutes,
-    a refusal or a failed write each burn the nonce and delete the record.
+    other road reaches the slot's one write), then the record's deletion is
+    asked for. They Don't Match, Cancel, Esc, closing the window, the five
+    minutes, a refusal or a failed write each burn the nonce and ask for
+    the record's deletion (one try, and the next launch's cleanup if it
+    did not go through: see "Pairing" above).
     A ceremony over a paired phone leaves the old key working until the
     new one is written.
   - *The sheet.* Five states: the code (with the countdown and the
@@ -820,8 +877,9 @@ arms anything.
     line as it changes, the code character by character, and the
     countdown at one minute and ten seconds only. No motion beyond the
     Settings buttons' press. Unpair… asks first — its Unpair button is
-    marked destructive and answers no key, and Esc cancels — then deletes
-    the key and turns Remote approvals off through its kill switch.
+    marked destructive and answers no key, and Esc cancels — then asks the
+    keychain to delete the key and turns Remote approvals off through its
+    kill switch, whatever the deletion came to.
   - *Not live in C1.* The app's record seam was a stub that found and
     deleted nothing, so a ceremony showed its code and ended with its
     window; no release could ship with the pairing button over it. Tests
@@ -941,13 +999,14 @@ arms anything.
     conformer, lint-locked to its declaration's line and pinned whole: the
     owner's private database, built by `makeLiveApprovalDatabase()` behind
     the same `LiveCapability` guard as the alert lane's (the file's second
-    container site), so a simulator build gets none. It checks what it is
-    handed (`isPairingResponseCreation`): one new PairingResponse record, in
-    this account's approvals zone, named by 64 lowercase hex digits, saved
-    under `.ifServerRecordUnchanged`, deleting nothing. Anything else (a
-    decision, a prompt, a deletion, an overwrite) is never added; its own
-    result block is told `invalidArguments`, so the writer reads a closed
-    failure.
+    container site), so a simulator build gets none. As C1.6 built it, it
+    checked what it is handed (`isPairingResponseCreation`): one new
+    PairingResponse record, in this account's approvals zone, named by 64
+    lowercase hex digits, saved under `.ifServerRecordUnchanged`, deleting
+    nothing. Anything else (a decision, a prompt, a deletion, an overwrite)
+    was never added; its own result block is told `invalidArguments`, so
+    the writer reads a closed failure. #194 widened what it runs: see "The
+    phone's prompt path".
   - *The live wiring* (`LivePairing`). Made once per launch by the live
     inbox's factory, over the keyring the inbox signs with, so the key a
     pairing commits is the key every answer is signed by. It builds
@@ -1059,8 +1118,9 @@ arms anything.
     `decision.signed` (it was `decision.unverifiable` while no key existed).
   - *The key, read at each verification.* The verifier reads the paired key
     from the slot (`PairedKeyStore.read()`) at each verification, on one
-    line, and keeps nothing: a verification after Unpair finds no key and
-    refuses (`noPairedKey`), and after a new pairing only the new key's
+    line, and keeps nothing: a verification after an Unpair whose deletion
+    went through finds no key and refuses (`noPairedKey`), and after a new
+    pairing only the new key's
     signatures verify. Lint-locked: the slot is read at that one site, the
     checks that take a key are reached from that entry alone, no approval
     file or the verifier names a pairing type anywhere else, and a P-256
@@ -1220,7 +1280,8 @@ is started with the development flag load the channel.
   check has passed: it is created and set to 0700 before Claude Code is
   found or read, so a run that stops later can leave it in place. Then it
   registers the helper at user scope with `claude mcp add`, and writes the
-  receipt (version and path, 0600).
+  receipt (version and path, 0600). NapCat does not read the receipt yet;
+  showing the registration in Settings › Claude is a later slice.
 - **Development builds.** A plain `make` signs ad hoc, so the installer
   refuses its bundle, as it refuses one signed with an Apple Development
   certificate of NapCat's own team; a build registers only when it is
@@ -1255,3 +1316,46 @@ is started with the development flag load the channel.
   tests run copies of both scripts in a scratch folder, with `codesign`,
   `id` and `claude` stubbed and a scratch home: never this machine's
   Claude Code configuration, receipt or installed app.
+
+## The phone's prompt path (#194)
+
+#194 lets the phone receive the Mac's permission prompts, still
+unanswerable: nothing arms on either device, and every answer goes to a
+writer that writes nothing (`UnsentDecisionWriter`), so the prompt screen
+is a preview with no answer buttons, and the inbox refuses an answer
+before it asks for a match.
+
+- **The phone's switch** (Settings › Remote approvals, "Prompts on This
+  iPhone", off by default; `ApprovalsSwitch`). It takes effect only on a
+  phone that holds a committed key, and it gates this phone's side alone:
+  the prompt subscription, the reads and the waiting list. Nothing tells
+  the Mac (owner ruling: pairing is the Mac-visible half of the opt-in),
+  so off is a local pause; switching it off deletes the prompt
+  subscription and empties the list.
+- **What the live database runs.** `LiveCloudKitApprovalDatabase` checks
+  each operation it is handed and runs exactly these: the pairing
+  response's create-only save; a decision's create-only save (no app
+  source builds a decision writer); one snapshot of the approvals zone
+  asking for the prompt's six fields; and the prompt subscription's
+  lookup, save and removal by its one ID. Before a record save it looks
+  the zone up and creates it only when missing, as in C1.6. Anything else
+  is never added: its own result block is told `invalidArguments`.
+- **The snapshot.** Every record the approvals zone holds (no change
+  token), asking for the prompt's six fields only. A prompt record is read
+  strictly: its type, zone and prompt-ID name, the six fields with exactly
+  the wire's encryption, the version, and a window of at most one hour.
+  Every other record is dropped after its type is checked: its metadata
+  (type and name), and any of the six fields it holds, may cross in the
+  snapshot and are discarded unread. A failed read changes nothing.
+- **When the phone reads.** At launch, on a return to the foreground, on a
+  pull to refresh, as Settings or the launch's pairing sheet closes, and on
+  a prompt push that reaches the open app or is tapped; never on a timer,
+  and only while the switch is in effect. Until the launch knows the
+  prompt subscription exists (found or made), each read is preceded by its
+  lookup, and by its save when the lookup finds it missing; once switching
+  off has deleted it, the same starts again.
+- **The push.** A query subscription on new PromptRequest records in the
+  approvals zone (`ApprovalWire.promptSubscriptionID`). Its push is the
+  app's title over fixed words ("A permission prompt is waiting on your
+  Mac.") with the default sound: no record field, no action and no silent
+  wake. Tapping it opens that prompt once the inbox holds it.
