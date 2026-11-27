@@ -51,44 +51,47 @@ import Testing
 ///    verdict goes back through), its stored members and its initializer are
 ///    pinned whole (#211: each closure it is handed, the armed flag among
 ///    them, stored as a `let`, exactly as passed in; what the host passes in
-///    is not read by this pin), and the frame writer (`sendFrame`) is named
-///    at today's sites; and the host's connection writes are pinned at
-///    today's site, the connection type is named at today's sites alone in
-///    the four targets, the host names its connections and its peer reader at
-///    today's lines, the seam file its send, its write, its read and its
-///    descriptor, also by the descriptor's other names (#208: the read
+///    is read by no pin: the host's initializer can rebind the armed closure,
+///    the record sink or the clock above the line that hands them on, and the
+///    sources behind its defaults are not pinned), and the frame writer
+///    (`sendFrame`) is named at today's sites; and the host's connection writes
+///    are pinned at today's site, the connection type is named at today's sites
+///    alone in the four targets, the host names its connections and its peer
+///    reader at today's lines, the seam file its send, its write, its read and
+///    its descriptor, also by the descriptor's other names (#208: the read
 ///    sources, a source's `handle`, at no line today, and the listener's
-///    accepted `client`), and the relay its writer to Claude Code (`emit`),
-///    so a new line of those files that names one of them fails; the seam
+///    accepted `client`), and the relay its writer to Claude Code (`emit`), so
+///    a new line of those files that names one of them fails; the seam
 ///    connection's writer (`send`) and reader (`drain`) are pinned whole
 ///    (#197), and so are the channel server's stream type (`StandardStreams`)
 ///    and the relay's two `receive`s, the last writes before Claude Code
 ///    (#199), so nothing is added to any of them; the stream type and its
 ///    writer (`writeLine`) are named in the four targets at today's lines
-///    alone, the writer's one call among them (#221's pin, read here), and
-///    the relay names its open requests (`open`) at today's lines (#210),
-///    so a second caller of the writer, or a set of another type holding
-///    the requests a verdict may answer, fails (a caller through the
-///    relay's own `emit` is read by the relay's pin instead); and the
-///    channel server's stdin reader's type (`StandardInput`) is pinned
-///    whole (#212): its header (no superclass, no conformance but today's),
-///    its stored members (the read source, the line handler and the line
-///    reader, each of today's type), its initializer, `start` and its
-///    reader (`drain`), the server file's one read of what Claude Code
-///    writes; and the server names that `read` at its line, so no member of
-///    the type, none it inherits and no second reader wired in `start`
-///    takes the read over. The server's `main`, which hands the reader's
-///    lines to the relay, is pinned whole too (#221's pin, in
-///    `ApprovalChannelStructureTests`, read here among the whole pins, so
-///    m. reads its names). Not read: a read of standard input elsewhere in
-///    the channel target, and the wire's line reader's own body. A line of
-///    the seam file that reaches the socket by none of those names (the
-///    connection handed on whole, or the descriptor through the peer reader
-///    the listener is given) is not read itself, and k. and n. read the
-///    writers they list by their spelled names only: a write to that
-///    socket, there or in code it is handed to, in a spelling neither reads
-///    (n. says which) or through a file API and a path, is not caught by
-///    them;
+///    alone, the writer's one call among them (#221's pin, read here), and the
+///    relay names its open requests (`open`) at today's lines (#210), so a
+///    second caller of the writer, or a set of another type holding the
+///    requests a verdict may answer, fails (a caller through the relay's own
+///    `emit` is read by the relay's pin instead); and the channel server's
+///    stdin reader's type (`StandardInput`) is pinned whole (#212): its header
+///    (no superclass, no conformance but today's), its stored members (the read
+///    source, the line handler and the line reader, each of today's type), its
+///    initializer, `start` and its reader (`drain`), the server file's one read
+///    of what Claude Code writes; and the server names that `read` at its line,
+///    so no member of the type, none it inherits and no second reader wired in
+///    `start` takes the read over. The server's `main`, which hands the
+///    reader's lines to the relay, is pinned whole too (#221's pin, in
+///    `ApprovalChannelStructureTests`, read here among the whole pins, so m.
+///    reads its names). Not read: a read of standard input elsewhere in the
+///    channel target, and the wire's line reader's own body. A line of the seam
+///    file that reaches the socket by none of those names (the connection
+///    handed on whole, or the descriptor through the peer reader the listener
+///    is given) is not read itself, nor is one that changes the frames read
+///    from the socket without naming any of them (the handler the connection's
+///    `start` stores, the connection's line reader's declaration; a type named
+///    like the wire's line reader is m.'s to read); and k. and n. read the
+///    writers they list by their spelled names only: a write to that socket,
+///    there or in code it is handed to, in a spelling neither reads (n. says
+///    which) or through a file API and a path, is not caught by them;
 /// g. the road, whole: the verifier (`enum DecisionVerifier`: every check,
 ///    the message, the diagnostic) and the slot's `read()` are pinned as
 ///    they are, flattened by scalars on the compiler's whitespace alone, so
@@ -118,11 +121,14 @@ import Testing
 ///    `sendmsg`, `writev`, bare or through a capitalized qualifier), and
 ///    declare a function so named, at today's sites alone, and the channel
 ///    server names `write` on its one standard-output line alone (as the
-///    seam file does on its one write, f.), so no new line writes to a
-///    descriptor by number through one of those names, and no member, local
+///    seam file does on its one write, f.), so no new line calls one of
+///    those names to write to a descriptor by number, and no member, local
 ///    or parameter added to either file takes one of today's two writes
 ///    over (l. keeps out a module-level one; the stream type is also pinned
-///    whole, f.);
+///    whole, f.). It reads those names only where they are called or
+///    declared: a C write taken as a value and called under another name is
+///    not read (n. reads its names applied or not), nor is a child process
+///    that inherits a descriptor;
 /// l. nothing stands at the top level of a file in the four targets but an
 ///    import, a `struct`, `enum`, `class` or `protocol` with its body, an
 ///    extension (each of today's, i.) or today's one top-level alias, each
@@ -160,10 +166,14 @@ import Testing
 ///    type (at its declaration, not where it is used), a standard handle as
 ///    an implicit member and one reached through another handle's type are
 ///    read too. It is a tripwire, not a wall: it reads the names it lists as
-///    they are spelled, so a writer the list does not name is not read, nor
-///    is a write on a file handle that already exists (only the making of
-///    one is); a file API can still reach a descriptor through a path; and
-///    code in a process can always write to its own descriptors.
+///    they are spelled, applied or not, so a writer the list does not name
+///    is not read, nor is a write on a file handle that already exists: of
+///    a handle's making, only a call that spells the type or one of the
+///    listed labels is read (and of a standard one, its taking), so an
+///    initializer taken unapplied from another handle's type and called
+///    later is not; a file API can still reach a descriptor through a path,
+///    and a child process the descriptors it inherits; and code in a
+///    process can always write to its own descriptors.
 ///
 /// These pin the sites and bodies they name, nothing more: a value forged
 /// from raw bytes that reaches none of them stays #163's accepted residual,
@@ -1316,8 +1326,8 @@ struct DecisionSinkStructureTests {
     // MARK: - f, continued. The intake's stored members and initializer, whole (#211)
 
     /// The intake's stored members and its initializer, whole (from the
-    /// token before the first, the last of the constant above it, so no
-    /// attribute or modifier joins them): each closure it is handed — the
+    /// token before the first member, the end of the constant above it, so
+    /// no attribute or modifier joins them): each closure it is handed — the
     /// armed flag, the secrets, the prompt IDs, the clock, the record sink,
     /// the frame writer, the closer and the audit — stored as a `let`,
     /// exactly as it is passed in, and the held prompts beside them.

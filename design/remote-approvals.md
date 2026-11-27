@@ -1071,7 +1071,11 @@ arms anything.
     standard input (#212) at today's lines, so a new line of those
     files that names one of them fails (a line reaching the socket by none
     of them, through the connection handed on whole or the listener's peer
-    reader, is not read itself); the channel server's stream writer and its
+    reader, is not read itself, nor is one that changes the frames read
+    from the socket without naming any of them: the handler the
+    connection's `start` stores, the connection's line reader's
+    declaration; a new type named like the wire's line reader is read,
+    below); the channel server's stream writer and its
     type, named in the four targets at its one call and their declarations
     alone (#210, by #221's pin), so a second caller fails (one through the
     relay's own `emit` is the relay's word pin's to read); the
@@ -1085,17 +1089,21 @@ arms anything.
     stream, or its unlocked, word, wide-character or locale writers, a
     copied descriptor, a positional, queued, listed or copying write, a Core
     Foundation stream or socket on a descriptor, a file handle made on a
-    descriptor or for writing however its type is reached, the standard
-    handles, Dispatch's channel, the printers): a tripwire with no site
-    today, not a wall. Beside it, the file handle's type and the standard
-    handles' names are read as words at today's lines alone (the app's
-    process setups), so an alias of the type (at its declaration, not
-    where it is used), an implicit standard handle and one reached through
-    another handle's type are read too (#209). It
-    and the C-write pin read the names they list as spelled, so a line
-    reaching the socket by another name is caught only when it writes with
-    one of them; a writer neither lists, a write on a file handle that
-    already exists, or a file API and a path is not. Every
+    descriptor or for writing by a call that spells its type or one of the
+    listed labels, the standard handles, Dispatch's channel, the
+    printers): a tripwire with no site today, not a wall. Beside it, the
+    file handle's type and the standard handles' names are read as words
+    at today's lines alone (the app's process setups), so an alias of the
+    type (at its declaration, not where it is used), an implicit standard
+    handle and one reached through another handle's type are read too
+    (#209). The tripwire reads the names it lists as spelled, applied or
+    not; the C-write pin reads its names only where they are called or
+    declared. So a line reaching the socket by another name is caught only
+    when it names one of them so; not read: a C write taken as a value and
+    called under another name, a file handle made by an initializer taken
+    unapplied from another handle's type and called later, a write on a
+    file handle that already exists, a child process that inherits the
+    descriptor, a writer neither lists, and a file API and a path. Every
     `extension` header and every operator implementation in the four targets
     is today's, and each of today's extensions declares today's members, so
     no extension member or operator overload added elsewhere or inside one
@@ -1122,17 +1130,19 @@ arms anything.
     the armed flag and the lifecycle's one open, with its default window),
     and its stored members and initializer, each closure it is handed (the
     armed flag among them) stored as a `let`, exactly as passed in (#211;
-    what the host passes in is not read by that pin),
-    the seam connection's `send` and `drain`, the channel server's stream
-    type and its stdin reader's type (`StandardInput`, #212: its header,
-    stored members, initializer, `start` and reader, so no superclass,
-    conformance or member of it and no second reader wired in `start`
-    takes its one read of standard input over; the server's `main`, which
-    hands the reader's lines to the relay, is pinned whole too, #221; a read
-    of standard input elsewhere in the channel target, and the wire's line
-    reader's own body, are not read), and the relay's two receives. A line
-    added on any of them fails
-    unless the stripper reads it as whitespace or a `//` comment, also
+    what the host passes in is read by no pin: the host's initializer can
+    rebind the armed closure, the record sink or the clock above the line
+    that hands them on, and the sources behind its defaults are not
+    pinned), the seam connection's `send` and `drain`, the channel
+    server's stream type and its stdin reader's type (`StandardInput`, #212:
+    its header, stored members, initializer, `start` and reader, so no
+    superclass, conformance or member of it and no second reader wired in
+    `start` takes its one read of standard input over; the server's `main`,
+    which hands the reader's lines to the relay, is pinned whole too, #221;
+    a read of standard input elsewhere in the channel target, and the
+    wire's line reader's own body, are not read), and the relay's two
+    receives. A line added on any of them fails unless the stripper reads
+    it as whitespace or a `//` comment, also
     beside a pinned copy kept in a literal or an inactive block. A raw-text
     lock over the four targets and the phone app keeps out the scalars a
     text reading drops or matches to another: control and format characters,
