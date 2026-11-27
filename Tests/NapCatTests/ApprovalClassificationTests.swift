@@ -11,9 +11,9 @@ import Testing
 /// exercised, the Bash grammar is run against a catalogue of shell bypass
 /// classes (chaining, substitution, redirection, quoting, globbing, wrappers,
 /// exec-capable options, encoding tricks), Bash forwards only an exact listed
-/// command (slice S-GATE: each split-audited), and every unknown or malformed
-/// input must fail closed. Fixtures are synthetic — no real topic, no real
-/// home directory.
+/// command (slice S-GATE: each split-audited), no Read forwards whatever its
+/// path (#231), and every unknown or malformed input must fail closed.
+/// Fixtures are synthetic — no real topic, no real home directory.
 struct ApprovalClassificationTests {
     // MARK: - Fixtures
 
@@ -78,6 +78,8 @@ struct ApprovalClassificationTests {
     static let outside = unclassifiable(.commandOutsideGrammar)
     static let notInTable = unclassifiable(.commandNotInTable)
     static let forwardBash = ApprovalClassification.forward(.bash)
+    /// A Read that passes every check: kept on the Mac with its own code.
+    static let keptRead = ApprovalClassification.suppress(.localOnlyRead)
 
     static func classify(_ row: Row, secrets: [String] = []) -> ApprovalClassification {
         ApprovalGate.classify(toolName: row.tool, inputPreview: row.preview, secrets: secrets)
@@ -706,37 +708,39 @@ struct ApprovalClassificationTests {
         #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: preview) == .forward(.bash))
     }
 
-    static let forwardableFiles: [Row] = [
-        read("\(base)/Package.swift", .forward(.read)),
-        read("\(base)/.github/workflows/ci.yml", .forward(.read)),
-        read("/tmp/scratch.txt", .forward(.read)),
+    /// The Reads that forwarded until #231: each passes every check, and each
+    /// now stays on the Mac as `localOnly.read`.
+    static let ordinaryReads: [Row] = [
+        read("\(base)/Package.swift", keptRead),
+        read("\(base)/.github/workflows/ci.yml", keptRead),
+        read("/tmp/scratch.txt", keptRead),
         raw("Read", object([("file_path", quote("\(base)/doc.pdf")), ("offset", "1"), ("limit", "200"), ("pages", quote("1-3"))]),
-            .forward(.read), "Read with every optional argument"),
+            keptRead, "Read with every optional argument"),
         // The path alphabet (#159): dot, dash, underscore, slash and tilde,
-        // and the punctuation that stays allowed because it draws no quote
-        // in the phone's copy: real paths hold it.
-        read("\(base)/Sources/my_module/file-name.v2.swift", .forward(.read)),
-        read("\(base)/notes~1.txt", .forward(.read)),
-        read("\(base)/~$report.docx", .forward(.read)),
-        read("\(base)/app/[slug]/page.tsx", .forward(.read)),
-        read("\(base)/app/[...slug]/page.tsx", .forward(.read)),
-        read("\(base)/app/(marketing)/page.tsx", .forward(.read)),
-        read("\(base)/{{cookiecutter.project_slug}}/README.md", .forward(.read)),
-        read("\(base)/data/a,b.csv", .forward(.read)),
-        read("\(base)/logs/12:30.log", .forward(.read)),
-        read("\(base)/it's-done.txt", .forward(.read)),
-        read("\(base)/icon#1@2x!.png", .forward(.read)),
-        read("\(base)/{a:[1,2]}.json", .forward(.read)),
+        // and the punctuation that passes the path check because it would
+        // draw no quote in the phone's copy: real paths hold it.
+        read("\(base)/Sources/my_module/file-name.v2.swift", keptRead),
+        read("\(base)/notes~1.txt", keptRead),
+        read("\(base)/~$report.docx", keptRead),
+        read("\(base)/app/[slug]/page.tsx", keptRead),
+        read("\(base)/app/[...slug]/page.tsx", keptRead),
+        read("\(base)/app/(marketing)/page.tsx", keptRead),
+        read("\(base)/{{cookiecutter.project_slug}}/README.md", keptRead),
+        read("\(base)/data/a,b.csv", keptRead),
+        read("\(base)/logs/12:30.log", keptRead),
+        read("\(base)/it's-done.txt", keptRead),
+        read("\(base)/icon#1@2x!.png", keptRead),
+        read("\(base)/{a:[1,2]}.json", keptRead),
     ]
 
-    @Test(arguments: forwardableFiles)
-    func readForwardsOrdinaryPaths(_ row: Row) {
+    @Test(arguments: ordinaryReads)
+    func readStaysLocalEvenOnOrdinaryPaths(_ row: Row) {
         #expect(Self.classify(row) == row.expected)
+        #expect(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview) == nil, "no copy of a Read")
     }
 
     // MARK: - Read's other arguments
 
-    static let forwardRead = ApprovalClassification.forward(.read)
     static let badValue = unclassifiable(.argumentValue)
 
     static func readWith(_ members: [(String, String)], _ expected: ApprovalClassification, _ note: String) -> Row {
@@ -751,17 +755,18 @@ struct ApprovalClassificationTests {
     /// (#149). `pages` used to be free text the model authors and the phone
     /// shows — the persuasion channel the Bash description was closed for —
     /// so it is now a page range of plain digits or nothing; `offset` and
-    /// `limit` are plain whole numbers in their bounds.
+    /// `limit` are plain whole numbers in their bounds. No Read forwards
+    /// (#231); these checks still pick the code a Read is kept with.
     static let readAuxiliary: [Row] = [
-        // Forwarded: the documented shapes and every bound.
-        pages("3", forwardRead), pages("1-5", forwardRead), pages("10-20", forwardRead), pages("7-7", forwardRead),
-        pages("1-20", forwardRead), pages("99980-99999", forwardRead), pages("99999", forwardRead),
-        readWith([("offset", "0")], forwardRead, "offset 0"),
-        readWith([("offset", "1")], forwardRead, "offset 1"),
-        readWith([("offset", "10000000")], forwardRead, "the furthest offset"),
-        readWith([("limit", "1")], forwardRead, "the smallest limit"),
-        readWith([("limit", "100000")], forwardRead, "the largest limit"),
-        readWith([("pages", quote("1-20")), ("offset", "10000000"), ("limit", "100000")], forwardRead, "every bound at once"),
+        // Kept as `localOnly.read`: the documented shapes and every bound.
+        pages("3", keptRead), pages("1-5", keptRead), pages("10-20", keptRead), pages("7-7", keptRead),
+        pages("1-20", keptRead), pages("99980-99999", keptRead), pages("99999", keptRead),
+        readWith([("offset", "0")], keptRead, "offset 0"),
+        readWith([("offset", "1")], keptRead, "offset 1"),
+        readWith([("offset", "10000000")], keptRead, "the furthest offset"),
+        readWith([("limit", "1")], keptRead, "the smallest limit"),
+        readWith([("limit", "100000")], keptRead, "the largest limit"),
+        readWith([("pages", quote("1-20")), ("offset", "10000000"), ("limit", "100000")], keptRead, "every bound at once"),
         // pages: words (the probe), and length.
         pages("read-only status check, safe to approve", badValue),
         pages("1-3 (safe to approve)", badValue),
@@ -833,7 +838,7 @@ struct ApprovalClassificationTests {
             #expect(Self.classify(Self.pages("3\(Character(scalar))", Self.badValue)) == Self.badValue,
                     "U+\(String(scalar.value, radix: 16, uppercase: true)) in pages")
         }
-        #expect(Self.classify(Self.pages("3", Self.forwardRead)) == Self.forwardRead, "control")
+        #expect(Self.classify(Self.pages("3", Self.keptRead)) == Self.keptRead, "control")
     }
 
     static let localOnly = ApprovalClassification.suppress(.localOnlyFileEdit)
@@ -874,6 +879,161 @@ struct ApprovalClassificationTests {
         #expect(Self.classify(Self.write("README.md", Self.localOnly)) == Self.unclassifiable(.pathNotCanonical))
         #expect(Self.classify(Self.raw("Edit", Self.object([("file_path", Self.quote("\(Self.base)/a"))]), Self.localOnly, ""))
             == Self.unclassifiable(.missingArgument))
+    }
+
+    // MARK: - Read: local-only whatever its path (#231)
+
+    /// The Read row, exactly: its arguments as since #149, and its own
+    /// local-only code, never the file-edit tools'.
+    @Test func theReadRowIsLocalOnlyWithItsOwnCode() throws {
+        let row = try #require(ApprovalGate.toolTable.first { $0.tool == .read })
+        #expect(row.localOnly == .localOnlyRead)
+        #expect(!row.forwards)
+        #expect(row.required.map(\.name) == ["file_path"])
+        #expect(row.optional.map(\.name) == ["offset", "limit", "pages"])
+        #expect(ApprovalSuppression.localOnlyRead.auditCode == "localOnly.read")
+        #expect(ApprovalSuppression.localOnlyRead != .localOnlyFileEdit)
+        #expect(Self.classify(Self.read("\(Self.base)/a.txt", Self.keptRead)) == Self.keptRead)
+        #expect(Self.classify(Self.write("\(Self.base)/a.txt", Self.localOnly)) == Self.localOnly, "Write keeps its own code")
+    }
+
+    /// Local-only comes last for a Read too: it is checked in full, so the
+    /// alert topic, a forbidden location or a malformed prompt keeps its
+    /// own, more specific code, and only a Read that passes every check is
+    /// `localOnly.read`.
+    @Test func aReadPromptIsStillClassifiedBeforeItIsKeptLocal() {
+        let rows: [Row] = [
+            Self.read("/Users/someone/.claude/settings.json", Self.forbidden(.configurationOrHooks)),
+            Self.read("/etc/hosts", Self.forbidden(.privilegeEscalation)),
+            Self.read("/Users/someone/.ssh/config", Self.forbidden(.secretAccess)),
+            Self.read("\(Self.base)/[REDACTED].txt", Self.forbidden(.secretAccess)),
+            Self.read("\(Self.base)/(value unserializable)", Self.notFaithful),
+            Self.read("\(Self.base)/a\u{200B}b.txt", Self.unclassifiable(.hiddenText)),
+            Self.read("notes.md", Self.pathNotCanonical),
+            Self.read("\(Self.base)/my notes.md", Self.pathNotCanonical),
+            Self.raw("Read", Self.object([("file_path", Self.quote("\(Self.base)/a.pdf")), ("pages", Self.quote("1-30"))]),
+                     Self.badValue, "more than 20 pages"),
+            Self.raw("Read", Self.object([("file_path", Self.quote("\(Self.base)/a.txt")), ("allow_large", "true")]),
+                     Self.unclassifiable(.unknownArgument), "an unknown key"),
+            Self.raw("Read", Self.object([("offset", "1")]), Self.unclassifiable(.missingArgument), "no path"),
+            Self.raw("Read", Self.object([("file_path", "1")]), Self.unclassifiable(.argumentKind), "a path as a number"),
+            Self.raw("Read", "{\"file_path\":", Self.unclassifiable(.previewNotStrictJSON), "a truncated preview"),
+        ]
+        for row in rows {
+            #expect(Self.classify(row) == row.expected, "\(row.note)")
+        }
+        let holding = Self.read("\(Self.base)/\(Self.topic).txt", Self.forbidden(.secretAccess))
+        #expect(Self.classify(holding, secrets: [Self.topic]) == holding.expected, "the alert topic in a Read's path")
+        #expect(Self.classify(holding, secrets: []) == Self.keptRead, "control: without the secret the same Read is kept as itself")
+    }
+
+    /// Where a Read may point: the home folder and folders under it that no
+    /// rule names, other projects, shared, temporary and system folders,
+    /// volumes, and the forbidden locations. A list of locations cannot
+    /// name every credential file, so no Read forwards, whatever its path.
+    static let readFolders = [
+        "/Users/someone", "/Users/someone/.config/sometool", "/Users/someone/.local/share/sometool", "/Users/someone/.sometool",
+        "/Users/someone/Library/Application Support/SomeTool", "/Users/someone/Library/Containers/com.example.tool/Data",
+        "/Users/someone/Downloads", "/Users/someone/other-project", base, "\(base)/sub/dir", "/Users/Shared", "/tmp",
+        "/private/tmp", "/private/var/folders/ab/cd/T", "/var/log", "/Volumes/External", "/opt/sometool",
+        "/Applications/Some.app/Contents/Resources", "/Library/Preferences", "/etc", "/usr/local/share", "/System/Library",
+        "/Users/someone/.ssh", "/Users/someone/.claude",
+    ]
+
+    static let readNames = [
+        ".history", ".sometool-token", ".sometoolrc", "auth.json", "sometool-keys.txt", "secrets.yaml", "notes.md",
+        "Package.swift", "a.txt", "report.pdf", "README", "x.y.z", "~$draft.docx", "[slug].tsx", "it's.txt",
+    ]
+
+    /// A JSON string literal with every character written as a `\u` escape:
+    /// the strict reader decodes it to `text` itself.
+    static func escapedQuote(_ text: String) -> String {
+        "\"" + text.unicodeScalars.map { String(format: "\\u%04x", $0.value) }.joined() + "\""
+    }
+
+    /// What a Read of `path` alone is: the path check's own refusal (a
+    /// forbidden family first, then a malformed path), or else
+    /// `localOnly.read`. Never a forward.
+    static func readOutcome(_ path: String) -> ApprovalClassification {
+        ApprovalGate.pathRefusal(Array(path.utf8)).map { .suppress($0) } ?? keptRead
+    }
+
+    /// THE PROPERTY (#231): no Read prompt is forwarded, for any path. Every
+    /// folder and name above, in its own and in upper case, written plainly,
+    /// as escapes and with every optional argument at its bound, and every
+    /// Read in this suite's tables: each is kept on the Mac, with the code
+    /// precedence gives it, and none has a copy that could leave.
+    @Test func noReadPromptIsEverForwarded() {
+        var rows: [Row] = []
+        for folder in Self.readFolders {
+            for name in Self.readNames {
+                for path in ["\(folder)/\(name)", "\(folder)/\(name)".uppercased()] {
+                    let expected = Self.readOutcome(path)
+                    rows.append(Self.read(path, expected))
+                    rows.append(Self.raw("Read", Self.object([("file_path", Self.escapedQuote(path))]), expected, "escaped \(path)"))
+                    rows.append(Self.raw("Read", Self.object([("file_path", Self.quote(path)), ("offset", "0"), ("limit", "100000"),
+                                                              ("pages", Self.quote("1-20"))]), expected, "every argument \(path)"))
+                }
+            }
+        }
+        rows += (Self.familyRows + Self.ordinaryReads + Self.readAuxiliary + Self.failClosed + Self.placeholders)
+            .filter { $0.tool == "Read" }
+        var kept = 0
+        var refused = 0
+        for row in rows {
+            let found = Self.classify(row)
+            if case .forward = found { Issue.record("a Read was forwarded: \(row.note)") }
+            #expect(found == row.expected, "\(row.note)")
+            #expect(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview) == nil, "a copy of \(row.note)")
+            if found == Self.keptRead { kept += 1 } else { refused += 1 }
+        }
+        #expect(kept >= 1_500 && refused >= 500, "vacuity: \(kept) kept as localOnly.read, \(refused) for a more specific reason")
+    }
+
+    /// What can leave the Mac at all, by enumeration: only the Bash row
+    /// forwards, its one required argument is the command, every other row
+    /// keeps its prompts with a code, each tool on an ordinary preview
+    /// forwards only if it is Bash, and of every command this suite holds,
+    /// the ones that forward are exactly the listed ones.
+    @Test func theOnlyForwardsAreTheListedBashCommands() throws {
+        for row in ApprovalGate.toolTable {
+            if row.forwards {
+                #expect(row.tool == .bash, "\(row.tool) forwards")
+                #expect(row.required.map(\.name) == ["command"])
+                guard case .command = try #require(row.required.first).kind else {
+                    Issue.record("the forwarding row's basis is not the command")
+                    continue
+                }
+            } else {
+                #expect(row.localOnly != nil, "\(row.tool)")
+            }
+        }
+        let ordinary: [ApprovalTool: String] = [
+            .bash: Self.bashPreview("make test"), .write: Self.writePreview("\(Self.base)/a.txt"),
+            .edit: Self.object([("file_path", Self.quote("\(Self.base)/a.txt")), ("old_string", Self.quote("a")),
+                                ("new_string", Self.quote("b"))]),
+            .notebookEdit: Self.object([("notebook_path", Self.quote("\(Self.base)/n.ipynb")), ("new_source", Self.quote("x"))]),
+            .read: Self.readPreview("\(Self.base)/a.txt"),
+        ]
+        #expect(Set(ordinary.keys) == Set(ApprovalTool.allCases), "every tool")
+        for tool in ApprovalTool.allCases {
+            let found = ApprovalGate.classify(toolName: tool.rawValue, inputPreview: try #require(ordinary[tool]))
+            #expect((found == .forward(tool)) == (tool == .bash), "\(tool): \(found)")
+            if case .forward(let forwarded) = found { #expect(forwarded == .bash) }
+        }
+        let fromRows: [String] = (Self.nearMisses + Self.bypassCatalogue + Self.familyRows + Self.auxiliary)
+            .filter { $0.tool == "Bash" }.compactMap(Self.command)
+        let corpus = ApprovalGate.bashCommands + Self.noLongerForwarded + fromRows
+        #expect(corpus.count >= 200, "vacuity: \(corpus.count) commands")
+        let forwarded = Set(corpus.filter { Self.classify(Self.bash($0, Self.forwardBash)) == Self.forwardBash })
+        #expect(forwarded == Set(ApprovalGate.bashCommands))
+    }
+
+    /// A Bash row's command, as its preview holds it.
+    static func command(_ row: Row) -> String? {
+        guard let members = ApprovalPreview.parseObject(row.preview),
+              case .string(let text)? = members.first(where: { $0.key == "command" })?.value else { return nil }
+        return text
     }
 
     // MARK: - Fail-closed defaults
@@ -1044,19 +1204,28 @@ struct ApprovalClassificationTests {
     }
 
     /// The placeholders are matched where the rows above say: each list
-    /// entry alone refuses an otherwise forwardable prompt.
+    /// entry alone refuses an otherwise forwardable Bash prompt, and turns
+    /// a Read that would be kept as `localOnly.read` into its own code.
     @Test func everyPlaceholderRefusesOnItsOwn() {
         for marker in ApprovalGate.unfaithfulMarkers {
             let row = Self.raw("Read", Self.object([("file_path", Self.quote("\(Self.base)/a.txt")), ("pages", Self.quote(marker))]),
                                Self.notFaithful, marker)
             #expect(Self.classify(row) == Self.notFaithful, "\(marker)")
+            let bash = Self.raw("Bash", Self.object([("command", Self.quote("git status")), ("description", Self.quote(marker))]),
+                                Self.notFaithful, marker)
+            #expect(Self.classify(bash) == Self.notFaithful, "\(marker) in a Bash description")
         }
         for marker in ApprovalGate.maskMarkers {
             let row = Self.read("\(Self.base)/\(marker)", Self.forbidden(.secretAccess))
             #expect(Self.classify(row) == row.expected, "\(marker)")
+            let bash = Self.raw("Bash", Self.object([("command", Self.quote("git status")), ("description", Self.quote(marker))]),
+                                Self.forbidden(.secretAccess), marker)
+            #expect(Self.classify(bash) == bash.expected, "\(marker) in a Bash description")
             #expect(marker == marker.lowercased(), "matched case-insensitively")
         }
-        #expect(Self.classify(Self.read("\(Self.base)/a.txt", .forward(.read))) == .forward(.read), "control")
+        #expect(Self.classify(Self.read("\(Self.base)/a.txt", Self.keptRead)) == Self.keptRead, "control")
+        #expect(Self.classify(Self.raw("Bash", Self.object([("command", Self.quote("git status")), ("description", Self.quote("x"))]),
+                                       Self.forwardBash, "")) == Self.forwardBash, "control")
     }
 
     /// The whole preview is capped in Unicode code points of the text as
@@ -1083,9 +1252,11 @@ struct ApprovalClassificationTests {
 
     /// A forbidden path with a space is still logged as its family.
     @Test func aForbiddenPathWithASpaceKeepsItsFamily() {
-        #expect(Self.classify(Self.read("/Library/Application Support/ClaudeCode/managed-settings.json", .forward(.read)))
+        #expect(Self.classify(Self.read("/Library/Application Support/ClaudeCode/managed-settings.json",
+                                        Self.forbidden(.configurationOrHooks)))
             == Self.forbidden(.configurationOrHooks))
-        #expect(Self.classify(Self.read("/Users/someone/My Keys/.ssh/id_rsa", .forward(.read))) == Self.forbidden(.secretAccess))
+        #expect(Self.classify(Self.read("/Users/someone/My Keys/.ssh/id_rsa", Self.forbidden(.secretAccess)))
+            == Self.forbidden(.secretAccess))
     }
 
     // MARK: - The path alphabet (#159)
@@ -1093,7 +1264,8 @@ struct ApprovalClassificationTests {
     static let pathNotCanonical: ApprovalClassification = unclassifiable(.pathNotCanonical)
 
     /// Where a character can sit in a path: (before it, after it). Joined
-    /// without it, each is a path that forwards.
+    /// without it, each is a path that passes the path check (a Read of it
+    /// is `localOnly.read`).
     static let pathPositions: [(String, String)] = [
         ("", "/Users/someone/a.txt"), ("/", "Users/someone/a.txt"), ("\(base)/", "a.txt"), ("\(base)/a", "b.txt"),
         ("\(base)/dir", "/a.txt"), ("\(base)/a.txt", ""),
@@ -1102,7 +1274,7 @@ struct ApprovalClassificationTests {
     /// Each character refused after the families is refused wherever it
     /// sits: before the root, first after it, first, inside and last in a
     /// name, and as the path's last character. The same path without it
-    /// forwards.
+    /// passes the path check: a Read of it is `localOnly.read`.
     @Test(arguments: ApprovalGate.pathBytesRefusedAfterFamilies)
     func aCharacterRefusedAfterTheFamiliesIsRefusedAnywhere(_ byte: UInt8) {
         let character = Character(Unicode.Scalar(byte))
@@ -1111,7 +1283,7 @@ struct ApprovalClassificationTests {
             let control = "\(before)\(after)"
             #expect(Self.classify(Self.read(path, Self.pathNotCanonical)) == Self.pathNotCanonical, "Read \(path)")
             #expect(Self.classify(Self.write(path, Self.pathNotCanonical)) == Self.pathNotCanonical, "Write \(path)")
-            #expect(Self.classify(Self.read(control, Self.forwardRead)) == Self.forwardRead, "control: \(control)")
+            #expect(Self.classify(Self.read(control, Self.keptRead)) == Self.keptRead, "control: \(control)")
         }
     }
 
@@ -1145,35 +1317,34 @@ struct ApprovalClassificationTests {
         return quotes == own && !copy.contains("\\")
     }
 
-    /// The whole alphabet, character by character: a path forwards with any
-    /// printable ASCII character from `!` to `~` in a name except the
-    /// double quote and the backslash. Those two, the space, a tab, a
-    /// newline and a carriage return are `pathNotCanonical`; NUL is
+    /// The whole alphabet, character by character: a path passes the path
+    /// check with any printable ASCII character from `!` to `~` in a name
+    /// except the double quote and the backslash (a Read of it is then
+    /// `localOnly.read`: no Read forwards, #231). Those two, the space, a
+    /// tab, a newline and a carriage return are `pathNotCanonical`; NUL is
     /// `previewNotStrictJSON`; every other control character is
-    /// `hiddenText` (the codes the refusal catalogue names). The copy of a
-    /// path holding a forwarding character, in each of the six positions,
-    /// draws no quote of its own (see `aForwardedPathDrawsNoQuoteOfItsOwn`).
-    /// The wire is unchanged.
-    @Test func theForwardedPathAlphabetIsPrintableASCIIWithoutQuoteOrBackslash() throws {
+    /// `hiddenText` (the codes the refusal catalogue names). No Read of a
+    /// path holding a passing character, in any of the six positions, has a
+    /// copy that could leave the Mac. The wire is unchanged.
+    @Test func thePathAlphabetIsPrintableASCIIWithoutQuoteOrBackslash() {
         let pinned: [UInt8] = [UInt8(ascii: " "), UInt8(ascii: "\"")]
         #expect(ApprovalGate.pathBytesRefusedAfterFamilies == pinned)
         let refused: Set<UInt8> = [UInt8(ascii: " "), UInt8(ascii: "\""), UInt8(ascii: "\\")]
         let tabAndLineBreaks: Set<UInt8> = [UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r")]
-        var forwarded = 0
-        var copies = 0
+        var passed = 0
+        var withoutCopy = 0
         for byte in UInt8(0)...UInt8(0x7F) {
             let character = Character(Unicode.Scalar(byte))
             let path = "\(Self.base)/a\(character)b.txt"
-            let found: ApprovalClassification = Self.classify(Self.read(path, Self.forwardRead))
+            let found: ApprovalClassification = Self.classify(Self.read(path, Self.keptRead))
             let printable: Bool = byte >= 0x20 && byte <= 0x7E
             if printable && !refused.contains(byte) {
-                #expect(found == Self.forwardRead, "byte \(byte)")
-                forwarded += 1
+                #expect(found == Self.keptRead, "byte \(byte)")
+                passed += 1
                 for (before, after) in Self.pathPositions {
                     let preview: String = Self.readPreview("\(before)\(character)\(after)")
-                    let copy: String = try #require(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: preview), "byte \(byte)")
-                    #expect(try Self.ownQuotesOnly(copy), "byte \(byte): \(copy)")
-                    copies += 1
+                    #expect(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: preview) == nil, "byte \(byte)")
+                    withoutCopy += 1
                 }
             } else if printable || tabAndLineBreaks.contains(byte) {
                 #expect(found == Self.pathNotCanonical, "byte \(byte)")
@@ -1183,30 +1354,32 @@ struct ApprovalClassificationTests {
                 #expect(found == Self.unclassifiable(.hiddenText), "byte \(byte)")
             }
         }
-        #expect(forwarded == 92, "vacuity: 95 printable characters less the space, the quote and the backslash")
-        #expect(copies == 552, "vacuity: the 92 forwarding characters, each in six positions")
+        #expect(passed == 92, "vacuity: 95 printable characters less the space, the quote and the backslash")
+        #expect(withoutCopy == 552, "vacuity: the 92 passing characters, each in six positions")
         #expect(ApprovalWire.wireVersion == 1)
         #expect(ApprovalChannel.frameVersion == 2)
     }
 
-    /// Why the quote: the phone draws the gate's copy verbatim, and in the
-    /// copy of every forwarded Read the only quotes are its members' own
-    /// (two per key, two per string value) and there is no backslash, so no
-    /// path can draw a member boundary. The canary is the vector #159
-    /// closes: the copy of a path holding a quote draws one, so the count
+    /// Why the quote (#159): the phone draws the gate's copy verbatim, and
+    /// in a copy whose only quotes are its members' own (two per key, two
+    /// per string value) and that holds no backslash, no path can draw a
+    /// member boundary. No Read has a copy any more (#231), and every copy
+    /// that can leave still draws only its members' own quotes
+    /// (`everyForwardedPromptHasAFaithfulCopy`). The canary is the vector
+    /// #159 closed: a drawn path holding a quote draws one, so the count
     /// catches it, and the gate refuses that path.
-    @Test func aForwardedPathDrawsNoQuoteOfItsOwn() throws {
-        let rows: [Row] = Self.forwardableFiles.filter { $0.tool == "Read" }
+    @Test func noReadHasACopyAndTheQuoteCountCatchesADrawnBoundary() throws {
+        let rows: [Row] = Self.ordinaryReads
         #expect(rows.count >= 10, "vacuity: the pinned paths are read")
         for row in rows {
-            #expect(Self.classify(row) == Self.forwardRead, "\(row.note)")
-            let copy = try #require(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview), "\(row.note)")
-            #expect(try Self.ownQuotesOnly(copy), "\(row.note): \(copy)")
+            #expect(Self.classify(row) == Self.keptRead, "\(row.note)")
+            #expect(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview) == nil, "\(row.note)")
         }
         let forged = Self.read("\(Self.base)/a\",\"limit\":1", Self.pathNotCanonical)
-        let copy = try #require(ApprovalGate.forwardedPreview(toolName: forged.tool, inputPreview: forged.preview))
-        #expect(copy == #"{"file_path":"/Users/someone/project/a\",\"limit\":1"}"#)
-        #expect(try !Self.ownQuotesOnly(copy), "canary: the count catches the drawn boundary")
+        #expect(ApprovalGate.forwardedPreview(toolName: forged.tool, inputPreview: forged.preview) == nil)
+        #expect(try !Self.ownQuotesOnly(#"{"file_path":"/Users/someone/project/a\",\"limit\":1"}"#),
+                "canary: the count catches the drawn boundary")
+        #expect(try Self.ownQuotesOnly(#"{"file_path":"/Users/someone/project/a.txt","limit":1}"#), "control")
         #expect(Self.classify(forged) == Self.pathNotCanonical)
     }
 
@@ -1229,10 +1402,13 @@ struct ApprovalClassificationTests {
         #expect(!members.contains { $0.key == "description" })
     }
 
-    @Test func theReadCopyKeepsEveryMember() {
+    /// No Read has a copy (#231), whatever its members: one the gate would
+    /// have forwarded before is kept as `localOnly.read`, with nothing to
+    /// save.
+    @Test func thereIsNoReadCopyWhateverItsMembers() {
         let relayed = #"{ "file_path": "/Users/someone/project/doc.pdf", "offset": 1, "limit": 200, "pages": "1-3" }"#
-        #expect(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: relayed)
-            == #"{"file_path":"/Users/someone/project/doc.pdf","offset":1,"limit":200,"pages":"1-3"}"#)
+        #expect(ApprovalGate.classify(toolName: "Read", inputPreview: relayed) == Self.keptRead)
+        #expect(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: relayed) == nil)
     }
 
     /// No copy for a tool that does not forward, or for a preview the gate
@@ -1240,6 +1416,7 @@ struct ApprovalClassificationTests {
     @Test(arguments: [
         ("Write", #"{"file_path":"/tmp/a","content":"x"}"#), ("Edit", #"{"file_path":"/tmp/a","old_string":"a","new_string":"b"}"#),
         ("NotebookEdit", #"{"notebook_path":"/tmp/n.ipynb","new_source":"x"}"#), ("mcp__x__y", #"{"text":"x"}"#),
+        ("Read", #"{"file_path":"/tmp/a"}"#), ("Read", #"{"file_path":"/Users/someone/project/doc.pdf","pages":"1-3"}"#),
         ("WebFetch", #"{"url":"https://example.com"}"#), ("bash", #"{"command":"git status"}"#),
         ("Bash", #"{"command":"git status","shell":"zsh"}"#), ("Bash", #"{"command":["git","status"]}"#),
         ("Bash", #"{"command":null}"#), ("Bash", #"{"command":{"a":1}}"#), ("Bash", "not json"),
@@ -1250,19 +1427,24 @@ struct ApprovalClassificationTests {
     }
 
     /// Every prompt the gate forwards has a copy, the copy reads back under
-    /// the strict reader as the same members minus the description, and the
-    /// gate forwards the copy exactly as it forwarded the original.
+    /// the strict reader as the same members minus the description, the
+    /// gate forwards the copy exactly as it forwarded the original, and the
+    /// copy's only quotes are its members' own. Since #231 these are Bash
+    /// prompts only: every listed command, and every forwarded row above.
     @Test func everyForwardedPromptHasAFaithfulCopy() throws {
-        let rows = Self.forwardableFiles + Self.readAuxiliary.filter { $0.expected == Self.forwardRead } + [
+        let rows = ApprovalGate.bashCommands.map { Self.bash($0, Self.forwardBash) }
+            + Self.auxiliary.filter { $0.expected == Self.forwardBash } + [
             Self.raw("Bash", #"{ "command": "git status", "description": "x" }"#, Self.forwardBash, "relayed spacing"),
             Self.raw("Bash", Self.object([("command", Self.quote("make test")), ("timeout", "600000")]), Self.forwardBash, "timeout"),
         ]
+        #expect(rows.count >= 10, "vacuity: \(rows.count) forwarded prompts")
         for row in rows {
             #expect(Self.classify(row) == row.expected, "\(row.note)")
             let copy = try #require(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview), "\(row.note)")
             let original = try #require(ApprovalPreview.parseObject(row.preview))
             #expect(ApprovalPreview.parseObject(copy) == original.filter { $0.key != "description" }, "\(row.note)")
             #expect(ApprovalGate.classify(toolName: row.tool, inputPreview: copy) == row.expected, "\(row.note)")
+            #expect(try Self.ownQuotesOnly(copy), "\(row.note): \(copy)")
         }
     }
 
@@ -1290,6 +1472,7 @@ struct ApprovalClassificationTests {
             Self.raw("Bash", Self.object([("command", Self.quote("ls")), ("description", Self.quote(Self.topic))]),
                      Self.forbidden(.secretAccess), "in the Bash description argument"),
             Self.raw("Bash", "{\"command\":\"\(Self.topic)", Self.forbidden(.secretAccess), "before the preview even parses"),
+            Self.read("\(Self.base)/\(Self.topic).txt", Self.forbidden(.secretAccess)),
             Self.raw("mcp__x__\(Self.topic.replacingOccurrences(of: "-", with: "_"))", "{}", .suppress(.localOnlyMCP), "control"),
         ]
         for row in rows {
@@ -1319,8 +1502,9 @@ struct ApprovalClassificationTests {
         #expect(ApprovalSuppression.forbidden(.secretAccess).auditCode == "forbidden.secretAccess")
         #expect(ApprovalSuppression.localOnlyMCP.auditCode == "localOnly.mcp")
         #expect(ApprovalSuppression.localOnlyFileEdit.auditCode == "localOnly.fileEdit")
+        #expect(ApprovalSuppression.localOnlyRead.auditCode == "localOnly.read")
         #expect(ApprovalSuppression.unclassifiable(.unknownTool).auditCode == "unclassifiable.unknownTool")
-        let all = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP, .localOnlyFileEdit]
+        let all = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) } + [.localOnlyMCP, .localOnlyFileEdit, .localOnlyRead]
             + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
         #expect(Set(all.map(\.auditCode)).count == all.count, "codes are distinct")
         for code in all.map(\.auditCode) {
@@ -1367,8 +1551,10 @@ struct ApprovalClassificationTests {
     }
 
     static let missRefusal = "else {\n            return .suppress(.unclassifiable(.unknownTool))\n        }"
-    /// The row's own switch, directly before the single forward.
-    static let localOnlyRefusal = "guard row.forwards else {\n            return .suppress(.localOnlyFileEdit)\n        }\n"
+    /// The row's own switch, directly before the single forward: a row with
+    /// a local-only code keeps its prompt with that code, read from the
+    /// table (never a code fixed here).
+    static let localOnlyRefusal = "if let localOnly = row.localOnly {\n            return .suppress(localOnly)\n        }\n"
         + "        return .forward(row.tool)"
 
     static func defaultForwardFailures(_ code: String) -> [String] {
@@ -1400,11 +1586,13 @@ struct ApprovalClassificationTests {
             code.replacingOccurrences(of: "        case (.path, _),", with: "        default: return nil\n        case (.path, _),"),
             code + "\nlet x = y ?? .forward(.bash)\n",
             code.replacingOccurrences(of: "inputPreview: String, secrets", with: "inputPreview: String, description: String, secrets"),
-            code.replacingOccurrences(of: "guard row.forwards else {", with: "guard true else {"),
-            code.replacingOccurrences(of: "        guard row.forwards else {\n            return .suppress(.localOnlyFileEdit)\n        }\n",
+            code.replacingOccurrences(of: "if let localOnly = row.localOnly {", with: "if false, let localOnly = row.localOnly {"),
+            code.replacingOccurrences(of: "        if let localOnly = row.localOnly {\n            return .suppress(localOnly)\n        }\n",
                                       with: ""),
+            code.replacingOccurrences(of: "            return .suppress(localOnly)\n", with: "            return .suppress(.localOnlyFileEdit)\n"),
         ]
         for mutant in mutants {
+            #expect(mutant != code, "canary setup")
             #expect(!Self.defaultForwardFailures(mutant).isEmpty, "a mutant was NOT caught")
         }
     }
@@ -1428,8 +1616,10 @@ struct ApprovalClassificationTests {
     @Test func theToolTableIsExactlyTheForwardableTools() {
         let tools = ApprovalGate.toolTable.map(\.tool)
         #expect(tools == ApprovalTool.allCases, "one row per tool, in order")
-        #expect(ApprovalGate.toolTable.filter(\.forwards).map(\.tool) == [.bash, .read],
-                "the file-edit tools are local-only")
+        #expect(ApprovalGate.toolTable.filter(\.forwards).map(\.tool) == [.bash],
+                "the file-edit tools and Read are local-only")
+        #expect(ApprovalGate.toolTable.map(\.localOnly) == [nil, .localOnlyFileEdit, .localOnlyFileEdit, .localOnlyFileEdit, .localOnlyRead],
+                "each kept tool with its own code")
         #expect(!ApprovalGate.toolTable.contains { $0.tool.rawValue.hasPrefix(ApprovalGate.mcpPrefix) })
         for row in ApprovalGate.toolTable {
             let names = (row.required + row.optional).map(\.name)

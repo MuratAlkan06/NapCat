@@ -86,10 +86,10 @@ struct ApprovalSeamEndToEndTests {
         #expect(world.host.start())
         defer { world.host.stop() }
         world.handshake()
-        let preview = #"{"file_path":"/Users/someone/project/notes.md"}"#
-        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Read", preview: preview, description: "Read a file"))
+        let preview = #"{"command":"make test"}"#
+        world.stdin(RelayHarness.permissionRequest("abcde", preview: preview, description: "Run the tests"))
         let saved = try #require(world.sink.saved.next(), "the forwardable prompt must reach the record store")
-        #expect(saved.tool == .read)
+        #expect(saved.tool == .bash)
         #expect(saved.inputPreview == preview, "exactly what the gate classified")
         #expect(world.emitted.next(within: 0.2) == nil, "nothing is answered while the prompt waits")
         world.host.withIntake { intake in
@@ -128,6 +128,28 @@ struct ApprovalSeamEndToEndTests {
         let id = PromptID(high: 0xE2E, low: 1)!
         #expect(world.audits.next() == "prompt=\(id.hex) suppressed.gate.forbidden.privilegeEscalation")
         #expect(world.sink.saved.next(within: 0.2) == nil)
+        world.host.withIntake {
+            $0.decide(.verified(ApprovalDecision(promptID: id, verdict: .allow, wireVersion: 1, signatureVerified: true)))
+        }
+        #expect(world.audits.next() == "prompt=\(id.hex) ignored.notForwarded")
+        #expect(world.emitted.next(within: 0.2) == nil, "no verdict for a prompt that never left")
+    }
+
+    /// Armed, a Read crosses the seam and stays on the Mac whatever its path
+    /// (#231): kept as `localOnly.read`, never saved, and a decision for it
+    /// answers nothing.
+    @Test func anArmedReadPromptCrossesTheSeamButNeverLeavesTheMac() throws {
+        let world = try SeamWorld(armed: true)
+        #expect(world.host.start())
+        defer { world.host.stop() }
+        world.handshake()
+        let preview = #"{"file_path":"/Users/someone/project/notes.md","offset":1,"limit":200}"#
+        world.stdin(RelayHarness.permissionRequest("abcde", tool: "Read", preview: preview, description: "Read a file"))
+        let id = PromptID(high: 0xE2E, low: 1)!
+        #expect(world.audits.next() == "prompt=\(id.hex) suppressed.gate.localOnly.read")
+        #expect(world.sink.saved.next(within: 0.2) == nil, "a Read never reaches the record store")
+        let counted = world.host.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) }
+        #expect(counted?.isEmpty == true, "nor is it counted for a waiting push")
         world.host.withIntake {
             $0.decide(.verified(ApprovalDecision(promptID: id, verdict: .allow, wireVersion: 1, signatureVerified: true)))
         }
