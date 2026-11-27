@@ -856,16 +856,19 @@ The script:
   one releases are signed with, so a plain `make` build (signed ad hoc),
   an Apple Development build, or another team's build is refused;
 - **checks the receipt's folder before registering anything**, so a folder
-  it refuses leaves no registration behind;
+  it refuses leaves no registration behind. It creates that folder,
+  `~/Library/Application Support/NapCat/approvals`, if it is missing, and
+  sets it to 0700, before it looks for Claude Code or reads the entry, so a
+  run that stops after that point can leave the folder in place;
 - **registers the server through Claude Code's own CLI**, at user scope and
   under the name `napcat`:
   `claude mcp add --scope user --transport stdio napcat -- <NapCat.app>/Contents/MacOS/napcat-channel`.
   Running it again leaves a matching entry as it is. If the entry points at
   another copy of NapCat (for example, after you moved the app), the script
-  points it at this one. It stops without changing anything if a different
-  server is already registered as `napcat`, or if it cannot read the entry
-  (`claude mcp get napcat` answered in a way it does not recognise, as a
-  newer Claude Code might);
+  points it at this one. It stops without registering or removing anything
+  if a different server is already registered as `napcat`, or if it cannot
+  read the entry (`claude mcp get napcat` answered in a way it does not
+  recognise, as a newer Claude Code might);
 - **writes a small receipt**, mode 0600, holding the server's version and
   path, to `~/Library/Application Support/NapCat/approvals/channel-registration`;
 - **prints the flag** to start each session with. It never edits Claude
@@ -884,6 +887,14 @@ flag the server stays idle: it offers no tools, and no prompt reaches it.
 The server passes prompts on only from Claude Code builds NapCat has
 checked; in a session from any other build, NapCat does not see them.
 
+**What the check is not.** The script verifies the bundle once, when it
+runs. The registration names a path, not the code: Claude Code starts
+whatever is at that path in every later session, and nothing verifies it
+again. Anything that can write to the bundle can change what runs there, as
+it could by running `claude mcp add` itself, and an update that replaces the
+app in place is picked up the same way. What a server may do once it reaches
+NapCat is decided by NapCat, not by this registration.
+
 **If you move or rename NapCat.app, run the script again**, because the
 registration names the server's path. To undo it:
 
@@ -897,6 +908,9 @@ registration the receipt does not record is left in place and reported, with
 the command that removes it; if the script cannot read the entry, it says
 so and exits with an error rather than reporting success, and keeps the
 receipt for the next run.
+
+To undo it by hand instead, run `claude mcp remove napcat --scope user`,
+then delete `~/Library/Application Support/NapCat/approvals/channel-registration`.
 
 ### Honest limitations
 

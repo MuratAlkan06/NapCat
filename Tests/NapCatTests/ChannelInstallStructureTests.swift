@@ -692,7 +692,11 @@ struct ChannelInstallStructureTests {
     static let uninstallRecorded = "RECORDED=\"$(receipt_path)\" || RECORDED=\"\""
     static let uninstallReceiptGuard = "elif [ \"$RECORDED\" != \"$CURRENT\" ]; then"
     static let uninstallRemove = "elif claude_cli mcp remove \"$SERVER_NAME\" --scope user > /dev/null; then"
-    static let uninstallKeep = "if [ -n \"$KEEP_RECEIPT\" ]; then"
+    /// The receipt step's first branch: a symlinked approvals folder, which
+    /// the installer refuses, is reported, and nothing is read or removed
+    /// through it, even while a registration step failed.
+    static let uninstallApprovalsLink = "if [ -L \"$APPROVALS_DIR\" ]; then"
+    static let uninstallKeep = "elif [ -n \"$KEEP_RECEIPT\" ]; then"
     /// Each script reads the registration fail-safe: an unknown answer stops
     /// the installer and is an uninstall error, never an empty command.
     static let installRead = "CURRENT=\"$(registered_command)\" \\"
@@ -759,9 +763,10 @@ struct ChannelInstallStructureTests {
         where lines.contains(where: { $0.contains(failOpenRead) }) {
             failures.append("\(name) reads an unknown registration as none")
         }
-        guard let keep = removal.firstIndex(of: uninstallKeep), let link = removal.firstIndex(of: uninstallLink),
-              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), keep < link, link < receipt else {
-            return failures + ["uninstall-channel.sh must keep the receipt while a registration step failed, and refuse a symlinked one, before removing one"]
+        guard let folder = removal.firstIndex(of: uninstallApprovalsLink),
+              let keep = removal.firstIndex(of: uninstallKeep), let link = removal.firstIndex(of: uninstallLink),
+              let receipt = removal.firstIndex(of: "if rm -f \"$RECEIPT\"; then"), folder < keep, keep < link, link < receipt else {
+            return failures + ["uninstall-channel.sh must refuse a symlinked approvals folder, keep the receipt while a registration step failed, and refuse a symlinked one, before removing one"]
         }
         return failures
     }
@@ -786,7 +791,8 @@ struct ChannelInstallStructureTests {
     /// registration, the flag line dropped; and
     /// an unguarded or a second removal, a folder removed, the receipt's
     /// symlink guard or match dropped, the receipt never read, or removed
-    /// while a registration step failed.
+    /// while a registration step failed, and a symlinked approvals folder
+    /// let through.
     @Test func theStepLockCatchesRegressionMutants() throws {
         let install = try Self.read(Self.installPath)
         let uninstall = try Self.read(Self.uninstallPath)
@@ -845,7 +851,9 @@ struct ChannelInstallStructureTests {
             ("receipt symlink guard dropped", uninstall.replacingOccurrences(of: Self.uninstallLink, with: "elif false; then")),
             ("receipt match dropped", uninstall.replacingOccurrences(of: Self.uninstallReceiptGuard, with: "elif false; then")),
             ("receipt never read", uninstall.replacingOccurrences(of: Self.uninstallRecorded, with: "RECORDED=\"$CURRENT\"")),
-            ("receipt removed even when a step failed", uninstall.replacingOccurrences(of: Self.uninstallKeep, with: "if false; then")),
+            ("receipt removed even when a step failed", uninstall.replacingOccurrences(of: Self.uninstallKeep, with: "elif false; then")),
+            ("a symlinked approvals folder let through", uninstall.replacingOccurrences(
+                of: Self.uninstallApprovalsLink, with: "if false; then")),
             ("an unreadable registration read as none", uninstall.replacingOccurrences(
                 of: Self.uninstallRead, with: "elif false; then\nelse\nCURRENT=\"$(registered_command)\" || CURRENT=\"\"")),
             ("an unreadable registration not kept", uninstall.replacingOccurrences(

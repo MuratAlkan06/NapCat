@@ -22,8 +22,9 @@
 #   3. checks the receipt's folder, BEFORE anything is registered, so that a
 #      refusal here leaves no registration behind: the approvals folder
 #      must be a real directory of yours, not a symlink (it is created if
-#      missing, and its mode forced to 0700), and the receipt in it, if any,
-#      a regular file, not a symlink;
+#      missing, and its mode forced to 0700, before Claude Code is found or
+#      read, so a run that stops before registering may leave that folder
+#      behind), and the receipt in it, if any, a regular file, not a symlink;
 #   4. registers the helper with Claude Code at user scope under the name
 #      "napcat", through Claude Code's own command line:
 #          claude mcp add --scope user --transport stdio napcat -- <helper>
@@ -36,8 +37,8 @@
 #      merely close to that is another server. The entry is read with
 #      `claude mcp get napcat`, and only two answers are acted on (a stdio
 #      entry's one Command: line, or Claude Code's not-found line); anything
-#      else stops the script with nothing changed, rather than risk a second
-#      registration;
+#      else stops the script with nothing registered or removed, rather than
+#      risk a second registration;
 #   5. writes the receipt, mode 0600, holding the channel version and the
 #      helper path: ~/Library/Application Support/NapCat/approvals/
 #      channel-registration (replaced by rename, never written through);
@@ -267,11 +268,11 @@ registered_command() {
 }
 
 CURRENT="$(registered_command)" \
-    || die "cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format). Nothing changed. Inspect it with: claude mcp get $SERVER_NAME"
+    || die "cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format). Nothing was registered or removed. Inspect it with: claude mcp get $SERVER_NAME"
 if [ "$CURRENT" = "$HELPER" ]; then
     echo "ok:         \"$SERVER_NAME\" already runs $HELPER (user scope); registration unchanged."
 elif [ -n "$CURRENT" ] && ! is_napcat_helper "$CURRENT"; then
-    die "another MCP server is registered as \"$SERVER_NAME\"; it was left alone and nothing changed. Inspect it with: claude mcp get $SERVER_NAME"
+    die "another MCP server is registered as \"$SERVER_NAME\"; it was left alone and nothing was registered. Inspect it with: claude mcp get $SERVER_NAME"
 else
     if [ -n "$CURRENT" ]; then
         # Another NapCat copy's helper (the app moved, or a second copy).

@@ -600,7 +600,7 @@ struct ChannelInstallScriptTests {
             try sandbox.register(command)
             let run = try sandbox.install()
             #expect(run.status == 1, "\(String(reflecting: command)): status \(run.status)")
-            #expect(run.stderr.contains("another MCP server is registered as \"napcat\"; it was left alone and nothing changed."),
+            #expect(run.stderr.contains("another MCP server is registered as \"napcat\"; it was left alone and nothing was registered."),
                     "\(String(reflecting: command)): \(run.errors)")
             #expect(sandbox.claudeArguments == [Self.mcpGet], "\(String(reflecting: command)): \(sandbox.claudeArguments)")
             #expect(sandbox.registered == command && !sandbox.exists(sandbox.receipt))
@@ -754,6 +754,73 @@ struct ChannelInstallScriptTests {
         }
     }
 
+    /// The uninstaller prints the receipt's recorded path only in the one
+    /// shape the installer writes: any other recorded path (another
+    /// command, a terminal escape inside or after a helper path) is named
+    /// by a fixed phrase instead. A well-shaped other copy is still named
+    /// (teeth). Each is left alone, status 1, with the receipt kept.
+    @Test func aRecordedPathIsPrintedOnlyInTheShapeTheInstallerWrites() throws {
+        let shaped = "/Applications/NapCat.app/Contents/MacOS/napcat-channel"
+        let odd = ["/usr/local/bin/other-server", "/Users/someone/Nap\u{1B}]0;title\u{07}Cat.app/Contents/MacOS/napcat-channel",
+                   shaped + "\u{1B}[2K"]
+        for recorded in odd + [shaped] {
+            let name = String(reflecting: recorded)
+            let sandbox = try Sandbox()
+            try FileManager.default.createDirectory(atPath: sandbox.approvals, withIntermediateDirectories: true)
+            try sandbox.register(sandbox.helper)
+            try sandbox.write(sandbox.receipt, "version=2\npath=\(recorded)\n")
+            let run = try sandbox.uninstall()
+            #expect(run.status == 1, "\(name): status \(run.status)")
+            let left = "left alone: \"napcat\" runs \(sandbox.helper), but the receipt records "
+            if recorded == shaped {
+                #expect(run.stderr.contains(left + shaped + "; if it is yours"), "\(name): \(run.errors)")
+            } else {
+                #expect(run.stderr.contains(left + "a path that is not a NapCat helper's (not shown); if it is yours, remove it "
+                                            + "with: claude mcp remove napcat --scope user"), "\(name): \(run.errors)")
+                #expect(!(run.stdout + run.stderr).contains(recorded) && !(run.stdout + run.stderr).contains("\u{1B}"),
+                        "\(name) was printed")
+            }
+            #expect(!sandbox.claudeArguments.contains(Self.mcpRemove) && sandbox.registered == sandbox.helper, "\(name)")
+            #expect(sandbox.exists(sandbox.receipt), "\(name): the receipt must be kept")
+        }
+    }
+
+    /// A symlinked approvals folder, which the installer refuses, is never
+    /// read or cleared through: a receipt behind the link that records the
+    /// registered helper does not get it removed, and is neither read nor
+    /// deleted, with a registration or without one. Each run reports the
+    /// folder, status 1.
+    @Test func aSymlinkedApprovalsFolderIsNeitherReadNorClearedThrough() throws {
+        for registered in [true, false] {
+            let name = registered ? "registered" : "nothing registered"
+            let sandbox = try Sandbox()
+            let elsewhere = sandbox.root + "/elsewhere"
+            let parent = sandbox.approvals.components(separatedBy: "/").dropLast().joined(separator: "/")
+            for folder in [elsewhere, parent] {
+                try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            }
+            try FileManager.default.createSymbolicLink(atPath: sandbox.approvals, withDestinationPath: elsewhere)
+            let receipt = "version=2\npath=\(sandbox.helper)\n"
+            try sandbox.write(elsewhere + "/channel-registration", receipt)
+            if registered {
+                try sandbox.register(sandbox.helper)
+            }
+            let run = try sandbox.uninstall()
+            #expect(run.status == 1, "\(name): status \(run.status)")
+            #expect(run.stderr.contains("\(sandbox.approvals) is a symlink, which the installer refuses; no receipt was read or "
+                                        + "removed through it, check it by hand"), "\(name): \(run.errors)")
+            #expect(sandbox.read(elsewhere + "/channel-registration") == receipt, "\(name): the receipt behind the link changed")
+            #expect(!sandbox.claudeArguments.contains(Self.mcpRemove), "\(name): \(sandbox.claudeArguments)")
+            #expect(!run.lines.contains { $0.hasPrefix("kept: ") || $0.hasPrefix("removed: ") || $0.hasPrefix("Done.") },
+                    "\(name): \(run.lines)")
+            if registered {
+                #expect(sandbox.registered == sandbox.helper, "the registration was removed")
+                #expect(run.stderr.contains("left alone: \"napcat\" runs \(sandbox.helper), but no readable receipt records it"),
+                        "\(run.errors)")
+            }
+        }
+    }
+
     /// The receipt is kept whenever the registration may still be there: no
     /// claude on the PATH, and a removal Claude Code refused. A later run
     /// with both fixed removes the registration and the receipt.
@@ -834,7 +901,8 @@ struct ChannelInstallScriptTests {
             #expect(run.status == 1, "\(name): status \(run.status)")
             #expect(run.errors == ["install-channel: error: cannot read the \"napcat\" entry: claude mcp get answered in a way "
                                    + "this script does not recognise (a server that is not a stdio server, or a newer Claude Code's "
-                                   + "format). Nothing changed. Inspect it with: claude mcp get napcat"], "\(name): \(run.errors)")
+                                   + "format). Nothing was registered or removed. Inspect it with: claude mcp get napcat"],
+                    "\(name): \(run.errors)")
             #expect(sandbox.claudeArguments == [Self.mcpGet], "\(name): \(sandbox.claudeArguments)")
             #expect(sandbox.registered == nil && !sandbox.exists(sandbox.receipt), "\(name)")
             #expect(!(run.stdout + run.stderr).contains(Self.secret) && !run.stdout.contains("example.invalid"),
@@ -861,6 +929,21 @@ struct ChannelInstallScriptTests {
                     "\(name): \(run.lines)")
             #expect(!(run.stdout + run.stderr).contains(Self.secret), "\(name): the answer was printed")
         }
+    }
+
+    /// That error names the command that removes the entry by hand, as the
+    /// uninstaller's other left-alone errors do.
+    @Test func theUnreadableEntryErrorNamesTheCommandThatRemovesIt() throws {
+        let sandbox = try Sandbox()
+        #expect(try sandbox.install().status == 0)
+        let (_, status, stdout, stderr) = Self.unrecognisedAnswers[0]
+        try Self.script(sandbox, status: status, stdout: stdout, stderr: stderr)
+        let run = try sandbox.uninstall()
+        #expect(run.status == 1, "status \(run.status)")
+        #expect(run.errors.contains("  - cannot read the \"napcat\" entry: claude mcp get answered in a way this script does not "
+                                    + "recognise (a server that is not a stdio server, or a newer Claude Code's format); nothing "
+                                    + "was removed. Inspect it with: claude mcp get napcat; if it runs a NapCat helper you "
+                                    + "registered, remove it with: claude mcp remove napcat --scope user"), "\(run.errors)")
     }
 
     /// Claude Code 2.1.326's not-found line, whatever hint follows it (the

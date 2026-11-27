@@ -24,7 +24,9 @@
 #   2. the receipt, ~/Library/Application Support/NapCat/approvals/
 #      channel-registration (a symlink there is reported, never followed).
 #      It is kept while a registration step above fails, so that a later
-#      run can still match the registration against it.
+#      run can still match the registration against it. A symlinked
+#      approvals folder, which the installer refuses, is reported too: no
+#      receipt is read or removed through it.
 # The approvals folder itself stays: it is NapCat's seam folder too.
 #
 # Idempotent and error-collecting: every step is attempted, and it is safe to
@@ -131,11 +133,11 @@ is_napcat_helper() {
 
 # The helper path the receipt records: its one "path=" line, read from at
 # most its first 1 KiB, as NapCat reads it. Status 1 (nothing printed) when
-# the receipt is missing, a symlink or not a regular file, or holds no
-# single path line.
+# the approvals folder is a symlink, the receipt is missing, a symlink or
+# not a regular file, or it holds no single path line.
 receipt_path() {
     local found
-    if [ -L "$RECEIPT" ] || [ ! -f "$RECEIPT" ]; then
+    if [ -L "$APPROVALS_DIR" ] || [ -L "$RECEIPT" ] || [ ! -f "$RECEIPT" ]; then
         return 1
     fi
     found="$(head -c 1024 "$RECEIPT" | sed -n 's/^path=//p')" || return 1
@@ -151,7 +153,7 @@ if [ -z "$CLAUDE_BIN" ]; then
     FAILURES+=("cannot find the claude command on your PATH; if 'claude mcp get $SERVER_NAME' shows a NapCat helper, remove it with: claude mcp remove $SERVER_NAME --scope user")
     KEEP_RECEIPT=1
 elif ! CURRENT="$(registered_command)"; then
-    FAILURES+=("cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format); nothing was removed. Inspect it with: claude mcp get $SERVER_NAME")
+    FAILURES+=("cannot read the \"$SERVER_NAME\" entry: claude mcp get answered in a way this script does not recognise (a server that is not a stdio server, or a newer Claude Code's format); nothing was removed. Inspect it with: claude mcp get $SERVER_NAME; if it runs a NapCat helper you registered, remove it with: claude mcp remove $SERVER_NAME --scope user")
     KEEP_RECEIPT=1
 else
     RECORDED="$(receipt_path)" || RECORDED=""
@@ -162,8 +164,11 @@ else
     elif [ "$RECORDED" != "$CURRENT" ]; then
         if [ -z "$RECORDED" ]; then
             FAILURES+=("left alone: \"$SERVER_NAME\" runs $CURRENT, but no readable receipt records it, so this script cannot show the installer registered it; if it is yours, remove it with: claude mcp remove $SERVER_NAME --scope user")
-        else
+        elif is_napcat_helper "$RECORDED"; then
             FAILURES+=("left alone: \"$SERVER_NAME\" runs $CURRENT, but the receipt records $RECORDED; if it is yours, remove it with: claude mcp remove $SERVER_NAME --scope user")
+        else
+            # The recorded path is printed only in the one shape the installer writes.
+            FAILURES+=("left alone: \"$SERVER_NAME\" runs $CURRENT, but the receipt records a path that is not a NapCat helper's (not shown); if it is yours, remove it with: claude mcp remove $SERVER_NAME --scope user")
         fi
         KEEP_RECEIPT=1
     elif claude_cli mcp remove "$SERVER_NAME" --scope user > /dev/null; then
@@ -175,7 +180,9 @@ else
 fi
 
 # --- 2. The receipt ---
-if [ -n "$KEEP_RECEIPT" ]; then
+if [ -L "$APPROVALS_DIR" ]; then
+    FAILURES+=("$APPROVALS_DIR is a symlink, which the installer refuses; no receipt was read or removed through it, check it by hand")
+elif [ -n "$KEEP_RECEIPT" ]; then
     if [ -e "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
         echo "kept: $RECEIPT, for the registration step reported below"
     fi
