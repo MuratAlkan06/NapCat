@@ -14,7 +14,8 @@ import NapCatWire
 /// Where the Mac side of remote approvals stands.
 enum RemoteApprovalsPhase: Equatable, Sendable {
     /// Switched off — the default. Nothing exists: no socket, no probe, no
-    /// listener, so a wired session finds nothing to connect to.
+    /// listener, so a wired session finds nothing of NapCat's to connect to
+    /// (the seam checks the listener's user, not which program it is).
     case off
     /// Switched on and listening on the seam: prompts are classified and
     /// audited, and stay on this Mac.

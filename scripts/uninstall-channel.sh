@@ -148,7 +148,7 @@ is_napcat_helper() {
 }
 
 # The helper path the receipt records: its one "path=" line, read from at
-# most its first 1 KiB, as NapCat reads it, byte by byte (sed under
+# most its first 1 KiB, as NapCat will read it, byte by byte (sed under
 # LC_ALL=C, the same in every locale). Status 1 (nothing printed) when
 # the approvals folder is a symlink, the receipt is missing, a symlink or
 # not a regular file, or it holds no single path line.

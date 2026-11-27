@@ -84,8 +84,9 @@ struct PendingRequestScreen: View {
         }
     }
 
-    /// The tool's glyph: one per tool the Mac's gate can forward, and a
-    /// neutral tool mark for a name it does not know. Each has the filled
+    /// The tool's glyph: one per tool the Mac's gate has a row for (only
+    /// Bash can be forwarded since #231), and a neutral tool mark for a name
+    /// it does not know. Each has the filled
     /// form the theme draws, so none reads thinner than another.
     nonisolated static let otherToolSymbol = "wrench.and.screwdriver"
     nonisolated static func toolSymbol(_ toolName: String) -> String {

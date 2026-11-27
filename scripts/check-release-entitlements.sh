@@ -18,11 +18,11 @@
 # In both modes the bundled channel server, Contents/MacOS/napcat-channel, is
 # checked too: a regular file whose own signature verifies, signed under
 # CHANNEL_IDENTIFIER (the Makefile's), with no entitlements, and with the
-# app's team identifier and hardened-runtime flag. So a Developer ID app
-# carries a Developer ID helper with the hardened runtime, and an ad-hoc app
-# an ad-hoc helper. The helper check prints nothing unless it fails (the
-# release dry run compares a refusal's whole output) and runs before the
-# ad-hoc refusal, which stays last; the closing summary names it.
+# app's team identifier and hardened-runtime flag. The kind of certificate
+# that signed the helper is not compared here; notarization refuses a helper
+# without a Developer ID signature. The helper check prints nothing unless it
+# fails (the release dry run compares a refusal's whole output) and runs
+# before the ad-hoc refusal, which stays last; the closing summary names it.
 #
 # Read-only: it signs, installs and changes nothing. It prints entitlement key
 # names, the plist's own application identifier and the profile's expiry date,

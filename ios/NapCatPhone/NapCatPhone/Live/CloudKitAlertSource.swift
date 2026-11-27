@@ -458,14 +458,16 @@ actor CloudKitAlertSource: AlertSource {
         }
     }
 
-    /// What the live approvals database runs (S-PAIR-C1.6, #172), checked on
-    /// the operation it is handed: the pairing response's create-only save
-    /// and nothing else. Exactly one record to save and none to delete; a
-    /// PairingResponse, NEW (no change tag), in this account's approvals
-    /// zone, named by 64 lowercase hex digits; saved under
+    /// The pairing response's create-only save, as the live approvals
+    /// database checks it on the operation it is handed (S-PAIR-C1.6, #172;
+    /// since #194 it also runs a decision's create-only save, the prompts'
+    /// snapshot and the prompt subscription's lookup, save and removal: see
+    /// `LiveCloudKitApprovalDatabase`). Exactly one record to save and none
+    /// to delete; a PairingResponse, NEW (no change tag), in this account's
+    /// approvals zone, named by 64 lowercase hex digits; saved under
     /// `.ifServerRecordUnchanged`, so a response saved already is refused,
-    /// never overwritten. A decision, a prompt, a deletion or an overwrite is
-    /// never run: decisions stay unwired, and nothing arms.
+    /// never overwritten. A decision, a prompt, a deletion or an overwrite
+    /// fails this check.
     static func isPairingResponseCreation(_ operation: CKModifyRecordsOperation) -> Bool {
         guard operation.savePolicy == .ifServerRecordUnchanged, operation.recordIDsToDelete?.isEmpty ?? true,
               let records = operation.recordsToSave, records.count == 1, let record = records.first,

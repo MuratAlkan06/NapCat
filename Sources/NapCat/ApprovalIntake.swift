@@ -170,11 +170,13 @@ final class ApprovalIntake {
     /// logged with the reason) instead of as unknown.
     private(set) var prompts: [PromptID: Entry] = [:]
 
-    /// `armed`: whether the feature is enabled on both devices (always false
-    /// until the iPhone half lands). `secrets`: strings that must never leave the
-    /// Mac (the alert topic) — nil while one exists that could not be read,
-    /// and then every prompt stays local (fail closed). `now`: monotonic
-    /// seconds.
+    /// `armed`: whether forwarding is armed, which the Mac alone decides (its
+    /// toggle, a paired iPhone and a live record path; the iPhone's own
+    /// switch tells the Mac nothing). The app builds its host with
+    /// `armed: { false }`: no build arms it yet. `secrets`: strings that
+    /// must never leave the Mac (the alert topic) — nil while one exists
+    /// that could not be read, and then every prompt stays local (fail
+    /// closed). `now`: monotonic seconds.
     init(armed: @escaping () -> Bool, secrets: @escaping () -> [String]?, newPromptID: @escaping () -> PromptID?,
          now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,
          closeConnection: @escaping (ConnectionKey) -> Void, audit: @escaping (ApprovalAuditEvent) -> Void) {

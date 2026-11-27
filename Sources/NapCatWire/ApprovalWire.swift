@@ -89,8 +89,10 @@ public enum ApprovalWire {
         case promptID
         /// One of `Verdict` (String).
         case verdict
-        /// When the owner answered, on the phone's clock (Date). Audit only:
-        /// freshness is judged on the Mac's clock against the prompt's TTL.
+        /// When the owner answered, on the phone's clock (Date). Signed; the
+        /// Mac checks only that it is a whole second in range, and does not
+        /// log it: freshness is judged on the Mac's clock against the
+        /// prompt's TTL.
         case decidedAt
         /// The paired phone's Secure Enclave signature over the decision
         /// (CL-1, Bytes). A decision that does not verify is ignored.
@@ -127,7 +129,8 @@ public enum ApprovalWire {
     public enum Verdict: String, CaseIterable, Sendable {
         /// The phone's in-app, biometric-only Allow (CL-3).
         case allow
-        /// The phone's Deny (also a lock-screen action).
+        /// The phone's Deny: in-app and biometric-only like Allow (the
+        /// uniform-signing ruling); the prompt push carries no action.
         case deny
     }
 }

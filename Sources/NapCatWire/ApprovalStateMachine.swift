@@ -104,8 +104,9 @@ public enum ApprovalEvent: Equatable, Sendable {
 public enum ApprovalHold: Equatable, Sendable {
     /// The category gate kept it.
     case gate(ApprovalSuppression)
-    /// The feature is not enabled on both devices (or the relay is not
-    /// available), so nothing is forwarded at all.
+    /// Forwarding is not armed, so nothing is forwarded at all. Arming is
+    /// the Mac's to decide (its toggle, a paired iPhone and a live record
+    /// path); the iPhone's own switch tells the Mac nothing.
     case notArmed
 }
 
@@ -223,7 +224,8 @@ public struct ApprovalLifecycle: Equatable, Sendable {
     }
 
     /// A prompt opens with the gate's answer. It is forwarded only when the
-    /// gate forwards it AND the feature is armed on both devices. Its remote
+    /// gate forwards it AND forwarding is armed (the Mac's to decide: see
+    /// `ApprovalHold.notArmed`). Its remote
     /// window is `timeToLive` seconds, clamped to the wire's bounds; left
     /// out, it is the wire's TTL.
     public static func open(id: PromptID, classification: ApprovalClassification, armed: Bool, now: Int,

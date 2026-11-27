@@ -46,8 +46,8 @@ let package = Package(
             name: "NapCat",
             dependencies: ["NapCatSeam", "NapCatWire"]
         ),
-        // F4: the authenticated Unix-socket seam between the channel server
-        // and the app. macOS only, never linked by the phone app.
+        // Remote approvals: the same-user Unix-socket seam between the channel
+        // server and the app. macOS only, never linked by the phone app.
         .target(
             name: "NapCatSeam",
             dependencies: ["NapCatWire"]

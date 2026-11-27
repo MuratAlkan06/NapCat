@@ -2,9 +2,10 @@ import Darwin
 import Dispatch
 import NapCatWire
 
-// F4 slice S1: the authenticated Unix-socket seam between `napcat-channel`
-// and NapCat (the frozen design's technical ruling: verdicts are a control
-// plane, so they travel over an authenticated socket, never a file).
+// Remote approvals, slice S1: the same-user Unix-socket seam between
+// `napcat-channel` and NapCat (the frozen design's technical ruling: verdicts
+// are a control plane, so they travel over a socket restricted to this user,
+// never a file). Neither end checks yet which program the other is.
 // Design: design/remote-approvals.md.
 //
 // NapCat listens; each channel server connects. BOTH ends check the peer
@@ -210,8 +211,9 @@ public enum SeamSocket {
     }
 }
 
-/// One authenticated seam connection: lines in, lines out. Every method must
-/// be called on the connection's queue, where its handlers also run.
+/// One seam connection to a peer of this user: lines in, lines out. Every
+/// method must be called on the connection's queue, where its handlers also
+/// run.
 public final class SeamConnection: @unchecked Sendable {
     private let descriptor: Int32
     private let queue: DispatchQueue
@@ -441,9 +443,10 @@ public final class SeamListener: @unchecked Sendable {
 
 /// The server's end: connects to NapCat's socket and checks the listener.
 public enum SeamClient {
-    /// An authenticated connection, or nil when the socket is missing, is not
-    /// this user's (or sits in a directory others can enter), nothing
-    /// listens, or the listener fails the peer check. Call it on `queue`.
+    /// A connection to a listener of this user (not yet checked for which
+    /// program it is), or nil when the socket is missing, is not this
+    /// user's (or sits in a directory others can enter), nothing listens, or
+    /// the listener fails the peer check. Call it on `queue`.
     public static func connect(socketPath: String, queue: DispatchQueue,
                                peerReader: (Int32) -> SeamPeer? = SeamSocket.peer(of:),
                                ownUID: uid_t = geteuid()) -> SeamConnection? {
