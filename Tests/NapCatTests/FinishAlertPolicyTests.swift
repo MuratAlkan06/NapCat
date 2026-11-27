@@ -707,6 +707,88 @@ struct FinishAlertPolicyTests {
         #expect(pairs == 20, "vacuity: every ordered pair of kinds")
     }
 
+    // MARK: - F4: one diff's fold (#216)
+
+    struct FoldRow: Sendable, CustomTestStringConvertible {
+        let id: String
+        let events: [FinishAlertEvent]
+        let waitingWrites: Int
+        let context: WaitingPromptContext
+        let kept: [FinishAlertEvent]
+        let folded: Int
+        let prompts: WaitingPromptCounts
+        var testDescription: String { id }
+    }
+
+    /// The seam's answer when the one new prompt has evidence (the rule
+    /// yields for one write).
+    static let covered = WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), countsWithEvidence: WaitingPromptCounts(bash: 1),
+                                              newPrompts: 1, newPromptsWithEvidence: 1)
+
+    /// Row ids are LOCKED. Only a yield drops anything, and then only the
+    /// waiting events.
+    static let foldRows: [FoldRow] = [
+        FoldRow(id: "W1 a lone wait whose one new prompt has evidence", events: [.waiting(minutes: 12)], waitingWrites: 1,
+                context: covered, kept: [], folded: 1, prompts: .none),
+        FoldRow(id: "W2 its diff's finishes still go, in order", events: [.waiting(minutes: 12), .finished(minutes: 5), .finished(minutes: nil)],
+                waitingWrites: 1, context: covered, kept: [.finished(minutes: 5), .finished(minutes: nil)], folded: 1, prompts: .none),
+        FoldRow(id: "W3 a yield with no waiting event only uses the prompt up", events: [.finished(minutes: 5)], waitingWrites: 1,
+                context: covered, kept: [.finished(minutes: 5)], folded: 0, prompts: .none),
+        FoldRow(id: "W4 a yield on a diff with no event at all", events: [], waitingWrites: 1, context: covered, kept: [], folded: 0,
+                prompts: .none),
+        FoldRow(id: "W5 two writes keep both alerts, less the evidence", events: [.waiting(minutes: 12), .waiting(minutes: 3)],
+                waitingWrites: 2, context: covered, kept: [.waiting(minutes: 12), .waiting(minutes: 3)], folded: 0, prompts: .none),
+        FoldRow(id: "W6 a new prompt without evidence keeps the alert as counted", events: [.waiting(minutes: 12)], waitingWrites: 1,
+                context: WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), newPrompts: 1), kept: [.waiting(minutes: 12)],
+                folded: 0, prompts: WaitingPromptCounts(bash: 1)),
+        FoldRow(id: "W7 evidence on no new prompt keeps the alert, without that prompt", events: [.waiting(minutes: 12)],
+                waitingWrites: 1, context: WaitingPromptContext(counts: WaitingPromptCounts(bash: 2),
+                                                                countsWithEvidence: WaitingPromptCounts(bash: 1)),
+                kept: [.waiting(minutes: 12)], folded: 0, prompts: WaitingPromptCounts(bash: 1)),
+        FoldRow(id: "W8 two new prompts, one with evidence", events: [.waiting(minutes: 12)], waitingWrites: 1,
+                context: WaitingPromptContext(counts: WaitingPromptCounts(bash: 2), countsWithEvidence: WaitingPromptCounts(bash: 1),
+                                              newPrompts: 2, newPromptsWithEvidence: 1),
+                kept: [.waiting(minutes: 12)], folded: 0, prompts: WaitingPromptCounts(bash: 1)),
+        FoldRow(id: "W9 remote approvals off", events: [.waiting(minutes: 12), .finished(minutes: 5)], waitingWrites: 1, context: .none,
+                kept: [.waiting(minutes: 12), .finished(minutes: 5)], folded: 0, prompts: .none),
+        FoldRow(id: "W10 no write, so no read", events: [.finished(minutes: 5)], waitingWrites: 0, context: covered,
+                kept: [.finished(minutes: 5)], folded: 0, prompts: .none),
+    ]
+
+    @Test(arguments: foldRows)
+    func oneDiffsFold(_ row: FoldRow) {
+        let fold = FinishAlertPolicy.promptPushFold(events: row.events, waitingWrites: row.waitingWrites, context: row.context)
+        #expect(fold.events == row.kept, "\(row.id)")
+        #expect(fold.folded == row.folded, "\(row.id): what the controller logs as folded")
+        #expect(fold.prompts == row.prompts, "\(row.id)")
+        #expect(fold.events.count + fold.folded == row.events.count, "\(row.id): every event is kept or counted, once")
+    }
+
+    /// Without evidence no diff changes: every event kept in order, nothing
+    /// folded, and the counts as read, for every write count 0…3, every new
+    /// prompt count 0…2 and a grid of counts.
+    @Test func noEvidenceNeverChangesADiff() {
+        let diffs: [[FinishAlertEvent]] = [[], [.waiting(minutes: 12)], [.finished(minutes: 5)], [.waiting(minutes: nil), .finished(minutes: 5)],
+                                           [.waiting(minutes: 3), .waiting(minutes: 12), .finished(minutes: nil)]]
+        var checked = 0
+        for events in diffs {
+            for writes in 0...3 {
+                for newPrompts in 0...2 {
+                    for bash in 0...2 {
+                        for write in 0...1 {
+                            let counts = WaitingPromptCounts(bash: bash, write: write)
+                            let context = WaitingPromptContext(counts: counts, newPrompts: newPrompts)
+                            let fold = FinishAlertPolicy.promptPushFold(events: events, waitingWrites: writes, context: context)
+                            #expect(fold.events == events && fold.folded == 0 && fold.prompts == counts)
+                            checked += 1
+                        }
+                    }
+                }
+            }
+        }
+        #expect(checked == 360, "vacuity: the whole grid is walked")
+    }
+
     /// FA-5 × C3 rule 2 AMENDED (2026-10-27): a newer UserPromptSubmit
     /// updates only lastTs/lastEvent — the episode anchor and its exactness
     /// never move (not just "no event"); leaving waiting still clears the

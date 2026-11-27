@@ -306,4 +306,558 @@ struct WaitingPromptContextTests {
         #expect(world.controller.waitingPrompts() == .none)
         #expect(clockReads.all.count == before, "off: the intake was not asked")
     }
+
+    // MARK: - One alert for one permission wait (#216)
+
+    /// The intake's clock, set by the test, read on the seam's queue.
+    final class SeamClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seconds = 1_000
+
+        var now: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return seconds
+        }
+
+        func advance(_ by: Int) {
+            lock.lock()
+            seconds += by
+            lock.unlock()
+        }
+    }
+
+    /// Every context the alert lane was handed, in order.
+    final class ContextLog {
+        var reads: [WaitingPromptContext] = []
+    }
+
+    /// A host's limits for these tests: a server idle for longer than any
+    /// run of the suite (whose shared main actor can stretch one test to
+    /// minutes) is never let go mid-test, even with no prompt still open.
+    nonisolated static let patient = ApprovalSeamHost.Limits(idleSeconds: 3_600)
+
+    /// The toggle over an ARMED test host, its record sink recorded and its
+    /// clock the test's, so a prompt can reach `.forwarded`; the test plays
+    /// the record path's part through the door. (The app's one host is never
+    /// armed and its sink writes nothing.)
+    func armedWorld(_ clock: SeamClock, _ sink: ApprovalsRecordingSink) throws -> ApprovalsWorld {
+        try ApprovalsWorld(makeHost: { path, audit in
+            ApprovalSeamHost(socketPath: path, armed: { @Sendable in true }, secrets: { @Sendable in [] }, records: sink,
+                             audit: audit, now: { @Sendable in clock.now }, limits: Self.patient)
+        })
+    }
+
+    /// One wired session's listed command, relayed over the seam and saved:
+    /// `accepted` plays CloudKit accepting its record, `found` the record
+    /// path finding the phone's prompt subscription.
+    func relay(_ world: ApprovalsWorld, _ sink: ApprovalsRecordingSink, _ request: String,
+               accepted: Bool = true, found: Bool = true) throws -> PromptID {
+        world.prompt(request)
+        let id = try #require(sink.saved.next(), "the armed host saves a listed command")
+        world.host?.withIntake {
+            if accepted { $0.apply(.saveAccepted, to: id) }
+            if found { $0.noteSubscriptionFound(id) }
+        }
+        return id
+    }
+
+    /// The alert lane wired to the toggle as the app wires it, every context
+    /// it is handed logged.
+    func withWiredAlerts(_ world: ApprovalsWorld, _ log: ContextLog,
+                         _ body: (FinishAlertHarness) async throws -> Void) async throws {
+        try await withFinishAlertHarness(waitingPrompts: {
+            let context = world.controller.waitingPrompts()
+            log.reads.append(context)
+            return context
+        }, body)
+    }
+
+    func bodies(_ h: FinishAlertHarness) -> [String] {
+        h.sends.map { LidGuardPolicy.messageBody(kind: $0.kind, clockTime: "09:41") }
+    }
+
+    /// What the seam says when the one new prompt has evidence.
+    static let covered = WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), countsWithEvidence: WaitingPromptCounts(bash: 1),
+                                              newPrompts: 1, newPromptsWithEvidence: 1)
+
+    /// A lone wired wait whose prompt has evidence: the phone's push stands
+    /// for it, so no plain waiting alert goes; a finish in the same diff
+    /// still does, and so does the next lone wait, unwired.
+    @Test func aLoneWiredWaitWithEvidenceSendsNoPlainAlertButItsFinishesStillGo() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 1800)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(log.reads.last == Self.covered, "vacuity: the seam reported the one prompt with its evidence")
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: 20, folded: 1, stillWorking: 2)],
+                    "the wait's plain alert yields to the phone's push; the finish beside it still goes")
+            h.advance(31)
+            clock.advance(2)
+            h.store.put(H.s3, ts: h.now, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.dropFirst().map(\.kind) == [.needsAttention(minutes: 30, stillWorking: 1, prompts: .none)],
+                    "the next lone wait alerts, and does not name the prompt the phone showed")
+        }
+    }
+
+    /// A wired and an unwired wait in one diff: one plain alert, which
+    /// leaves out the prompt the phone showed.
+    @Test func aWiredAndAnUnwiredWaitInOneDiffGiveOnePlainAlert() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            h.store.put(H.s2, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last == Self.covered)
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: nil, stillWorking: 1, prompts: .none)])
+            #expect(bodies(h) == ["Claude is waiting for you — 1 other still working"])
+        }
+    }
+
+    /// Where the one prompt stands when the lone wait is read: the test sets
+    /// the record path's finding on it in every case but `notFound`.
+    enum NoEvidence: String, CaseIterable, Sendable {
+        case keptByTheGate, saveFailed, savePending, notFound
+    }
+
+    /// No evidence, no fold: a prompt the gate keeps, a save that failed or
+    /// is still in flight, and an accepted one whose subscription was not
+    /// found each leave the plain alert exactly as today, counts and all.
+    @Test(arguments: NoEvidence.allCases)
+    func aPromptWithoutEvidenceLeavesThePlainAlertAsToday(_ state: NoEvidence) async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.controller.reconcile()
+            clock.advance(1)
+            switch state {
+            case .keptByTheGate:
+                world.prompt("abcde", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
+                let id = try #require(world.nextPrompt(endingIn: "suppressed.gate.forbidden.privilegeEscalation"))
+                world.host?.withIntake { $0.noteSubscriptionFound(id) }
+            case .saveFailed:
+                let id = try relay(world, sink, "abcde", accepted: false)
+                world.host?.withIntake { $0.apply(.saveFailed, to: id) }
+            case .savePending:
+                _ = try relay(world, sink, "abcde", accepted: false)
+            case .notFound:
+                _ = try relay(world, sink, "abcde", found: false)
+            }
+            let today = WaitingPromptCounts(world.host?.withIntake { $0.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds) } ?? [])
+            let counted: WaitingPromptCounts = state == .keptByTheGate ? .none : WaitingPromptCounts(bash: 1)
+            #expect(today == counted, "vacuity: what the waiting alert counted before this change")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last?.newPrompts == 1 && log.reads.last?.newPromptsWithEvidence == 0)
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 0, prompts: today)])
+            #expect(bodies(h) == [state == .keptByTheGate ? "Claude is waiting for you — 12 min in"
+                                                           : "Claude is waiting for you — 12 min in — 1 Bash permission prompt"])
+        }
+    }
+
+    /// A prompt that folded one wait never folds another: the next lone
+    /// wait alerts.
+    @Test func aPromptThatFoldedOnceNeverFoldsAgain() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.isEmpty, "folded")
+            clock.advance(3)
+            h.store.put(H.s2, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last?.newPrompts == 0, "the prompt is new to one read only")
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 20, stillWorking: 1, prompts: .none)])
+        }
+    }
+
+    /// A prompt older than the new-prompt window never folds a wait (exactly
+    /// the window still does).
+    @Test(arguments: [0, ApprovalIntake.newPromptSeconds, ApprovalIntake.newPromptSeconds + 1])
+    func aPromptOlderThanTheWindowNeverFolds(_ age: Int) async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            clock.advance(age)
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            let folds: Bool = age <= ApprovalIntake.newPromptSeconds
+            #expect(h.sends.map(\.kind) == (folds ? [] : [.needsAttention(minutes: 12, stillWorking: 0, prompts: .none)]))
+        }
+    }
+
+    /// A wired wait under the run floor sends nothing, as before, but its
+    /// diff still reads the seam and uses its prompt up, so the next lone
+    /// wait, unwired, still alerts.
+    @Test func aWaitUnderTheFloorUsesUpItsPrompt() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 10)
+            h.store.put(H.s2, ts: H.t0 - 720)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.isEmpty, "under the floor: no alert, as before")
+            #expect(log.reads.count == 2 && log.reads.last == Self.covered, "the arm's read, then the suppressed wait's")
+            clock.advance(2)
+            h.store.put(H.s2, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1, prompts: .none)])
+        }
+    }
+
+    /// The mark is set as the alert lane arms: a prompt relayed before it
+    /// stands for no wait the lane then sees.
+    @Test func theMarkIsSetWhenAlertsArm() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.controller.reconcile()
+            #expect(log.reads == [Self.covered], "arming reads once")
+            clock.advance(1)
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.count == 2 && log.reads[1].newPrompts == 0)
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 0, prompts: .none)])
+        }
+    }
+
+    /// Every read moves the mark, whether or not the rule yields: two waits
+    /// at once (no fold) use the prompt up, and so does a read before its
+    /// evidence existed, so a later lone wait alerts.
+    @Test(arguments: [false, true])
+    func aReadThatDoesNotFoldStillUsesUpItsPrompt(_ evidenceLate: Bool) async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 1800)
+            h.controller.reconcile()
+            clock.advance(1)
+            let id = try relay(world, sink, "abcde", found: !evidenceLate)
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            if !evidenceLate { h.store.put(H.s2, ts: H.t0, event: H.waiting) }
+            await h.settle()
+            #expect(h.sends.count == 1, "no fold: two waits at once, or no evidence yet")
+            if evidenceLate { world.host?.withIntake { $0.noteSubscriptionFound(id) } }
+            h.advance(31)
+            clock.advance(2)
+            h.store.put(H.s3, ts: h.now, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last?.newPrompts == 0 && log.reads.last?.newPromptsWithEvidence == 0, "used up by the earlier read")
+            #expect(h.sends.dropFirst().map(\.kind) == [.needsAttention(minutes: 30, stillWorking: 2, prompts: .none)])
+        }
+    }
+
+    /// The rule can yield for a diff that has no waiting event to drop (a
+    /// waiting marker rewritten, with a finish beside it): nothing is
+    /// dropped, the finish goes, and the prompt is only used up, so the next
+    /// lone wait alerts.
+    @Test func aYieldWithNoWaitingEventOnlyUsesUpItsPrompt() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 1800)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 2, prompts: .none)], "an unwired wait")
+            h.advance(31)
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: h.now, event: H.waiting)
+            h.store.remove(H.s2)
+            await h.settle()
+            #expect(log.reads.last == Self.covered, "vacuity: the rewrite's diff would yield")
+            #expect(h.sends.dropFirst().map(\.kind) == [.sessionFinished(minutes: 20, folded: 1, stillWorking: 2)])
+            h.advance(31)
+            clock.advance(2)
+            h.store.put(H.s3, ts: h.now, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.dropFirst(2).map(\.kind) == [.needsAttention(minutes: 31, stillWorking: 1, prompts: .none)])
+        }
+    }
+
+    /// A buzz that goes out leaves out the prompts with evidence over the
+    /// same 30 s its counts cover: one the phone showed, no longer new, is
+    /// still left out; one outside the window takes nothing from a prompt
+    /// inside it.
+    @Test func evidenceCoversTheCountsOwnWindow() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 1800)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.isEmpty, "folded")
+            clock.advance(15)
+            h.store.put(H.s2, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last == WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), countsWithEvidence: WaitingPromptCounts(bash: 1)))
+            #expect(bodies(h) == ["Claude is waiting for you — 20 min in — 2 others still working"],
+                    "no longer new, the prompt the phone showed is still left out")
+            clock.advance(10)
+            _ = try relay(world, sink, "bcdef", found: false)
+            clock.advance(6)
+            h.advance(31)
+            h.store.put(H.s3, ts: h.now, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.last == WaitingPromptContext(counts: WaitingPromptCounts(bash: 1), newPrompts: 1))
+            #expect(h.sends.dropFirst().map(\.kind) == [.needsAttention(minutes: 30, stillWorking: 2, prompts: WaitingPromptCounts(bash: 1))],
+                    "the first prompt's evidence is outside the window: it takes nothing from the second")
+        }
+    }
+
+    /// A corpus of diffs through one alert controller: a lone wait, a
+    /// finish, a wait under the floor, a waiting rewrite beside a finish, a
+    /// wait left and two waits at once, each diff past the last send's batch
+    /// window. Returns every send.
+    func alertCorpus(_ waitingPrompts: @escaping () -> WaitingPromptContext) async throws -> [LidGuardMessageKind] {
+        var kinds: [LidGuardMessageKind] = []
+        let s5 = "eeee0005-0000-4abc-8def-000000000005"
+        try await withFinishAlertHarness(waitingPrompts: waitingPrompts) { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 1200)
+            h.store.put(H.s3, ts: H.t0 - 1800)
+            h.store.put(s5, ts: H.t0 - 900)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: h.now, event: H.waiting)
+            await h.settle()
+            h.advance(31)
+            h.store.remove(H.s2)
+            await h.settle()
+            h.advance(31)
+            h.store.put(H.s4, ts: h.now, event: H.waiting)
+            await h.settle()
+            h.advance(31)
+            h.store.put(H.s1, ts: h.now, event: H.waiting)
+            h.store.remove(H.s3)
+            await h.settle()
+            h.advance(31)
+            h.store.put(H.s1, ts: h.now)
+            await h.settle()
+            h.advance(31)
+            h.store.put(H.s1, ts: h.now, event: H.waiting)
+            h.store.put(s5, ts: h.now, event: H.waiting)
+            await h.settle()
+            kinds = h.sends.map(\.kind)
+        }
+        return kinds
+    }
+
+    /// The corpus's sends with remote approvals off, and with `prompts`
+    /// counted for each waiting alert.
+    static func corpusSends(_ prompts: WaitingPromptCounts) -> [LidGuardMessageKind] {
+        [.needsAttention(minutes: 12, stillWorking: 3, prompts: prompts), .sessionFinished(minutes: 20, folded: 1, stillWorking: 3),
+         .sessionFinished(minutes: 31, folded: 1, stillWorking: 3), .needsAttention(minutes: nil, stillWorking: 2, prompts: prompts)]
+    }
+
+    enum Quiet: String, CaseIterable, Sendable {
+        case off, unavailable
+    }
+
+    /// Off, or on but not listening (the socket could not be opened): the
+    /// alert lane never reaches the seam — not as it arms, not for any diff —
+    /// and every alert is byte for byte what the corpus's own wiring
+    /// (`.none`) sends.
+    @Test(arguments: Quiet.allCases)
+    func offOrNotListeningTheAlertLaneNeverReachesTheSeam(_ quiet: Quiet) async throws {
+        let clockReads = ApprovalsInbox<Void>()
+        let world = try ApprovalsWorld(makeHost: { path, audit in
+            ApprovalSeamHost(socketPath: path, armed: { @Sendable in true }, secrets: { @Sendable in [] }, records: ApprovalsRecordingSink(),
+                             audit: audit, now: { @Sendable in
+                                 clockReads.put(())
+                                 return 1_000
+                             })
+        })
+        if quiet == .unavailable {
+            try FileManager.default.createDirectory(atPath: world.scratch.directoryPath, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            #expect(FileManager.default.createFile(atPath: world.scratch.socketPath, contents: Data("keep".utf8)))
+            world.controller.setEnabled(true)
+            #expect(world.controller.phase == .unavailable && world.builtHosts.count == 1, "vacuity: a host, not listening")
+        }
+        let log = ContextLog()
+        let wired: [LidGuardMessageKind] = try await alertCorpus {
+            let context = world.controller.waitingPrompts()
+            log.reads.append(context)
+            return context
+        }
+        let plain: [LidGuardMessageKind] = try await alertCorpus { .none }
+        #expect(plain == Self.corpusSends(.none), "vacuity: the corpus sends what it says")
+        #expect(wired == plain)
+        #expect(log.reads.count == 5 && log.reads.allSatisfy { $0 == .none }, "the arm and the four diffs with a waiting write")
+        #expect(clockReads.all.isEmpty, "zero hops: the intake was never asked")
+        world.controller.setEnabled(false)
+    }
+
+    /// The app's own wiring: the fail-dark host (never armed, the sink that
+    /// writes nothing: `failDarkHost`'s arguments, on the test's clock and
+    /// `patient`, so neither the 30 s window nor the idle limit depends on
+    /// how fast the suite runs) behind the toggle, on and listening, with a
+    /// listed command and a kept one relayed. Nothing produces evidence, so every alert is the one this
+    /// lane sent before (#216): the corpus's, each waiting alert counting the
+    /// one listed command. Even the record path's finding, set by hand,
+    /// changes nothing: no prompt of that host is ever forwarded.
+    @Test func theAppsWiringSendsEveryAlertAsBefore() async throws {
+        let clock = SeamClock()
+        let world = try ApprovalsWorld(makeHost: { path, audit in
+            ApprovalSeamHost(socketPath: path, armed: { @Sendable in false }, secrets: { @Sendable in [] },
+                             records: FailDarkApprovalRecords(), audit: audit, now: { @Sendable in clock.now }, limits: Self.patient)
+        })
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        world.prompt("abcde")
+        let listed = try #require(world.nextPrompt(endingIn: "suppressed.notArmed"))
+        world.prompt("bcdef", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
+        #expect(world.nextPrompt(endingIn: "suppressed.notArmed") != nil)
+        let log = ContextLog()
+        let wired: [LidGuardMessageKind] = try await alertCorpus {
+            let context = world.controller.waitingPrompts()
+            log.reads.append(context)
+            return context
+        }
+        #expect(wired == Self.corpusSends(WaitingPromptCounts(bash: 1)), "every alert and every phrase as before")
+        #expect(log.reads.count == 5 && log.reads.allSatisfy { $0.newPromptsWithEvidence == 0 && $0.countsWithEvidence == .none })
+        #expect(log.reads.first?.newPrompts == 2, "vacuity: the arm's read saw both prompts")
+        world.host?.withIntake { $0.noteSubscriptionFound(listed) }
+        let after = world.controller.waitingPrompts()
+        #expect(after.counts == WaitingPromptCounts(bash: 1) && after.countsWithEvidence == .none && after.newPromptsWithEvidence == 0,
+                "never forwarded, so never evidence")
+    }
+
+    // MARK: - Dark: nothing in the app produces evidence (#216)
+
+    /// The record path's finding and its one setter, in the four targets:
+    /// the flag's declaration, the evidence's one reading, the setter's
+    /// declaration and its one write. Nothing in the app calls the setter
+    /// or sets the flag otherwise, so no prompt carries evidence until the
+    /// record path that will set it amends this list.
+    static let findingSites: [String: [String: Int]] = [
+        ApprovalChannelStructureTests.intakeFile: [
+            "var subscriptionFound = false": 1,
+            "var hasPushEvidence: Bool { subscriptionFound && lifecycle.phase == .forwarded }": 1,
+            "func noteSubscriptionFound(_ id: PromptID) {": 1,
+            "prompts[id]?.subscriptionFound = true": 1],
+    ]
+    static let findingPattern: String = #"\bsubscriptionFound\b|\bnoteSubscriptionFound\b"#
+
+    static func findingFailures(_ sources: ApprovalChannelStructureTests.Sources) -> [String] {
+        DecisionSinkStructureTests.absent(findingSites.keys, in: sources)
+            + PairingStructureTests.appSiteFailures(findingPattern, in: sources, allowed: findingSites,
+                                                    rule: "the record path's finding is named at its declaration, the evidence and its one setter alone")
+    }
+
+    @Test func nothingInTheAppSetsTheFindingYet() throws {
+        let sources = try DecisionSinkStructureTests.uncutSources()
+        #expect(Self.findingFailures(sources).isEmpty, "\(Self.findingFailures(sources))")
+        let intake: String = ApprovalChannelStructureTests.intakeFile
+        let toggle: String = ApprovalChannelStructureTests.toggleFile
+        let entry: String = "forwardable: classification.forwardedTool)"
+        #expect(DecisionSinkStructureTests.text(intake, in: sources).contains(entry), "vacuity: the entry is where a canary plants")
+        let mutants: [(String, ApprovalChannelStructureTests.Sources)] = [
+            ("the toggle calls the setter", DecisionSinkStructureTests.mutate(sources, toggle) {
+                $0 + "\nfunc zz(_ h: ApprovalSeamHost, _ id: PromptID) { _ = h.withIntake { $0.noteSubscriptionFound(id) } }" }),
+            ("the entry made with the finding", DecisionSinkStructureTests.mutate(sources, intake) {
+                $0.replacingOccurrences(of: entry, with: "forwardable: classification.forwardedTool, subscriptionFound: true)") }),
+            ("the flag set through a key path", DecisionSinkStructureTests.mutate(sources, intake) {
+                $0 + "\nlet zz = \\ApprovalIntake.Entry.subscriptionFound" }),
+            ("the setter called, backticked, from a new file", DecisionSinkStructureTests.adding(sources, "ZZFinding.swift",
+                "func zz(_ i: ApprovalIntake, _ id: PromptID) { i.`noteSubscriptionFound`(id) }\n")),
+            ("a second write inside the intake", DecisionSinkStructureTests.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "        prompts[id]?.subscriptionFound = true\n",
+                                        with: "        prompts[id]?.subscriptionFound = true\n        prompts[id]?.subscriptionFound = true\n") }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.findingFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned ones, and a
+        // whole-line comment naming them.
+        let controls = DecisionSinkStructureTests.mutate(sources, toggle) {
+            $0 + "\nlet subscriptionFoundCount = 0, wasSubscriptionFound = false"
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never noteSubscriptionFound(id), never subscriptionFound = true")
+        }
+        #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
+        #expect(Self.findingFailures(controls).isEmpty, "over-match: \(Self.findingFailures(controls))")
+    }
 }

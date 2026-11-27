@@ -541,4 +541,143 @@ struct ApprovalIntakeTests {
         }
         #expect(Self.vocabulary.count == 19 + 3 + 4 + 7 + 2 + 9, "vacuity: the whole vocabulary")
     }
+
+    // MARK: - What a waiting alert reads (#216)
+
+    /// Where one relayed prompt stands when a waiting alert reads it. The
+    /// test sets the record path's finding (the phone's prompt subscription
+    /// found) on every one but `notFound`, so only its lifecycle tells them
+    /// apart.
+    enum PushCase: String, CaseIterable, Sendable {
+        case covered, notFound, savePending, saveFailed, keptByTheGate, notArmed, answered, sessionEnded, killSwitch, expired
+    }
+
+    /// Evidence is the record accepted AND the subscription found, both: the
+    /// finding alone never counts, on a prompt the gate keeps, one not armed,
+    /// a save still in flight or one that failed, or one answered, withdrawn
+    /// or expired since. Every relayed prompt still in the window is new to
+    /// the first read, whatever became of it.
+    @Test(arguments: PushCase.allCases)
+    func evidenceIsAnAcceptedRecordWithItsSubscriptionFound(_ state: PushCase) {
+        let harness = IntakeHarness()
+        harness.armed = state != .notArmed
+        let kept = #"{"command":"sudo pmset -a disablesleep 1"}"#
+        harness.receive("abcde", preview: state == .keptByTheGate ? kept : #"{"command":"git status"}"#)
+        let id = IntakeHarness.id(1)
+        switch state {
+        case .covered, .notFound, .answered, .sessionEnded, .killSwitch, .expired: harness.intake.apply(.saveAccepted, to: id)
+        case .saveFailed: harness.intake.apply(.saveFailed, to: id)
+        case .savePending, .keptByTheGate, .notArmed: break
+        }
+        if state != .notFound { harness.intake.noteSubscriptionFound(id) }
+        switch state {
+        case .answered: harness.intake.decide(IntakeHarness.decision(id))
+        case .sessionEnded: harness.intake.connectionClosed(1)
+        case .killSwitch: harness.intake.killSwitch()
+        case .expired:
+            harness.now += ApprovalWire.promptTimeToLiveSeconds
+            harness.intake.apply(.tick, to: id)
+        case .covered, .notFound, .savePending, .saveFailed, .keptByTheGate, .notArmed: break
+        }
+        let entry = harness.intake.prompts[id]
+        #expect(entry?.subscriptionFound == (state != .notFound), "vacuity: the finding is set as the case says")
+        let evident: Bool = state == .covered
+        #expect(entry?.hasPushEvidence == evident)
+        let read = harness.intake.waitingPromptRead(after: nil, within: ApprovalIntake.waitingContextSeconds)
+        let inWindow: Bool = state != .expired
+        #expect(read.newPrompts == (inWindow ? 1 : 0))
+        #expect(read.newPromptsWithEvidence == (evident ? 1 : 0))
+        #expect(read.recentWithEvidence == (evident ? [.bash] : []))
+        let counted: Bool = inWindow && state != .keptByTheGate && state != .sessionEnded
+        #expect(read.recent == (counted ? [.bash] : []), "the counts are the gate's, whatever the evidence")
+    }
+
+    /// A read's mark: a prompt is new to the first read after it opened and
+    /// to no later one, and one that opens after a read is new to the next.
+    /// One that opens in a read's own second, after it, is new to no read.
+    /// The counts do not depend on the mark, and a read changes nothing the
+    /// intake holds.
+    @Test func eachPromptIsNewToOneReadAtMost() {
+        let harness = IntakeHarness()
+        let within = ApprovalIntake.waitingContextSeconds
+        harness.receive("abcde")
+        harness.receive("bcdef", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
+        harness.receive("cdefg", tool: "Read", preview: #"{"file_path":"/Users/someone/project/notes.md"}"#)
+        harness.receive("defgh", tool: "mcp__webhook__reply", preview: #"{"text":"hi"}"#)
+        let held = harness.intake.prompts
+        let first = harness.intake.waitingPromptRead(after: nil, within: within)
+        #expect(first.newPrompts == 4, "whatever the gate made of them")
+        #expect(first.recent == [.bash], "only the listed command is counted")
+        #expect(harness.intake.prompts == held, "a read changes nothing the intake holds")
+        let again = harness.intake.waitingPromptRead(after: first.mark, within: within)
+        #expect(again.newPrompts == 0, "none is new twice")
+        #expect(again.recent == [.bash], "the counts do not depend on the mark")
+        harness.receive("efghi")
+        let sameSecond = harness.intake.waitingPromptRead(after: again.mark, within: within)
+        #expect(sameSecond.newPrompts == 0, "opened in the read's own second, after it: new to no read")
+        harness.now += 1
+        harness.receive("fghij")
+        let next = harness.intake.waitingPromptRead(after: sameSecond.mark, within: within)
+        #expect(next.newPrompts == 1)
+        #expect(harness.intake.waitingPromptRead(after: next.mark, within: within).newPrompts == 0)
+        #expect(harness.intake.waitingPromptRead(after: nil, within: within).newPrompts == 6, "with no mark, every prompt in the window")
+    }
+
+    /// New prompts are those of the last `newPromptSeconds` (exactly that
+    /// still counts). The counts and their evidence share the window the
+    /// read is handed: a prompt's evidence covers it for as long as it is
+    /// counted, and evidence outside the window takes nothing from a prompt
+    /// inside it.
+    @Test func newPromptsAndEvidenceKeepTheirWindows() throws {
+        let harness = IntakeHarness()
+        let within = ApprovalIntake.waitingContextSeconds
+        let covered = try #require(harness.forward("abcde"))
+        harness.intake.noteSubscriptionFound(covered)
+        harness.now += ApprovalIntake.newPromptSeconds
+        let edge = harness.intake.waitingPromptRead(after: nil, within: within)
+        #expect(edge.newPrompts == 1 && edge.newPromptsWithEvidence == 1, "exactly the window still counts")
+        harness.now += 1
+        let past = harness.intake.waitingPromptRead(after: nil, within: within)
+        #expect(past.newPrompts == 0 && past.newPromptsWithEvidence == 0, "older than the window: no new prompt")
+        #expect(past.recent == [.bash] && past.recentWithEvidence == [.bash], "its evidence covers it while it is counted")
+        harness.now = 1_000 + within - 5
+        #expect(harness.forward("bcdef") != nil, "a second prompt, accepted, its subscription not found")
+        harness.now = 1_000 + within + 1
+        let later = harness.intake.waitingPromptRead(after: nil, within: within)
+        #expect(later.recent == [.bash], "only the second is counted now")
+        #expect(later.recentWithEvidence.isEmpty, "the first's evidence is outside the window and takes nothing from the second")
+        #expect(later.newPrompts == 1 && later.newPromptsWithEvidence == 0)
+    }
+
+    /// What crosses from the seam to the alert lane, by shape: tool kinds,
+    /// counts and the mark, which holds one Int (the intake's clock), never a
+    /// prompt ID, preview or session; and the lane's context, counts only. A
+    /// new field fails this until it is read here.
+    @Test func whatCrossesIsKindsCountsAndAMark() {
+        let harness = IntakeHarness()
+        harness.receive("abcde")
+        let read = harness.intake.waitingPromptRead(after: nil, within: ApprovalIntake.waitingContextSeconds)
+        let fields: [(label: String, type: String)] = Mirror(reflecting: read).children.map { ($0.label ?? "", "\(type(of: $0.value))") }
+        #expect(fields.map(\.label) == ["recent", "recentWithEvidence", "newPrompts", "newPromptsWithEvidence", "mark"])
+        #expect(fields.map(\.type) == ["Array<ApprovalTool>", "Array<ApprovalTool>", "Int", "Int", "PromptRelayMark"])
+        #expect(Mirror(reflecting: read.mark).children.map { "\(type(of: $0.value))" } == ["Int"], "the mark is one Int")
+        #expect(Mirror(reflecting: WaitingPromptContext.none).children.map { "\(type(of: $0.value))" }
+                == ["WaitingPromptCounts", "WaitingPromptCounts", "Int", "Int"])
+    }
+
+    /// The record path's finding is a flag and nothing else: no audit line,
+    /// no effect, no lifecycle change; for a prompt not held it does nothing.
+    @Test func theFindingChangesNothingButTheEvidence() throws {
+        let harness = IntakeHarness()
+        let id = try #require(harness.forward("abcde"))
+        let codes = harness.codes, saved = harness.sink.saved, superseded = harness.sink.superseded
+        let before = try #require(harness.intake.prompts[id])
+        harness.intake.noteSubscriptionFound(id)
+        harness.intake.noteSubscriptionFound(IntakeHarness.id(99))
+        let after = try #require(harness.intake.prompts[id])
+        #expect(!before.subscriptionFound && after.subscriptionFound)
+        #expect(after.lifecycle == before.lifecycle && after.forwardable == before.forwardable)
+        #expect(harness.codes == codes && harness.sink.saved == saved && harness.sink.superseded == superseded)
+        #expect(harness.frames.isEmpty && harness.sink.retracted.isEmpty && harness.intake.prompts.count == 1)
+    }
 }
