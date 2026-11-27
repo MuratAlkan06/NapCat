@@ -878,7 +878,14 @@ The server passes prompts on only from Claude Code builds NapCat has
 checked; in a session from any other build, NapCat does not see them.
 
 **If you move or rename NapCat.app, run the script again**, because the
-registration names the server's path. To undo it:
+registration names the server's path. **Run it again after you install a new
+NapCat build, too**: it keeps a matching registration as it is and rewrites
+the receipt with the new server's version. Then start your flagged sessions
+again. A session keeps the server it started with, and NapCat refuses the
+prompts of a server whose version is not its own, so they stay in the
+terminal.
+
+To undo the registration:
 
 ```sh
 ./scripts/uninstall-channel.sh

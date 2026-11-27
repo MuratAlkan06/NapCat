@@ -30,8 +30,9 @@ public enum ApprovalChannel {
     /// the busy hook's version stamp). Claude Code sees it as the server's
     /// `serverInfo.version`; every prompt frame names it too (frame version
     /// 2), and NapCat refuses a frame from a server of another version
-    /// (#150).
-    public static let serverVersion = 2
+    /// (#150). Version 3 (#221): the server passes no answer back
+    /// (`passesAnswersBack`).
+    public static let serverVersion = 3
 
     /// The design doc's stamp line starts with this, followed by the version.
     public static let serverVersionStampPrefix = "napcat-channel-version: "

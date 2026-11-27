@@ -259,8 +259,8 @@ struct ApprovalSeamEndToEndTests {
     }
 
     /// #150: a version-1 frame exactly as the server wrote one before #150,
-    /// a frame from a server of another version, and one for a client
-    /// NapCat has not confirmed.
+    /// a frame from a server of another version (the one before #221 among
+    /// them), and one for a client NapCat has not confirmed.
     static let staleFrames: [StaleFrame] = [
         StaleFrame(name: "a version-1 frame",
                    line: #"{"frame":"prompt","v":1,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}"}"#,
@@ -268,8 +268,11 @@ struct ApprovalSeamEndToEndTests {
         StaleFrame(name: "another server version",
                    line: #"{"frame":"prompt","v":2,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}","server":1,"client":"claude-code","clientVersion":"2.1.326"}"#,
                    code: "seam.serverVersionRefused"),
+        StaleFrame(name: "the server version before #221",
+                   line: #"{"frame":"prompt","v":2,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}","server":2,"client":"claude-code","clientVersion":"2.1.326"}"#,
+                   code: "seam.serverVersionRefused"),
         StaleFrame(name: "an unconfirmed client",
-                   line: #"{"frame":"prompt","v":2,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}","server":2,"client":"claude-code","clientVersion":"2.1.327"}"#,
+                   line: #"{"frame":"prompt","v":2,"request":"bcdef","tool":"Bash","preview":"{\"command\":\"make test\"}","server":3,"client":"claude-code","clientVersion":"2.1.327"}"#,
                    code: "seam.clientRefused"),
     ]
 
