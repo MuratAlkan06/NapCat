@@ -40,10 +40,14 @@ struct FinishAlertPolicyTests {
 
     @Test func tunablesAreTheContractValues() {
         // The run floor's DEFAULT (30 → 60: user ruling 2026-10-23); since
-        // issue #34 the live floor is the user's setting, clamped to 30–600.
+        // issue #34 the live floor is the user's setting, clamped to 30–600,
+        // and since issue #242 it may also be 0 ("Immediately", no floor).
         #expect(FinishAlertTuning.minimumRunSeconds == 60)
         #expect(FinishAlertTuning.minimumRunSecondsRange == 30...600)
         #expect(FinishAlertTuning.minimumRunSecondsRange.contains(FinishAlertTuning.minimumRunSeconds))
+        #expect(FinishAlertTuning.immediatelySeconds == 0)
+        #expect(!FinishAlertTuning.minimumRunSecondsRange.contains(FinishAlertTuning.immediatelySeconds),
+                "Immediately is the one kept value outside the clamp range")
         #expect(FinishAlertTuning.debounceSeconds == 2)
         #expect(FinishAlertTuning.batchWindowSeconds == 30)
         #expect(FinishAlertTuning.retryDelaySeconds == 30)
@@ -862,7 +866,11 @@ struct FinishAlertPolicyTests {
     /// passed to `observe` the way the controller passes the user's setting.
     /// They replace the hard-coded 59 / 60 / 61 s rows (D2–D4, W7–W8): the
     /// boundary (one second under / exactly / one second over) is checked at
-    /// the lower bound, the default, a raised floor and the upper bound.
+    /// the lower bound, the default, a raised floor and the upper bound —
+    /// and at 0 ("Immediately", issue #242), where there is no second under
+    /// (a negative run is a clock jump, `noFloorSuppressesNothingButAClockJump`):
+    /// a 0-second run qualifies, so does a 1-second one, and a run of a
+    /// minute is the first to read minutes.
     /// `minutes` is what a SENT run reads: under a full minute it is unknown
     /// (rule 5), even though the run qualifies. Row ids are LOCKED.
     struct FloorRow: Sendable, CustomTestStringConvertible {
@@ -887,6 +895,10 @@ struct FinishAlertPolicyTests {
         FloorRow(id: "F600a", floor: 600, run: 599, sent: false, minutes: nil),
         FloorRow(id: "F600b", floor: 600, run: 600, sent: true, minutes: 10),
         FloorRow(id: "F600c", floor: 600, run: 601, sent: true, minutes: 10),
+        FloorRow(id: "F0a", floor: 0, run: 0, sent: true, minutes: nil),
+        FloorRow(id: "F0b", floor: 0, run: 1, sent: true, minutes: nil),
+        FloorRow(id: "F0c", floor: 0, run: 59, sent: true, minutes: nil),
+        FloorRow(id: "F0d", floor: 0, run: 60, sent: true, minutes: 1),
     ]
 
     /// The default floor's rows must also hold WITHOUT the argument: the
@@ -946,9 +958,39 @@ struct FinishAlertPolicyTests {
         #expect(observation.waitingWrites == 1, "s1's suppressed transition is the one waiting write")
     }
 
+    /// Issue #242: with no floor ("Immediately", 0) nothing in a diff is
+    /// `underMinimumRun` — a wait 0 s in buzzes and a 1-second run finishes,
+    /// neither with minutes — while a negative run is still a clock jump.
+    /// The buzz stays once per episode: a rewrite that stays waiting, the
+    /// other waiting token included, never buzzes again.
+    @Test func noFloorSuppressesNothingButAClockJump() {
+        let t = Self.t0
+        let previous = [
+            Self.s1: Self.session(firstSeen: t, exact: true, lastTs: t),
+            Self.s2: Self.session(firstSeen: t - 1, exact: true, lastTs: t - 1),
+            Self.s3: Self.session(firstSeen: t + 10, exact: true, lastTs: t + 10),
+        ]
+        let observation = FinishAlertPolicy.observe(previous: previous, current: Self.m1(t, Self.waiting), now: t,
+                                                    minimumRunSeconds: FinishAlertTuning.immediatelySeconds)
+        #expect(observation.events == [.waiting(minutes: nil), .finished(minutes: nil)], "s1 0 s in; s2 after 1 s")
+        #expect(observation.suppressed == [.clockJump], "s3: a negative run, whatever the floor")
+        #expect(observation.tracked[Self.s1]?.waitingBuzzed == true)
+        #expect(observation.waitingWrites == 1)
+
+        var tracked = observation.tracked
+        for (ts, token) in [(t + 5, Self.waiting), (t + 9, ClaudeBusyConstants.waitingAfterStopEventToken)] {
+            let again = FinishAlertPolicy.observe(previous: tracked, current: Self.m1(ts, token), now: ts,
+                                                  minimumRunSeconds: FinishAlertTuning.immediatelySeconds)
+            #expect(again.events.isEmpty && again.suppressed.isEmpty, "\(token) at +\(ts - t) s: the same episode")
+            #expect(again.waitingWrites == 1, "a rewrite is still a write")
+            tracked = again.tracked
+        }
+    }
+
     /// The ONE clamp rule for a stored `finishAlertMinimumRunSeconds` value:
-    /// missing or not an integer ⇒ the 60 s default; outside 30–600 ⇒ the
-    /// nearer bound (29 → 30, 601 → 600).
+    /// missing or not an integer ⇒ the 60 s default; exactly 0 ⇒ 0
+    /// ("Immediately", issue #242 — never read as unset); any other value
+    /// outside 30–600 ⇒ the nearer bound (29 → 30, 601 → 600, 1 → 30).
     @Test func aStoredFloorIsClampedAndJunkReadsAsTheDefault() {
         let rows: [(id: String, stored: Any?, expected: Int)] = [
             ("missing", nil, 60),
@@ -960,13 +1002,18 @@ struct FinishAlertPolicyTests {
             ("599", 599, 599),
             ("the upper bound", 600, 600),
             ("601 clamps down", 601, 600),
-            ("zero", 0, 30),
+            ("zero is Immediately", 0, 0),
+            ("one clamps up, as before", 1, 30),
+            ("minus one clamps up, as before", -1, 30),
             ("negative", -120, 30),
             ("Int.min", Int.min, 30),
             ("Int.max", Int.max, 600),
             ("a plist integer", NSNumber(value: 120), 120),
+            ("a plist zero", NSNumber(value: 0), 0),
             ("a plist fraction", NSNumber(value: 120.5), 60),
+            ("a plist fraction under one", NSNumber(value: 0.5), 60),
             ("a plist Bool (reads as 1)", NSNumber(value: true), 30),
+            ("a plist Bool false (reads as 0)", NSNumber(value: false), 0),
             ("a string", "junk", 60),
             ("a numeric string", "120", 60),
             ("an array", [1, 2], 60),

@@ -161,9 +161,13 @@ struct SettingsRowView: View {
                     }
                 }
                 .accessibilityLabel(MenuStateModel.sessionAlertsFloorAccessibilityLabel)
+                // Issue #242: the caption follows the floor, and the
+                // "Immediately" one is long — it wraps, like the other
+                // captions here, rather than truncate.
                 Text(caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case let .phoneAlerts(title, isOn, hint):
             VStack(alignment: .leading, spacing: PanelMetrics.tight) {

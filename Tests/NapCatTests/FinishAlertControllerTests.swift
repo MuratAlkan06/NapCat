@@ -1032,6 +1032,100 @@ struct FinishAlertControllerTests {
         }
     }
 
+    // MARK: Immediately (issue #242) — no floor
+
+    static let immediately = FinishAlertTuning.immediatelySeconds
+
+    /// With no floor, a run of 1 second — and one of 0 — that the watcher saw
+    /// finishes with exactly one alert, and its message names no minutes
+    /// (rule 5: under a minute they are not printed, never "0 min").
+    @Test(arguments: [1, 0])
+    func immediatelyAShortRunSendsOneFinishAlert(run: Int) async throws {
+        try await withFinishAlertHarness { h in
+            h.runFloor.value = Self.immediately
+            h.store.put(H.s1, ts: H.t0 - run)
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: nil, folded: 1, stillWorking: 0)], "\(run) s")
+            #expect(h.scheduler.pending.isEmpty, "\(run) s: nothing else queued")
+            let kind = try #require(h.sends.first?.kind)
+            #expect(LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49")
+                    == "A Claude session finished — none still working")
+        }
+    }
+
+    /// With no floor, finishes close together still fold: the first goes at
+    /// once, the two inside its batch window leave together as ONE message
+    /// when the window closes, and two in one diff are one message too.
+    @Test func immediatelyFinishesInsideTheBatchWindowStillFoldIntoOneMessage() async throws {
+        try await withFinishAlertHarness { h in
+            h.runFloor.value = Self.immediately
+            for id in [H.s1, H.s2, H.s3] { h.store.put(id, ts: H.t0 - 1) }
+            h.controller.reconcile()
+            h.store.remove(H.s1)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: nil, folded: 1, stillWorking: 2)])
+
+            h.advance(5)
+            h.store.remove(H.s2)
+            await h.settle()
+            h.advance(5)
+            h.store.remove(H.s3)
+            await h.settle()
+            #expect(h.sends.count == 1, "both held while the window is open")
+            let flush = try #require(h.scheduler.pending(delay: 25).first)
+            h.advance(20)
+            flush.fire()
+            await drainMain()
+            #expect(h.sends.dropFirst().map(\.kind) == [.sessionFinished(minutes: nil, folded: 2, stillWorking: 0)])
+            let kind = try #require(h.sends.last?.kind)
+            #expect(LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49")
+                    == "2 Claude sessions finished — none still working")
+        }
+    }
+
+    /// With no floor, two short runs ending in one diff are one message.
+    @Test func immediatelyTwoFinishesInOneDiffAreOneMessage() async throws {
+        try await withFinishAlertHarness { h in
+            h.runFloor.value = Self.immediately
+            for id in [H.s1, H.s2] { h.store.put(id, ts: H.t0 - 1) }
+            h.controller.reconcile()
+            for id in [H.s1, H.s2] { h.store.remove(id) }
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.sessionFinished(minutes: nil, folded: 2, stillWorking: 0)])
+        }
+    }
+
+    /// With no floor, a wait 0 s into its run alerts — once: rewrites that
+    /// stay waiting (the other waiting token included) never alert again;
+    /// a new session first seen already waiting alerts too. No minutes.
+    @Test func immediatelyAWaitingEpisodeAlertsOnce() async throws {
+        try await withFinishAlertHarness { h in
+            h.runFloor.value = Self.immediately
+            h.store.put(H.s1, ts: H.t0)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: nil, stillWorking: 0)])
+            let kind = try #require(h.sends.first?.kind)
+            #expect(LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49") == "Claude is waiting for you")
+
+            for token in [H.waiting, ClaudeBusyConstants.waitingAfterStopEventToken] {
+                h.advance(40)
+                h.store.put(H.s1, ts: h.now, event: token)
+                await h.settle()
+                #expect(h.sends.count == 1, "\(token): the same episode never alerts again")
+            }
+
+            h.advance(40)
+            h.store.put(H.s2, ts: h.now, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.dropFirst().map(\.kind) == [.needsAttention(minutes: nil, stillWorking: 1)],
+                    "a new session already waiting, 0 s after it was first seen")
+        }
+    }
+
     // MARK: Waiting buzz
 
     @Test func aWaitingTransitionBuzzesOnceAndRewritesDoNot() async throws {
@@ -1389,10 +1483,12 @@ struct FinishAlertHealingTests {
     }
 
     /// Issue #34 DECOUPLING: the user's session-alert floor is NOT the
-    /// outage floor. At the lowest and the highest setting alike, an outage
-    /// of 59 s heals silently and one of exactly 60 s earns the restore push
-    /// — `AlertHealingTuning.minimumOutageSeconds` stays a fixed constant.
-    @Test(arguments: [(30, 59, false), (30, 60, true), (600, 59, false), (600, 60, true)])
+    /// outage floor. At the lowest and the highest setting alike — and at
+    /// "Immediately" (issue #242), no floor at all — an outage of 59 s heals
+    /// silently and one of exactly 60 s earns the restore push —
+    /// `AlertHealingTuning.minimumOutageSeconds` stays a fixed constant.
+    @Test(arguments: [(30, 59, false), (30, 60, true), (600, 59, false), (600, 60, true),
+                      (FinishAlertTuning.immediatelySeconds, 59, false), (FinishAlertTuning.immediatelySeconds, 60, true)])
     func theOutageFloorDoesNotFollowTheSessionAlertFloor(_ setting: Int, _ outage: Int, _ restorePush: Bool) async throws {
         let path = ConnectivitySimulator()
         let sender = RecordingMessageSender(outcome: Self.offline)

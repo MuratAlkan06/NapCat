@@ -588,31 +588,50 @@ struct MenuStateModelTests {
     }
 
     /// Issue #34: the "Session alerts" group of the ntfy settings editor.
-    /// Its strings are fixed (the title is the panel row's own name), and the
-    /// popup offers five presets — both clamp bounds and the default among
-    /// them — as formatted durations.
+    /// Its title and label are fixed (the title is the panel row's own name;
+    /// since issue #242 the label is the VoiceOver name's own words), and
+    /// the popup offers six presets — "Immediately", both clamp bounds and
+    /// the default among them — the rest as formatted durations. The caption
+    /// follows the floor: every floor above 0 keeps the original words, and
+    /// "Immediately" says nothing is too short, and what still is.
     @Test func theSessionAlertsFloorGroupPresentation() {
         #expect(MenuStateModel.sessionAlertsFloorGroupTitle == "Session alerts")
-        #expect(MenuStateModel.sessionAlertsFloorLabel == "Only alert for runs longer than:")
+        #expect(MenuStateModel.sessionAlertsFloorLabel == "Minimum run before alerting:")
         #expect(MenuStateModel.sessionAlertsFloorAccessibilityLabel == "Minimum run before alerting")
-        #expect(MenuStateModel.sessionAlertsFloorCaption == "Shorter runs finish silently.")
+        #expect(MenuStateModel.sessionAlertsFloorLabel.hasPrefix(MenuStateModel.sessionAlertsFloorAccessibilityLabel),
+                "the visible label is in the spoken name")
+        #expect(MenuStateModel.sessionAlertsFloorCaption(seconds: 0) == Self.immediatelyCaption)
+        for seconds in [1, 30, 60, 90, 600] {
+            #expect(MenuStateModel.sessionAlertsFloorCaption(seconds: seconds) == "Shorter runs finish silently.",
+                    "\(seconds) s")
+        }
 
         let presets = MenuStateModel.sessionAlertsFloorPresets
         let range = FinishAlertTuning.minimumRunSecondsRange
-        #expect(presets == [30, 60, 120, 300, 600])
+        #expect(presets == [0, 30, 60, 120, 300, 600])
         #expect(presets.map(MenuStateModel.sessionAlertsFloorText(seconds:))
-                == ["30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"])
+                == ["Immediately", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"])
         #expect(presets == presets.sorted() && Set(presets).count == presets.count)
-        #expect(presets.first == range.lowerBound && presets.last == range.upperBound, "both bounds are reachable")
+        #expect(presets.first == FinishAlertTuning.immediatelySeconds, "Immediately is reachable, first")
+        #expect(presets.dropFirst().first == range.lowerBound && presets.last == range.upperBound,
+                "both bounds are reachable")
         #expect(presets.contains(FinishAlertTuning.minimumRunSeconds), "the default is a preset — no reset row")
     }
 
-    /// Issue #34: the popup's formatter. Under a minute in seconds, whole
-    /// minutes in minutes, anything else as "N min S s" — never raw seconds
-    /// above 59. Across the whole clamp range every floor gets its own text
-    /// (a popup merges rows with the same title).
+    /// Issue #242: the "Immediately" caption, word for word. Its "2 seconds"
+    /// is the watcher's debounce: a run or wait over before the marker
+    /// folder has been quiet that long may never be read.
+    static let immediatelyCaption =
+        "Every finish and wait alerts, however short, except a run or wait over within 2 seconds, which can go unseen."
+
+    /// Issue #34: the popup's formatter. No floor as "Immediately" (issue
+    /// #242), under a minute in seconds, whole minutes in minutes, anything
+    /// else as "N min S s" — never raw seconds above 59, never "0 seconds".
+    /// Across the whole clamp range, and 0, every floor gets its own text (a
+    /// popup merges rows with the same title).
     @Test func theSessionAlertsFloorFormatter() {
         let rows: [(seconds: Int, text: String)] = [
+            (0, "Immediately"),
             (1, "1 second"), (30, "30 seconds"), (45, "45 seconds"), (59, "59 seconds"),
             (60, "1 minute"), (61, "1 min 1 s"), (90, "1 min 30 s"), (119, "1 min 59 s"),
             (120, "2 minutes"), (150, "2 min 30 s"), (300, "5 minutes"), (599, "9 min 59 s"),
@@ -623,7 +642,7 @@ struct MenuStateModelTests {
         }
 
         let range = FinishAlertTuning.minimumRunSecondsRange
-        var seen = Set<String>()
+        var seen: Set<String> = [MenuStateModel.sessionAlertsFloorText(seconds: FinishAlertTuning.immediatelySeconds)]
         for seconds in range {
             let text = MenuStateModel.sessionAlertsFloorText(seconds: seconds)
             let numbers = text.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
@@ -632,18 +651,19 @@ struct MenuStateModelTests {
         }
     }
 
-    /// Issue #34: the popup's rows. A preset floor (the default included)
-    /// gets exactly the five presets; a floor that is not one — 90 written
-    /// with `defaults write` — gets ONE extra row of its own, in order,
-    /// rather than being snapped to a neighbour.
+    /// Issue #34: the popup's rows. A preset floor (the default and, since
+    /// issue #242, "Immediately" included) gets exactly the six presets; a
+    /// floor that is not one — 90 written with `defaults write` — gets ONE
+    /// extra row of its own, in order, rather than being snapped to a
+    /// neighbour.
     @Test func aNonPresetFloorGetsOneExtraRowOfItsOwn() {
         let presets = MenuStateModel.sessionAlertsFloorPresets
         for preset in presets {
             #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: preset) == presets, "\(preset) s")
         }
-        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 90) == [30, 60, 90, 120, 300, 600])
-        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 31) == [30, 31, 60, 120, 300, 600])
-        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 599) == [30, 60, 120, 300, 599, 600])
+        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 90) == [0, 30, 60, 90, 120, 300, 600])
+        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 31) == [0, 30, 31, 60, 120, 300, 600])
+        #expect(MenuStateModel.sessionAlertsFloorChoices(seconds: 599) == [0, 30, 60, 120, 300, 599, 600])
     }
 
     /// The real owner wired to fakes: a MenuContentView whose finish alert

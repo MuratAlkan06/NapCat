@@ -1586,19 +1586,31 @@ final class MenuStateModel: ObservableObject {
     /// appears in the panel itself.
     nonisolated static let sessionAlertsFloorGroupTitle = "Session alerts"
 
-    /// The popup's leading label.
-    nonisolated static let sessionAlertsFloorLabel = "Only alert for runs longer than:"
+    /// The popup's leading label: its VoiceOver name's own words (issue
+    /// #242 — the old "Only alert for runs longer than:" could not lead
+    /// into "Immediately").
+    nonisolated static let sessionAlertsFloorLabel = "Minimum run before alerting:"
 
     /// The popup's VoiceOver name; its value is the selected row's text.
     nonisolated static let sessionAlertsFloorAccessibilityLabel = "Minimum run before alerting"
 
-    /// Under the popup, small and secondary.
-    nonisolated static let sessionAlertsFloorCaption = "Shorter runs finish silently."
+    /// Under the popup, small and secondary: what the floor shown does. Any
+    /// floor above 0 keeps the original words. "Immediately" (issue #242)
+    /// says that nothing is too short to alert, and the one limit that
+    /// remains: the watcher reads the marker folder only once it has been
+    /// quiet for the debounce (`FinishAlertTuning.debounceSeconds`), so a run
+    /// or wait over within it may never be seen.
+    nonisolated static func sessionAlertsFloorCaption(seconds: Int) -> String {
+        guard seconds == FinishAlertTuning.immediatelySeconds else { return "Shorter runs finish silently." }
+        return "Every finish and wait alerts, however short, except a run or wait over within "
+            + "\(Int(FinishAlertTuning.debounceSeconds)) seconds, which can go unseen."
+    }
 
-    /// The popup's preset floors in seconds, ascending: both clamp bounds and
-    /// the 60 s default (pre-selected while nothing is stored). There is no
-    /// reset row — "1 minute" is the default.
-    nonisolated static let sessionAlertsFloorPresets = [30, 60, 120, 300, 600]
+    /// The popup's preset floors in seconds, ascending: "Immediately" (0,
+    /// issue #242), both clamp bounds and the 60 s default (pre-selected
+    /// while nothing is stored). There is no reset row — "1 minute" is the
+    /// default.
+    nonisolated static let sessionAlertsFloorPresets = [FinishAlertTuning.immediatelySeconds, 30, 60, 120, 300, 600]
 
     /// The popup's rows for a (clamped) floor: the presets, plus — only when
     /// the floor is not one of them, e.g. 90 set with `defaults write` — ONE
@@ -1610,10 +1622,12 @@ final class MenuStateModel: ObservableObject {
         return (sessionAlertsFloorPresets + [seconds]).sorted()
     }
 
-    /// A floor as the popup shows it: a formatted duration, never raw seconds
-    /// above 59 — "30 seconds", "1 minute", "10 minutes", "1 min 30 s". Each
-    /// floor gets its own text (a popup merges rows with the same title).
+    /// A floor as the popup shows it: "Immediately" for no floor (issue
+    /// #242), else a formatted duration, never raw seconds above 59 — "30
+    /// seconds", "1 minute", "10 minutes", "1 min 30 s". Each floor gets its
+    /// own text (a popup merges rows with the same title).
     nonisolated static func sessionAlertsFloorText(seconds: Int) -> String {
+        if seconds == FinishAlertTuning.immediatelySeconds { return "Immediately" }
         let minutes = seconds / 60
         let rest = seconds % 60
         if minutes == 0 { return rest == 1 ? "1 second" : "\(rest) seconds" }

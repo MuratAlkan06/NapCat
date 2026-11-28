@@ -351,19 +351,21 @@ struct ScaffoldTests {
     }
 
     /// Issue #34, headless: the editor's floor group at the default. One
-    /// popup of exactly the five presets with "1 minute" pre-selected, under
-    /// the "Session alerts" title, after the exact label and above the exact
-    /// caption (small, secondary). VoiceOver: a fixed name, the selected
-    /// row's text as the value — kept current by the popup's action.
-    @Test func theSessionAlertsFloorGroupOffersFivePresetsWithOneMinuteSelected() {
+    /// popup of exactly the six presets ("Immediately" first since issue
+    /// #242) with "1 minute" pre-selected, under the "Session alerts" title,
+    /// after the exact label and above the exact caption (small, secondary).
+    /// VoiceOver: a fixed name, the selected row's text as the value — kept
+    /// current by the popup's action, like the caption.
+    @Test func theSessionAlertsFloorGroupOffersSixPresetsWithOneMinuteSelected() {
         let group = SessionAlertsFloorGroup(seconds: 60, width: 300)
-        #expect(group.popup.itemTitles == ["30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"])
-        #expect(group.popup.itemArray.map(\.tag) == [30, 60, 120, 300, 600])
+        #expect(group.popup.itemTitles
+                == ["Immediately", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes"])
+        #expect(group.popup.itemArray.map(\.tag) == [0, 30, 60, 120, 300, 600])
         #expect(!group.popup.pullsDown)
         #expect(group.popup.titleOfSelectedItem == "1 minute")
         #expect(group.seconds == 60)
         #expect(group.titleLabel.stringValue == "Session alerts")
-        #expect(group.rowLabel.stringValue == "Only alert for runs longer than:")
+        #expect(group.rowLabel.stringValue == "Minimum run before alerting:")
         #expect(group.caption.stringValue == "Shorter runs finish silently.")
         #expect(group.caption.font?.pointSize == NSFont.smallSystemFontSize)
         #expect(group.caption.textColor == .secondaryLabelColor)
@@ -376,14 +378,46 @@ struct ScaffoldTests {
         group.chose(group.popup)
         #expect(group.seconds == 300, "Save hands the chosen preset back")
         #expect(group.popup.accessibilityValue() as? String == "5 minutes")
+        #expect(group.caption.stringValue == "Shorter runs finish silently.")
+
+        // Issue #242: "Immediately" — its value, its caption, and the same
+        // frames: the caption band was sized for the tallest caption, so a
+        // choice never resizes the editor.
+        let frames = [group.view.frame, group.caption.frame, group.popup.frame, group.titleLabel.frame]
+        group.popup.selectItem(withTag: 0)
+        group.chose(group.popup)
+        #expect(group.seconds == 0, "Save hands Immediately back as 0")
+        #expect(group.popup.accessibilityValue() as? String == "Immediately")
+        #expect(group.caption.stringValue == MenuStateModelTests.immediatelyCaption)
+        #expect([group.view.frame, group.caption.frame, group.popup.frame, group.titleLabel.frame] == frames)
+        group.popup.selectItem(withTag: 60)
+        group.chose(group.popup)
+        #expect(group.caption.stringValue == "Shorter runs finish silently.", "and back")
 
         // The prefill goes through the one clamp rule, like every read — an
         // out-of-range value lands on a bound, which is a preset.
-        for (stored, title) in [(29, "30 seconds"), (601, "10 minutes")] {
+        for (stored, title) in [(29, "30 seconds"), (601, "10 minutes"), (1, "30 seconds"), (-1, "30 seconds")] {
             let clamped = SessionAlertsFloorGroup(seconds: stored, width: 300)
-            #expect(clamped.popup.numberOfItems == 5, "\(stored) s")
+            #expect(clamped.popup.numberOfItems == 6, "\(stored) s")
             #expect(clamped.popup.titleOfSelectedItem == title, "\(stored) s")
         }
+    }
+
+    /// Issue #242, headless: a stored "Immediately" (0) opens selected — not
+    /// clamped to 30 s, no extra row — with its spoken value and its caption,
+    /// in the same frames as a group opened at the default (same rows, same
+    /// band). Untouched, Save hands 0 back.
+    @Test func aStoredImmediatelyOpensSelectedWithItsCaption() {
+        let group = SessionAlertsFloorGroup(seconds: 0, width: 300)
+        #expect(group.popup.numberOfItems == 6)
+        #expect(group.popup.indexOfSelectedItem == 0)
+        #expect(group.popup.titleOfSelectedItem == "Immediately")
+        #expect(group.seconds == 0, "untouched, Save returns the stored 0 as it is")
+        #expect(group.popup.accessibilityValue() as? String == "Immediately")
+        #expect(group.popup.accessibilityLabel() == "Minimum run before alerting")
+        #expect(group.caption.stringValue == MenuStateModelTests.immediatelyCaption)
+        let atDefault = SessionAlertsFloorGroup(seconds: 60, width: 300)
+        #expect(group.view.frame == atDefault.view.frame && group.caption.frame == atDefault.caption.frame)
     }
 
     /// Issue #34, headless: a stored floor that is not a preset (90, written
@@ -394,8 +428,8 @@ struct ScaffoldTests {
     @Test func aStoredNonPresetFloorShowsAsItsOwnSelectedRow() {
         let group = SessionAlertsFloorGroup(seconds: 90, width: 300)
         #expect(group.popup.itemTitles
-                == ["30 seconds", "1 minute", "1 min 30 s", "2 minutes", "5 minutes", "10 minutes"])
-        #expect(group.popup.indexOfSelectedItem == 2)
+                == ["Immediately", "30 seconds", "1 minute", "1 min 30 s", "2 minutes", "5 minutes", "10 minutes"])
+        #expect(group.popup.indexOfSelectedItem == 3)
         #expect(group.popup.titleOfSelectedItem == "1 min 30 s")
         #expect(group.seconds == 90, "untouched, Save returns the stored value as it is")
         #expect(group.popup.accessibilityValue() as? String == "1 min 30 s")
@@ -409,8 +443,9 @@ struct ScaffoldTests {
     /// and one baseline, neither truncated (the group widens past the
     /// editor's 300 pt instead); the title above and the caption below, both
     /// flush with the label — nothing overlapping, nothing outside the view.
+    /// Issue #242: the caption's band holds every row's caption unclipped.
     @Test func theSessionAlertsFloorGroupLaysOutOneRowBetweenTitleAndCaption() {
-        for seconds in [60, 90] {
+        for seconds in [60, 90, 0] {
             let group = SessionAlertsFloorGroup(seconds: seconds, width: 300)
             let bounds = group.view.bounds
             #expect(bounds.width >= 300)
@@ -427,6 +462,13 @@ struct ScaffoldTests {
             #expect(group.caption.frame.maxY <= min(group.rowLabel.frame.minY, group.popup.frame.minY))
             #expect(group.titleLabel.frame.minY >= max(group.rowLabel.frame.maxY, group.popup.frame.maxY))
             #expect(group.titleLabel.frame.minX == 0 && group.rowLabel.frame.minX == 0 && group.caption.frame.minX == 0)
+            let band = NSRect(x: 0, y: 0, width: group.caption.frame.width, height: .greatestFiniteMagnitude)
+            for item in group.popup.itemArray {
+                let text = NSTextField(wrappingLabelWithString: MenuStateModel.sessionAlertsFloorCaption(seconds: item.tag))
+                text.font = group.caption.font
+                let needed = ceil(text.cell?.cellSize(forBounds: band).height ?? text.fittingSize.height)
+                #expect(group.caption.frame.height >= needed, "\(item.tag) s: the caption would be clipped")
+            }
         }
     }
 

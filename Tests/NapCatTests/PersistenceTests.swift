@@ -118,7 +118,7 @@ struct PersistenceTests {
             #expect(finish.minimumRunSeconds == 60)
             #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == nil,
                     "the default is computed, not eagerly written")
-            for (stored, expected) in [(29, 30), (30, 30), (120, 120), (600, 600), (601, 600)] {
+            for (stored, expected) in [(29, 30), (30, 30), (120, 120), (600, 600), (601, 600), (0, 0), (1, 30), (-1, 30)] {
                 lid.defaults.set(stored, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
                 #expect(finish.minimumRunSeconds == expected, "stored \(stored)")
             }
@@ -128,6 +128,43 @@ struct PersistenceTests {
             #expect(finish.minimumRunSeconds == 60, "so does a fraction")
             lid.defaults.removeObject(forKey: DefaultsKey.finishAlertMinimumRunSeconds)
             #expect(finish.minimumRunSeconds == 60, "missing again ⇒ the default")
+        }
+    }
+
+    /// Issue #242: a stored 0 is "Immediately" — read as 0, never as the
+    /// unset default — and it outlives the controller and the defaults
+    /// object that read it: a controller built later (as at the next launch)
+    /// over a fresh `UserDefaults` of the same domain reads 0 again. Stored
+    /// 60 reads as 60 the same way, and reading never rewrites either value.
+    @Test func aStoredZeroIsImmediatelyAndSurvivesARebuild() {
+        withLidGuardHarness { lid in
+            let suite = "com.muratalkan.napcat.tests.persistence.floor.\(UUID().uuidString)"
+            let first = UserDefaults(suiteName: suite)!
+            defer { first.removePersistentDomain(forName: suite) }
+            @MainActor func build(_ defaults: UserDefaults) -> FinishAlertController? {
+                FinishAlertController.makeIfEnabled(
+                    debugBattery: false, lidGuard: lid.controller, sender: RecordingMessageSender(),
+                    connectivity: ConnectivitySimulator(), stayAwakeMirror: ObservedStayAwakeMirror(),
+                    defaults: defaults)
+            }
+            guard let unset = build(first) else {
+                Issue.record("makeIfEnabled must build the controller here")
+                return
+            }
+            #expect(unset.minimumRunSeconds == 60, "unset ⇒ the default")
+            for stored in [0, 60] {
+                first.set(stored, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+                #expect(unset.minimumRunSeconds == stored, "read live: stored \(stored)")
+                let relaunched = build(UserDefaults(suiteName: suite)!)
+                #expect(relaunched?.minimumRunSeconds == stored, "a later controller reads \(stored) too")
+                #expect(first.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) as? Int == stored,
+                        "reading never rewrites the stored \(stored)")
+            }
+            first.set(0, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            #expect(first.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) != nil,
+                    "a stored 0 is a value, not an absence")
+            first.removeObject(forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            #expect(unset.minimumRunSeconds == 60, "only removing it brings the default back")
         }
     }
 

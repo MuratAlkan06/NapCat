@@ -71,7 +71,8 @@ enum SettingsRow: Equatable, Sendable {
     /// feedback (`SendFeedbackButton`).
     case ntfyButtons
     /// The session alerts' run-floor popup (issue #34): the stored floor, the
-    /// rows it offers, and the caption under it.
+    /// rows it offers ("Immediately" among them, issue #242), and the
+    /// caption under it, which follows the floor.
     case minimumRun(label: String, seconds: Int, choices: [Int], caption: String)
     /// The phone transport checkbox (F3 stage 1) and its hint.
     case phoneAlerts(title: String, isOn: Bool, hint: String)
@@ -223,7 +224,8 @@ extension MenuStateModel {
             let floor = sessionAlerts.minimumRunSeconds
             sections.append(SettingsSection(title: sessionAlertsFloorGroupTitle, rows: [
                 .minimumRun(label: sessionAlertsFloorLabel, seconds: floor,
-                            choices: sessionAlertsFloorChoices(seconds: floor), caption: sessionAlertsFloorCaption),
+                            choices: sessionAlertsFloorChoices(seconds: floor),
+                            caption: sessionAlertsFloorCaption(seconds: floor)),
             ]))
         }
         var history: [SettingsRow] = [.line(lidLastSend)]
