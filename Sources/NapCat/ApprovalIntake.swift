@@ -6,7 +6,8 @@ import NapCatWire
 // Every prompt frame from a channel server is read by the strict frame reader
 // (ApprovalChannel.frame), checked again for the server's version and its
 // confirmed client (#150), and classified by the category gate
-// (ApprovalGate.classify, with the alert topic as a secret) BEFORE its
+// (ApprovalGate.classify, with the alert topic, under the listed commands
+// alone: `ApprovalForwardingSet.listedOnly`) BEFORE its
 // lifecycle opens; the lifecycle (ApprovalLifecycle) alone decides what
 // happens next, and this type only performs the effects it returns. The ONE
 // verdict frame it ever writes is the lifecycle's `.deliverVerdict` — the
@@ -288,7 +289,7 @@ final class ApprovalIntake {
         // look for: the prompt is then secret access, whatever it is.
         let known = secrets()
         let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,
-                                                   secrets: known ?? []).failingClosed(secretsKnown: known != nil)
+                                                   topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)
                                                    .requiringCopy(copy)
         let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())
         prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,
@@ -426,5 +427,16 @@ final class ApprovalIntake {
                 records.retract(id)
             }
         }
+    }
+
+    /// The alert topic as the gate's floor reads it, from the secrets the
+    /// lid guard gave (`secrets`): none readable (nil) is `unreadable`, none
+    /// set is `absent`, one is its value (an empty one the floor reads as
+    /// unreadable), and more than one, which no single check covers, is
+    /// `unreadable`.
+    static func floorTopic(_ secrets: [String]?) -> ApprovalFloorTopic {
+        guard let secrets else { return .unreadable }
+        guard let topic = secrets.first else { return .absent }
+        return secrets.count == 1 ? .value(Array(topic.utf8)) : .unreadable
     }
 }

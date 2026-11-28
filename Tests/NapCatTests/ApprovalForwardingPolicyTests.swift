@@ -5,11 +5,12 @@ import AppKit
 import NapCatWire
 import Testing
 
-/// #248: the forwarding policy model, pure and unwired. The stored text has
-/// one spelling, which the reader takes and nothing else; the effective set
-/// is the listed commands alone unless every condition holds; one function
-/// is the only way to a wider set; the two identity facts are false
-/// literals; and no source but the model's own file names its types.
+/// #248: the forwarding policy model, pure. The stored text has one
+/// spelling, which the reader takes and nothing else; the effective set is
+/// the listed commands alone unless every condition holds; one function is
+/// the only way to a wider set; the two identity facts are false literals;
+/// no source but the model's own file and the gate names its types; and the
+/// intake hands the gate the listed commands alone.
 struct ApprovalForwardingPolicyTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
     typealias RecordPath = ApprovalRecordPathStructureTests
@@ -589,21 +590,43 @@ struct ApprovalForwardingPolicyTests {
         ApprovalChannelStructureTests.mutate(sources, name, transform)
     }
 
-    // MARK: Unwired
+    // MARK: Wired to the gate alone
 
     /// The model's types, matched as whole words.
     static let policyTypes = ["ApprovalPromptKind", "ApprovalRiskyKind", "ApprovalSwitchOrigin", "ApprovalRiskySwitch",
                               "ApprovalStoredPolicy", "ApprovalForwardingSet", "ApprovalForwardingPolicy"]
     static let typePattern = #"\b(?:"# + policyTypes.joined(separator: "|") + #")\b"#
 
-    /// Where a source other than the model's own file names its types, line
-    /// by line: nowhere yet (#248 is unwired). Outside Sources/NapCatWire
-    /// nothing may; a later slice that wires the model adds its lines here.
-    static let wiredSites: [String: [String: Int]] = [:]
+    static let gatePath = "Sources/NapCatWire/ApprovalClassification.swift"
+    static let intakePath = "Sources/NapCat/ApprovalIntake.swift"
 
-    static func unwiredFailures(_ sources: Sources) -> [String] {
+    /// Where a source other than the model's own file names its types, line
+    /// by line: the gate alone, which takes the effective set, gives its
+    /// families their risky kinds and its rows their kinds. Nothing else
+    /// may: no source reads a stored policy, a switch or the effective
+    /// function.
+    static let wiredSites: [String: [String: Int]] = [
+        gatePath: [
+            "var riskyKind: ApprovalRiskyKind {": 1,
+            "policy: ApprovalForwardingSet) -> ApprovalClassification {": 1,
+            "var riskyKinds: Set<ApprovalRiskyKind> { Set(families.map(\\.riskyKind)) }": 1,
+            "func firstUnadmitted(by policy: ApprovalForwardingSet) -> ApprovalSuppression? {": 1,
+            "let kind: ApprovalPromptKind": 1,
+        ],
+    ]
+
+    /// The one set a source hands the gate, outside the model's file: the
+    /// listed commands alone, at the intake's one classify call.
+    static let listedOnlySites: [String: [String: Int]] = [
+        intakePath: ["topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)": 1],
+    ]
+
+    static func wiringFailures(_ sources: Sources) -> [String] {
         var failures = PairingStructureTests.appSiteFailures(typePattern, in: sources.filter { $0.name != policyPath }, allowed: wiredSites,
-                                                             rule: "no source but the model's own file names its types (#248: unwired)")
+                                                             rule: "the gate alone names the model's types, on these lines")
+        failures += PairingStructureTests.appSiteFailures(#"\blistedOnly\b"#, in: sources.filter { $0.name != policyPath },
+                                                          allowed: listedOnlySites,
+                                                          rule: "the intake's one classify call hands the gate the listed commands alone")
         let own = ApprovalChannelStructureTests.text(policyPath, in: sources)
         for type in policyTypes where !own.contains("public enum " + type) && !own.contains("public struct " + type) {
             failures.append("\(type) is not declared in \(policyPath) — the lock would be vacuous")
@@ -611,18 +634,29 @@ struct ApprovalForwardingPolicyTests {
         return failures
     }
 
-    @Test func noSourceButTheModelsOwnNamesItsTypes() throws {
+    @Test func onlyTheGateNamesTheModelAndTheIntakeHandsItTheListedCommands() throws {
         let sources = try Self.sources()
-        #expect(Self.unwiredFailures(sources).isEmpty, "\(Self.unwiredFailures(sources))")
+        #expect(Self.wiringFailures(sources).isEmpty, "\(Self.wiringFailures(sources))")
         #expect(sources.contains { $0.name.hasPrefix("ios/NapCatPhone/NapCatPhone/") }, "vacuity: the phone app is read")
-        #expect(sources.contains { $0.name == "Sources/NapCat/ApprovalIntake.swift" }, "vacuity: the app is read")
+        #expect(sources.contains { $0.name == Self.intakePath }, "vacuity: the app is read")
         #expect(sources.contains { $0.name == Self.policyPath }, "vacuity: the model is read")
+        let intakeLine = "topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)"
+        let wider = "topic: Self.floorTopic(known), policy: ApprovalForwardingPolicy.effective(stored: zzStored, pairingInForce: zzPairing, "
+            + "mainSwitchOn: true, peerCodeConfirmed: true, promptsMacSigned: true, protectedStoreAvailable: true))"
+            + ".failingClosed(secretsKnown: known != nil)"
         let mutants: [(String, Sources)] = [
-            ("the app names the set", Self.mutate(sources, "Sources/NapCat/ApprovalIntake.swift") {
+            ("the app names the set", Self.mutate(sources, Self.intakePath) {
                 $0 + "\nlet zzSet = ApprovalForwardingSet.listedOnly" }),
-            ("the gate calls the function", Self.mutate(sources, "Sources/NapCatWire/ApprovalClassification.swift") {
+            ("a wider set at the intake's call", Self.mutate(sources, Self.intakePath) {
+                $0.replacingOccurrences(of: intakeLine, with: wider) }),
+            ("a second listed-only set in the app", Self.mutate(sources, "Sources/NapCat/RemoteApprovalsController.swift") {
+                $0 + "\nlet zzPolicy: Int = 0; let zz = zzPolicy == 0 ? 1 : 2; let listedOnly = zz" }),
+            ("the gate calls the function", Self.mutate(sources, Self.gatePath) {
                 $0 + "\nlet zzSet = ApprovalForwardingPolicy.effective(stored: nil, pairingInForce: nil, mainSwitchOn: true, "
                     + "peerCodeConfirmed: true, promptsMacSigned: true, protectedStoreAvailable: true)" }),
+            ("the gate picks its own set", Self.mutate(sources, Self.gatePath) {
+                $0.replacingOccurrences(of: "guard policy.admits(row.kind, carrying: found.riskyKinds) else {",
+                                        with: "guard ApprovalForwardingSet.listedOnly.admits(row.kind, carrying: found.riskyKinds) else {") }),
             ("the phone names a risky kind", Self.mutate(sources, "ios/NapCatPhone/NapCatPhone/Model/RequestInbox.swift") {
                 $0 + "\nlet zzKind: ApprovalRiskyKind = .secrets" }),
             ("the seam names the stored policy, module-qualified", Self.mutate(sources, "Sources/NapCatSeam/SeamSocket.swift") {
@@ -638,16 +672,16 @@ struct ApprovalForwardingPolicyTests {
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
-            #expect(!Self.unwiredFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+            #expect(!Self.wiringFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
         // Over-match controls: a comment naming a type, and names that only
-        // contain one.
-        let controls = Self.mutate(sources, "Sources/NapCat/ApprovalIntake.swift") {
-            $0 + LidGuardStructureTests.codeOnly("\n// A later slice hands the gate an ApprovalForwardingSet.\n")
-                + "\nlet zzApprovalRiskyKind = 1, approvalForwardingSetNote = 2, ApprovalPromptKinds = 3\n"
+        // contain one or the constant's.
+        let controls = Self.mutate(sources, Self.intakePath) {
+            $0 + LidGuardStructureTests.codeOnly("\n// A later slice hands the gate an ApprovalForwardingSet, not listedOnly.\n")
+                + "\nlet zzApprovalRiskyKind = 1, approvalForwardingSetNote = 2, ApprovalPromptKinds = 3, zzListedOnlyCount = 4\n"
         }
         #expect(controls.map { $0.text } != sources.map { $0.text }, "the controls applied")
-        #expect(Self.unwiredFailures(controls).isEmpty, "over-match: \(Self.unwiredFailures(controls))")
+        #expect(Self.wiringFailures(controls).isEmpty, "over-match: \(Self.wiringFailures(controls))")
     }
 
     // MARK: The identity facts' literals

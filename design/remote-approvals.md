@@ -167,9 +167,13 @@ interactive Claude Code sessions, away from the keyboard.
   prompts that can leave the Mac are Bash prompts whose whole command is one
   of the listed commands. The gate judges the prompt, not what an approved
   command then does: a listed command runs the project's own build files,
-  tests and git configuration. `Sources/NapCatWire` also holds the name
-  tables and text scans of a never-sent floor (`ApprovalFloor`), which the
-  gate does not call yet.
+  tests and git configuration. The gate checks every prompt against a
+  never-sent floor first (`ApprovalFloor`): the alert topic, NapCat's own
+  names, its privileged footprint and source tree, the keychain, Claude
+  Code's helper files and the `claude` command, and the signing and iCloud
+  tools. A floor match is kept under every setting, and a listed command is
+  kept on the Mac when the prompt Claude Code sends alongside it names
+  something on the floor (see "The gate's order (#253)").
 - **Classification and display rely on the tool name and the parsed input
   preview, never on the description.** The S-1 spike showed why: the
   description is often the tool's generic text, while the preview carries the
@@ -389,7 +393,8 @@ napcat-channel-version: 3
 - **The intake** (`ApprovalIntake`, behind `ApprovalSeamHost`). For every
   prompt frame: the strict read, then (since #150) the frame's server
   version and client checked again against NapCat's own version and its
-  confirmed builds, then the gate (with the alert topic as a secret), then
+  confirmed builds, then the gate (with the alert topic, and the listed
+  commands alone as the set it may forward), then
   the lifecycle opens with the gate's answer. A frame from a server of
   another version, or for a client that is not exactly a confirmed build, is
   refused before anything is held (`seam.serverVersionRefused`,
@@ -659,6 +664,8 @@ this section points at them.
     so it cannot stop a waiting push from being dropped. Before anything
     produces evidence, such a prompt must also block the drop for the
     10-second window.
+  - An alert-topic item that exists must read as unreadable unless it
+    holds a valid value, before arming.
   - A refused Unpair is remembered in memory only and only by the pane:
     the decision verifier reads the slot itself, so the key the owner
     asked to remove would still verify, during the run and after a
@@ -1463,3 +1470,140 @@ buttons, and the inbox refuses an answer before it asks for a match.
   app's title over fixed words ("A permission prompt is waiting.") with
   the default sound: no record field, no action and no silent
   wake. Tapping it opens that prompt once the inbox holds it.
+
+## The gate's order (#253)
+
+#253 routes the category gate through the never-sent floor and the
+forwarding policy. Nothing is armed, and nothing forwards that did not
+before: the intake hands the gate the listed commands alone
+(`ApprovalForwardingSet.listedOnly`), no source reads a stored policy, the
+identity facts or the effective function, and `.forward` is still built
+once.
+
+- **The order.** The tool name's shape and the preview's size; the floor
+  over the tool name and the raw preview; the relay's placeholders, one
+  strict JSON object and hidden text; the floor again over every decoded
+  key and string, at every depth; the tool's row (an MCP tool and a tool
+  the table does not list have none) and its arguments; the floor's rule
+  that a command or a path is printable ASCII; the row's local-only code;
+  the set the gate is handed; the gate's own copy. The catalogue's
+  "Precedence" gives each step's codes.
+- **The floor's codes.** `floor.<group>` for a match (the first group, in
+  the floor's order) and `floorUnreadable.<reason>` when the floor cannot
+  judge the prompt (`topic`: the gate is told an alert topic exists but is
+  handed no value it can read; `notPrintableASCII`). A floor outcome keeps
+  the prompt at once, under every setting; it is its own code, never a
+  risky kind. A preview over the gate's size limit is kept before the
+  floor runs. The intake reads the lid guard's answer for the topic: none
+  readable is unreadable, none set is absent, one value is that value.
+- **Risky kinds.** Every forbidden family the row finds, and the relay's
+  credential placeholder (the secrets kind), is noted, every one, not only
+  the first. A prompt is forwarded only when the set admits its kind and
+  every risky kind it carries; the listed commands alone admit none. An
+  unsandboxed Bash run and a background run stay kept under every setting,
+  with their codes as before.
+- **The code a kept prompt is logged with.** A floor outcome first;
+  otherwise the first reason, in the order above, that the set does not
+  admit, a family before the row's other refusals. Under the listed
+  commands alone that is the code the gate logged before, unless the floor
+  names the prompt first.
+- **The one tightening.** A listed command is kept on the Mac when the
+  prompt Claude Code sends alongside it names something on the never-sent
+  floor: the description, which the model writes and which never leaves
+  the Mac, or another part of the preview the gate's copy leaves out. A
+  frozen copy of the gate as it was (`FrozenApprovalGate`, pinned by its
+  digest) is the oracle: on a seeded corpus of 50,000 prompts, and on every
+  catalogue row, the gate never forwards what the oracle keeps, never
+  forwards another copy, keeps what the oracle forwards only with a floor
+  group when the floor finds nothing in the oracle's copy, and changes a
+  kept prompt's code only to a floor code.
+- **Codes that changed.** Every catalogue row whose code changed, as the
+  tests name it (the made-up topic written `<topic>`); `ApprovalGateOracleTests`
+  proves no other row changed:
+
+| Row | Before | Now |
+| :- | :- | :- |
+| Bash: echo <topic>, with the topic | `forbidden.secretAccess` | `floor.alertTopic` |
+| before the preview parses, with the topic | `forbidden.secretAccess` | `floor.alertTopic` |
+| in a listed command's description, with the topic | `forbidden.secretAccess` | `floor.alertTopic` |
+| in content, with the topic | `forbidden.secretAccess` | `floor.alertTopic` |
+| JSON-escaped in content, with the topic | `forbidden.secretAccess` | `floor.alertTopic` |
+| Read: /Users/someone/project/<topic>.txt, with the topic | `forbidden.secretAccess` | `floor.alertTopic` |
+| Bash: cat '/Users/someone/project/.claude.json/file' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: cat '/Users/someone/project/.mcp.json/file' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: cat '/Users/someone/project/library/application support/claudecode/file' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: cat '/Users/someone/project/managed-mcp.json/file' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: cat '/Users/someone/project/managed-settings.json/file' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: cat .mcp.json | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: claude mcp add evil | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: claude x | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: echo '.mcp.json' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: echo '.MCP.JSON' | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Read: /Users/someone/project/.claude.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Read: /Users/someone/project/.mcp.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Read: /Users/someone/project/library/application support/claudecode/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Read: /Users/someone/project/managed-mcp.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Read: /Users/someone/project/managed-settings.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Library/Application Support/ClaudeCode/managed-settings.json | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/.claude.json | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/project/.claude.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /USERS/SOMEONE/PROJECT/.CLAUDE.JSON/FILE | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/project/.mcp.json | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/project/.mcp.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /USERS/SOMEONE/PROJECT/.MCP.JSON/FILE | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/project/library/application support/claudecode/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /USERS/SOMEONE/PROJECT/LIBRARY/APPLICATION SUPPORT/CLAUDECODE/FILE | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/project/managed-mcp.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /USERS/SOMEONE/PROJECT/MANAGED-MCP.JSON/FILE | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /Users/someone/project/managed-settings.json/file | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Write: /USERS/SOMEONE/PROJECT/MANAGED-SETTINGS.JSON/FILE | `forbidden.configurationOrHooks` | `floor.claudeCodeHelpers` |
+| Bash: cat '/Users/someone/project/keychains/file' | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: cat '/Users/someone/project/x.keychain' | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: cat '/Users/someone/project/x.keychain-db' | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: echo 'keychain' | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: echo 'KEYCHAIN' | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: ls ~/Library/Keychains | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: security find-generic-password -s x -w | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: security x | `forbidden.secretAccess` | `floor.keychain` |
+| Read: /Users/someone/Library/Keychains/login.keychain-db | `forbidden.secretAccess` | `floor.keychain` |
+| Read: /Users/someone/project/keychains/file | `forbidden.secretAccess` | `floor.keychain` |
+| Read: /Users/someone/project/x.keychain | `forbidden.secretAccess` | `floor.keychain` |
+| Read: /Users/someone/project/x.keychain-db | `forbidden.secretAccess` | `floor.keychain` |
+| Write: /Users/someone/project/keychains/file | `forbidden.secretAccess` | `floor.keychain` |
+| Write: /USERS/SOMEONE/PROJECT/KEYCHAINS/FILE | `forbidden.secretAccess` | `floor.keychain` |
+| Write: /Users/someone/project/x.keychain | `forbidden.secretAccess` | `floor.keychain` |
+| Write: /USERS/SOMEONE/PROJECT/X.KEYCHAIN | `forbidden.secretAccess` | `floor.keychain` |
+| Write: /Users/someone/project/x.keychain-db | `forbidden.secretAccess` | `floor.keychain` |
+| Write: /USERS/SOMEONE/PROJECT/X.KEYCHAIN-DB | `forbidden.secretAccess` | `floor.keychain` |
+| Bash: Security find-generic-password | `unclassifiable.commandNotInTable` | `floor.keychain` |
+| Bash: cat '/Users/someone/project/usr/local/napcat/file' | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Bash: echo '/usr/local/napcat' | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Bash: echo '/USR/LOCAL/NAPCAT' | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Bash: ls /usr/local/napcat | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Bash: sudo -n /usr/local/napcat/smc -k CHTE -r | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Read: /Users/someone/project/usr/local/napcat/file | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Write: /etc/sudoers.d/napcat | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Write: /Users/someone/project/usr/local/napcat/file | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Write: /USERS/SOMEONE/PROJECT/USR/LOCAL/NAPCAT/FILE | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Write: /usr/local/napcat/smc | `forbidden.privilegeEscalation` | `floor.ownNames` |
+| Bash: cat '/Users/someone/project/com.muratalkan.napcat.plist/file' | `forbidden.secretAccess` | `floor.ownNames` |
+| Bash: echo lidGuardNtfyTopic | `forbidden.secretAccess` | `floor.ownNames` |
+| Bash: echo ntfy-topic | `forbidden.secretAccess` | `floor.ownNames` |
+| Read: /Users/someone/Library/Preferences/com.muratalkan.napcat.plist | `forbidden.secretAccess` | `floor.ownNames` |
+| Read: /Users/someone/project/com.muratalkan.napcat.plist/file | `forbidden.secretAccess` | `floor.ownNames` |
+| the topic's keychain account named in content | `forbidden.secretAccess` | `floor.ownNames` |
+| Write: /Users/someone/project/com.muratalkan.napcat.plist/file | `forbidden.secretAccess` | `floor.ownNames` |
+| Write: /USERS/SOMEONE/PROJECT/COM.MURATALKAN.NAPCAT.PLIST/FILE | `forbidden.secretAccess` | `floor.ownNames` |
+| an MCP tool with no arguments | `localOnly.mcp` | `floor.ownNames` |
+| Write: /Users/someone/.claude/hooks/napcat-busy-hook.sh | `forbidden.configurationOrHooks` | `floor.privilegedFootprint` |
+| Bash: cat '/Users/someone/project/sudoers.d/file' | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Bash: cat '/Users/someone/project/sudoers/file' | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Bash: cat /etc/sudoers | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Bash: pmset -a disablesleep 1 | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Read: /private/etc/sudoers | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Read: /Users/someone/project/sudoers.d/file | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Read: /Users/someone/project/sudoers/file | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Write: /Users/someone/project/sudoers.d/file | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Write: /USERS/SOMEONE/PROJECT/SUDOERS.D/FILE | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Write: /Users/someone/project/sudoers/file | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |
+| Write: /USERS/SOMEONE/PROJECT/SUDOERS/FILE | `forbidden.privilegeEscalation` | `floor.privilegedFootprint` |

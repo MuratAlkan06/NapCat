@@ -148,7 +148,8 @@ struct ApprovalIntakeTests {
         GateRow(tool: "Write", preview: #"{"file_path":"/Users/someone/.claude/settings.json","content":"{}"}"#,
                 code: "forbidden.configurationOrHooks"),
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/.ssh/id_ed25519"}"#, code: "forbidden.secretAccess"),
-        GateRow(tool: "Bash", preview: #"{"command":"security find-generic-password"}"#, code: "forbidden.secretAccess"),
+        // The keychain's tool is on the gate's floor (#253): its own code.
+        GateRow(tool: "Bash", preview: #"{"command":"security find-generic-password"}"#, code: "floor.keychain"),
         GateRow(tool: "mcp__webhook__reply", preview: #"{"text":"hi"}"#, code: "localOnly.mcp"),
         GateRow(tool: "Write", preview: #"{"file_path":"/Users/someone/project/notes.md","content":"hello"}"#,
                 code: "localOnly.fileEdit"),
@@ -168,6 +169,10 @@ struct ApprovalIntakeTests {
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/(value unserializable)"}"#,
                 code: "unclassifiable.previewNotFaithful"),
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/[REDACTED].txt"}"#, code: "forbidden.secretAccess"),
+        // A listed command whose description holds the relay's credential
+        // placeholder (#253): the secrets kind, which the listed commands
+        // alone do not admit.
+        GateRow(tool: "Bash", preview: #"{"command":"git status","description":"token [REDACTED]"}"#, code: "forbidden.secretAccess"),
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/my notes.txt"}"#, code: "unclassifiable.pathNotCanonical"),
         // A double quote in a path (#159), and a forbidden one: its family.
         GateRow(tool: "Read", preview: #"{"file_path":"/Users/someone/project/a\",\"limit\":1"}"#,
@@ -186,8 +191,8 @@ struct ApprovalIntakeTests {
         #expect(harness.codes.last == "prompt=\(IntakeHarness.id(1).hex) ignored.notForwarded")
     }
 
-    /// The alert topic is a secret to the gate: a prompt that holds it is
-    /// secret access, whatever else it is.
+    /// The alert topic is on the gate's floor: a prompt that holds it is
+    /// kept with the floor's code, whatever else it is.
     @Test func theTopicIsASecretToTheGate() {
         let harness = IntakeHarness()
         let topic = "napcat-TESTONLYz9y8x7w6v5"
@@ -195,7 +200,7 @@ struct ApprovalIntakeTests {
         let preview = #"{"command":"git status","description":"echo "# + topic + #""}"#
         harness.receive("abcde", preview: preview)
         #expect(harness.sink.saved.isEmpty)
-        #expect(harness.codes == ["prompt=\(IntakeHarness.id(1).hex) suppressed.gate.forbidden.secretAccess"])
+        #expect(harness.codes == ["prompt=\(IntakeHarness.id(1).hex) suppressed.gate.floor.alertTopic"])
         harness.secrets = []
         harness.receive("bcdef", preview: preview)
         #expect(harness.sink.saved.count == 1, "baseline: without the secret the same prompt forwards")
@@ -504,8 +509,7 @@ struct ApprovalIntakeTests {
     /// Every code the intake can log, built from the S0 enums: the whole
     /// vocabulary, nothing else.
     static var vocabulary: Set<String> {
-        let suppressions = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) }
-            + [.localOnlyMCP, .localOnlyFileEdit, .localOnlyRead] + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
+        let suppressions = ApprovalClassificationTests.everySuppression
         let audits: [ApprovalAudit] = suppressions.map { .suppressed(.gate($0)) } + [.suppressed(.notArmed), .forwarded, .forwardFailed]
             + ApprovalWire.Verdict.allCases.map { .decided(.remote($0)) } + [.decided(.local), .expired]
             + ApprovalIgnoreReason.allCases.map { .ignored($0) } + ApprovalRetraction.allCases.map { .retracted($0) }
@@ -539,7 +543,7 @@ struct ApprovalIntakeTests {
             }
             #expect(Self.vocabulary.contains(String(words)), "'\(code)' is outside the audit vocabulary")
         }
-        #expect(Self.vocabulary.count == 19 + 3 + 4 + 7 + 2 + 9, "vacuity: the whole vocabulary")
+        #expect(Self.vocabulary.count == 9 + 19 + 3 + 4 + 7 + 2 + 9, "vacuity: the whole vocabulary (the floor's nine codes first, #253)")
     }
 
     // MARK: - What a waiting alert reads (#216)

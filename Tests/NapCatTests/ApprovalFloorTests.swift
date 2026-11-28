@@ -13,9 +13,9 @@ import Testing
 /// connector's argument, a tool name); both look-alike letters, both sharp
 /// s letters and two ligatures are caught through the fold; each name that
 /// mirrors a constant matches that constant's definition;
-/// ordinary text is not matched; the outcome carries closed codes only; and
-/// nothing calls the floor yet. Fixtures are synthetic: made-up topics, no
-/// real home folder.
+/// ordinary text is not matched; the outcome carries closed codes only; the
+/// topic never prints; and the gate alone calls the floor. Fixtures are
+/// synthetic: made-up topics, no real home folder.
 struct ApprovalFloorTests {
     // MARK: - Fixtures
 
@@ -1003,21 +1003,70 @@ struct ApprovalFloorTests {
         }
     }
 
-    // MARK: - Unwired
+    // MARK: - The topic never prints
 
-    /// Nothing calls the floor yet: no file of the four Mac targets but the
-    /// floor's own, and no phone source, names it; so the gate's file is as
-    /// it was.
-    static func callerFailures(_ sources: ApprovalChannelStructureTests.Sources) -> [String] {
-        sources.filter { $0.name != floorFile && $0.text.contains("ApprovalFloor") }.map { "\($0.name) names the floor" }
+    /// A topic value describes, debug-describes, dumps and reflects as fixed
+    /// text with no children, however it is wrapped, so neither the topic's
+    /// text nor its bytes can be printed by accident.
+    @Test func theTopicNeverPrints() {
+        let topic = ApprovalFloorTopic.value(Array(Self.topic.utf8))
+        var dumped = ""
+        dump(topic, to: &dumped)
+        dump([topic], to: &dumped)
+        dump(Optional(topic), to: &dumped)
+        var printed = ""
+        print(topic, [topic], Optional(topic) as Any, to: &printed)
+        debugPrint(topic, to: &printed)
+        let texts: [String] = [String(describing: topic), String(reflecting: topic), "\(topic)", "\([topic])", dumped, printed,
+                               topic.description, topic.debugDescription]
+        let bytes = Array(Self.topic.utf8).map(String.init).joined(separator: ", ")
+        for text in texts {
+            #expect(!text.contains(Self.topic) && !text.contains(bytes) && !text.contains(String(Self.topic.utf8.first ?? 0) + ","),
+                    "the topic shows: \(text)")
+            #expect(text.contains("alert topic (redacted)"), "\(text)")
+        }
+        #expect(Mirror(reflecting: topic).children.isEmpty)
+        #expect(Mirror(reflecting: [topic]).children.allSatisfy { Mirror(reflecting: $0.value).children.isEmpty })
+        // Control: the same bytes, unwrapped, print as numbers.
+        #expect(String(describing: Array(Self.topic.utf8)).contains(bytes))
     }
 
-    @Test func nothingCallsTheFloorYet() throws {
+    // MARK: - Wired: the gate alone calls the floor
+
+    /// Where a source of the four Mac targets other than the floor's own
+    /// names the floor, line by line: the gate's file, which holds the
+    /// floor's codes, calls the floor three times in `classify` (the raw
+    /// text, the decoded strings, the strings its row reads as names) and
+    /// reads its outcome and its topic; and the intake, which maps the lid
+    /// guard's answer to a topic. No phone source names it.
+    static let callSites: [String: [String: Int]] = [
+        "ApprovalClassification.swift": [
+            "case floor(ApprovalFloorGroup)": 1,
+            "case floorUnreadable(ApprovalFloorUnreadable)": 1,
+            "public static func classify(toolName: String, inputPreview: String, topic: ApprovalFloorTopic,": 1,
+            "if let floor = floorRefusal(ApprovalFloor.outcome(of: [.naming(toolName), .freeText(inputPreview)], topic: topic)) {": 1,
+            "if let floor = floorRefusal(ApprovalFloor.outcome(of: strings.map { .freeText($0) }, topic: topic)) {": 1,
+            "let names: [ApprovalFloorString] = ([toolName] + namingStrings(members, row)).map { .naming($0) }": 1,
+            "if let floor = floorRefusal(ApprovalFloor.outcome(of: names, topic: topic)) {": 1,
+            "static func floorRefusal(_ outcome: ApprovalFloorOutcome) -> ApprovalSuppression? {": 1,
+            "static func topicBytes(_ topic: ApprovalFloorTopic) -> [[UInt8]] {": 1,
+        ],
+        "ApprovalIntake.swift": ["static func floorTopic(_ secrets: [String]?) -> ApprovalFloorTopic {": 1],
+    ]
+    static let floorPattern = #"\bApprovalFloor\w*"#
+
+    static func callerFailures(_ sources: ApprovalChannelStructureTests.Sources) -> [String] {
+        PairingStructureTests.appSiteFailures(floorPattern, in: sources.filter { $0.name != floorFile }, allowed: callSites,
+                                              rule: "the gate alone calls the floor, at its three passes, and the intake maps the topic")
+    }
+
+    @Test func theGateAloneCallsTheFloor() throws {
         let sources = try ApprovalChannelStructureTests.sources()
         #expect(sources.contains { $0.name == Self.floorFile }, "vacuity: the scan reads the floor's file")
         #expect(sources.contains { $0.name == "ApprovalClassification.swift" }, "vacuity: the scan reads the gate's file")
         #expect(Self.callerFailures(sources).isEmpty, "\(Self.callerFailures(sources))")
-        #expect(!(try WireContractTests.wireCode("ApprovalClassification.swift")).contains("ApprovalFloor"))
+        let gate = ApprovalChannelStructureTests.text("ApprovalClassification.swift", in: sources)
+        #expect(ApprovalChannelStructureTests.count("ApprovalFloor.outcome(", in: gate) == 3, "vacuity: the three passes")
         let phone = LidGuardStructureTests.repoRoot().appendingPathComponent("ios/NapCatPhone/NapCatPhone")
         var phoneFiles = 0
         if let walker = FileManager.default.enumerator(at: phone, includingPropertiesForKeys: nil) {
@@ -1028,10 +1077,25 @@ struct ApprovalFloorTests {
             }
         }
         #expect(phoneFiles > 0, "vacuity: the phone's sources were read")
-        // The lock can fail: a call planted in the gate's file is seen.
-        let planted = ApprovalChannelStructureTests.mutate(sources, "ApprovalClassification.swift") {
-            $0 + "\nlet zz = ApprovalFloor.outcome(of: [], topic: .absent)"
+        // The lock can fail: a fourth pass in the gate, a call elsewhere in
+        // the wire, a call in the app, a pass dropped, and the topic built in
+        // another file are each seen.
+        let mutants: [(String, ApprovalChannelStructureTests.Sources)] = [
+            ("a fourth pass", ApprovalChannelStructureTests.mutate(sources, "ApprovalClassification.swift") {
+                $0 + "\nlet zz = ApprovalFloor.outcome(of: [], topic: .absent)" }),
+            ("a call in the wire", ApprovalChannelStructureTests.mutate(sources, "ApprovalChannel.swift") {
+                $0 + "\nlet zz = ApprovalFloor.outcome(of: [], topic: .absent)" }),
+            ("a call in the app", ApprovalChannelStructureTests.mutate(sources, "ApprovalIntake.swift") {
+                $0 + "\nlet zz = ApprovalFloor.matchedGroups([], topic: .absent)" }),
+            ("the second pass dropped", ApprovalChannelStructureTests.mutate(sources, "ApprovalClassification.swift") {
+                $0.replacingOccurrences(of: "if let floor = floorRefusal(ApprovalFloor.outcome(of: strings.map { .freeText($0) }, topic: topic)) {",
+                                        with: "if let floor = floorRefusal(.noMatch) {") }),
+            ("a topic built in the toggle", ApprovalChannelStructureTests.mutate(sources, ApprovalChannelStructureTests.toggleFile) {
+                $0 + "\nlet zzTopic: ApprovalFloorTopic = .absent" }),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
+            #expect(!Self.callerFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
-        #expect(!Self.callerFailures(planted).isEmpty)
     }
 }
