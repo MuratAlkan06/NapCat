@@ -563,8 +563,9 @@ struct PairingPresentationTests {
     }
 
     /// The group sits in Remote approvals, after the switch and its policy
-    /// line, whatever the switch says (ratified: visible while off).
-    @Test func thePairingRowsCloseTheRemoteApprovalsGroup() {
+    /// line, whatever the switch says (ratified: visible while off) — and
+    /// before the Advanced section (#252), which closes the group.
+    @Test func thePairingRowsFollowTheSwitchInTheRemoteApprovalsGroup() {
         let status = PanelLine(text: "Claude: idle", severity: .nominal)
         let policy = PanelLine(text: "policy", severity: .nominal)
         for isOn in [false, true] {
@@ -572,7 +573,8 @@ struct PairingPresentationTests {
                                                  approvals: (isOn: isOn, status: status, policy: policy), pairing: .notPaired)
             let rows = pane.sections.last?.rows ?? []
             #expect(pane.sections.last?.title == MenuStateModel.remoteApprovalsToggleTitle)
-            #expect(Array(rows.suffix(3)) == [.line(policy)] + MenuStateModel.pairingRows(.notPaired), "isOn \(isOn)")
+            #expect(Array(rows.suffix(4)) == [.line(policy)] + MenuStateModel.pairingRows(.notPaired)
+                        + [MenuStateModel.approvalsAdvancedRow], "isOn \(isOn)")
         }
         let without = MenuStateModel.claudePane(status: status, hook: status, hookVersion: nil, awake: nil, paused: false,
                                                 approvals: (isOn: false, status: status, policy: nil))

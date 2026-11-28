@@ -478,6 +478,18 @@ It builds controls only: nothing can be forwarded yet.
   is next read (when the menu or Settings next opens, or at the next
   launch); a store that never kept the write can read on again then.
   Quitting NapCat is the same stop, final.
+- **The Advanced section (#252).** The group in Settings › Claude ends
+  with a collapsed Advanced section: a switch for each riskier kind of
+  prompt (admin commands; Claude settings and startup files; secrets), a
+  checkbox for whether the iPhone may turn them on, and what is never
+  sent. It is shown only: every control in it is disabled, drawn over a
+  fixed value (the switches off, the checkbox ticked) with no setting
+  stored behind it, so it changes nothing, and a line says these stay on
+  this Mac in this version. Open, that line and the controls' labels are
+  its only text: the section's intro, each control's caption and what is
+  never sent sit behind info circles, each a tooltip that VoiceOver also
+  reads. It starts collapsed whenever the pane is built, and opens and
+  closes without motion.
 - **Behind the toggle only.** Until the first switch-on nothing exists: no
   host, no socket or socket directory, no listener, no probe, no timer. Once
   off completes, no socket, listener, connection, probe or timer remains; the
