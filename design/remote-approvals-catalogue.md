@@ -100,9 +100,11 @@ names the path) unless its preview, its keys or its path's shape are
 malformed, and a malformed Read keeps its `unclassifiable` code; every other
 Read is `localOnly.read`. NapCat's intake then applies its own holds: an
 alert-topic item that exists reads as unreadable unless it holds a valid
-value (exactly the value the alerts are sent to), and then every prompt is
-kept as `forbidden.secretAccess`; and while the feature is unarmed (every
-build so far) each prompt the gate classified is logged
+value, exactly the value the alerts are sent to, read from the item itself
+at launch; a launch that could not finish moving the topic into the
+keychain reads as unreadable; while the topic reads as unreadable every
+prompt is kept as `forbidden.secretAccess`; and while the feature is
+unarmed (every build so far) each prompt the gate classified is logged
 `suppressed.notArmed` instead of the gate's code.
 
 ## The never-sent floor
