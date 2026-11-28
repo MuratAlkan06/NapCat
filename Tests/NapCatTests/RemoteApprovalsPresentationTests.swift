@@ -196,6 +196,40 @@ struct RemoteApprovalsPresentationTests {
                 "C1: the panel row adds two words")
     }
 
+    /// #252: the Advanced section's words, each exact, in the order the
+    /// section shows them. User words, never the alert lane or the
+    /// transport; and the line that says why nothing there can change yet
+    /// promises no date, number or release.
+    @Test func theAdvancedCopy() {
+        let copy: [(text: String, expected: String)] = [
+            (MenuStateModel.advancedTitle, "Advanced"),
+            (MenuStateModel.advancedIntro, "Riskier kinds of prompt. Each stays on this Mac until you turn its switch on, and "
+                + "then stays on until you turn it off. Turning one on needs Touch ID or your password."),
+            (MenuStateModel.advancedUnavailable, "Not available yet — these stay on this Mac in this version."),
+            (MenuStateModel.advancedAdminTitle, "Admin commands"),
+            (MenuStateModel.advancedAdminCaption, "sudo and similar commands, system folders. One Allow can change the whole Mac."),
+            (MenuStateModel.advancedClaudeSettingsTitle, "Claude settings and startup files"),
+            (MenuStateModel.advancedClaudeSettingsCaption, "Claude's settings and hooks, git hooks, shell startup files. A change "
+                + "here can run later, or stop Claude asking at all."),
+            (MenuStateModel.advancedSecretsTitle, "Secrets"),
+            (MenuStateModel.advancedSecretsCaption, "Key, token and password files, and commands holding a credential. Their "
+                + "text goes to your iPhone through iCloud."),
+            (MenuStateModel.advancedPhoneTitle, "Let my iPhone turn these on"),
+            (MenuStateModel.advancedPhoneCaption, "A notice on the iPhone can turn one on with Face ID. Off: only this Mac can."),
+            (MenuStateModel.advancedNeverSent, "Never sent, and there is no switch for it: NapCat's own pairing and settings, "
+                + "your alert topic, your keychain, and Claude Code's helper list."),
+        ]
+        for (text, expected) in copy {
+            #expect(text == expected)
+            #expect(!text.lowercased().contains("ntfy") && !text.contains("CloudKit"), "'\(text)' — user words, not the transport")
+        }
+        let why = MenuStateModel.advancedUnavailable
+        #expect(why.rangeOfCharacter(from: .decimalDigits) == nil, "no date or version number")
+        for promise in ["soon", "next", "update", "release", "when"] {
+            #expect(!why.lowercased().contains(promise), "the line promises '\(promise)'")
+        }
+    }
+
     @Test func theRowSymbolResolvesAndIsItsOwn() {
         #expect(PanelSymbol.all.contains(PanelSymbol.remoteApprovals))
         #expect(NSImage(systemSymbolName: PanelSymbol.remoteApprovals, accessibilityDescription: nil) != nil)

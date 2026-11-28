@@ -3155,6 +3155,15 @@ struct DecisionSinkStructureTests {
         "nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingRows(_ pane: PairingPaneState) -> [SettingsRow] {": 1,
+        // #252: the Advanced section.
+        #"nonisolated static let advancedTitle = "Advanced""#: 1, "nonisolated static let advancedIntro =": 1,
+        "nonisolated static let advancedUnavailable =": 1, #"nonisolated static let advancedAdminTitle = "Admin commands""#: 1,
+        "nonisolated static let advancedAdminCaption =": 1,
+        #"nonisolated static let advancedClaudeSettingsTitle = "Claude settings and startup files""#: 1,
+        "nonisolated static let advancedClaudeSettingsCaption =": 1, #"nonisolated static let advancedSecretsTitle = "Secrets""#: 1,
+        "nonisolated static let advancedSecretsCaption =": 1,
+        #"nonisolated static let advancedPhoneTitle = "Let my iPhone turn these on""#: 1,
+        "nonisolated static let advancedPhoneCaption =": 1, "nonisolated static let advancedNeverSent =": 1,
     ]
     /// The wire's extension of its channel, line by line.
     static let channelMembers: [String: Int] = [

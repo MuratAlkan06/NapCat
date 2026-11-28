@@ -357,4 +357,30 @@ extension MenuStateModel {
                     .pairingButtons(paired: false, retry: true)]
         }
     }
+
+    // MARK: Advanced (#252)
+
+    /// The Advanced section's words: the riskier kinds of prompt, each with
+    /// its caption; whether the iPhone may turn them on; what is never
+    /// sent; and why nothing in the section can change in this build
+    /// (`advancedUnavailable`).
+    nonisolated static let advancedTitle = "Advanced"
+    nonisolated static let advancedIntro =
+        "Riskier kinds of prompt. Each stays on this Mac until you turn its switch on, and then stays on until you turn it off. Turning one on needs Touch ID or your password."
+    nonisolated static let advancedUnavailable =
+        "Not available yet — these stay on this Mac in this version."
+    nonisolated static let advancedAdminTitle = "Admin commands"
+    nonisolated static let advancedAdminCaption =
+        "sudo and similar commands, system folders. One Allow can change the whole Mac."
+    nonisolated static let advancedClaudeSettingsTitle = "Claude settings and startup files"
+    nonisolated static let advancedClaudeSettingsCaption =
+        "Claude's settings and hooks, git hooks, shell startup files. A change here can run later, or stop Claude asking at all."
+    nonisolated static let advancedSecretsTitle = "Secrets"
+    nonisolated static let advancedSecretsCaption =
+        "Key, token and password files, and commands holding a credential. Their text goes to your iPhone through iCloud."
+    nonisolated static let advancedPhoneTitle = "Let my iPhone turn these on"
+    nonisolated static let advancedPhoneCaption =
+        "A notice on the iPhone can turn one on with Face ID. Off: only this Mac can."
+    nonisolated static let advancedNeverSent =
+        "Never sent, and there is no switch for it: NapCat's own pairing and settings, your alert topic, your keychain, and Claude Code's helper list."
 }
