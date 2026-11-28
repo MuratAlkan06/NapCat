@@ -758,16 +758,22 @@ silences both pushes, and the row says so.
   is accepted — a session alert is never the first thing your topic is trusted
   with. The two toggles are otherwise independent.
 - **A minimum run before either push fires** — configurable, default 60 s
-  (measured from when the session became busy): a quick answer, or a permission
-  prompt seconds after you hit Enter, stays quiet — you are still looking.
-  Choose it in **Settings › Alerts** ("Only alert for runs longer than"), or
-  under **ntfy settings… → Session alerts**: 30 seconds, or 1, 2, 5 or 10
-  minutes. One value
+  (measured from when the session became busy): with one, a quick answer, or a
+  permission prompt seconds after you hit Enter, stays quiet — you are still
+  looking. Choose it in **Settings › Alerts** ("Minimum run before alerting"),
+  or under **ntfy settings… → Session alerts**: Immediately, 30 seconds, or 1,
+  2, 5 or 10 minutes. One value
   covers both pushes, and a change takes effect at once, without restarting
   NapCat. Any other whole number of seconds from 30 to 600 can be set with
   `defaults write com.muratalkan.napcat finishAlertMinimumRunSeconds -int <seconds>`
-  (values outside that range are clamped); the dialog shows it as its own entry
-  and keeps it until you save a different choice.
+  (0 is Immediately; any other value outside 30 to 600 is clamped); the dialog
+  shows it as its own entry and keeps it until you save a different choice.
+- **Immediately means no minimum.** Every finish and every wait pushes,
+  however short the run, and finishes close together still fold into one
+  message. A push for a run under a minute names no minutes ("A Claude
+  session finished — none still working", "Claude is waiting for you").
+  NapCat reads the marker folder once it has been quiet for 2 seconds, so a
+  run or a wait that is over within 2 seconds can go unseen and push nothing.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
   — none still working"), which also keeps the feed clear of ntfy's rate limit.
 - **One waiting push per turn**, unless the session stops or resumes in between.
@@ -1001,7 +1007,7 @@ command, then delete
   episode start, so until the hook is reinstalled such a session is still
   re-anchored at its latest hook event: the minutes in its pushes can come out
   low or be left out, and a run that ends within the minimum run (60 seconds by
-  default) of that point stays quiet. Upgrade in this order: rebuild and
+  default, none with Immediately) of that point stays quiet. Upgrade in this order: rebuild and
   relaunch NapCat first, then reinstall the hook
   (`./scripts/install-claude-busy-hook.sh`) and start a new Claude Code
   session. A NapCat build older than the hook cannot read version 7 markers at

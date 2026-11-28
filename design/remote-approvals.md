@@ -522,7 +522,10 @@ It builds controls only: nothing can be forwarded yet.
   prompts the read saw, not which. When a change holds exactly one waiting
   write and the read finds exactly one new prompt, with evidence, its plain
   waiting push, if it has one, is dropped; the finish pushes in it still go
-  out. A waiting push that does go out leaves the prompts with evidence out
+  out. A wait under Session alerts' minimum run has no push to drop, and its
+  prompt is used up all the same; with the Immediately choice there is no
+  minimum, so a short wait has a push too, and that push is what is dropped.
+  A waiting push that does go out leaves the prompts with evidence out
   of its count. Nothing in the app sets that evidence yet (the record path
   that will is not live, and the host is never armed), so no push is dropped
   and every push reads as before.
