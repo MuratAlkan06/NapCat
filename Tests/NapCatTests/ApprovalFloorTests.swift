@@ -108,6 +108,11 @@ struct ApprovalFloorTests {
         row(.bashCommand, "open -a NapCat", [.ownNames]),
         row(.bashCommand, "open -aNapCat", [.ownNames]),
         row(.bashCommand, "lldb -nNapCat", [.ownNames]),
+        row(.bashCommand, "open -gaNapCat", [.ownNames]),
+        row(.bashCommand, "open -gjaNapCat", [.ownNames]),
+        row(.bashCommand, "open -FnaNapCat", [.ownNames]),
+        row(.bashCommand, "lldb -wnNapCat", [.ownNames]),
+        row(.bashCommand, "pkill -fxNapCat", [.ownNames]),
         row(.bashCommand, "open -a Nap$'C'at", [.ownNames]),
         row(.bashCommand, "open -a Nap''Cat$x", [.ownNames]),
         row(.bashCommand, "defaults write com.muratalkan.nap$'c'at remote$'A'pprovalsEnabled -bool true", [.ownNames]),
@@ -211,6 +216,11 @@ struct ApprovalFloorTests {
         row(.url, "file:///Users/someone/Library/%E2%84%AAeychains/login.%E2%84%AAeychain-db", [.keychain]),
         row(.bashCommand, "env -Ssecurity\\ list-smartcards", [.keychain]),
         row(.bashCommand, "env -S'sec\"\"urity list-smartcards'", [.keychain]),
+        row(.bashCommand, "env -iSsecurity\\ list-smartcards", [.keychain]),
+        row(.bashCommand, "x -insecurity", [.keychain]),
+        row(.bashCommand, "x -websecurity", [.keychain]),
+        row(.bashCommand, "x -cybersecurity", [.keychain]),
+        row(.bashCommand, "x -nonsecurity", [.keychain]),
         row(.bashCommand, "swift -e 'import Security; " + itemDelete
             + "([kSecClass: kSecClassGenericPassword, kSecAttrAccount: \"x\"] as CFDictionary)'", [.keychain]),
         row(.fileText, "let query = [kSecValueData: data]", [.keychain]),
@@ -233,6 +243,7 @@ struct ApprovalFloorTests {
         row(.bashCommand, "x$cl'aude`", [.claudeCodeHelpers]),
         row(.fileText, "x$cl'aude`", [.claudeCodeHelpers]),
         row(.bashCommand, "env -Sclaude\\ mcp\\ add\\ x\\ --\\ /tmp/x", [.claudeCodeHelpers]),
+        row(.bashCommand, "env -iSclaude\\ mcp\\ list", [.claudeCodeHelpers]),
         row(.connectorArgument, "/Users/someone/.claude.json", [.claudeCodeHelpers]),
         row(.connectorArgument, "{\"path\": \"/Users/someone/.claude.json\"}", [.claudeCodeHelpers]),
         row(.filePath, "/Users/someone/.claude.json", [.claudeCodeHelpers]),
@@ -375,15 +386,16 @@ struct ApprovalFloorTests {
 
     /// Each word matches standing alone, quoted, escaped, between path
     /// separators, before a joiner, in capitals, split by `$` and an empty
-    /// quote pair, with its first letter percent-encoded, and glued to a
-    /// one-letter option; and does not match inside a longer word.
+    /// quote pair, with its first letter percent-encoded, and glued to an
+    /// option cluster of letters or digits; and does not match inside a
+    /// longer word.
     @Test func everyWordMatchesAsAWholePieceOnly() {
         for table in ApprovalFloor.tables {
             for word in table.words {
                 let head = String(word.prefix(1)), tail = String(word.dropFirst())
                 for text in ["run \(word) now", "'\(word)'", "\"\(word)\"", "\\\(word)", "/opt/\(word)/bin", "\(word);", "x=\(word)",
                              word.uppercased(), "\(head)$''\(tail)", "\(head)$\"\"\(tail)", Self.firstBytePercentEncoded(word),
-                             "env -S\(word)", "open -a\(word.uppercased())"] {
+                             "env -S\(word)", "open -a\(word.uppercased())", "open -gja\(word)", "x -j8\(word)"] {
                     #expect(Self.groups([.naming(text)]).contains(table.group), "\(text)")
                     #expect(Self.groups([.freeText(text)]).contains(table.group), "free text: \(text)")
                 }
@@ -490,6 +502,9 @@ struct ApprovalFloorTests {
             .naming("https://example.invalid/wiki/K%C3%B6ln"), .naming("https://example.invalid/Stra%C3%9Fe"),
             .naming("git log --format='%h %ad %s'"), .naming("curl 'https://example.invalid/a%0Ab'"),
             .naming("https://example.invalid/?q=%E2%9C%93"), .naming("https://example.invalid/?q=%E4%B8%96%E7%95%8C"),
+            .naming("ls -security"), .naming("rg --security"), .naming("npm audit --security"),
+            .naming("chrome --disable-web-security"), .naming("clang -Wformat-security -c x.c"), .naming("x -a-security"),
+            .naming("docker run --security-opt seccomp=unconfined x"), .naming("tar -xfclaude.tar"), .naming("open -aSafari https://example.com"),
         ]
         for control in controls {
             #expect(Self.groups([control]).isEmpty, "\(control)")

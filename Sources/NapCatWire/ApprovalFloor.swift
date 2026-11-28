@@ -18,8 +18,9 @@
 //   every `//` and `/./` written as `/`, each reading lowercased (ASCII
 //   letters only, as the gate lowercases). A WORD name matches a whole
 //   piece of the text split on every byte that is not an ASCII letter,
-//   digit, `_`, `.`, `+` or `-`, and the rest of a piece made of `-`, one
-//   letter and more (`-aNapCat` gives `NapCat`); a SUBSTRING name matches
+//   digit, `_`, `.`, `+` or `-`, and a piece made of `-`, one or more ASCII
+//   letters or digits, then the word (an option cluster with the word
+//   glued to it: `-aNapCat`, `-gjaNapCat`); a SUBSTRING name matches
 //   anywhere. Each table says which of its names are which.
 // - ASCII or kept: a string that names a command, a path, a URL or a tool
 //   must be printable ASCII as written, or the outcome is `unreadable` and
@@ -273,12 +274,11 @@ public enum ApprovalFloor {
     }
 
     /// Whether one copy holds a name of `table`: a substring anywhere, or a
-    /// word as a whole piece or as the rest of a glued option's piece.
+    /// word as a whole piece or glued to an option cluster.
     static func matches(_ table: Table, _ copy: [UInt8]) -> Bool {
         table.substrings.contains { ApprovalGate.contains(copy, Array($0.utf8)) }
             || pieces(copy).contains { piece in
-                let rest: ArraySlice<UInt8>? = gluedOptionValue(piece)
-                return table.words.contains { piece.elementsEqual($0.utf8) || rest?.elementsEqual($0.utf8) == true }
+                table.words.contains { piece.elementsEqual($0.utf8) || isGluedToOptions(piece, $0) }
             }
     }
 
@@ -293,12 +293,13 @@ public enum ApprovalFloor {
             || pieceMarks.contains(byte)
     }
 
-    /// The rest of a piece that starts with `-` and one ASCII letter, a
-    /// one-letter option with its value glued to it (`-aNapCat` gives
-    /// `NapCat`); nil for any other piece, or when nothing follows.
-    static func gluedOptionValue(_ piece: ArraySlice<UInt8>) -> ArraySlice<UInt8>? {
-        guard piece.count > 2, piece.first == hyphen, isLetter(piece[piece.startIndex + 1]) else { return nil }
-        return piece.dropFirst(2)
+    /// Whether `piece` is `-`, one or more ASCII letters or digits, then
+    /// `word`: an option cluster with the word glued to it (`-aNapCat`,
+    /// `-gjaNapCat`).
+    static func isGluedToOptions(_ piece: ArraySlice<UInt8>, _ word: String) -> Bool {
+        let length = word.utf8.count
+        guard piece.count > length + 1, piece.first == hyphen else { return false }
+        return piece.suffix(length).elementsEqual(word.utf8) && piece.dropFirst().dropLast(length).allSatisfy(isLetterOrDigit)
     }
 
     /// `bytes` with every run of slashes written as one, and every slash,
@@ -319,8 +320,8 @@ public enum ApprovalFloor {
         return collapsed
     }
 
-    private static func isLetter(_ byte: UInt8) -> Bool {
-        (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
+    private static func isLetterOrDigit(_ byte: UInt8) -> Bool {
+        (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
     }
 
     /// Whether every byte of `text` is printable ASCII (space to tilde), the
