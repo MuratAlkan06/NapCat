@@ -625,6 +625,8 @@ struct MenuPanelStructureTests {
             // F4 slice S2: the channel-policy reading lives in Settings ›
             // Claude, so its twin joins the Claude ones.
             ("model.remoteApprovalsPolicyLine", claudeTwins),
+            // #240: the pairing line, a warning after a refused Unpair.
+            ("model.pairingLine", claudeTwins),
         ]
         for (accessor, twinHome) in pairs {
             #expect(Self.occurrences(of: accessor, in: views) == 1, "\(accessor) must render exactly once in the panel")

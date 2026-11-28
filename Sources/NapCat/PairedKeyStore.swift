@@ -18,8 +18,9 @@ import NapCatWire
 //
 // ONE SLOT, swapped whole: a pairing replaces the item in place (one keychain
 // update, or one add when there is none), so the Mac holds the old key or the
-// new one, never a mix and never two. Unpair deletes it. `commit` is reached
-// from the ceremony's Codes Match alone (PairingStructureTests).
+// new one, never a mix and never two. Unpair asks the keychain to delete
+// it. `commit` is reached from the ceremony's Codes Match alone
+// (PairingStructureTests).
 //
 // NOTHING ARMS here. Since S-PAIR-C2 (#181) the decision verifier reads this
 // slot at each verification, its one reader on the decision path (`read()`

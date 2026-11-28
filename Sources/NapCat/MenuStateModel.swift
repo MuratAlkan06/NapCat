@@ -258,8 +258,8 @@ final class MenuStateModel: ObservableObject {
     @Published private(set) var remoteApprovalsFinding: ChannelPolicyFinding?
     /// The pairing mirror (#205): whether an iPhone is paired, as the
     /// pairing controller last read its slot (re-read at every menu and
-    /// Settings open). No pairing controller, or a slot that could not be
-    /// read, is not paired.
+    /// Settings open). No pairing controller, a slot that could not be
+    /// read, or (#240) a refused Unpair, is not paired.
     @Published private(set) var remoteApprovalsPaired = false
     /// F4 slice S-PAIR-C1 mirror — what Settings › Claude shows for the
     /// pairing. No controller (debugBattery mode) ⇒ nil, no rows.
@@ -434,8 +434,10 @@ final class MenuStateModel: ObservableObject {
         // S-PAIR-C1 mirror: the controller's last read of the slot (it is
         // re-read as the menu or Settings opens, never here).
         pairingPane = pairing?.paneState
-        // #205: the same read, for the Remote approvals row's caption.
-        remoteApprovalsPaired = if case .paired? = pairing?.paired { true } else { false }
+        // #205: the same read, for the Remote approvals row's caption — and
+        // (#240) not paired while a refused Unpair stands, so switching the
+        // toggle back on then says to pair first.
+        remoteApprovalsPaired = switch pairingPane { case .paired?, .rotating?: true; default: false }
     }
 
     // MARK: Actions (forwarded)
@@ -526,6 +528,13 @@ final class MenuStateModel: ObservableObject {
 
     func beginPairing() { pairing?.begin() }
     func unpair() { requestUnpair?() }
+
+    /// #240: Try Again, after a refused Unpair. The owner already confirmed
+    /// the Unpair, so no alert: the controller's retry runs it again.
+    func retryUnpair() {
+        pairing?.retryUnpair()
+        refresh()
+    }
 
     // MARK: Panel presentation — what the panel renders (thin wrappers over
     // the pure mappings; the views compose these and never classify).
@@ -639,6 +648,12 @@ final class MenuStateModel: ObservableObject {
         return Self.remoteApprovalsPolicyLine(finding: remoteApprovalsFinding)
     }
 
+    /// Settings › Claude's pairing line as the panel words it (nil without
+    /// the pairing controller), at the pane's severity. #240: a refused
+    /// Unpair makes it a warning, so it has its twin below the cards
+    /// (`ClaudeSurfacedLines`), saying where to try again.
+    var pairingLine: PanelLine? { pairingPane.map(Self.pairingPanelLine) }
+
     /// Badge on the footer's Settings gear (slice W, issue #78): the worst
     /// severity among the SETTINGS-RESIDENT lines — those whose home or fix
     /// is a pane of the Settings window — over the panes this wiring shows.
@@ -673,11 +688,10 @@ final class MenuStateModel: ObservableObject {
             // so it raises no badge; counted so a later warning would). The
             // Remote approvals status is not counted — its home is the panel
             // row's caption, where it surfaces and is acted on.
-            // S-PAIR-C1: the pairing line (nominal in every state, so it
-            // raises no badge; counted so a later warning would).
+            // S-PAIR-C1: the pairing line (nominal in every state but a
+            // refused Unpair, #240, whose warning raises the badge).
             return [hookStatus.severity, claudeAwakeLine?.severity ?? .nominal, hookVersionStatus?.severity ?? .nominal,
-                    remoteApprovalsPolicyLine?.severity ?? .nominal,
-                    pairingPane.map { Self.pairingStatusLine($0).severity } ?? .nominal]
+                    remoteApprovalsPolicyLine?.severity ?? .nominal, pairingLine?.severity ?? .nominal]
         }
     }
 

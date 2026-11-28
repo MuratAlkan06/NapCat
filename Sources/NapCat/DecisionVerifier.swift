@@ -32,9 +32,10 @@ import os
 // WIRED (S-PAIR-C2, #181): `verify` is the one road from a decision record's
 // reading to the intake's `decide` (lint-locked), and it reads the paired
 // key from the slot (`PairedKeyStore.read()`) at each verification, here and
-// nowhere else, keeping nothing: a verification after an Unpair finds no key
-// and refuses. NOTHING ARMS: the approval files' one armed literal is still
-// `armed: { false }`, so no decision reaches a real session.
+// nowhere else, keeping nothing: a verification after an Unpair whose
+// deletion went through finds no key and refuses. NOTHING ARMS: the
+// approval files' one armed literal is still `armed: { false }`, so no
+// decision reaches a real session.
 // UNPRIVILEGED — no sudo, no PLAN §4 command, no subprocess.
 
 /// A decision record's fields exactly as decoded, before any check: what
@@ -113,8 +114,9 @@ enum DecisionVerifier {
 
     /// THE verification (S-PAIR-C2): the paired key is the one the slot
     /// holds NOW — read here, at this verification, and never kept — so no
-    /// key outlives an Unpair. A refusal is audited by its code and counts
-    /// for nothing; only a `.verified` result reaches a lifecycle.
+    /// key outlives an Unpair whose deletion went through. A refusal is
+    /// audited by its code and counts for nothing; only a `.verified`
+    /// result reaches a lifecycle.
     static func verify(_ evidence: DecisionEvidence, copy: ForwardedCopy?, keys: PairedKeyStore,
                        audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> DecisionVerification {
         let pairedKey: P256.Signing.PublicKey? = switch keys.read() {

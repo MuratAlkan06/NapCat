@@ -309,6 +309,8 @@ struct ClaudeSurfacedLines: View {
         // F4 slice S2: the channel-policy reading (absent while off; a
         // Settings fact in this slice — `remoteApprovalsPolicyLine`).
         SurfacedLine(line: model.remoteApprovalsPolicyLine)
+        // #240: the pairing line, a warning only after a refused Unpair.
+        SurfacedLine(line: model.pairingLine)
     }
 }
 

@@ -492,7 +492,9 @@ It builds controls only: nothing can be forwarded yet.
   the Mac; the row says so ("Local only — the iPhone app cannot answer
   prompts yet"), and while no iPhone is paired
   it says to pair one first ("Not paired — pair your iPhone in Settings ›
-  Claude", #205). No CloudKit record operation
+  Claude", #205), as it does while a refused Unpair stands (#240: until a
+  deletion or a new pairing goes through, or NapCat quits).
+  No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
   apply: a pre-arming revision of the category gate (done: S-GATE, #145) and
   an owner-run live test.
@@ -643,6 +645,13 @@ this section points at them.
     so it cannot stop a waiting push from being dropped. Before anything
     produces evidence, such a prompt must also block the drop for the
     10-second window.
+  - A refused Unpair is remembered in memory only and only by the pane:
+    the decision verifier reads the slot itself, so the key the owner
+    asked to remove would still verify, during the run and after a
+    relaunch. Before arming: the verifier's read refuses a key under an
+    outstanding Unpair; the refusal survives a relaunch; an item that is
+    there but unreadable has its own line and a way to remove it; Unpair
+    runs the kill switch before the keychain call (#247).
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
     re-check; done, see slice S1's seam and intake), #221 (no answer
@@ -756,9 +765,11 @@ arms anything.
 - **One slot; re-pairing is the recovery.** At most one key is paired, and
   a new pairing replaces it. Unpair on the Mac asks the keychain to delete
   the stored key and stops the feature through the kill switch either way;
-  if the keychain refuses, the key stays (Settings › Claude re-reads the
-  slot, so a pairing still there still shows while the slot can be read)
-  and the `pairing` log says `pairing.unpairFailed`. Re-enrolling Face ID
+  if the keychain refuses, the key stays, the `pairing` log says
+  `pairing.unpairFailed`, and Settings › Claude says the key could not be
+  removed and offers Try Again until a deletion or a new pairing goes
+  through or NapCat quits (#240; after a relaunch it shows what the slot
+  reads: the pairing, while the slot can be read). Re-enrolling Face ID
   invalidates the phone's key in hardware; the phone then unpairs itself
   and asks to pair again. A new or restored phone arrives unpaired (Secure
   Enclave keys never leave their device). Each case is recovered by the
@@ -921,18 +932,36 @@ arms anything.
     (no auto-close), and four closed ends: expired, refused, stopped (no
     Start Over) and save failed. A rotation that ends keeps its title,
     "Pair a New iPhone", and says the current pairing keeps working —
-    never "Not Paired" while the old key works. Esc ends the sheet in
-    every state (in the comparison, whose two buttons each decide
-    something, through a Cancel with no button of its own); no button is
-    the default, so nothing answers Return and only a click on Codes
-    Match writes the key. The QR payload is drawn and never spoken,
-    copied, logged or shown as a tooltip; VoiceOver hears each state's
-    line as it changes, the code character by character, and the
-    countdown at one minute and ten seconds only. No motion beyond the
+    never "Not Paired" while the old key works. (After a refused Unpair,
+    below, a pairing begun is a first one: the owner asked for the old key
+    to go, so the sheet never says it keeps working; if that ceremony ends
+    without a save its title is "Not Paired" although the old key is still
+    stored, and the pane behind it keeps saying the key couldn't be
+    removed.) Esc ends the sheet in every state (in the comparison, whose
+    two buttons each decide something, through a Cancel with no button of
+    its own); no button is the default, so nothing answers Return and only
+    a click on Codes Match writes the key. The QR payload is drawn and
+    never spoken, copied, logged or shown as a tooltip; VoiceOver hears
+    each state's line as it changes, the code character by character, and
+    the countdown at one minute and ten seconds only. No motion beyond the
     Settings buttons' press. Unpair… asks first — its Unpair button is
     marked destructive and answers no key, and Esc cancels — then asks the
     keychain to delete the key and turns Remote approvals off through its
-    kill switch, whatever the deletion came to.
+    kill switch, whatever the deletion came to. When the keychain refuses
+    the deletion (#240) the pane's pairing line is a warning, "Unpair
+    failed — the iPhone's key couldn't be removed from your keychain",
+    whatever the slot reads after; its twin below the menu's cards says
+    "Unpair failed — try again in Settings › Claude" (the panel has no Try
+    Again), and the gear carries the badge. The pane's buttons are Try
+    Again — the same Unpair, already confirmed, so no second alert, and
+    nothing unless a refusal stands — and Pair iPhone…. Until a deletion or
+    a new pairing goes through, or NapCat quits, the Remote approvals
+    switch counts no pairing: switched back on, it says to pair first. The
+    refusal is kept in memory only: after a relaunch the pane shows what
+    the slot reads, and a slot that cannot be read shows as not paired, as
+    before (a line of its own for an item that is there but unreadable is
+    a follow-up). The decision verifier is unchanged: it reads the slot
+    itself, and nothing hands it a decision in this build.
   - *Not live in C1.* The app's record seam was a stub that found and
     deleted nothing, so a ceremony showed its code and ended with its
     window; no release could ship with the pairing button over it. Tests
