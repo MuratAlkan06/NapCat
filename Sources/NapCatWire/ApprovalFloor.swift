@@ -13,25 +13,27 @@
 //
 // Two scans read every string of a prompt:
 // - The name scan needs no command grammar. It reads the text as written,
-//   a copy with every `'`, `"`, `\` and `$` removed, each of the two
-//   percent-decoded, and each of those four with every `//` and `/./`
-//   written as `/`, each lowercased (ASCII letters only, as the gate
-//   lowercases). A WORD name matches a whole piece of the text split on
-//   every byte that is not an ASCII letter, digit, `_`, `.`, `+` or `-`,
-//   and the rest of a piece made of `-`, one letter and more (`-aNapCat`
-//   gives `NapCat`); a SUBSTRING name matches anywhere. Each table says
-//   which of its names are which.
+//   a copy with every `'`, `"` and `\`, and every `$` before a `'` or `"`,
+//   removed, each of the two percent-decoded, and each of those four with
+//   every `//` and `/./` written as `/`, each reading lowercased (ASCII
+//   letters only, as the gate lowercases). A WORD name matches a whole
+//   piece of the text split on every byte that is not an ASCII letter,
+//   digit, `_`, `.`, `+` or `-`, and the rest of a piece made of `-`, one
+//   letter and more (`-aNapCat` gives `NapCat`); a SUBSTRING name matches
+//   anywhere. Each table says which of its names are which.
 // - ASCII or kept: a string that names a command, a path, a URL or a tool
-//   must be printable ASCII, or the outcome is `unreadable` and the prompt
-//   is kept. Free text (a file's text, a search query, a connector's
-//   argument) may hold any script, so the name scan also reads its copies
-//   case-folded, which turns U+212A KELVIN SIGN into `k`, U+017F LATIN
-//   SMALL LETTER LONG S into `s`, both sharp s letters (U+00DF, U+1E9E)
-//   into `ss`, and the ligatures U+FB01 and U+FB06 into `fi` and `st`.
+//   must be printable ASCII as written, or the outcome is `unreadable` and
+//   the prompt is kept. The name scan also reads case-folded each reading
+//   of free text (a file's text, a search query, a connector's argument,
+//   which may hold any script) and each reading of a naming string that is
+//   not printable ASCII (a percent-encoded letter, say). The fold turns
+//   U+212A KELVIN SIGN into `k`, U+017F LATIN SMALL LETTER LONG S into `s`,
+//   both sharp s letters (U+00DF, U+1E9E) into `ss`, and the ligatures
+//   U+FB01 and U+FB06 into `fi` and `st`.
 // The alert topic is matched as exact bytes: as written, without quotes,
-// backslashes and `$`, and each of the two percent-decoded. An empty topic
-// is one that cannot be read. Its bytes are a parameter of each check and
-// are never kept.
+// backslashes and every `$` before a quote, and each of the two
+// percent-decoded. An empty topic is one that cannot be read. Its bytes are
+// a parameter of each check and are never kept.
 //
 // Anything the floor does not name is left to the gate's fail-closed rule.
 
@@ -83,10 +85,11 @@ public enum ApprovalFloorOutcome: Equatable, Sendable {
 public enum ApprovalFloorString: Sendable {
     /// A string that names a command, a path, a URL or a tool (a Bash
     /// command, a file tool's path, a web address, the tool name): it must
-    /// be printable ASCII.
+    /// be printable ASCII as written, and each of its readings outside
+    /// printable ASCII is scanned case-folded as well.
     case naming(String)
     /// Free text (a file's text, a search query, a connector's argument):
-    /// any script, scanned case-folded as well.
+    /// any script, each reading scanned case-folded as well.
     case freeText(String)
 }
 
@@ -233,8 +236,8 @@ public enum ApprovalFloor {
     }
 
     /// Whether `string` holds the topic's bytes exactly: as written,
-    /// without quotes, backslashes and `$`, or either of the two
-    /// percent-decoded.
+    /// without quotes, backslashes and every `$` before a quote, or either
+    /// of the two percent-decoded.
     static func holdsTopic(_ string: ApprovalFloorString, _ topic: [UInt8]) -> Bool {
         let raw: [UInt8] = Array(text(of: string).utf8)
         let stripped: [UInt8] = quotesRemoved(raw)
@@ -242,8 +245,9 @@ public enum ApprovalFloor {
     }
 
     /// The readings the name scan reads, each once: the text as written,
-    /// without quotes, backslashes and `$`, either of the two
-    /// percent-decoded, and each of those four with its slashes collapsed.
+    /// without quotes, backslashes and every `$` before a quote, either of
+    /// the two percent-decoded, and each of those four with its slashes
+    /// collapsed.
     static func readings(_ raw: [UInt8]) -> [[UInt8]] {
         let stripped: [UInt8] = quotesRemoved(raw)
         let four: [[UInt8]] = [raw, stripped, percentDecoded(raw), percentDecoded(stripped)]
@@ -254,13 +258,18 @@ public enum ApprovalFloor {
         return once
     }
 
-    /// The copies the name scan reads: each reading lowercased; for free
-    /// text, also each reading case-folded.
+    /// The copies the name scan reads: each reading lowercased, then,
+    /// case-folded, each reading of free text and each reading of a naming
+    /// string that is not printable ASCII.
     static func nameCopies(_ string: ApprovalFloorString) -> [[UInt8]] {
         let readings: [[UInt8]] = readings(Array(text(of: string).utf8))
         let copies: [[UInt8]] = readings.map { ApprovalGate.lowercased($0) }
-        guard case .freeText = string else { return copies }
-        return copies + readings.map { folded(String(decoding: $0, as: UTF8.self)) }
+        let toFold: [[UInt8]]
+        switch string {
+        case .naming: toFold = readings.filter { !$0.allSatisfy(isPrintableASCII) }
+        case .freeText: toFold = readings
+        }
+        return copies + toFold.map { folded(String(decoding: $0, as: UTF8.self)) }
     }
 
     /// Whether one copy holds a name of `table`: a substring anywhere, or a
@@ -318,14 +327,24 @@ public enum ApprovalFloor {
     /// gate's rule for a Bash command and a file path: no tab, line break or
     /// other control character, and nothing outside ASCII.
     static func isPrintableASCII(_ text: String) -> Bool {
-        text.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7E }
+        text.utf8.allSatisfy(isPrintableASCII)
     }
 
-    /// `bytes` without any `'`, `"`, `\` or `$` (the `$` of `$'…'` and
-    /// `$"…"` quoting). These are ASCII, so the result of valid UTF-8 is
-    /// valid UTF-8.
+    /// Whether `byte` is printable ASCII (space to tilde).
+    static func isPrintableASCII(_ byte: UInt8) -> Bool {
+        byte >= 0x20 && byte <= 0x7E
+    }
+
+    /// `bytes` without any `'`, `"` or `\`, and without every `$` before a
+    /// `'` or `"` (the `$` of `$'…'` and `$"…"` quoting). These are ASCII,
+    /// so the result of valid UTF-8 is valid UTF-8.
     static func quotesRemoved(_ bytes: [UInt8]) -> [UInt8] {
-        bytes.filter { !quoteMarks.contains($0) }
+        var kept: [UInt8] = []
+        for index in bytes.indices where !quoteMarks.contains(bytes[index]) {
+            let quoting = bytes[index] == dollar && index + 1 < bytes.count && quotes.contains(bytes[index + 1])
+            if !quoting { kept.append(bytes[index]) }
+        }
+        return kept
     }
 
     /// `bytes` with each `%` and two hex digits replaced by the byte they
@@ -375,6 +394,8 @@ public enum ApprovalFloor {
     private static let hyphen = UInt8(ascii: "-")
     private static let slash = UInt8(ascii: "/")
     private static let dot = UInt8(ascii: ".")
-    private static let quoteMarks: [UInt8] = [UInt8(ascii: "'"), UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "$")]
+    private static let dollar = UInt8(ascii: "$")
+    private static let quotes: [UInt8] = [UInt8(ascii: "'"), UInt8(ascii: "\"")]
+    private static let quoteMarks: [UInt8] = quotes + [UInt8(ascii: "\\")]
     private static let pieceMarks: [UInt8] = [UInt8(ascii: "_"), UInt8(ascii: "."), UInt8(ascii: "+"), UInt8(ascii: "-")]
 }

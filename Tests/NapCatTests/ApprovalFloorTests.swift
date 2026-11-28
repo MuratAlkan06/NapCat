@@ -109,6 +109,7 @@ struct ApprovalFloorTests {
         row(.bashCommand, "open -aNapCat", [.ownNames]),
         row(.bashCommand, "lldb -nNapCat", [.ownNames]),
         row(.bashCommand, "open -a Nap$'C'at", [.ownNames]),
+        row(.bashCommand, "open -a Nap''Cat$x", [.ownNames]),
         row(.bashCommand, "defaults write com.muratalkan.nap$'c'at remote$'A'pprovalsEnabled -bool true", [.ownNames]),
         row(.url, "file:///Applications/NapC%61t.app", [.ownNames]),
         row(.url, "https://example.invalid/?f=com.muratalkan.%6Eapcat", [.ownNames]),
@@ -155,6 +156,7 @@ struct ApprovalFloorTests {
         row(.url, "file:///usr/local/n%61pcat/smc", [.ownNames, .privilegedFootprint]),
         row(.bashCommand, "pmset -a disablesleep 1", [.privilegedFootprint]),
         row(.bashCommand, "cat /private/etc/sudoers", [.privilegedFootprint]),
+        row(.bashCommand, "curl file:///private/etc/%C5%BFudoers", [.privilegedFootprint]),
         row(.filePath, "/etc/sudoers.d/napcat", [.ownNames, .privilegedFootprint]),
         row(.bashCommand, "launchctl bootout gui/501/com.napcat.failsafe", [.privilegedFootprint]),
         row(.filePath, "/Users/someone/.claude/hooks/napcat-busy-hook.sh", [.privilegedFootprint]),
@@ -171,6 +173,7 @@ struct ApprovalFloorTests {
         row(.bashCommand, "vi NapCatSeam/SeamSocket.swift", [.sourceTree]),
         row(.filePath, "NapCatChannel/main.swift", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/Tests/NapCatTests/ScaffoldTests.swift", [.sourceTree]),
+        row(.bashCommand, "curl file:///Users/someone/src/fork/Tests/NapCatTe%EF%AC%86s/ScaffoldTests.swift", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/ios/NapCatPhone/project.yml", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/third_party/smc/smc.c", [.sourceTree]),
         row(.bashCommand, "vi third_party//smc/smc.c", [.sourceTree]),
@@ -191,6 +194,21 @@ struct ApprovalFloorTests {
         row(.bashCommand, "'security' find-certificate -a", [.keychain]),
         row(.bashCommand, "sec$'u'rity find-certificate -a", [.keychain]),
         row(.bashCommand, "sec$\"u\"rity find-certificate -a", [.keychain]),
+        row(.bashCommand, "sec''urity$IFS-h", [.keychain]),
+        row(.bashCommand, "sec\\urity$IFS'find-certificate'", [.keychain]),
+        row(.bashCommand, "\"sec\"urity$IFS-a", [.keychain]),
+        row(.bashCommand, "sec''urity$1 list", [.keychain]),
+        row(.bashCommand, "sec$'u'rity$IFS-h", [.keychain]),
+        row(.bashCommand, "x$sec''urity", [.keychain]),
+        row(.bashCommand, "echo $HOME/sec''urity", [.keychain]),
+        row(.bashCommand, "s'ecurity$x", [.keychain]),
+        row(.bashCommand, "s\\ecurity$x", [.keychain]),
+        row(.bashCommand, " s\"ecurity$x", [.keychain]),
+        row(.fileText, "s'ecurity$x", [.keychain]),
+        row(.bashCommand, "%C5%BFecurity find-certificate -a", [.keychain]),
+        row(.bashCommand, "curl file:///usr/bin/%C5%BFecurity", [.keychain]),
+        row(.bashCommand, "curl file:///Users/someone/Library/%E2%84%AAeychains/login.%E2%84%AAeychain-db -o /tmp/k", [.keychain]),
+        row(.url, "file:///Users/someone/Library/%E2%84%AAeychains/login.%E2%84%AAeychain-db", [.keychain]),
         row(.bashCommand, "env -Ssecurity\\ list-smartcards", [.keychain]),
         row(.bashCommand, "env -S'sec\"\"urity list-smartcards'", [.keychain]),
         row(.bashCommand, "swift -e 'import Security; " + itemDelete
@@ -211,14 +229,19 @@ struct ApprovalFloorTests {
         row(.bashCommand, "cd /tmp && claude mcp list > out.txt", [.claudeCodeHelpers]),
         row(.bashCommand, "claude --dangerously-load-development-channels server:x", [.claudeCodeHelpers]),
         row(.bashCommand, "cl$'a'ude mcp add x -- /tmp/x", [.claudeCodeHelpers]),
+        row(.bashCommand, "cl''aude$IFS'mcp'$IFS'list'", [.claudeCodeHelpers]),
+        row(.bashCommand, "x$cl'aude`", [.claudeCodeHelpers]),
+        row(.fileText, "x$cl'aude`", [.claudeCodeHelpers]),
         row(.bashCommand, "env -Sclaude\\ mcp\\ add\\ x\\ --\\ /tmp/x", [.claudeCodeHelpers]),
         row(.connectorArgument, "/Users/someone/.claude.json", [.claudeCodeHelpers]),
         row(.connectorArgument, "{\"path\": \"/Users/someone/.claude.json\"}", [.claudeCodeHelpers]),
         row(.filePath, "/Users/someone/.claude.json", [.claudeCodeHelpers]),
         row(.bashCommand, "cat ~/.claude$'.'json", [.claudeCodeHelpers]),
         row(.url, "file:///Users/someone/.claude%2Ejson", [.claudeCodeHelpers]),
+        row(.bashCommand, "curl file:///Users/someone/.claude.j%C5%BFon", [.claudeCodeHelpers]),
         row(.filePath, "/Users/someone/project/.mcp.json", [.claudeCodeHelpers]),
         row(.bashCommand, "curl -T x file:///Users/someone/project/%2Emcp.json", [.claudeCodeHelpers]),
+        row(.bashCommand, "curl -T x file:///Users/someone/project/.mcp.j%C5%BFon", [.claudeCodeHelpers]),
         row(.filePath, "/Library/Application Support/ClaudeCode/managed-settings.json", [.claudeCodeHelpers]),
         row(.filePath, "/Library/Application Support/ClaudeCode/managed-settings.d/10-team.json", [.claudeCodeHelpers]),
         row(.filePath, "/Library/Application Support/ClaudeCode/managed-mcp.json", [.claudeCodeHelpers]),
@@ -238,6 +261,7 @@ struct ApprovalFloorTests {
         row(.bashCommand, "security find-identity -v -p codesigning", [.keychain, .signingAndICloud]),
         row(.fileText, "Developer ID Application: Someone (HJSC985877)", [.signingAndICloud]),
         row(.filePath, "/Users/someone/Downloads/release.provisionprofile", [.signingAndICloud]),
+        row(.bashCommand, "curl file:///Users/someone/Downloads/release.provisionpro%EF%AC%81le", [.signingAndICloud]),
         row(.bashCommand, "xcrun cktool get-teams", [.signingAndICloud]),
     ]
 
@@ -268,13 +292,24 @@ struct ApprovalFloorTests {
 
     // MARK: - The look-alike letters
 
+    /// `text` with each byte outside ASCII written as `%` and two hex
+    /// digits, as a URL carries it.
+    static func percentEncodedOutsideASCII(_ text: String) -> String {
+        text.utf8.map { $0 < 0x80 ? String(Character(Unicode.Scalar($0))) : "%" + String($0, radix: 16, uppercase: true) }.joined()
+    }
+
+    /// The strings each look-alike spelling is caught in: free text, and a
+    /// naming string as written and percent-encoded.
+    static func lookAlikeStrings(_ text: String) -> [ApprovalFloorString] {
+        [.freeText(text), .naming(text), .naming(percentEncodedOutsideASCII(text))]
+    }
+
     /// U+212A (KELVIN SIGN) and U+017F (LATIN SMALL LETTER LONG S) fold to
-    /// `k` and `s`: in free text the folded copy holds the name; in a string
-    /// that names something they are outside printable ASCII, so the prompt
-    /// is kept as unreadable.
+    /// `k` and `s`: in free text, and in a string that names something as
+    /// written or percent-encoded, the folded copy holds the name.
     @Test func bothLookAlikeLettersAreCaught() {
         let k = Self.kelvin, s = Self.longS
-        let freeText: [(String, ApprovalFloorGroup)] = [
+        let spellings: [(String, ApprovalFloorGroup)] = [
             ("plutil -p ~/Library/Preferences/com.muratal\(k)an.napcat.plist", .ownNames),
             ("/Users/someone/Library/\(k)eychains/login.\(k)eychain-db", .keychain),
             ("\"\(k)ey\"chain", .keychain),
@@ -284,33 +319,37 @@ struct ApprovalFloorTests {
             ("/Users/someone/.claude/hooks/napcat-bu\(s)y-hook.\(s)h", .privilegedFootprint),
             ("managed-\(s)ettings.json", .claudeCodeHelpers),
         ]
-        for (text, group) in freeText {
-            #expect(Self.groups([.freeText(text)]) == [group], "\(text)")
-            #expect(Self.outcome([.freeText(text)]) == .floor(group), "\(text)")
-            #expect(Self.outcome([.naming(text)]) == .unreadable(.notPrintableASCII), "named: \(text)")
+        for (text, group) in spellings {
+            for string in Self.lookAlikeStrings(text) {
+                #expect(Self.groups([string]) == [group], "\(string)")
+                #expect(Self.outcome([string]) == .floor(group), "\(string)")
+            }
         }
         // The fold reads the letters themselves, on their own.
         #expect(ApprovalFloor.folded(k) == Array("k".utf8))
         #expect(ApprovalFloor.folded(s) == Array("s".utf8))
         #expect(ApprovalFloor.folded("KeyCHAIN") == Array("keychain".utf8))
+        // The percent-encoded strings above are printable ASCII as written.
+        #expect(Self.percentEncodedOutsideASCII("a\(k)\(s)") == "a%E2%84%AA%C5%BF")
     }
 
     /// Both sharp s letters (U+00DF, U+1E9E) fold to `ss`, and the
-    /// ligatures U+FB01 and U+FB06 to `fi` and `st`: in free text the folded
-    /// copy holds the name; in a string that names something they are
-    /// outside printable ASCII, so the prompt is kept as unreadable.
+    /// ligatures U+FB01 and U+FB06 to `fi` and `st`: in free text, and in a
+    /// string that names something as written or percent-encoded, the
+    /// folded copy holds the name.
     @Test func theSharpSAndTheLigaturesAreCaught() {
-        let freeText: [(String, ApprovalFloorGroup)] = [
+        let spellings: [(String, ApprovalFloorGroup)] = [
             ("delete-generic-pa\u{DF}word", .keychain),
             ("delete-generic-pa\u{1E9E}word", .keychain),
             ("DELETE-GENERIC-PA\u{1E9E}WORD", .keychain),
             ("/Users/someone/Downloads/release.provisionpro\u{FB01}le", .signingAndICloud),
             ("/Users/someone/src/fork/Tests/NapCatTe\u{FB06}s/ScaffoldTests.swift", .sourceTree),
         ]
-        for (text, group) in freeText {
-            #expect(Self.groups([.freeText(text)]) == [group], "\(text)")
-            #expect(Self.outcome([.freeText(text)]) == .floor(group), "\(text)")
-            #expect(Self.outcome([.naming(text)]) == .unreadable(.notPrintableASCII), "named: \(text)")
+        for (text, group) in spellings {
+            for string in Self.lookAlikeStrings(text) {
+                #expect(Self.groups([string]) == [group], "\(string)")
+                #expect(Self.outcome([string]) == .floor(group), "\(string)")
+            }
         }
         #expect(ApprovalFloor.folded("\u{DF}") == Array("ss".utf8))
         #expect(ApprovalFloor.folded("\u{1E9E}") == Array("ss".utf8))
@@ -377,14 +416,29 @@ struct ApprovalFloorTests {
     }
 
     /// The readings, each once: as written, without quotes, backslashes and
-    /// `$`, either of the two percent-decoded, and each of those four with
-    /// every run of slashes written as one and every `/./` as `/`.
+    /// every `$` before a quote, either of the two percent-decoded, and each
+    /// of those four with every run of slashes written as one and every
+    /// `/./` as `/`.
     @Test func theNameScanReadsEachReadingOnce() {
         let readings = ApprovalFloor.readings(Array("a//$'b'%41".utf8)).map { String(decoding: $0, as: UTF8.self) }
         #expect(readings == ["a//$'b'%41", "a//b%41", "a//$'b'A", "a//bA", "a/$'b'%41", "a/b%41", "a/$'b'A", "a/bA"])
         #expect(ApprovalFloor.readings(Array("git status".utf8)) == [Array("git status".utf8)], "a plain text is read once")
+        #expect(ApprovalFloor.quotesRemoved(Array("a$b$'c'$\"d\"\\e$".utf8)) == Array("a$bcde$".utf8))
         #expect(ApprovalFloor.slashesCollapsed(Array("a//b///c/./d/././e".utf8)) == Array("a/b/c/d/e".utf8))
         #expect(ApprovalFloor.slashesCollapsed(Array("./a/.b/c.".utf8)) == Array("./a/.b/c.".utf8), "other dots stay")
+    }
+
+    /// The copies, each reading lowercased; then, case-folded, each reading
+    /// of free text and each reading of a naming string that is not
+    /// printable ASCII.
+    @Test func theNameScanFoldsEachReadingOfFreeTextAndEachOutsideASCII() {
+        func copies(_ string: ApprovalFloorString) -> [String] {
+            ApprovalFloor.nameCopies(string).map { String(decoding: $0, as: UTF8.self) }
+        }
+        #expect(copies(.naming("A%C3%9F")) == ["a%c3%9f", "a\u{DF}", "ass"])
+        #expect(copies(.naming("A\u{DF}")) == ["a\u{DF}", "ass"])
+        #expect(copies(.naming("A%41")) == ["a%41", "aa"])
+        #expect(copies(.freeText("A%41")) == ["a%41", "aa", "a%41", "aa"])
     }
 
     /// The split: every byte that is not an ASCII letter, digit, `_`, `.`,
@@ -408,8 +462,8 @@ struct ApprovalFloorTests {
     /// Ordinary prompts and text match nothing: the gate's own listed
     /// commands, everyday paths and text, a folder whose name holds the
     /// app's name inside a longer word, longer words that hold a word name,
-    /// everyday options, variables, percent signs and slashes, and other
-    /// connectors' tools.
+    /// everyday options, variables, percent signs and slashes, other
+    /// connectors' tools, and percent-encoded letters of other scripts.
     @Test func ordinaryTextMatchesNothing() {
         var controls: [ApprovalFloorString] = ApprovalGate.bashCommands.map { .naming($0) }
         controls += [
@@ -433,6 +487,9 @@ struct ApprovalFloorTests {
             .freeText("price is $5, 100% sure; see a//b and ./c"),
             .freeText("Stra\u{DF}e und Fu\u{DF}ball, \u{FB01}ne \u{FB06}yle"),
             .naming("mcp__plugin_github_github__create_issue"), .naming("mcp__claude_ai_Notion__search"),
+            .naming("https://example.invalid/wiki/K%C3%B6ln"), .naming("https://example.invalid/Stra%C3%9Fe"),
+            .naming("git log --format='%h %ad %s'"), .naming("curl 'https://example.invalid/a%0Ab'"),
+            .naming("https://example.invalid/?q=%E2%9C%93"), .naming("https://example.invalid/?q=%E4%B8%96%E7%95%8C"),
         ]
         for control in controls {
             #expect(Self.groups([control]).isEmpty, "\(control)")
