@@ -94,6 +94,8 @@ import Testing
 ///    names it.
 ///
 /// AMENDED (#247): lock 8 runs the kill switch before the slot's Unpair.
+///
+/// AMENDED (#247): lock 8 binds Try Again to the item the record holds.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -228,7 +230,7 @@ struct PairingStructureTests {
     /// #247: every call on the slot's item — its reads, its one write and
     /// its one deletion.
     static let slotItemCalls: [String: Int] = [
-        "let held = items.read()": 1, "unpairs.record(items.read())": 1,
+        "let held = items.read()": 1, "unpairs.record(items.read())": 1, "guard unpairs.holds(items.read()) else {": 1,
         "guard items.write(Self.text(of: phone)) else { return false }": 1, "guard items.delete() else { return false }": 1]
 
     static func compareFailures(_ sources: Sources) -> [String] {
@@ -1551,10 +1553,14 @@ struct PairingStructureTests {
     /// AMENDED (#247): the refusal is no flag of the controller's any more:
     /// it is the slot's outstanding-Unpair record, written by the slot's
     /// Unpair alone, before the deletion, and removed only after a deletion
-    /// that went through or a key written.
+    /// that went through, a key written, or (below) Try Again finding the
+    /// item gone.
     ///
     /// AMENDED (#247): every Unpair runs the kill switch FIRST, before the
     /// slot is asked for anything.
+    ///
+    /// AMENDED (#247): Try Again runs the kill switch first too, then the
+    /// slot's own Try Again, which deletes only an item its record holds.
     ///
     /// Every `unpair`, `retryUnpair` and `removeRecorded` is pinned as a
     /// whole word, so a reference taken unapplied (`let go = p.unpair`, then
@@ -1567,7 +1573,7 @@ struct PairingStructureTests {
     /// its call cannot move into `refresh()`.
     static let unpairSites: [String: [String: Int]] = [
         slotFile: ["func unpair() -> Bool {": 1],
-        controllerFile: ["func unpair() {": 1, "let gone = keys.unpair()": 1, "unpair()": 1],
+        controllerFile: ["func unpair() {": 1, "let gone = keys.unpair()": 1],
         "MenuContentView.swift": ["pairing?.unpair()": 1,
                                   "let unpair = alert.addButton(withTitle: MenuStateModel.unpairAlertConfirm)": 1,
                                   "unpair.hasDestructiveAction = true": 1, "unpair.keyEquivalent = \"\"": 1],
@@ -1577,7 +1583,8 @@ struct PairingStructureTests {
         "UnpairRecord.swift": [#"static let header = "napcat-unpair-v1""#: 1, #"static let fileName = "unpair-outstanding""#: 1],
     ]
     static let retrySites: [String: [String: Int]] = [
-        controllerFile: ["func retryUnpair() {": 1],
+        slotFile: ["func retryUnpair() -> Bool {": 1],
+        controllerFile: ["func retryUnpair() {": 1, "let gone = keys.retryUnpair()": 1],
         "MenuStateModel.swift": ["func retryUnpair() {": 1, "pairing?.retryUnpair()": 1],
         "SettingsPanes.swift": ["Button(MenuStateModel.unpairRetryButtonTitle) { model.retryUnpair() }": 1],
     ]
@@ -1591,29 +1598,32 @@ struct PairingStructureTests {
     /// pane's case, from the slot's reading, and the audit's, nothing through
     /// `self` or a key path.
     static let refusalMemberSites: [String: [String: Int]] = [
-        controllerFile: ["case .unpairOutstanding: return .unpairFailed": 1, "audit(gone ? .unpaired : .unpairFailed)": 1],
+        controllerFile: ["case .unpairOutstanding: return .unpairFailed": 1, "audit(gone ? .unpaired : .unpairFailed)": 2],
     ]
     /// #247: every mention of the record, in every file — the slot's member
-    /// and init, its read's check, Unpair's record, its removals (after a
-    /// key written, after a deletion) — and the app's wiring, which hands the
-    /// real one in.
+    /// and init, its read's check, Unpair's record, Try Again's check, its
+    /// removals (after a key written, after Try Again found the item gone,
+    /// after a deletion) — and the app's wiring, which hands the real one in.
     static let recordSites: [String: [String: Int]] = [
         slotFile: ["private let unpairs: UnpairRecord": 1, "init(items: any TopicStore, unpairs: UnpairRecord) {": 1,
                    "self.unpairs = unpairs": 2, "if unpairs.holds(held) { return .unpairOutstanding }": 1,
-                   "unpairs.record(items.read())": 1, "unpairs.clear()": 2],
+                   "unpairs.record(items.read())": 1, "guard unpairs.holds(items.read()) else {": 1, "unpairs.clear()": 3],
         "NapCatApp.swift": [wiringLine: 1],
     ]
     static let recordMemberSites: [String: [String: Int]] = [slotFile: ["self.unpairs = unpairs": 1]]
     static let removalSites: [String: [String: Int]] = [
-        slotFile: ["return removeRecorded()": 1, "private func removeRecorded() -> Bool {": 1],
+        slotFile: ["return removeRecorded()": 2, "private func removeRecorded() -> Bool {": 1],
     ]
     static let unpairBody = "func unpair() { killSwitch() let gone = keys.unpair() audit(gone ? .unpaired : .unpairFailed) refreshPaired() }"
-    static let retryBody = "func retryUnpair() { guard paired == .unpairOutstanding else { return } unpair() }"
+    static let retryBody = "func retryUnpair() { guard paired == .unpairOutstanding else { return } killSwitch()"
+        + " let gone = keys.retryUnpair() audit(gone ? .unpaired : .unpairFailed) refreshPaired() }"
     static let modelRetryBody = "func retryUnpair() { pairing?.retryUnpair() refresh() }"
     /// #247: the slot's side, whole — Unpair records the item before the
-    /// deletion; the record goes after a deletion that went through, or a
-    /// key written.
+    /// deletion; Try Again deletes only an item the record holds; the record
+    /// goes after a deletion that went through, or a key written.
     static let slotUnpairBody = "func unpair() -> Bool { unpairs.record(items.read()) return removeRecorded() }"
+    static let slotRetryBody = "func retryUnpair() -> Bool { guard unpairs.holds(items.read()) else { unpairs.clear() return true }"
+        + " return removeRecorded() }"
     static let slotRemovalBody = "private func removeRecorded() -> Bool { guard items.delete() else { return false } unpairs.clear()"
         + " return true }"
     static let slotCommitBody = "func commit(_ phone: PairedPhone) -> Bool { guard items.write(Self.text(of: phone)) else { return false }"
@@ -1636,16 +1646,18 @@ struct PairingStructureTests {
                                     allowed: refusalMemberSites,
                                     rule: "the controller names the refusal behind a dot as the pane's case, from the slot's reading, and the audit's alone")
         failures += appSiteFailures(#"\bunpairs\b"#, in: sources, allowed: recordSites,
-                                    rule: "the record is written by Unpair before the deletion, and goes after a deletion or a key written, alone")
+                                    rule: "the record is written by Unpair before the deletion, and goes after a deletion, a key written or "
+                                        + "Try Again finding the item gone, alone")
         failures += appSiteFailures(#"\.\s*unpairs\b"#, in: sources, allowed: recordMemberSites,
                                     rule: "nothing reaches the record through a member access or a key path but the slot's init")
         failures += appSiteFailures(#"\bremoveRecorded\b"#, in: sources, allowed: removalSites,
-                                    rule: "the slot's one removal is reached from its Unpair alone")
+                                    rule: "the slot's one removal is reached from its Unpair and its Try Again alone")
         for (body, file, what) in [
             (unpairBody, controller, "every Unpair runs the kill switch and the slot's Unpair in their order — exactly as pinned"),
             (retryBody, controller, "Try Again runs only while the pane shows a refusal — exactly as pinned"),
             (modelRetryBody, model, "the model's Try Again calls the controller's, then refreshes — exactly as pinned"),
             (slotUnpairBody, slot, "the slot's Unpair records the item before the deletion — exactly as pinned"),
+            (slotRetryBody, slot, "the slot's Try Again deletes only an item its record holds — exactly as pinned"),
             (slotRemovalBody, slot, "the record goes only after a deletion that went through — exactly as pinned"),
             (slotCommitBody, slot, "the record goes only after a key written — exactly as pinned"),
         ] where ApprovalChannelStructureTests.count(body, in: MenuPanelStructureTests.flat(file)) != 1 {
@@ -1662,8 +1674,10 @@ struct PairingStructureTests {
         let model = "MenuStateModel.swift"
         let heldLine = "        let held = items.read()\n"
         let killFirst = "        killSwitch()\n        let gone = keys.unpair()\n"
+        let retryKillFirst = "        killSwitch()\n        let gone = keys.retryUnpair()\n"
         let recordFirst = "        unpairs.record(items.read())\n        return removeRecorded()\n"
         let removal = "        guard items.delete() else { return false }\n        unpairs.clear()\n"
+        let retryCheck = "        guard unpairs.holds(items.read()) else {\n            unpairs.clear()\n            return true\n        }\n"
         let retryCall = "        pairing?.retryUnpair()\n"
         let refreshHead = "    func refresh() {\n"
         let movedRetry = Self.mutate(sources, model) {
@@ -1685,6 +1699,16 @@ struct PairingStructureTests {
                 $0.replacingOccurrences(of: killFirst, with: "        let gone = keys.unpair()\n        killSwitch()\n") }),
             ("the kill switch only after a deletion", Self.mutate(sources, controller) {
                 $0.replacingOccurrences(of: killFirst, with: "        let gone = keys.unpair()\n        if gone { killSwitch() }\n") }),
+            // #247: Try Again bound to its record.
+            ("Try Again's deletion before its kill switch", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: retryKillFirst, with: "        let gone = keys.retryUnpair()\n        killSwitch()\n") }),
+            ("Try Again as a fresh Unpair of what the slot holds now", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: "let gone = keys.retryUnpair()", with: "let gone = keys.unpair()") }),
+            ("the slot's Try Again unbound", Self.mutate(sources, slot) { $0.replacingOccurrences(of: retryCheck, with: "") }),
+            ("the slot's Try Again rebinding the record", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: retryCheck, with: "        unpairs.record(items.read())\n") }),
+            ("the slot's Try Again taken unapplied", Self.mutate(sources, controller) {
+                $0 + "\nfunc zz(_ k: PairedKeyStore) -> Bool {\n    let again = k.retryUnpair\n    return again()\n}" }),
             // #247: the record.
             ("the record cleared before the deletion", Self.mutate(sources, slot) {
                 $0.replacingOccurrences(of: removal, with: "        unpairs.clear()\n        guard items.delete() else { return false }\n") }),
@@ -1716,6 +1740,7 @@ struct PairingStructureTests {
         // — only the pinned body sees it).
         var anchors: [(String, String)] = [(heldLine, slot), (recordFirst, slot), (removal, slot)]
         anchors.append((killFirst, controller))
+        anchors += [(retryCheck, slot), (retryKillFirst, controller)]
         for (anchor, file) in anchors {
             #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(file, in: sources)) == 1, "vacuity: \(anchor)")
         }

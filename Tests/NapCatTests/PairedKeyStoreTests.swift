@@ -154,6 +154,28 @@ struct PairedKeyStoreTests {
         #expect(medium.storedValue == nil && store.read() == .paired(second))
     }
 
+    /// The record names the item it was asked to remove: an item written
+    /// since — the record's own removal refused, so it still names the old
+    /// one — reads as the pairing, and Try Again leaves it alone (and drops
+    /// the record, which holds nothing stored).
+    @Test func tryAgainDeletesOnlyTheItemTheRecordNames() throws {
+        let items = FakeTopicStore()
+        let medium = FakeTopicStore()
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: medium))
+        #expect(store.commit(try Self.phone()))
+        items.setFailDeletes(true)
+        #expect(!store.unpair())
+        medium.setFailDeletes(true)
+        let second = try Self.phone(Self.otherKey)
+        #expect(store.commit(second))
+        #expect(medium.storedValue != nil, "vacuity: the record still names the first key")
+        #expect(store.read() == .paired(second), "the item written since is the pairing")
+        items.setFailDeletes(false)
+        medium.setFailDeletes(false)
+        #expect(store.retryUnpair())
+        #expect(items.deleteCount == 1 && store.read() == .paired(second) && medium.storedValue == nil)
+    }
+
     /// An Unpair run while the keychain refused the read cannot name the
     /// item: its record names none, so it holds whatever is stored, until a
     /// deletion goes through. An empty slot is held by no record.

@@ -557,6 +557,51 @@ struct PairingControllerTests {
         }
     }
 
+    /// Try Again acts on the key the owner asked to remove, never on one
+    /// paired since. Here the record's own removal is refused, so it still
+    /// names the old key after a new pairing: the new pairing shows as
+    /// paired, with no Try Again, and a Try Again from a pane that still
+    /// showed the refusal deletes nothing.
+    @Test func tryAgainIsBoundToThePairingUnpairWasAskedToRemove() async throws {
+        let world = PairingWorld()
+        _ = try Self.paired(world)
+        world.items.setFailDeletes(true)
+        world.controller.unpair()
+        world.unpairMedium.setFailDeletes(true)
+
+        let response = try PhoneHalf.response()
+        world.records.answer(.found(.response(response)))
+        world.controller.begin()
+        await world.advance(to: 2.5)
+        world.controller.codesMatch()
+        let phone = try #require(PairedPhone(publicKey: response.publicKey, pairedAt: world.clock))
+        world.controller.cancel()
+        await world.controller.settle()
+        #expect(world.items.storedValue == PairedKeyStore.text(of: phone) && world.unpairMedium.storedValue != nil,
+                "vacuity: the new key is stored, and the record still names the old one")
+        #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt), "no Try Again for the new pairing")
+        world.items.setFailDeletes(false)
+        world.controller.retryUnpair()
+        #expect(world.items.deleteCount == 1 && world.killSwitches == 1, "Try Again is not offered, and does nothing")
+
+        // A pane that still shows the refusal while the slot changed behind
+        // it: Try Again checks the slot itself.
+        let stale = PairingWorld()
+        _ = try Self.paired(stale)
+        stale.items.setFailDeletes(true)
+        stale.controller.unpair()
+        #expect(stale.controller.paneState == .unpairFailed)
+        stale.unpairMedium.setFailDeletes(true)
+        let other = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
+                                             pairedAt: stale.clock))
+        #expect(stale.keys.commit(other))
+        stale.items.setFailDeletes(false)
+        stale.controller.retryUnpair()
+        #expect(stale.items.storedValue == PairedKeyStore.text(of: other) && stale.items.deleteCount == 1,
+                "the pairing written since is never deleted")
+        #expect(stale.controller.paneState == .paired(other.fingerprint, since: other.pairedAt))
+    }
+
     /// A stored item NapCat cannot read — a text not this build's, or a
     /// read the keychain refuses — has its own pane state (no longer Not
     /// paired), and Unpair, the same confirmed Unpair, removes it. Refused,

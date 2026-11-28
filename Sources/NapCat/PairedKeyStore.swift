@@ -28,6 +28,8 @@ import NapCatWire
 // record: while it holds what the slot holds, the slot reads
 // `.unpairOutstanding`, no pairing, during this run and after a relaunch.
 // The record goes once the deletion went through or a new key was written.
+// Try Again deletes only the item the record names, never one written since,
+// and drops a record that holds nothing stored.
 //
 // NOTHING ARMS here. Since S-PAIR-C2 (#181) the decision verifier reads this
 // slot at each verification, its one reader on the decision path (`read()`
@@ -75,8 +77,8 @@ enum PairedPhoneRead: Equatable, Sendable {
 /// `UnpairRecord.approvalsFolder`; tests a record over a fake).
 struct PairedKeyStore: Sendable {
     /// Private (the C1 security review's R3): nothing but the slot's own
-    /// `read`, `commit` and `unpair` reaches the item — no alias of it and no
-    /// key path to it (PairingStructureTests).
+    /// `read`, `commit`, `unpair` and `retryUnpair` reaches the item — no
+    /// alias of it and no key path to it (PairingStructureTests).
     private let items: any TopicStore
     /// #247: what an Unpair asked to remove, until the removal went through.
     private let unpairs: UnpairRecord
@@ -116,6 +118,19 @@ struct PairedKeyStore: Sendable {
     /// delete it. True when the slot is empty — deleted now, or never there.
     func unpair() -> Bool {
         unpairs.record(items.read())
+        return removeRecorded()
+    }
+
+    /// #247: Try Again — the outstanding Unpair's own deletion, of the item
+    /// it recorded, only while that item is still what the slot holds. An
+    /// item written since (a new pairing) is left alone, and the record, which
+    /// no longer holds anything stored, goes. True when the item Unpair was
+    /// asked to remove is gone.
+    func retryUnpair() -> Bool {
+        guard unpairs.holds(items.read()) else {
+            unpairs.clear()
+            return true
+        }
         return removeRecorded()
     }
 

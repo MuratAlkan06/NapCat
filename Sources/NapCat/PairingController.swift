@@ -232,12 +232,16 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
         refreshPaired()
     }
 
-    /// #240: Try Again, after a refused Unpair — the same Unpair, already
-    /// confirmed, so no alert. Nothing while the pane shows no refusal, so a
-    /// late click never unpairs a phone paired since.
+    /// #240: Try Again, after a refused Unpair — already confirmed, so no
+    /// alert: the kill switch, then the outstanding Unpair's own deletion
+    /// (#247), bound to the item that Unpair recorded: an item written since
+    /// is never deleted by it. Nothing while the pane shows no refusal.
     func retryUnpair() {
         guard paired == .unpairOutstanding else { return }
-        unpair()
+        killSwitch()
+        let gone = keys.retryUnpair()
+        audit(gone ? .unpaired : .unpairFailed)
+        refreshPaired()
     }
 
     /// Launch: a record name remembered from a ceremony that never ended
