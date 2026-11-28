@@ -92,6 +92,18 @@ enum ClaudeBusyConstants {
     /// `WAITING_AFTER_STOP_EVENT` (parity lint).
     static let waitingAfterStopEventToken = "waiting-after-stop"
 
+    /// Synthetic marker event token (hook v9): a direct question (Claude
+    /// Code's AskUserQuestion tool) is about to be asked. In flight, and NOT
+    /// a waiting token: Claude waits on the user only once the question's
+    /// waiting notification arrives (`waitingQuestionEventToken`).
+    static let questionEventToken = "question"
+
+    /// Synthetic marker event token (hook v9): the same WAITING class as
+    /// `waitingEventToken`, written when the wait is a direct question. The
+    /// app treats it as waiting, and a waiting alert entered through it
+    /// names the question.
+    static let waitingQuestionEventToken = "waiting-question"
+
     /// B-2 marker PHASE, encoded in the marker's `event` token: the main turn
     /// is still IN FLIGHT. MUST byte-match the shell `marker_phase` case
     /// pattern, in order (parity lint).

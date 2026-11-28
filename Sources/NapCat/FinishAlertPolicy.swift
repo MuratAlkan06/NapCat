@@ -78,13 +78,14 @@ struct TrackedSession: Equatable, Sendable {
     var waitingBuzzed: Bool
 }
 
-/// An alert-worthy transition. Minutes only — never a session id.
+/// An alert-worthy transition. Minutes and counts only — never a session id.
 enum FinishAlertEvent: Equatable, Sendable {
     /// A session's marker disappeared after a run of at least the floor.
     case finished(minutes: Int?)
-    /// A session's marker transitioned to `event=waiting` at least the floor
-    /// into its run.
-    case waiting(minutes: Int?)
+    /// A session's marker transitioned to a waiting token at least the floor
+    /// into its run. `questions` is 1 when the token it entered is
+    /// `waitingQuestionEventToken` (the wait is a direct question), else 0.
+    case waiting(minutes: Int?, questions: Int = 0)
 }
 
 /// Why a transition produced no event (log-safe reason, never an id).
@@ -114,7 +115,7 @@ struct FinishAlertObservation: Equatable, Sendable {
     /// an `ep` the policy rejected (`EpisodeStartReading.invalid`) — they fell
     /// back to the pre-v7 anchor. A count for the controller's log line only.
     let invalidEpisodeStarts: Int
-    /// F4: how many present ids WROTE a waiting marker (either waiting token)
+    /// F4: how many present ids WROTE a waiting marker (any waiting token)
     /// in this diff, one each at most — the first input of
     /// `FinishAlertPolicy.waitingBuzzYieldsToPromptPush`. Counted:
     /// - every transition into waiting (from a non-waiting token, or a new id
@@ -122,8 +123,8 @@ struct FinishAlertObservation: Equatable, Sendable {
     ///   `.waiting` event, or a suppression under the run floor or for a
     ///   clock jump;
     /// - a waiting marker rewritten while waiting, never an event: its ts
-    ///   differs from the one last observed, or its token changed between
-    ///   the two waiting tokens.
+    ///   differs from the one last observed, or its token changed from one
+    ///   waiting token to another.
     /// Not counted: a waiting marker read again with the same ts and token
     /// (a rewrite in the same second, as the diff sees it, is no write), any
     /// non-waiting marker, and a disappearance. The arm-time baseline counts
@@ -174,6 +175,9 @@ struct FinishAlertDigest: Equatable, Sendable {
     /// Minutes of the FIRST folded waiting buzz (used only when it is the
     /// only one).
     var firstWaitingMinutes: Int? = nil
+    /// How many of the folded waiting buzzes are direct questions (used only
+    /// when exactly one buzz is folded).
+    var waitingQuestions = 0
     /// The LATEST observation's `stillWorking` (fresh tracked count).
     var stillWorking = 0
     /// F4 slice S2: the prompt counts of the LATEST folded waiting event (the
@@ -192,7 +196,8 @@ struct FinishAlertDigest: Equatable, Sendable {
 
     /// Fold one event observed at `now`. Keeps the FIRST minutes per kind and
     /// the first event's time; `stillWorking` is always the latest, and so
-    /// are a waiting event's `prompts` (F4 slice S2).
+    /// are a waiting event's `prompts` (F4 slice S2). A waiting event with
+    /// `questions` above 0 counts as one question wait.
     mutating func fold(_ event: FinishAlertEvent, stillWorking: Int, prompts: WaitingPromptCounts = .none,
                        at now: Double) {
         if isEmpty { originatedAt = now }
@@ -200,9 +205,10 @@ struct FinishAlertDigest: Equatable, Sendable {
         case .finished(let minutes):
             if finishedCount == 0 { firstFinishMinutes = minutes }
             finishedCount += 1
-        case .waiting(let minutes):
+        case .waiting(let minutes, let questions):
             if waitingCount == 0 { firstWaitingMinutes = minutes }
             waitingCount += 1
+            if questions > 0 { waitingQuestions += 1 }
             self.prompts = prompts
         }
         self.stillWorking = stillWorking
@@ -214,7 +220,8 @@ struct FinishAlertDigest: Equatable, Sendable {
     /// the next flush. `.sessionFinished(minutes, folded, stillWorking)`
     /// re-enters as `folded` finished events (at least one), its minutes kept
     /// only when it stood for exactly one finish; `.needsAttention(minutes,
-    /// …)` as one waiting event with its minutes. Same first-minutes rule as
+    /// …)` as one waiting event with its minutes, a question wait when its
+    /// `questions` is above 0. Same first-minutes rule as
     /// `fold`; `stillWorking` is the caller's latest observation (as in
     /// `fold`); `originatedAt` keeps the EARLIEST event (the absorbed message
     /// may predate what the digest already holds). The lid kinds (`.lidAlert`,
@@ -229,13 +236,14 @@ struct FinishAlertDigest: Equatable, Sendable {
             let count = max(1, folded)
             if finishedCount == 0 { firstFinishMinutes = count == 1 ? minutes : nil }
             finishedCount += count
-        case .needsAttention(let minutes, _, let prompts):
+        case .needsAttention(let minutes, _, let prompts, let questions):
             // A newer fold's prompt counts win over the absorbed message's.
             if waitingCount == 0 {
                 firstWaitingMinutes = minutes
                 self.prompts = prompts
             }
             waitingCount += 1
+            if questions > 0 { waitingQuestions += 1 }
         case .lidAlert, .test, .connectionRestored:
             return
         }
@@ -257,13 +265,16 @@ struct FinishAlertDigest: Equatable, Sendable {
 
     /// The messages to publish, WAITING FIRST (the user can act on it), then
     /// the finish. Minutes ride only when exactly one event of that kind was
-    /// folded (folded sessions' run lengths differ). `.needsAttention` counts
+    /// folded (folded sessions' run lengths differ), and so does the question
+    /// count: a buzz names a question only when it stands for exactly one
+    /// wait and that wait is a question. `.needsAttention` counts
     /// OTHER sessions: the waiting session itself is subtracted (clamped at 0).
     func messages() -> [LidGuardMessageKind] {
         var out: [LidGuardMessageKind] = []
         if waitingCount > 0 {
             out.append(.needsAttention(minutes: waitingCount == 1 ? firstWaitingMinutes : nil,
-                                       stillWorking: max(0, stillWorking - 1), prompts: prompts))
+                                       stillWorking: max(0, stillWorking - 1), prompts: prompts,
+                                       questions: waitingCount == 1 ? waitingQuestions : 0))
         }
         if finishedCount > 0 {
             out.append(.sessionFinished(minutes: finishedCount == 1 ? firstFinishMinutes : nil,
@@ -369,14 +380,18 @@ enum FinishAlertPolicy {
     ///    FRESH, later `ep`). The baseline (a NapCat restart, a disarm/re-arm)
     ///    applies rule 1, so with hook v7 it re-anchors at the recorded
     ///    episode start; a hook v6 marker still re-anchors at its CURRENT ts.
+    ///    Hook v9's `question` token (a question is about to be asked) is not
+    ///    a waiting token, so entering it ends a waiting episode too.
     /// 3. DISAPPEARED id ⇒ stale (last ts beyond the 12 h cap; exactly the cap
     ///    is NOT stale) / clockJump (negative run) / underMinimumRun, else
     ///    `.finished`.
     /// 4. WAITING transition (non-waiting or new → waiting, not yet buzzed) ⇒
     ///    clockJump / underMinimumRun, else `.waiting` and the dedupe flag is
-    ///    set. A suppressed transition leaves the flag false; rewrites that
-    ///    stay waiting — including `waiting` ⇄ `waiting-after-stop` — are
-    ///    never a transition.
+    ///    set; the event counts a question (`questions: 1`) exactly when the
+    ///    token entered is `waiting-question`. A suppressed transition leaves
+    ///    the flag false; rewrites that stay waiting — including any change
+    ///    between `waiting`, `waiting-after-stop` and `waiting-question` — are
+    ///    never a transition, so they never send a second, relabelled buzz.
     ///
     /// `minimumRunSeconds` is the ONE floor of rules 3 and 4 — the finish and
     /// the waiting buzz share it (`runSuppression`). The controller passes the
@@ -426,7 +441,8 @@ enum FinishAlertPolicy {
                 if let reason = runSuppression(duration: duration, minimumRunSeconds: minimumRunSeconds) {
                     suppressed.append(reason)
                 } else {
-                    events.append(.waiting(minutes: minutes(duration: duration, exact: session.exactStart)))
+                    events.append(.waiting(minutes: minutes(duration: duration, exact: session.exactStart),
+                                           questions: isQuestionWait(marker.event) ? 1 : 0))
                     session.waitingBuzzed = true
                 }
             }
@@ -492,11 +508,18 @@ enum FinishAlertPolicy {
         return duration / 60
     }
 
-    /// B-2: BOTH synthetic waiting tokens mean "blocked on the user" — the
-    /// in-flight `waiting` and the post-Stop `waiting-after-stop`. A change
-    /// between the two is NOT a new episode; any other token ends it.
+    /// B-2: every synthetic waiting token means "blocked on the user" — the
+    /// in-flight `waiting`, the post-Stop `waiting-after-stop` and (hook v9)
+    /// the in-flight `waiting-question`. A change between them is NOT a new
+    /// episode; any other token ends it.
     private static func isWaitingEvent(_ event: String) -> Bool {
         event == ClaudeBusyConstants.waitingEventToken || event == ClaudeBusyConstants.waitingAfterStopEventToken
+            || isQuestionWait(event)
+    }
+
+    /// Hook v9: the waiting token of a direct question.
+    private static func isQuestionWait(_ event: String) -> Bool {
+        event == ClaudeBusyConstants.waitingQuestionEventToken
     }
 
     /// Floor + clock checks shared by finishes and waiting buzzes; nil = the
