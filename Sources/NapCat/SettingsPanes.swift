@@ -274,7 +274,110 @@ struct SettingsRowView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        case let .approvalsAdvanced(title, intro, unavailable, switches, phone, never):
+            // #252: no model here — nothing in the section can act.
+            SettingsAdvancedSection(title: title, intro: intro, unavailable: unavailable, switches: switches,
+                                    phone: phone, never: never)
         }
+    }
+}
+
+/// #252: the Remote approvals group's Advanced section. Its button opens
+/// and closes it: collapsed whenever the pane is built (the state is this
+/// view's, in memory only), and with no motion — the chevron swaps and the
+/// content shows or goes in one step; the button's press is the only
+/// animation, as on every Settings button. VoiceOver hears the button's
+/// title with "collapsed" or "expanded" as its value.
+///
+/// Open, the only words on screen are each control's label and the line
+/// saying these stay on this Mac in this version. The rest sits behind
+/// info circles (`info(_:)`), each holding its text in full as a tooltip
+/// and as what VoiceOver reads: the intro's beside the title, what is
+/// never sent at the end of the not-available line, and each control's
+/// caption beside its label — outside the control, since a disabled view
+/// shows no tooltip.
+///
+/// Every control inside is drawn disabled over its row's constant value:
+/// a `.constant` binding, so there is no setter, and the view holds no
+/// model; its label is dimmed to match.
+struct SettingsAdvancedSection: View {
+    let title: String
+    let intro: String
+    let unavailable: String
+    let switches: [SettingsFixedToggle]
+    let phone: SettingsFixedToggle
+    let never: String
+    @State private var expanded = false
+
+    /// The chevron, swapped, never turned.
+    static let collapsedSymbol = "chevron.right"
+    static let expandedSymbol = "chevron.down"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: PanelMetrics.regular) {
+            HStack(spacing: PanelMetrics.tight) {
+                Button {
+                    expanded.toggle()
+                } label: {
+                    HStack(spacing: PanelMetrics.tight) {
+                        Image(systemName: expanded ? Self.expandedSymbol : Self.collapsedSymbol)
+                            .font(.caption.weight(.semibold))
+                            .accessibilityHidden(true)
+                        Text(title)
+                    }
+                }
+                .buttonStyle(SettingsPressButtonStyle(look: .bezel))
+                .accessibilityValue(expanded ? "expanded" : "collapsed")
+                info(intro)
+            }
+            if expanded {
+                HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.tight) {
+                    Image(systemName: PanelSymbol.info)
+                        .accessibilityHidden(true)
+                    Text(unavailable)
+                        .fixedSize(horizontal: false, vertical: true)
+                    info(never)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                ForEach(switches, id: \.title) { kind in
+                    HStack(spacing: PanelMetrics.tight) {
+                        dimmed(kind.title)
+                        info(kind.caption)
+                        Spacer(minLength: PanelMetrics.regular)
+                        Toggle(kind.title, isOn: .constant(kind.isOn))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .disabled(true)
+                    }
+                }
+                HStack(spacing: PanelMetrics.tight) {
+                    Toggle(isOn: .constant(phone.isOn)) { dimmed(phone.title) }
+                        .toggleStyle(.checkbox)
+                        .disabled(true)
+                    info(phone.caption)
+                }
+            }
+        }
+    }
+
+    /// An info circle: `text` in full as its tooltip and as its VoiceOver
+    /// label (the panel's icon buttons pair `.help` and the label the same
+    /// way). It is never disabled, so its tooltip shows.
+    private func info(_ text: String) -> some View {
+        Image(systemName: PanelSymbol.info)
+            .foregroundStyle(.secondary)
+            .help(text)
+            .accessibilityLabel(text)
+    }
+
+    /// A disabled control's label: AppKit's disabled control text, as on
+    /// a disabled system control's title (a switch's label stands beside
+    /// it as plain text, which the disabled state does not reach).
+    private func dimmed(_ title: String) -> some View {
+        Text(title)
+            .foregroundStyle(Color(nsColor: .disabledControlTextColor))
     }
 }
 

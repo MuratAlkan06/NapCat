@@ -3164,6 +3164,7 @@ struct DecisionSinkStructureTests {
         "nonisolated static let advancedSecretsCaption =": 1,
         #"nonisolated static let advancedPhoneTitle = "Let my iPhone turn these on""#: 1,
         "nonisolated static let advancedPhoneCaption =": 1, "nonisolated static let advancedNeverSent =": 1,
+        "nonisolated static var approvalsAdvancedRow: SettingsRow {": 1,
     ]
     /// The wire's extension of its channel, line by line.
     static let channelMembers: [String: Int] = [

@@ -739,18 +739,21 @@ struct SettingsWindowTests {
             #expect(model.remoteApprovalsVisible)
             #expect(!model.remoteApprovalsEnabled)
             #expect(model.remoteApprovalsPolicyLine == nil, "off: no probe, so no reading")
-            #expect(model.claudePane.sections.last?.rows == [.remoteApprovals(isOn: false, caption: nil, hint: hint)])
+            #expect(model.claudePane.sections.last?.rows == [.remoteApprovals(isOn: false, caption: nil, hint: hint),
+                                                             MenuStateModel.approvalsAdvancedRow])
             #expect(!model.settingsResidentSeverities(.claude).contains(.info))
 
             model.setRemoteApprovalsEnabled(true)
             #expect(model.remoteApprovalsEnabled)
             let policy = try #require(model.remoteApprovalsPolicyLine)
             #expect(policy == MenuStateModel.remoteApprovalsPolicyLine(finding: .unreadable))
-            // No pairing controller in this model: not paired (#205).
+            // No pairing controller in this model: not paired (#205). The
+            // Advanced section (#252) closes the group, unchanged.
             #expect(model.claudePane.sections.last?.rows == [
                 .remoteApprovals(isOn: true, caption: MenuStateModel.remoteApprovalsStatus(phase: .listening, hold: .notPaired),
                                  hint: hint),
                 .line(policy),
+                MenuStateModel.approvalsAdvancedRow,
             ])
             #expect(policy.severity == .nominal && !model.settingsResidentSeverities(.claude).contains(.info),
                     "the unreadable reading is a Settings fact, and the row's info status is not counted: no badge")
@@ -1451,13 +1454,21 @@ struct SettingsWindowTests {
             + " { model.beginPairing() } if paired { Button(MenuStateModel.unpairButtonTitle) { model.unpair() } }"
             + " } .buttonStyle(SettingsPressButtonStyle(look: .bezel))"
         #expect(flat.contains(pairingButtons), "Try Again, Pair iPhone… / Pair a New iPhone… and Unpair… press on the bezel")
+        // #252: the Advanced section's button opens and closes it, on the
+        // bezel too — AMENDED: an eighth button, a fifth style site.
+        #expect(flat.contains("Button { expanded.toggle() } label: {"
+                              + " HStack(spacing: PanelMetrics.tight) {"
+                              + " Image(systemName: expanded ? Self.expandedSymbol : Self.collapsedSymbol)"
+                              + " .font(.caption.weight(.semibold)) .accessibilityHidden(true) Text(title) } }"
+                              + " .buttonStyle(SettingsPressButtonStyle(look: .bezel))"),
+                "the Advanced section's button presses on the bezel")
         #expect(Self.occurrences(of: "Button(\"", in: views) == 3 && Self.occurrences(of: "SendFeedbackButton(", in: views) == 1
                 && Self.occurrences(of: "Button(paired ? ", in: views) == 1
                 && Self.occurrences(of: "Button(MenuStateModel.unpairButtonTitle)", in: views) == 1
                 && Self.occurrences(of: "Button(MenuStateModel.unpairRetryButtonTitle)", in: views) == 1
                 && Self.occurrences(of: "Button(", in: views) == 7
-                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these seven")
-        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 4, "every button under the one style")
+                && Self.occurrences(of: "Button {", in: views) == 1, "the Settings buttons are exactly these eight")
+        #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 5, "every button under the one style")
         for token in [".buttonStyle(.", "PanelPressFadeButtonStyle", "BorderedButtonStyle", "LinkButtonStyle",
                       "PlainButtonStyle", "onLongPressGesture", "DragGesture", ".gesture(", "NSTrackingArea"] {
             #expect(!views.contains(token), "'\(token)' — the press comes from configuration.isPressed alone")
@@ -1554,6 +1565,290 @@ struct SettingsWindowTests {
             "Text(caption) .font(.caption) .foregroundStyle(.secondary) .fixedSize(horizontal: false, vertical: true)",
             "}",
         ].joined(separator: " "), "the minimum-run row was rewired: \(MenuPanelStructureTests.flat(row))")
+    }
+
+    // MARK: - The Advanced section (#252)
+
+    /// The section's view as written, flattened: one in-memory state, false
+    /// (collapsed whenever the pane is built), turned only by the button,
+    /// which presses on the bezel and says collapsed or expanded, with the
+    /// intro's info circle beside it; the chevron swapped, never turned;
+    /// then, open, why nothing changes yet with the never-sent note's circle
+    /// at its end, the three switches and the checkbox — each over a
+    /// `.constant` binding, drawn disabled with its label dimmed, its
+    /// caption's circle beside the label, outside the control.
+    static let advancedSectionShape: String = [
+        "View { let title: String let intro: String let unavailable: String let switches: [SettingsFixedToggle]",
+        "let phone: SettingsFixedToggle let never: String @State private var expanded = false",
+        #"static let collapsedSymbol = "chevron.right" static let expandedSymbol = "chevron.down""#,
+        "var body: some View { VStack(alignment: .leading, spacing: PanelMetrics.regular) {",
+        "HStack(spacing: PanelMetrics.tight) { Button { expanded.toggle() } label: { HStack(spacing: PanelMetrics.tight) {",
+        "Image(systemName: expanded ? Self.expandedSymbol : Self.collapsedSymbol) .font(.caption.weight(.semibold))",
+        ".accessibilityHidden(true) Text(title) } } .buttonStyle(SettingsPressButtonStyle(look: .bezel))",
+        #".accessibilityValue(expanded ? "expanded" : "collapsed") info(intro) } if expanded {"#,
+        "HStack(alignment: .firstTextBaseline, spacing: PanelMetrics.tight) { Image(systemName: PanelSymbol.info)",
+        ".accessibilityHidden(true) Text(unavailable) .fixedSize(horizontal: false, vertical: true) info(never)",
+        "Spacer(minLength: 0) } .font(.caption) .foregroundStyle(.secondary)",
+        "ForEach(switches, id: \\.title) { kind in HStack(spacing: PanelMetrics.tight) { dimmed(kind.title) info(kind.caption)",
+        "Spacer(minLength: PanelMetrics.regular) Toggle(kind.title, isOn: .constant(kind.isOn)) .labelsHidden()",
+        ".toggleStyle(.switch) .disabled(true) } }",
+        "HStack(spacing: PanelMetrics.tight) { Toggle(isOn: .constant(phone.isOn)) { dimmed(phone.title) }",
+        ".toggleStyle(.checkbox) .disabled(true) info(phone.caption) } } } }",
+        "private func info(_ text: String) -> some View { Image(systemName: PanelSymbol.info) .foregroundStyle(.secondary)",
+        ".help(text) .accessibilityLabel(text) }",
+        "private func dimmed(_ title: String) -> some View { Text(title)",
+        ".foregroundStyle(Color(nsColor: .disabledControlTextColor)) } }",
+    ].joined(separator: " ")
+
+    /// Never in the section's view: a road to a setter or a stored value
+    /// (a binding of any other kind, a property wrapper that stores or
+    /// observes, defaults, the keychain), the model, an action of its own
+    /// beyond the button's, a control enabled, and motion of any kind — a
+    /// stock disclosure included, which animates by itself.
+    static let advancedSectionForbidden = [
+        "model", "Binding(", "set:", "$", "@Binding", "@AppStorage", "@SceneStorage", "@ObservedObject", "@StateObject",
+        "@EnvironmentObject", "@Environment", "@Published", "UserDefaults", "defaults", "DefaultsKey", "Keychain",
+        "onChange", "onTapGesture", "onAppear", ".task", ".disabled(false)", ".disabled(!", ".animation(", "withAnimation",
+        ".transition(", "withTransaction", ".transaction", "rotationEffect", "matchedGeometryEffect", "contentTransition",
+        ".symbolEffect(", "phaseAnimator", "keyframeAnimator", "animator()", "NSAnimationContext", "DisclosureGroup",
+    ]
+
+    /// The row hands the section its strings and values, and no model.
+    static let advancedRowCase = "case let .approvalsAdvanced(title, intro, unavailable, switches, phone, never):"
+        + " SettingsAdvancedSection(title: title, intro: intro, unavailable: unavailable, switches: switches,"
+        + " phone: phone, never: never)"
+
+    /// `shape`: the whole pin, or nil to read the section's rules alone.
+    static func advancedSectionFailures(views: String, shape: String? = advancedSectionShape) -> [String] {
+        guard let chunk = MenuPanelStructureTests.structChunk("SettingsAdvancedSection", in: views) else {
+            return ["SettingsAdvancedSection not found — keep this lock updated"]
+        }
+        var failures: [String] = []
+        let flat = MenuPanelStructureTests.flat(chunk)
+        if let shape, flat != shape {
+            failures.append("the Advanced section was rewired: \(flat)")
+        }
+        if Self.occurrences(of: "@State", in: chunk) != 1 || !flat.contains("@State private var expanded = false")
+            || Self.occurrences(of: "expanded =", in: chunk) != 1 || Self.occurrences(of: "expanded.toggle()", in: chunk) != 1 {
+            failures.append("the section opens collapsed, its one state in memory and turned by its button alone")
+        }
+        let controls = Self.occurrences(of: "Toggle(", in: chunk)
+        if controls != 2 || Self.occurrences(of: "isOn: .constant(", in: chunk) != controls
+            || Self.occurrences(of: ".disabled(true)", in: chunk) != controls {
+            failures.append("every control has a constant binding and is drawn disabled — \(controls) controls")
+        }
+        for token in Self.advancedSectionForbidden where chunk.contains(token) {
+            failures.append("'\(token)' in the Advanced section — no setter, no stored value, no model, no motion")
+        }
+        if Self.occurrences(of: "SettingsAdvancedSection(", in: views) != 1
+            || !MenuPanelStructureTests.flat(views).contains(Self.advancedRowCase) {
+            failures.append("the Advanced row must build the section once, from its own values, with no model")
+        }
+        if views.contains("DisclosureGroup") {
+            failures.append("a stock disclosure animates: no DisclosureGroup in Settings")
+        }
+        return failures
+    }
+
+    /// #252: the Advanced section opens collapsed, opens and closes with no
+    /// motion, and nothing in it can set anything. Read from the view file,
+    /// pinned whole; each rule also holds on its own (the canaries below
+    /// are read without the whole pin). The motion lints over every
+    /// Settings file stay as they were (MenuPanelStructureTests), and the
+    /// section names no animation, transition or stock disclosure.
+    @Test func theAdvancedSectionOpensCollapsedStillAndSetsNothing() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        #expect(Self.advancedSectionFailures(views: views).isEmpty, "\(Self.advancedSectionFailures(views: views))")
+        #expect(MenuPanelStructureTests.motionGateFailures(views: views).isEmpty, "the press is still the one animation")
+        for symbol in [SettingsAdvancedSection.collapsedSymbol, SettingsAdvancedSection.expandedSymbol] {
+            #expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil, "'\(symbol)' must resolve")
+        }
+
+        let line = { (old: String, new: String) in views.replacingOccurrences(of: old, with: new) }
+        let canaries: [(name: String, views: String)] = [
+            ("a switch made enabled", line(".toggleStyle(.switch)\n                            .disabled(true)",
+                                           ".toggleStyle(.switch)\n                            .disabled(false)")),
+            ("the checkbox no longer disabled", line(".toggleStyle(.checkbox)\n                        .disabled(true)",
+                                                     ".toggleStyle(.checkbox)")),
+            ("a switch bound to stored state", line("isOn: .constant(kind.isOn)", "isOn: $stored")
+                .replacingOccurrences(of: "    @State private var expanded = false",
+                                      with: "    @State private var expanded = false\n    @AppStorage(\"zz\") private var stored = false")),
+            ("a switch with a setter", line("isOn: .constant(kind.isOn)", "isOn: Binding(get: { kind.isOn }, set: { _ in })")),
+            ("the section open by default", line("@State private var expanded = false", "@State private var expanded = true")),
+            ("the section opening with an animation", line("expanded.toggle()", "withAnimation { expanded.toggle() }")),
+            ("the content fading in", line("info(phone.caption)\n", "info(phone.caption).transition(.opacity)\n")),
+            ("the chevron turning", line("Image(systemName: expanded ? Self.expandedSymbol : Self.collapsedSymbol)",
+                                         "Image(systemName: Self.collapsedSymbol).rotationEffect(.degrees(expanded ? 90 : 0))")),
+            ("the model handed to the section", line("    let never: String\n", "    let never: String\n    @ObservedObject var model: MenuStateModel\n")),
+            ("a stock disclosure beside it", views + "\nlet zzDisclosure = DisclosureGroup(\"x\") { Text(\"y\") }"),
+        ]
+        for canary in canaries {
+            #expect(canary.views != views, "canary setup '\(canary.name)'")
+            #expect(!Self.advancedSectionFailures(views: canary.views, shape: nil).isEmpty, "canary '\(canary.name)' was NOT caught")
+            #expect(!Self.advancedSectionFailures(views: canary.views).isEmpty, "canary '\(canary.name)' passes the whole pin")
+        }
+    }
+
+    /// The section's info circles, by the text each holds: the intro beside
+    /// the title, what is never sent at the end of the not-available line,
+    /// each switch's caption and the checkbox's.
+    static let advancedInfoCircles = ["info(intro)", "info(never)", "info(kind.caption)", "info(phone.caption)"]
+    /// The one way a circle is drawn: the panel's info symbol, its text in
+    /// full as the tooltip and as the VoiceOver label.
+    static let advancedInfoCircle = "private func info(_ text: String) -> some View { Image(systemName: PanelSymbol.info)"
+        + " .foregroundStyle(.secondary) .help(text) .accessibilityLabel(text) }"
+    /// All the text the open section draws: the button's title, the
+    /// not-available line and the controls' labels (`dimmed`).
+    static let advancedTexts = ["Text(title)", "Text(unavailable)", "Text(title)"]
+
+    /// The section's words, read from the view: on screen only the labels
+    /// and the not-available line; every other string in a circle of its
+    /// own, as tooltip and VoiceOver label alike, once; no circle inside a
+    /// control (a disabled view shows no tooltip) and none disabled; each
+    /// caption read at its circle, not again as a control's hint.
+    static func advancedWordsFailures(views: String) -> [String] {
+        guard let chunk = MenuPanelStructureTests.structChunk("SettingsAdvancedSection", in: views) else {
+            return ["SettingsAdvancedSection not found — keep this lock updated"]
+        }
+        var failures: [String] = []
+        let flat = MenuPanelStructureTests.flat(chunk)
+        let match = { (pattern: String) in ApprovalRecordPathStructureTests.matches(pattern, in: flat) }
+        if Self.occurrences(of: "func info(", in: flat) != 1 || !flat.contains(Self.advancedInfoCircle)
+            || Self.occurrences(of: ".help(", in: flat) != 1 || Self.occurrences(of: ".accessibilityLabel(", in: flat) != 1 {
+            failures.append("a circle holds its text as both its tooltip and its VoiceOver label: \(flat)")
+        }
+        let circles = match(#"\binfo\([\w.]+\)"#)
+        if circles.sorted() != Self.advancedInfoCircles.sorted() {
+            failures.append("each string that is not a label or the not-available line has one circle: \(circles)")
+        }
+        let texts = match(#"\bText\([^)]*\)"#)
+        if texts != Self.advancedTexts {
+            failures.append("on screen, only the labels and the not-available line: \(texts)")
+        }
+        let labels = match(#"\bdimmed\([\w.]+\)"#)
+        if labels != ["dimmed(kind.title)", "dimmed(phone.title)"] || Self.occurrences(of: ".labelsHidden()", in: flat) != 1 {
+            failures.append("each control's label is drawn once, dimmed — the switch's beside it, so its own is hidden: \(labels)")
+        }
+        for label in flat.components(separatedBy: "Toggle(").dropFirst() {
+            let upToStyle = label.components(separatedBy: ".toggleStyle(").first ?? label
+            if upToStyle.contains("info(") || upToStyle.contains(".help(") {
+                failures.append("a circle inside a control: Toggle(\(upToStyle)")
+            }
+        }
+        let disabledAtTheControl = Self.occurrences(of: ".toggleStyle(.switch) .disabled(true)", in: flat)
+            + Self.occurrences(of: ".toggleStyle(.checkbox) .disabled(true)", in: flat)
+        if Self.occurrences(of: ".disabled(", in: flat) != 2 || disabledAtTheControl != 2 {
+            failures.append("each control is disabled at the control itself, and nothing else is")
+        }
+        if flat.contains(".accessibilityHint(") || Self.occurrences(of: ".accessibilityHidden(true)", in: flat) != 2 {
+            failures.append("each caption is read once, at its circle; only the two glyphs are hidden from VoiceOver")
+        }
+        return failures
+    }
+
+    /// #252: open, the section shows each control's label and the line
+    /// saying these stay on this Mac in this version, and no other words.
+    /// The intro, each control's caption and what is never sent are each
+    /// held by an info circle, in full, as its tooltip and its VoiceOver
+    /// label, beside the control (never inside it, so the tooltip shows);
+    /// the controls stay disabled. Every one of those strings is the row's,
+    /// the existing words unchanged (theAdvancedCopy pins them exactly).
+    @Test func theAdvancedSectionKeepsEveryCaptionInAnInfoCircle() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        #expect(Self.advancedWordsFailures(views: views).isEmpty, "\(Self.advancedWordsFailures(views: views))")
+        #expect(NSImage(systemSymbolName: PanelSymbol.info, accessibilityDescription: nil) != nil, "the circle resolves")
+        #expect(PanelSymbol.info == "info.circle")
+
+        let row = MenuStateModel.approvalsAdvancedRow
+        guard case let .approvalsAdvanced(title, intro, unavailable, switches, phone, never) = row else {
+            Issue.record("the section's row is not .approvalsAdvanced: \(row)")
+            return
+        }
+        #expect([title, unavailable] + switches.map(\.title) + [phone.title]
+                == [MenuStateModel.advancedTitle, MenuStateModel.advancedUnavailable, MenuStateModel.advancedAdminTitle,
+                    MenuStateModel.advancedClaudeSettingsTitle, MenuStateModel.advancedSecretsTitle,
+                    MenuStateModel.advancedPhoneTitle], "on screen: the title, the not-available line and the labels")
+        #expect([intro, never] + switches.map(\.caption) + [phone.caption]
+                == [MenuStateModel.advancedIntro, MenuStateModel.advancedNeverSent, MenuStateModel.advancedAdminCaption,
+                    MenuStateModel.advancedClaudeSettingsCaption, MenuStateModel.advancedSecretsCaption,
+                    MenuStateModel.advancedPhoneCaption], "in circles: the intro, the never-sent note and the four captions")
+        #expect(Self.advancedSectionFailures(views: views).isEmpty, "the controls stay disabled over constant values")
+
+        let line = { (old: String, new: String) -> String in
+            #expect(views.contains(old), "canary setup: '\(old)' must exist")
+            return views.replacingOccurrences(of: old, with: new)
+        }
+        let canaries: [(name: String, views: String)] = [
+            ("a caption shown as text again", line("info(kind.caption)", "Text(kind.caption)")),
+            ("the intro shown as text again", line("                info(intro)\n", "                Text(intro)\n")),
+            ("the never-sent note's circle dropped", line("                    info(never)\n", "")),
+            ("a second circle for a caption", line("info(phone.caption)\n",
+                                                   "info(phone.caption)\n" + "                    info(kind.caption)\n")),
+            ("the tooltip dropped", line("            .help(text)\n", "")),
+            ("the tooltip and the label holding different text", line(".accessibilityLabel(text)", ".accessibilityLabel(\"Info\")")),
+            ("a circle hidden from VoiceOver", line(".accessibilityLabel(text)", ".accessibilityHidden(true)")),
+            ("a circle inside the checkbox", line("Toggle(isOn: .constant(phone.isOn)) { dimmed(phone.title) }",
+                                                 "Toggle(isOn: .constant(phone.isOn)) {"
+                                                    + " HStack { dimmed(phone.title); info(phone.caption) } }")
+                .replacingOccurrences(of: "                        .disabled(true)\n                    info(phone.caption)\n",
+                                      with: "                        .disabled(true)\n")),
+            ("a circle disabled", line("info(kind.caption)", "info(kind.caption).disabled(true)")),
+            ("a switch's label shown inside it again", line("Toggle(kind.title, isOn: .constant(kind.isOn))\n"
+                                                                + "                            .labelsHidden()\n",
+                                                            "Toggle(isOn: .constant(kind.isOn)) { dimmed(kind.title) }\n")),
+            ("a caption as a control's hint too", line(".toggleStyle(.switch)\n                            .disabled(true)\n",
+                                                      ".toggleStyle(.switch)\n                            .disabled(true)\n"
+                                                        + "                            .accessibilityHint(kind.caption)\n")),
+            ("the not-available line behind a circle", line("Text(unavailable)", "info(unavailable)")),
+        ]
+        for canary in canaries {
+            #expect(canary.views != views, "canary setup '\(canary.name)'")
+            let caught = !Self.advancedWordsFailures(views: canary.views).isEmpty
+                || !Self.advancedSectionFailures(views: canary.views, shape: nil).isEmpty
+            #expect(caught, "canary '\(canary.name)' was NOT caught")
+            #expect(!Self.advancedSectionFailures(views: canary.views).isEmpty, "canary '\(canary.name)' passes the whole pin")
+        }
+    }
+
+    /// The defaults keys, the complete set, and the keychain
+    /// items, by name: #252 stores nothing, so it adds neither, and no
+    /// Settings source names either store.
+    static let liveDefaultsKeys = [
+        "stayAwakeIntent", "heatWarningAcknowledged", "limit", "limitEnabled", "debugBattery", "lidGuardEnabled",
+        "lidGuardNtfyServer", "lidGuardPrimedAt", "claudeFinishAlertEnabled", "finishAlertMinimumRunSeconds",
+        "phoneTransportEnabled", "settingsSelectedPane", "updateCheckAutoEnabled", "updateCheckLastAttempt",
+        "updateCheckLatestTag", "remoteApprovalsEnabled", "pairingRecordToDelete",
+    ]
+    static let keychainItems = ["ntfyTopic", "pairedPhone"]
+
+    @Test func theAdvancedSectionStoresNothing() throws {
+        let keys = try Self.code("DefaultsKeys.swift")
+        let live = try #require(keys.range(of: "enum DefaultsKey {")).upperBound
+        let retired = try #require(keys.range(of: "enum RetiredDefaultsKey {")).lowerBound
+        let declared = ApprovalRecordPathStructureTests.matches(#"static let \w+ = "\w+""#, in: String(keys[live..<retired]))
+        #expect(declared == Self.liveDefaultsKeys.map { "static let \($0) = \"\($0)\"" }, "the live keys: \(declared)")
+        var items: [String] = []
+        for (name, text) in try LidGuardStructureTests.swiftSources() {
+            items += ApprovalRecordPathStructureTests.matches(#"KeychainItemName\("#, in: text).map { _ in name }
+        }
+        #expect(items == ["KeychainTopicStore.swift", "KeychainTopicStore.swift"], "the keychain items' one home: \(items)")
+        let store = try Self.code("KeychainTopicStore.swift")
+        #expect(Self.keychainItems.allSatisfy { store.contains("static let \($0) = KeychainItemName(") })
+        // The composition and the view name no store at all (the window
+        // controller keeps the last pane, its one key, as before).
+        for file in [Self.compositionFile, Self.settingsViewFile] {
+            let text = try Self.code(file)
+            for token in ["DefaultsKey", "UserDefaults", "@AppStorage", "@SceneStorage", "Keychain"] {
+                #expect(!text.contains(token), "'\(token)' in \(file) — the panes store nothing")
+            }
+        }
+        // The model gains nothing for it: the section is the settings
+        // extension's constant (its member pin), and the model's own file
+        // never names it.
+        let model = try Self.code("MenuStateModel.swift")
+        for token in ["approvalsAdvanced", "SettingsFixedToggle", "advanced"] {
+            #expect(!model.contains(token), "'\(token)' in MenuStateModel.swift")
+        }
     }
 
     /// Every Settings control forwards to the SAME model action as its
