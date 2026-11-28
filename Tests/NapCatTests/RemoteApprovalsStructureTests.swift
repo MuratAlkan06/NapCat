@@ -126,7 +126,7 @@ struct RemoteApprovalsStructureTests {
             failures.append("the production host must look for the lid guard's fail-closed secrets")
         }
         let fold = "let known = secrets() let classification = ApprovalGate.classify(toolName: request.toolName, "
-            + "inputPreview: request.inputPreview, secrets: known ?? []).failingClosed(secretsKnown: known != nil)"
+            + "inputPreview: request.inputPreview, topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)"
         if !flat(intake).contains(fold) {
             failures.append("the intake must fold unknown secrets into a refusal on the gate's own answer")
         }
@@ -149,6 +149,10 @@ struct RemoteApprovalsStructureTests {
             ("the fold dropped", intake.replacingOccurrences(of: ".failingClosed(secretsKnown: known != nil)", with: ""), toggle),
             ("unknown read as none", intake.replacingOccurrences(
                 of: "secretsKnown ? self : .suppress(.forbidden(.secretAccess))", with: "self"), toggle),
+            // #253: the gate's call as it was before the floor and the
+            // policy (the alert topic as a list of secrets, no set).
+            ("the gate's call as it was", intake.replacingOccurrences(
+                of: "topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(", with: "secrets: known ?? []).failingClosed("), toggle),
         ]
         for (name, intake, toggle) in mutants {
             #expect(!Self.secretsFailures(intake: intake, toggle: toggle).isEmpty, "canary '\(name)' was NOT caught")

@@ -1372,8 +1372,9 @@ struct MenuPanelPresentationTests {
                                                 severity: .warning)
                 let warning = PanelLine(text: "Unpair failed — try again in Settings › Claude", severity: .warning)
                 #expect(model.pairingPane == .unpairFailed && model.pairingLine == warning)
-                #expect(model.claudePane.sections.last?.rows.suffix(2) == [
-                    .pairingStatus(line: settingsWarning, fingerprint: nil, hint: nil), .pairingButtons(paired: false, retry: true)])
+                #expect(model.claudePane.sections.last?.rows.suffix(3) == [
+                    .pairingStatus(line: settingsWarning, fingerprint: nil, hint: nil), .pairingButtons(paired: false, retry: true),
+                    MenuStateModel.approvalsAdvancedRow])
                 #expect(model.settingsBadge == .warning, "the gear says where it lives")
                 #expect(MenuStateModel.placement(ofSettingsLine: warning.severity) == .topLevel, "and its twin renders")
                 #expect(!model.remoteApprovalsPaired, "a refused Unpair is not a pairing")

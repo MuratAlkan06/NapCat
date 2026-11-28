@@ -11,6 +11,15 @@
 // description member INSIDE the preview is read only to refuse (it is
 // scanned like every string), and what leaves the Mac is the gate's own copy
 // without it (`forwardedPreview`), never the relayed text.
+//
+// The order (design/remote-approvals-catalogue.md, "Precedence"): the
+// shape; the never-sent floor (`ApprovalFloor`) over the tool name and the
+// raw preview; readability; the floor again over every decoded key and
+// string; the tool's row, whose forbidden families are collected as the
+// risky kinds the prompt carries; the policy (`ApprovalForwardingSet`): a
+// prompt is forwarded only when the set admits its kind and every risky
+// kind it carries; and the gate's own copy. A floor outcome is final under
+// every set.
 
 /// The tools the gate classifies (one row each in the tool table). Only the
 /// rows marked `forwards` may leave the Mac, and that is Bash alone: the
@@ -34,6 +43,15 @@ public enum ForbiddenFamily: String, CaseIterable, Sendable {
     case configurationOrHooks
     /// The keychain, the alert topic, token and key files.
     case secretAccess
+
+    /// The risky kind of the forwarding policy this family is.
+    var riskyKind: ApprovalRiskyKind {
+        switch self {
+        case .privilegeEscalation: return .privileged
+        case .configurationOrHooks: return .claudeConfig
+        case .secretAccess: return .secrets
+        }
+    }
 }
 
 /// Why a prompt could not be classified with confidence (fail closed).
@@ -66,6 +84,11 @@ public enum Unclassifiable: String, CaseIterable, Sendable {
 
 /// Why a prompt stays on the Mac.
 public enum ApprovalSuppression: Equatable, Sendable {
+    /// The never-sent floor names something the prompt holds (the floor's
+    /// group): kept under every setting.
+    case floor(ApprovalFloorGroup)
+    /// The floor cannot judge the prompt: kept under every setting.
+    case floorUnreadable(ApprovalFloorUnreadable)
     case forbidden(ForbiddenFamily)
     /// MCP tools are local-only in the MVP (CL-2).
     case localOnlyMCP
@@ -81,6 +104,8 @@ public enum ApprovalSuppression: Equatable, Sendable {
     /// A closed-vocabulary code for the audit log (never any prompt text).
     public var auditCode: String {
         switch self {
+        case .floor(let group): return "floor.\(group.rawValue)"
+        case .floorUnreadable(let reason): return "floorUnreadable.\(reason.rawValue)"
         case .forbidden(let family): return "forbidden.\(family.rawValue)"
         case .localOnlyMCP: return "localOnly.mcp"
         case .localOnlyFileEdit: return "localOnly.fileEdit"
@@ -122,10 +147,25 @@ public enum ApprovalGate {
     /// The tool-name prefix of every MCP tool.
     public static let mcpPrefix = "mcp__"
 
-    /// Classifies one prompt from the relay's `tool_name` and `input_preview`.
-    /// `secrets` are strings that must never leave the Mac (the alert topic):
-    /// a prompt containing one, anywhere, is secret access.
-    public static func classify(toolName: String, inputPreview: String, secrets: [String] = []) -> ApprovalClassification {
+    /// Classifies one prompt from the relay's `tool_name` and `input_preview`
+    /// under the effective set `policy`. `topic` is the alert topic, which
+    /// must never leave the Mac: the floor keeps a prompt holding it, and
+    /// every prompt while it cannot be read.
+    ///
+    /// In order: the tool name's shape and the preview's size; the floor
+    /// over the tool name and the raw preview; the relay's placeholders,
+    /// one strict JSON object and hidden text; the floor over every decoded
+    /// key and string; the tool's row (an MCP tool and a tool the table does
+    /// not list have none) and its arguments; the floor's ASCII rule over
+    /// the strings the row read as names; the row's local-only code; the
+    /// policy; the gate's own copy. A floor outcome is final, whatever was
+    /// found before it. Every other check either keeps the prompt for good
+    /// or, for a forbidden family (and the relay's credential mask), notes a
+    /// risky kind the prompt carries. A prompt kept for any reason is logged
+    /// with the first reason, in that order, that `policy` does not admit;
+    /// the families a row finds come before its other refusals.
+    public static func classify(toolName: String, inputPreview: String, topic: ApprovalFloorTopic,
+                                policy: ApprovalForwardingSet) -> ApprovalClassification {
         let name = Array(toolName.utf8)
         let preview = Array(inputPreview.utf8)
         guard !name.isEmpty, name.count <= maxToolNameBytes, name.allSatisfy(isToolNameByte) else {
@@ -134,39 +174,107 @@ public enum ApprovalGate {
         guard preview.count <= maxPreviewBytes, inputPreview.unicodeScalars.count <= maxPreviewScalars else {
             return .suppress(.unclassifiable(.previewTooLarge))
         }
-        let secretBytes = secrets.map { Array($0.utf8) }.filter { !$0.isEmpty }
+        if let floor = floorRefusal(ApprovalFloor.outcome(of: [.naming(toolName), .freeText(inputPreview)], topic: topic)) {
+            return .suppress(floor)
+        }
+        var found = Findings()
+        func kept(_ reason: ApprovalSuppression) -> ApprovalClassification {
+            .suppress(found.firstUnadmitted(by: policy) ?? reason)
+        }
+        let secretBytes: [[UInt8]] = topicBytes(topic)
         if revealsSecret(name, secretBytes) || revealsSecret(preview, secretBytes) {
-            return .suppress(.forbidden(.secretAccess))
+            found.note(.secretAccess)
         }
         if holdsUnfaithfulMarker(preview) {
-            return .suppress(.unclassifiable(.previewNotFaithful))
+            return kept(.unclassifiable(.previewNotFaithful))
         }
         guard let members = ApprovalPreview.parseObject(inputPreview) else {
-            return .suppress(.unclassifiable(.previewNotStrictJSON))
+            return kept(.unclassifiable(.previewNotStrictJSON))
         }
         let strings = ApprovalPreview.strings(in: members)
-        for text in strings where revealsSecret(Array(text.utf8), secretBytes) {
-            return .suppress(.forbidden(.secretAccess))
+        if strings.contains(where: { revealsSecret(Array($0.utf8), secretBytes) }) {
+            found.note(.secretAccess)
         }
-        for text in strings where holdsUnfaithfulMarker(Array(text.utf8)) {
-            return .suppress(.unclassifiable(.previewNotFaithful))
+        if strings.contains(where: { holdsUnfaithfulMarker(Array($0.utf8)) }) {
+            return kept(.unclassifiable(.previewNotFaithful))
         }
-        for text in strings where text.unicodeScalars.contains(where: isHidden) {
-            return .suppress(.unclassifiable(.hiddenText))
+        if strings.contains(where: { $0.unicodeScalars.contains(where: isHidden) }) {
+            return kept(.unclassifiable(.hiddenText))
+        }
+        if let floor = floorRefusal(ApprovalFloor.outcome(of: strings.map { .freeText($0) }, topic: topic)) {
+            return .suppress(floor)
         }
         if name.starts(with: mcpPrefix.utf8) {
-            return .suppress(.localOnlyMCP)
+            return kept(.localOnlyMCP)
         }
         guard let row = toolTable.first(where: { $0.tool.rawValue.utf8.elementsEqual(name) }) else {
-            return .suppress(.unclassifiable(.unknownTool))
+            return kept(.unclassifiable(.unknownTool))
         }
-        if let refusal = refusal(members, row) {
-            return .suppress(refusal)
+        if let refusal = refusal(members, row, &found) {
+            return kept(refusal)
+        }
+        let names: [ApprovalFloorString] = ([toolName] + namingStrings(members, row)).map { .naming($0) }
+        if let floor = floorRefusal(ApprovalFloor.outcome(of: names, topic: topic)) {
+            return .suppress(floor)
         }
         if let localOnly = row.localOnly {
-            return .suppress(localOnly)
+            return kept(localOnly)
+        }
+        guard policy.admits(row.kind, carrying: found.riskyKinds) else {
+            return kept(.unclassifiable(.commandNotInTable))
+        }
+        guard forwardedPreview(toolName: toolName, inputPreview: inputPreview) != nil else {
+            return kept(.unclassifiable(.previewNotStrictJSON))
         }
         return .forward(row.tool)
+    }
+
+    /// A floor outcome as the gate keeps it: nil for no match.
+    static func floorRefusal(_ outcome: ApprovalFloorOutcome) -> ApprovalSuppression? {
+        switch outcome {
+        case .noMatch: return nil
+        case .floor(let group): return .floor(group)
+        case .unreadable(let reason): return .floorUnreadable(reason)
+        }
+    }
+
+    /// The topic's bytes, for the gate's own check of the decoded strings
+    /// (the floor reads them first): none unless one is given.
+    static func topicBytes(_ topic: ApprovalFloorTopic) -> [[UInt8]] {
+        guard case .value(let bytes) = topic, !bytes.isEmpty else { return [] }
+        return [bytes]
+    }
+
+    /// The forbidden families a prompt was found to carry, in the order the
+    /// gate found them: the risky kinds of the policy (`riskyKind`).
+    struct Findings: Sendable {
+        private(set) var families: [ForbiddenFamily] = []
+
+        mutating func note(_ family: ForbiddenFamily) {
+            families.append(family)
+        }
+
+        var riskyKinds: Set<ApprovalRiskyKind> { Set(families.map(\.riskyKind)) }
+
+        /// The first family whose risky kind `policy` does not admit, as the
+        /// code a kept prompt is logged with.
+        func firstUnadmitted(by policy: ApprovalForwardingSet) -> ApprovalSuppression? {
+            families.first { !policy.riskyKinds.contains($0.riskyKind) }.map { .forbidden($0) }
+        }
+    }
+
+    /// The strings `row` reads as names, in the preview's order: its
+    /// command and its paths, where each is a string.
+    static func namingStrings(_ members: [PreviewMember], _ row: ToolRow) -> [String] {
+        members.compactMap { member in
+            guard case .string(let text) = member.value,
+                  let argument = (row.required + row.optional).first(where: { $0.name.utf8.elementsEqual(member.key.utf8) })
+            else { return nil }
+            switch argument.kind {
+            case .path, .command: return text
+            case .text, .withheld, .pageRange, .wholeNumber, .milliseconds, .bool, .falseOnly: return nil
+            }
+        }
     }
 
     /// The copy of a prompt's preview that may leave the Mac: the members its
@@ -231,6 +339,9 @@ public enum ApprovalGate {
 
     struct ToolRow: Sendable {
         let tool: ApprovalTool
+        /// What a prompt this row may forward is, for the policy: the
+        /// Bash row forwards only a listed command.
+        let kind: ApprovalPromptKind
         /// Nil when a prompt that passes every check may leave the Mac;
         /// otherwise the code such a prompt stays on the Mac with. A row
         /// with one is still checked in full first, so a forbidden or
@@ -248,19 +359,19 @@ public enum ApprovalGate {
     /// refuses the prompt. Only Bash forwards; the file-edit tools and Read
     /// are local-only, each with its own code.
     static let toolTable: [ToolRow] = [
-        ToolRow(tool: .bash, localOnly: nil, required: [Argument("command", .command)],
+        ToolRow(tool: .bash, kind: .listedCommand, localOnly: nil, required: [Argument("command", .command)],
                 optional: [Argument("description", .withheld), Argument("timeout", .milliseconds),
                            Argument("run_in_background", .falseOnly(.unclassifiable(.argumentValue))),
                            Argument("dangerouslyDisableSandbox", .falseOnly(.forbidden(.privilegeEscalation)))]),
-        ToolRow(tool: .write, localOnly: .localOnlyFileEdit, required: [Argument("file_path", .path), Argument("content", .text)],
+        ToolRow(tool: .write, kind: .fileEdit, localOnly: .localOnlyFileEdit, required: [Argument("file_path", .path), Argument("content", .text)],
                 optional: []),
-        ToolRow(tool: .edit, localOnly: .localOnlyFileEdit,
+        ToolRow(tool: .edit, kind: .fileEdit, localOnly: .localOnlyFileEdit,
                 required: [Argument("file_path", .path), Argument("old_string", .text), Argument("new_string", .text)],
                 optional: [Argument("replace_all", .bool)]),
-        ToolRow(tool: .notebookEdit, localOnly: .localOnlyFileEdit,
+        ToolRow(tool: .notebookEdit, kind: .fileEdit, localOnly: .localOnlyFileEdit,
                 required: [Argument("notebook_path", .path), Argument("new_source", .text)],
                 optional: [Argument("cell_id", .text), Argument("cell_type", .text), Argument("edit_mode", .text)]),
-        ToolRow(tool: .read, localOnly: .localOnlyRead, required: [Argument("file_path", .path)],
+        ToolRow(tool: .read, kind: .outsideRead, localOnly: .localOnlyRead, required: [Argument("file_path", .path)],
                 optional: [Argument("offset", .wholeNumber(0...maxReadOffset)), Argument("limit", .wholeNumber(1...maxReadLimit)),
                            Argument("pages", .pageRange)]),
     ]
@@ -474,7 +585,12 @@ public enum ApprovalGate {
 
     // MARK: - Arguments
 
-    private static func refusal(_ members: [PreviewMember], _ row: ToolRow) -> ApprovalSuppression? {
+    /// The row's refusal of `members`, which keeps the prompt for good: a key
+    /// the row does not list, a missing required one, then, of the values, a
+    /// refusal that is a family (an unsandboxed Bash run), else the first
+    /// other one, in the preview's order. Every forbidden family the values
+    /// name is noted in `found`, in that order: those are risky kinds.
+    private static func refusal(_ members: [PreviewMember], _ row: ToolRow, _ found: inout Findings) -> ApprovalSuppression? {
         var checked: [(Argument, PreviewValue)] = []
         for member in members {
             guard let argument = (row.required + row.optional).first(where: { $0.name.utf8.elementsEqual(member.key.utf8) }) else {
@@ -485,19 +601,23 @@ public enum ApprovalGate {
         for argument in row.required where !checked.contains(where: { $0.0.name == argument.name }) {
             return .unclassifiable(.missingArgument)
         }
+        var firstFamily: ApprovalSuppression?
         var firstRefusal: ApprovalSuppression?
         for (argument, value) in checked {
-            guard let found = refusal(value, argument.kind) else { continue }
-            if case .forbidden = found { return found }
-            firstRefusal = firstRefusal ?? found
+            guard let refused = refusal(value, argument.kind, &found) else { continue }
+            if case .forbidden = refused {
+                firstFamily = firstFamily ?? refused
+            } else {
+                firstRefusal = firstRefusal ?? refused
+            }
         }
-        return firstRefusal
+        return firstFamily ?? firstRefusal
     }
 
-    private static func refusal(_ value: PreviewValue, _ kind: ArgumentKind) -> ApprovalSuppression? {
+    private static func refusal(_ value: PreviewValue, _ kind: ArgumentKind, _ found: inout Findings) -> ApprovalSuppression? {
         switch (kind, value) {
-        case (.path, .string(let text)): return pathRefusal(Array(text.utf8))
-        case (.command, .string(let text)): return commandRefusal(Array(text.utf8))
+        case (.path, .string(let text)): return pathRefusal(Array(text.utf8), &found)
+        case (.command, .string(let text)): return commandRefusal(Array(text.utf8), &found)
         case (.text, .string): return nil
         case (.withheld, .string): return nil
         case (.pageRange, .string(let text)): return isPageRange(Array(text.utf8)) ? nil : .unclassifiable(.argumentValue)
@@ -505,7 +625,10 @@ public enum ApprovalGate {
             return wholeNumber(Array(literal.utf8), in: range) == nil ? .unclassifiable(.argumentValue) : nil
         case (.milliseconds, .number(let literal)): return isMilliseconds(Array(literal.utf8)) ? nil : .unclassifiable(.argumentValue)
         case (.bool, .bool): return nil
-        case (.falseOnly(let refusal), .bool(let flag)): return flag ? refusal : nil
+        case (.falseOnly(let refusal), .bool(let flag)):
+            guard flag else { return nil }
+            if case .forbidden(let family) = refusal { found.note(family) }
+            return refusal
         case (.path, _), (.command, _), (.text, _), (.withheld, _), (.pageRange, _), (.wholeNumber, _), (.milliseconds, _), (.bool, _),
              (.falseOnly, _):
             return .unclassifiable(.argumentKind)
@@ -527,9 +650,9 @@ public enum ApprovalGate {
 
     /// A file tool's path: absolute, printable ASCII without a backslash (so
     /// never a middle dot), no empty, `.` or `..` component, no trailing
-    /// slash — then the families — and, last, no space or double quote
-    /// (`pathBytesRefusedAfterFamilies`).
-    static func pathRefusal(_ path: [UInt8]) -> ApprovalSuppression? {
+    /// slash — then the families, each noted in `found` — and, last, no
+    /// space or double quote (`pathBytesRefusedAfterFamilies`).
+    static func pathRefusal(_ path: [UInt8], _ found: inout Findings) -> ApprovalSuppression? {
         guard path.count >= 2, path.count <= maxPathBytes, path.first == slash, path.last != slash,
               path.allSatisfy({ $0 >= 0x20 && $0 <= 0x7E && $0 != backslash }) else {
             return .unclassifiable(.pathNotCanonical)
@@ -538,18 +661,16 @@ public enum ApprovalGate {
         guard components.allSatisfy({ !$0.isEmpty && $0 != dot && $0 != dotDot }) else {
             return .unclassifiable(.pathNotCanonical)
         }
-        if let family = pathFamily(components, rooted: true) {
-            return .forbidden(family)
+        for family in pathFamilies(components, rooted: true) {
+            found.note(family)
         }
         return path.contains { pathBytesRefusedAfterFamilies.contains($0) } ? .unclassifiable(.pathNotCanonical) : nil
     }
 
-    /// The first family whose rule matches `components` (lowercased).
-    static func pathFamily(_ components: [[UInt8]], rooted: Bool) -> ForbiddenFamily? {
-        for rule in pathRules where matches(rule.pattern, components, rooted: rooted) {
-            return rule.family
-        }
-        return nil
+    /// The family of every rule that matches `components` (lowercased), in
+    /// the rules' order.
+    static func pathFamilies(_ components: [[UInt8]], rooted: Bool) -> [ForbiddenFamily] {
+        pathRules.filter { matches($0.pattern, components, rooted: rooted) }.map(\.family)
     }
 
     private static func matches(_ pattern: PathPattern, _ components: [[UInt8]], rooted: Bool) -> Bool {
@@ -584,22 +705,21 @@ public enum ApprovalGate {
     }
 
     /// A Bash command, in order: the needles, the grammar, then per simple
-    /// command its family and the families of its words — refusal filters
-    /// only — and last the forward basis: the whole command is exactly one of
-    /// `bashCommands`.
-    static func commandRefusal(_ command: [UInt8]) -> ApprovalSuppression? {
+    /// command its family and the families of its words — each family noted
+    /// in `found`, the rest refusal filters only — and last the forward
+    /// basis: the whole command is exactly one of `bashCommands`.
+    static func commandRefusal(_ command: [UInt8], _ found: inout Findings) -> ApprovalSuppression? {
         let lower = lowercased(command)
         for needle in commandNeedles where contains(lower, Array(needle.text.utf8)) {
-            return .forbidden(needle.family)
+            found.note(needle.family)
         }
         guard let segments = simpleCommands(command) else {
             return .unclassifiable(.commandOutsideGrammar)
         }
         var firstRefusal: ApprovalSuppression?
         for segment in segments {
-            guard let found = segmentRefusal(segment) else { continue }
-            if case .forbidden = found { return found }
-            firstRefusal = firstRefusal ?? found
+            guard let refused = segmentRefusal(segment, &found) else { continue }
+            firstRefusal = firstRefusal ?? refused
         }
         if let firstRefusal { return firstRefusal }
         return bashCommands.contains(where: { $0.utf8.elementsEqual(command) }) ? nil : .unclassifiable(.commandNotInTable)
@@ -688,12 +808,15 @@ public enum ApprovalGate {
         return tokens
     }
 
-    private static func segmentRefusal(_ words: [Word]) -> ApprovalSuppression? {
+    /// One simple command: the family of every command it leads with, then
+    /// the families of its words after the name, each noted in `found`, up
+    /// to its first word that cannot be read as a path (that refusal).
+    private static func segmentRefusal(_ words: [Word], _ found: inout Findings) -> ApprovalSuppression? {
         for rule in commandFamilies where leads(words, rule.words) {
-            return .forbidden(rule.family)
+            found.note(rule.family)
         }
         for word in words.dropFirst() {
-            if let found = wordRefusal(word) { return found }
+            if let refused = wordRefusal(word, &found) { return refused }
         }
         return nil
     }
@@ -705,8 +828,9 @@ public enum ApprovalGate {
     }
 
     /// A word after the command name: no `..` and no empty component (a
-    /// trailing slash aside), and no forbidden location, read as a path.
-    private static func wordRefusal(_ word: Word) -> ApprovalSuppression? {
+    /// trailing slash aside); read as a path, each forbidden location it
+    /// names is noted in `found`.
+    private static func wordRefusal(_ word: Word, _ found: inout Findings) -> ApprovalSuppression? {
         let rooted = word.text.first == slash
         var parts = word.text.split(separator: slash, omittingEmptySubsequences: false).map { lowercased(Array($0)) }
         if rooted { parts.removeFirst() }
@@ -714,7 +838,10 @@ public enum ApprovalGate {
         guard parts.allSatisfy({ $0 != dotDot }), parts.count == 1 || parts.allSatisfy({ !$0.isEmpty }) else {
             return .unclassifiable(.commandOutsideGrammar)
         }
-        return pathFamily(parts, rooted: rooted).map { .forbidden($0) }
+        for family in pathFamilies(parts, rooted: rooted) {
+            found.note(family)
+        }
+        return nil
     }
 
     // MARK: - Bytes
@@ -792,9 +919,24 @@ public enum ApprovalGate {
         bytes.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 0x20 : $0 }
     }
 
+    /// Whether `needle` (not empty) is a run of `haystack`, compared from
+    /// each place `needle`'s first byte stands (the floor reads every name
+    /// of its tables in every reading this way, so the loop stays plain).
     static func contains(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
-        guard !needle.isEmpty, haystack.count >= needle.count else { return false }
-        return (0...(haystack.count - needle.count)).contains { haystack[$0..<$0 + needle.count].elementsEqual(needle) }
+        let length = needle.count
+        guard length > 0, haystack.count >= length else { return false }
+        let first = needle[0]
+        let last = haystack.count - length
+        var start = 0
+        while start <= last {
+            if haystack[start] == first {
+                var offset = 1
+                while offset < length, haystack[start + offset] == needle[offset] { offset += 1 }
+                if offset == length { return true }
+            }
+            start += 1
+        }
+        return false
     }
 
     /// Whether `bytes` holds one of `secrets` (exactly) or one of the

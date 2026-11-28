@@ -121,27 +121,94 @@ struct RemoteApprovalsPresentationTests {
     static let status = PanelLine(text: "Claude: idle", severity: .nominal)
     static let hook = PanelLine(text: "Busy hook: last seen 1m ago", severity: .nominal)
 
-    static func pane(_ approvals: (isOn: Bool, status: PanelLine, policy: PanelLine?)?) -> SettingsPaneContent {
+    static func pane(_ approvals: (isOn: Bool, status: PanelLine, policy: PanelLine?)?,
+                     pairing: PairingPaneState? = nil) -> SettingsPaneContent {
         MenuStateModel.claudePane(status: Self.status, hook: Self.hook, hookVersion: nil, awake: nil, paused: false,
-                                  approvals: approvals)
+                                  approvals: approvals, pairing: pairing)
     }
 
     /// The group comes last, titled like the row; off shows the switch and
-    /// what it does, on adds its status, and a reading adds its line.
+    /// what it does, on adds its status, and a reading adds its line. The
+    /// Advanced section (#252) closes it either way.
     @Test func theRemoteApprovalsGroup() throws {
         let hint = MenuStateModel.remoteApprovalsHint
+        let advanced = MenuStateModel.approvalsAdvancedRow
         let without = Self.pane(nil)
         #expect(without.sections.map(\.title) == ["Detection", "Busy hook"], "no toggle (debugBattery): no group")
 
         let off = Self.pane((isOn: false, status: PanelLine(text: "Off", severity: .nominal), policy: nil))
         #expect(off.sections.map(\.title) == ["Detection", "Busy hook", "Remote approvals"])
-        #expect(off.sections.last?.rows == [.remoteApprovals(isOn: false, caption: nil, hint: hint)])
+        #expect(off.sections.last?.rows == [.remoteApprovals(isOn: false, caption: nil, hint: hint), advanced])
 
         let policy = try #require(MenuStateModel.remoteApprovalsPolicyLine(finding: .noFilePolicy))
         let on = Self.pane((isOn: true, status: Self.localOnly, policy: policy))
-        #expect(on.sections.last?.rows == [.remoteApprovals(isOn: true, caption: Self.localOnly, hint: hint), .line(policy)])
+        #expect(on.sections.last?.rows == [.remoteApprovals(isOn: true, caption: Self.localOnly, hint: hint), .line(policy),
+                                           advanced])
         #expect(Array(on.sections.prefix(2)) == Array(without.sections), "the rest of the pane is unchanged")
         #expect(on.footnote == nil)
+    }
+
+    /// #252: the Advanced section closes the group in every state the
+    /// pane's inputs can take — the switch off or on, each caption its
+    /// mapping gives (every phase, every hold), each reading or none, each
+    /// pairing state or no pairing controller — as ONE constant: its rows
+    /// in order, the three kinds' switches off and the iPhone checkbox
+    /// ticked. Nothing about the group reaches it; the row carries no
+    /// enabled flag, and the view draws every control in it disabled
+    /// (SettingsWindowTests). No toggle (debugBattery): no group, no
+    /// section.
+    @Test func theAdvancedSectionClosesTheGroupTheSameInEveryState() throws {
+        let advanced = MenuStateModel.approvalsAdvancedRow
+        guard case let .approvalsAdvanced(title, intro, unavailable, switches, phone, never) = advanced else {
+            Issue.record("the section's row is not .approvalsAdvanced: \(advanced)")
+            return
+        }
+        #expect([title, intro, unavailable]
+                == [MenuStateModel.advancedTitle, MenuStateModel.advancedIntro, MenuStateModel.advancedUnavailable])
+        #expect(switches == [
+            SettingsFixedToggle(title: MenuStateModel.advancedAdminTitle, caption: MenuStateModel.advancedAdminCaption,
+                                isOn: false),
+            SettingsFixedToggle(title: MenuStateModel.advancedClaudeSettingsTitle,
+                                caption: MenuStateModel.advancedClaudeSettingsCaption, isOn: false),
+            SettingsFixedToggle(title: MenuStateModel.advancedSecretsTitle, caption: MenuStateModel.advancedSecretsCaption,
+                                isOn: false),
+        ])
+        #expect(phone == SettingsFixedToggle(title: MenuStateModel.advancedPhoneTitle,
+                                             caption: MenuStateModel.advancedPhoneCaption, isOn: true))
+        #expect(never == MenuStateModel.advancedNeverSent)
+        #expect(switches.allSatisfy { !$0.isOn } && phone.isOn, "the switches off, the checkbox ticked")
+
+        let code = try #require(PairingFingerprint(lowercaseHex: "8a2c854aa45c"))
+        let since = Date(timeIntervalSince1970: 1_800_000_000)
+        let pairings: [PairingPaneState?] = [nil, .notPaired, .pairing, .paired(code, since: since),
+                                             .rotating(code, since: since), .unpairFailed]
+        let readings: [PanelLine?] = [nil] + ChannelPolicyFinding.allCases.map { MenuStateModel.remoteApprovalsPolicyLine(finding: $0) }
+        let isAdvanced = { (row: SettingsRow) -> Bool in if case .approvalsAdvanced = row { true } else { false } }
+        var states = 0
+        for isOn in [false, true] {
+            for phase in [RemoteApprovalsPhase.off, .listening, .unavailable] {
+                for hold in Self.holds {
+                    let caption = MenuStateModel.remoteApprovalsStatus(phase: phase, hold: hold)
+                    for reading in readings {
+                        for pairing in pairings {
+                            let pane = Self.pane((isOn: isOn, status: caption, policy: reading), pairing: pairing)
+                            let rows = pane.sections.last?.rows ?? []
+                            let all = pane.sections.flatMap(\.rows)
+                            let state = [String(describing: isOn), String(describing: phase), String(describing: hold),
+                                         String(describing: reading), String(describing: pairing)].joined(separator: ", ")
+                            #expect(rows.last == advanced && all.filter(isAdvanced).count == 1, "\(state)")
+                            states += 1
+                        }
+                    }
+                }
+            }
+        }
+        #expect(states == 2 * 3 * Self.holds.count * readings.count * pairings.count && readings.count == 7,
+                "vacuity: every state was composed — \(states)")
+        for pairing in pairings {
+            #expect(!Self.pane(nil, pairing: pairing).sections.flatMap(\.rows).contains(where: isAdvanced),
+                    "no toggle, no section — \(String(describing: pairing))")
+        }
     }
 
     /// The words: what it does today, the one change it makes you can see,
@@ -194,6 +261,40 @@ struct RemoteApprovalsPresentationTests {
         }
         #expect(MenuStateModel.remoteApprovalsToggleTitle.split(separator: " ").count == 2,
                 "C1: the panel row adds two words")
+    }
+
+    /// #252: the Advanced section's words, each exact, in the order the
+    /// section shows them. User words, never the alert lane or the
+    /// transport; and the line that says why nothing there can change yet
+    /// promises no date, number or release.
+    @Test func theAdvancedCopy() {
+        let copy: [(text: String, expected: String)] = [
+            (MenuStateModel.advancedTitle, "Advanced"),
+            (MenuStateModel.advancedIntro, "Riskier kinds of prompt. Each stays on this Mac until you turn its switch on, and "
+                + "then stays on until you turn it off. Turning one on needs Touch ID or your password."),
+            (MenuStateModel.advancedUnavailable, "Not available yet — these stay on this Mac in this version."),
+            (MenuStateModel.advancedAdminTitle, "Admin commands"),
+            (MenuStateModel.advancedAdminCaption, "sudo and similar commands, system folders. One Allow can change the whole Mac."),
+            (MenuStateModel.advancedClaudeSettingsTitle, "Claude settings and startup files"),
+            (MenuStateModel.advancedClaudeSettingsCaption, "Claude's settings and hooks, git hooks, shell startup files. A change "
+                + "here can run later, or stop Claude asking at all."),
+            (MenuStateModel.advancedSecretsTitle, "Secrets"),
+            (MenuStateModel.advancedSecretsCaption, "Key, token and password files, and commands holding a credential. Their "
+                + "text goes to your iPhone through iCloud."),
+            (MenuStateModel.advancedPhoneTitle, "Let my iPhone turn these on"),
+            (MenuStateModel.advancedPhoneCaption, "A notice on the iPhone can turn one on with Face ID. Off: only this Mac can."),
+            (MenuStateModel.advancedNeverSent, "Never sent, and there is no switch for it: NapCat's own pairing and settings, "
+                + "your alert topic, your keychain, and Claude Code's helper list."),
+        ]
+        for (text, expected) in copy {
+            #expect(text == expected)
+            #expect(!text.lowercased().contains("ntfy") && !text.contains("CloudKit"), "'\(text)' — user words, not the transport")
+        }
+        let why = MenuStateModel.advancedUnavailable
+        #expect(why.rangeOfCharacter(from: .decimalDigits) == nil, "no date or version number")
+        for promise in ["soon", "next", "update", "release", "when"] {
+            #expect(!why.lowercased().contains(promise), "the line promises '\(promise)'")
+        }
     }
 
     @Test func theRowSymbolResolvesAndIsItsOwn() {

@@ -4,11 +4,12 @@
 // their own switch is on.
 //
 // PURE — no imports, no I/O, no clock: the caller reads the stored text and
-// every fact this file decides on, and hands them in. UNWIRED: no source
-// but this file names its types (lint-locked in
-// ApprovalForwardingPolicyTests), so nothing calls it yet and nothing
-// changes: what may leave the Mac is still decided by the gate alone
-// (ApprovalClassification.swift), and only the listed commands can.
+// every fact this file decides on, and hands them in. The gate
+// (ApprovalClassification.swift) takes an effective set and forwards a
+// prompt only when the set admits it; its one caller, the intake, hands it
+// `ApprovalForwardingSet.listedOnly`, so only the listed commands can leave
+// the Mac. Nothing reads a stored policy, the identity facts or the
+// effective function yet (lint-locked in ApprovalForwardingPolicyTests).
 //
 // One function gives the effective set, and it fails closed: unless every
 // one of its conditions holds, it gives the listed commands alone
@@ -17,8 +18,8 @@
 
 /// What a permission prompt is, for forwarding. A prompt is exactly one of
 /// these kinds, and may also carry any of the risky kinds
-/// (`ApprovalRiskyKind`). The types only: nothing sorts a prompt into a
-/// kind yet.
+/// (`ApprovalRiskyKind`). The gate's rows name the kind each forwards; only
+/// the Bash row forwards, and only a listed command.
 public enum ApprovalPromptKind: CaseIterable, Sendable {
     /// A Bash prompt whose whole command is one of the listed commands
     /// (`ApprovalGate.bashCommands`): the one kind that can be sent today.

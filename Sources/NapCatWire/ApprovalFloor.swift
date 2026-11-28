@@ -1,9 +1,10 @@
 // NapCatWire — F4 remote approvals: the never-sent floor's name tables and
 // text scans. Design: design/remote-approvals.md.
 //
-// PURE — no imports, no I/O, no clock, no logging. UNWIRED: nothing calls
-// `ApprovalFloor.outcome(of:topic:)` yet, so the gate (`ApprovalGate`) and
-// what happens to every prompt are unchanged (ApprovalFloorTests locks it).
+// PURE — no imports, no I/O, no clock, no logging. The gate
+// (`ApprovalGate.classify`) alone calls `ApprovalFloor.outcome(of:topic:)`,
+// and a floor outcome keeps the prompt under every setting
+// (ApprovalFloorTests locks the call sites).
 //
 // The floor names what a prompt may never carry off the Mac, whatever any
 // setting says: the alert topic, NapCat's own names, its privileged
@@ -95,8 +96,10 @@ public enum ApprovalFloorString: Sendable {
 }
 
 /// The alert topic for one check: its bytes are handed in for that call
-/// alone and never kept.
-public enum ApprovalFloorTopic: Sendable {
+/// alone and never kept. A value describes, debug-describes and reflects
+/// as fixed text with no children, so no print, dump or interpolation of
+/// one shows the topic.
+public enum ApprovalFloorTopic: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     /// No topic is set: there is nothing to match.
     case absent
     /// The topic's bytes. An empty value cannot be checked for: it is read
@@ -104,6 +107,10 @@ public enum ApprovalFloorTopic: Sendable {
     case value([UInt8])
     /// A topic exists but could not be read: every prompt is kept.
     case unreadable
+
+    public var description: String { "alert topic (redacted)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }
 }
 
 public enum ApprovalFloor {
@@ -230,7 +237,8 @@ public enum ApprovalFloor {
             found.append(.alertTopic)
         }
         let copies: [[UInt8]] = strings.flatMap(nameCopies)
-        for table in tables where copies.contains(where: { matches(table, $0) }) {
+        let split: [[ArraySlice<UInt8>]] = copies.map(pieces)
+        for table in tables where copies.indices.contains(where: { matches(table, copies[$0], split[$0]) }) {
             found.append(table.group)
         }
         return found
@@ -276,8 +284,13 @@ public enum ApprovalFloor {
     /// Whether one copy holds a name of `table`: a substring anywhere, or a
     /// word as a whole piece or glued to an option cluster.
     static func matches(_ table: Table, _ copy: [UInt8]) -> Bool {
+        matches(table, copy, pieces(copy))
+    }
+
+    /// `matches(_:_:)` with the copy's `pieces`, split once for every table.
+    static func matches(_ table: Table, _ copy: [UInt8], _ pieces: [ArraySlice<UInt8>]) -> Bool {
         table.substrings.contains { ApprovalGate.contains(copy, Array($0.utf8)) }
-            || pieces(copy).contains { piece in
+            || pieces.contains { piece in
                 table.words.contains { piece.elementsEqual($0.utf8) || isGluedToOptions(piece, $0) }
             }
     }

@@ -461,7 +461,7 @@ struct WaitingPromptContextTests {
             switch state {
             case .keptByTheGate:
                 world.prompt("abcde", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
-                let id = try #require(world.nextPrompt(endingIn: "suppressed.gate.forbidden.privilegeEscalation"))
+                let id = try #require(world.nextPrompt(endingIn: "suppressed.gate.floor.privilegedFootprint"))
                 world.host?.withIntake { $0.noteSubscriptionFound(id) }
             case .saveFailed:
                 let id = try relay(world, sink, "abcde", accepted: false)
@@ -631,7 +631,7 @@ struct WaitingPromptContextTests {
             h.controller.reconcile()
             #expect(log.reads == [.none], "vacuity: the arm read this second and saw no prompt")
             world.prompt("abcde", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
-            #expect(world.nextPrompt(endingIn: "suppressed.gate.forbidden.privilegeEscalation") != nil, "A's prompt, kept on the Mac")
+            #expect(world.nextPrompt(endingIn: "suppressed.gate.floor.privilegedFootprint") != nil, "A's prompt, kept on the Mac")
             clock.advance(1)
             _ = try relay(world, sink, "bcdef")
             h.store.put(H.s1, ts: H.t0, event: H.waiting)
@@ -660,7 +660,7 @@ struct WaitingPromptContextTests {
             h.controller.reconcile()
             #expect(log.reads == [Self.covered], "vacuity: the arm read the covered prompt")
             world.prompt("bcdef", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#)
-            #expect(world.nextPrompt(endingIn: "suppressed.gate.forbidden.privilegeEscalation") != nil)
+            #expect(world.nextPrompt(endingIn: "suppressed.gate.floor.privilegedFootprint") != nil)
             clock.advance(1)
             h.store.put(H.s1, ts: H.t0, event: H.waiting)
             await h.settle()

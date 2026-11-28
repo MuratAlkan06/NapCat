@@ -197,6 +197,42 @@ struct WireContractTests {
         }
     }
 
+    /// The standard library's printers, as whole identifiers: a wire value
+    /// (the alert topic the gate's floor is handed, a prompt's text) is never
+    /// printed, debug-printed or dumped by the wire. Whole words, so
+    /// `PairingFingerprint(` and `isPrintableASCII` are not sites.
+    static let printerPattern = #"(?<![A-Za-z0-9_])(?:print|debugPrint|dump)(?![A-Za-z0-9_])"#
+
+    static func printerSites(_ code: String) -> [String] {
+        ApprovalRecordPathStructureTests.matches(printerPattern, in: code)
+    }
+
+    /// No wire file names a printer, in any scan copy (a backtick removed
+    /// too).
+    @Test func theWireTargetNeverPrints() throws {
+        var files = 0
+        for file in Self.constantsFiles + Self.pureFiles {
+            let code = try Self.wireCode(file)
+            files += 1
+            for copy in LidGuardStructureTests.constructorScanCopies(code) {
+                #expect(Self.printerSites(copy).isEmpty, "\(file) names a printer: \(Self.printerSites(copy))")
+            }
+        }
+        #expect(files == 12, "vacuity: every wire file is read (\(files))")
+        let fingerprint = try Self.wireCode("PairingFingerprint.swift")
+        #expect(fingerprint.contains("PairingFingerprint("), "vacuity: a substring `print(` the whole-word rule passes")
+        // The lock can fail: each printer, however it is spelled, is seen.
+        let planted = ["print(x)", "Swift.print(x)", "debugPrint(x)", "dump(x)", "let p = print", "print (x)", "`print`(x)",
+                       "Swift . dump(x, to: &s)", "_ = debugPrint"]
+        for line in planted {
+            let code = fingerprint + "\nfunc zz() { " + line + " }\n"
+            #expect(LidGuardStructureTests.constructorScanCopies(code).contains { !Self.printerSites($0).isEmpty }, "'\(line)' was NOT caught")
+        }
+        // Over-match controls: names that only contain a printer's.
+        let controls = "let blueprint = 1, printable = 2, isPrintableASCII = 3, dumpster = 4, sprint = 5, printer = 6, debugPrinted = 7"
+        #expect(Self.printerSites(controls).isEmpty, "over-match: \(Self.printerSites(controls))")
+    }
+
     /// The constants files hold constants only.
     @Test func theConstantsFilesHoldConstantsOnly() throws {
         for file in Self.constantsFiles {

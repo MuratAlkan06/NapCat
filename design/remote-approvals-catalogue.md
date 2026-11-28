@@ -4,10 +4,15 @@ Status: regenerated in slice S1 (issue #125) from the test rows, which are
 normative, and revised in slice S-GATE (issue #145), for Read's arguments
 (issue #149), for the path alphabet (issue #159) and for Read prompts kept
 on the Mac (issue #231), each of which only made the gate stricter, for seam
-frame version 2 (issue #150), which made the seam stricter, and for withheld
-verdicts (issue #221), which made the server stricter.
+frame version 2 (issue #150), which made the seam stricter, for withheld
+verdicts (issue #221), which made the server stricter, and for the
+never-sent floor and the forwarding policy (issue #253), which made the gate
+stricter in one way: a listed command is kept on the Mac when the prompt
+Claude Code sends alongside it names something on the floor.
 `Tests/NapCatTests/ApprovalClassificationTests.swift` pins every
-gate entry below and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
+gate entry below (`ApprovalGateOracleTests` holds every entry whose code
+changed in #253, and `ApprovalRelayFixtureTests` the previews Claude Code
+relayed in a recorded session), and the S1 tests (`ChannelRelayTests`, `ApprovalChannelTests`,
 `ApprovalSeamTests`, `ApprovalIntakeTests`) pin the seam and server entries;
 where a row and this note differ, the row wins. Companion to
 [remote-approvals.md](remote-approvals.md).
@@ -24,56 +29,133 @@ prompt ID to draw) is logged by its `seam.` code. The log holds what
 NapCat decided: an answer given at the Mac does not reach NapCat, so it is
 not in the log.
 The codes are the gate's own:
-`forbidden.<family>`, `localOnly.mcp`, `localOnly.fileEdit`,
-`localOnly.read` and `unclassifiable.<reason>`. In the
+`floor.<group>`, `floorUnreadable.<reason>`, `forbidden.<family>`,
+`localOnly.mcp`, `localOnly.fileEdit`, `localOnly.read` and
+`unclassifiable.<reason>`. In the
 examples, `~` stands for an absolute home directory and `<topic>` for the
 alert topic; the tests use synthetic values for both.
 
 What can leave the Mac at all is a Bash prompt whose whole command is one of
 the listed commands (see "Bash: listed commands only"). No other tool
 forwards: MCP tools, the file-edit tools and Read are local-only, each with
-its own code.
+its own code. The gate forwards a prompt only when the set it is handed
+admits the prompt's kind and every forbidden family it carries; NapCat hands
+it one set, the listed commands with no family.
 
 ## Precedence
 
-The gate checks a prompt in this order and logs the first code it meets:
+The gate checks a prompt in this order:
 
 1. The tool name's shape (`unclassifiable.malformedToolName`), then the
-   preview's size (`unclassifiable.previewTooLarge`).
-2. The alert topic, its storage names and the relay's credential
-   placeholder, in the tool name or anywhere in the raw preview
-   (`forbidden.secretAccess`), then the relay's other placeholders in the
-   raw preview (`unclassifiable.previewNotFaithful`).
-3. One strict JSON object (`unclassifiable.previewNotStrictJSON`).
-4. Every decoded string, keys included: the topic, its names and the
+   preview's size (`unclassifiable.previewTooLarge`). The floor reads
+   nothing larger.
+2. The never-sent floor, over the tool name and the raw preview
+   (`floor.<group>`, or `floorUnreadable.topic` while a topic exists that
+   could not be read; see "The never-sent floor").
+3. The relay's credential placeholder, in the tool name or anywhere in the
+   raw preview (`forbidden.secretAccess`), then the relay's other
+   placeholders in the raw preview (`unclassifiable.previewNotFaithful`).
+4. One strict JSON object (`unclassifiable.previewNotStrictJSON`).
+5. Every decoded string, keys included: the topic, its names and the
    credential placeholder (`forbidden.secretAccess`), then the other
    placeholders (`unclassifiable.previewNotFaithful`), then hidden text
    (`unclassifiable.hiddenText`).
-5. MCP tools (`localOnly.mcp`), then a tool the table does not list
+6. The never-sent floor again, over every decoded key and string, at every
+   depth (`floor.<group>`).
+7. MCP tools (`localOnly.mcp`), then a tool the table does not list
    (`unclassifiable.unknownTool`).
-6. The tool's row: a key it does not list (`unknownArgument`), a missing
-   required one (`missingArgument`), then every value. A forbidden family
-   found in any value wins (`forbidden.<family>`: a location in a path whose
-   shape passes — absolute, at most 1 KiB, printable ASCII without a
-   backslash, no empty, `.` or `..` component, no trailing slash; in Bash,
-   `dangerouslyDisableSandbox: true`, a substring of the command, and, when
-   the grammar reads the command, a forbidden command leading one of its
-   simple commands or a location in a later word of one, up to that simple
-   command's first word with a `..` or an empty component); otherwise the
-   first refusal in the preview's order (`argumentKind`, `argumentValue`,
-   `pathNotCanonical`, `commandOutsideGrammar`, `commandNotInTable`).
-7. The row's local-only code: `localOnly.fileEdit` for Write, Edit and
+8. The tool's row: a key it does not list (`unknownArgument`), a missing
+   required one (`missingArgument`), then every value. Every forbidden
+   family found in any value is noted (`forbidden.<family>`: a location in
+   a path whose shape passes — absolute, at most 1 KiB, printable ASCII
+   without a backslash, no empty, `.` or `..` component, no trailing slash;
+   in Bash, `dangerouslyDisableSandbox: true`, a substring of the command,
+   and, when the grammar reads the command, a forbidden command leading one
+   of its simple commands or a location in a later word of one, up to that
+   simple command's first word with a `..` or an empty component); the
+   first other refusal in the preview's order (`argumentKind`,
+   `argumentValue`, `pathNotCanonical`, `commandOutsideGrammar`,
+   `commandNotInTable`) keeps the prompt. Then the floor's rule that a
+   command or a path is printable ASCII
+   (`floorUnreadable.notPrintableASCII`).
+9. The row's local-only code: `localOnly.fileEdit` for Write, Edit and
    NotebookEdit, `localOnly.read` for Read.
-8. Only then, and only for Bash, the forward.
+10. The set of prompts the gate is handed: a listed command with no family
+    noted (the only set NapCat hands it).
+11. Only then, and only for Bash, the gate's own copy of the preview and
+    the forward.
 
-So a Read that names the alert topic is `forbidden.secretAccess`; a Read of
-a forbidden location keeps its family's code unless its preview, its keys or
-its path's shape are malformed, and a malformed Read keeps its
-`unclassifiable` code; every other Read is `localOnly.read`. NapCat's
-intake then applies its own holds: a topic that exists but could not be read
-keeps every prompt as `forbidden.secretAccess`, and while the feature is
-unarmed (every build so far) each prompt the gate classified is logged
-`suppressed.notArmed` instead of the gate's code.
+A floor outcome keeps the prompt at once, with its own code, under every
+setting. Every other prompt kept is logged with the first code, in this
+order, that the set does not admit: the credential placeholder and each
+forbidden family are noted where the order meets them, a family before the
+row's other refusals, and every other refusal keeps the prompt at once.
+Under the set NapCat hands the gate, which admits no family, that is the
+first code the order meets: the code the gate logged before #253, unless the
+floor names the prompt first.
+
+So a Read that names the alert topic is `floor.alertTopic`; a Read of a
+forbidden location keeps its family's code (or the floor's, where the floor
+names the path) unless its preview, its keys or its path's shape are
+malformed, and a malformed Read keeps its `unclassifiable` code; every other
+Read is `localOnly.read`. NapCat's intake then applies its own holds: a
+topic that exists but could not be read keeps every prompt as
+`forbidden.secretAccess`, and while the feature is unarmed (every build so
+far) each prompt the gate classified is logged `suppressed.notArmed` instead
+of the gate's code.
+
+## The never-sent floor
+
+The floor names what a prompt may never carry off the Mac, whatever any
+setting says. It reads the tool name and the raw preview first, before
+anything else but the tool name's shape and the preview's size, and every
+decoded key and string again once the preview is read (see "Precedence").
+A match keeps the prompt with `floor.<group>`, for the first group, in this
+order, that matches:
+
+- `alertTopic`: the alert topic's own bytes.
+- `ownNames`: NapCat's bundle and keychain names, its preference keys, its
+  helper, watchdog, socket and receipt, its record zone, subscriptions,
+  policy header and signing domains, its connector's tools
+  (`mcp__napcat…`), and the word `napcat` (`pkill -x NapCat`, a folder
+  named `NapCat`).
+- `privilegedFootprint`: the root helper's folder (`/usr/local/napcat`),
+  the sleep setting (`pmset -a disablesleep 1`), the sudoers file, the
+  failsafe login item, the busy hook and the install scripts.
+- `sourceTree`: NapCat's source folders and build files.
+- `keychain`: the keychain as a whole: the `security` command in any letter
+  case, the keychain files, the keychain API's names and the tool's item
+  verbs (`find-generic-password`).
+- `claudeCodeHelpers`: the files and settings that decide which helpers
+  Claude Code runs and how its prompts are answered (`~/.claude.json`,
+  `.mcp.json`, the managed settings and their folder), and the `claude`
+  command.
+- `signingAndICloud`: code signing (`codesign`), the certificate kind and
+  team NapCat is signed with, provisioning profiles and Apple's CloudKit
+  tool.
+
+Each string is read as written, with every quote and backslash removed,
+percent-decoded, and with doubled and `/./` slashes written once, in any
+letter case; a word name (`napcat`, `security`, `claude`) matches a whole
+word, also glued to an option cluster (`open -aNapCat`); free text is also
+read case-folded, so a look-alike letter that folds to a name's letter (the
+Kelvin sign, the long s) reads as that letter. The topic is matched by its
+exact bytes, as written, without quotes and backslashes, and
+percent-decoded.
+
+Two codes keep a prompt the floor cannot judge, `floorUnreadable.<reason>`:
+
+- `topic`: the gate is told an alert topic exists but is handed no
+  value it can read, so no prompt can be checked against it and every
+  prompt is kept.
+- `notPrintableASCII`: a string the tool's row reads as a command or a path
+  holds a byte outside printable ASCII. The row's own rules refuse such a
+  string first today (`commandOutsideGrammar`, `pathNotCanonical`).
+
+A floor outcome is final: it keeps the prompt under every setting, and it
+comes before every other code the prompt could have (see "Precedence").
+Anything the floor does not name is left to the gate's other rules, which
+keep every prompt they cannot classify.
 
 ## The forbidden families
 
@@ -82,47 +164,54 @@ gives: the alert topic for every prompt, the rest in the tool's row, before
 that row's local-only code. An MCP tool or an unlisted tool has no row, so
 apart from the alert topic its arguments are not checked against the
 families: it is `localOnly.mcp` or `unclassifiable.unknownTool` whatever
-they name.
+they name (or a floor code, where the floor names them).
+
+Each family the gate finds in a prompt is noted, every one of them, not
+only the first; the set NapCat hands the gate admits none, so each keeps its
+prompt, logged with the first family found. The floor comes first: an entry
+below that the floor also names is logged with the floor's code, marked
+(floor) here. Every other spelling keeps its family's code.
 
 - **`forbidden.privilegeEscalation`**
   - `sudo` in any case, path or position: `sudo ls`, `SUDO ls`,
     `/usr/bin/sudo ls`, `ls && sudo make`, `echo $(sudo id)`.
   - Its relatives: `su`, `sudoedit`, `visudo`, `doas`, `pkexec`, `osascript`
     (and the words "administrator privileges"), `launchctl`, `dscl`,
-    `dseditgroup`, `sysadminctl`, `authopen`, `chown`, `chgrp`, `pmset`,
-    `nvram`.
+    `dseditgroup`, `sysadminctl`, `authopen`, `chown`, `chgrp`, `pmset`
+    (`pmset -a disablesleep 1`: floor), `nvram`.
   - System and privileged-helper locations: `/etc` and `/private/etc`
-    (`/etc/sudoers`, `/etc/sudoers.d/…`), `/usr` (including `/usr/local/bin`
-    and NapCat's own `/usr/local/napcat`), `/bin`, `/sbin`, `/System`,
+    (`/etc/sudoers`, `/etc/sudoers.d/…`: floor), `/usr` (including
+    `/usr/local/bin`, and NapCat's own `/usr/local/napcat`: floor), `/bin`,
+    `/sbin`, `/System`,
     `/Library/LaunchDaemons`, `/Library/PrivilegedHelperTools`, and any file
     named like an escalation command (a `PATH` shim such as `~/project/bin/sudo`).
-  - Bash with `dangerouslyDisableSandbox: true`.
+  - Bash with `dangerouslyDisableSandbox: true`, kept under every setting.
 - **`forbidden.configurationOrHooks`**
   - Claude Code's configuration: `~/.claude/…` (settings, hooks, agents),
-    `.claude` in any project, `~/.claude.json`, `.mcp.json`, `CLAUDE.md`,
-    `CLAUDE.local.md`, `managed-settings.json`, `managed-mcp.json`,
-    `Library/Application Support/ClaudeCode` (the system directory and the
-    one in the home directory), in any letter case.
+    `.claude` in any project, `~/.claude.json` (floor), `.mcp.json` (floor),
+    `CLAUDE.md`, `CLAUDE.local.md`, `managed-settings.json` (floor),
+    `managed-mcp.json` (floor), `Library/Application Support/ClaudeCode`
+    (floor: the system directory and the one in the home directory), in any
+    letter case.
   - Code that runs later: `.git` (hooks, config), `~/.gitconfig`,
     `~/.config/git`, `.githooks`, `.husky`, `git config`, shell startup files
     (`.zshrc`, `.zshenv`, `.zprofile`, `.zlogin`, `.zlogout`, `.bashrc`,
     `.bash_profile`, `.bash_login`, `.bash_logout`, `.profile`), `.envrc`,
     `~/Library/LaunchAgents`, `/opt/homebrew/bin`, `crontab`.
-  - The `claude` command itself (`claude mcp add …`).
+  - The `claude` command itself (`claude mcp add …`: floor).
 - **`forbidden.secretAccess`**
-  - The keychain: the `security` command, `~/Library/Keychains`,
+  - The keychain (floor): the `security` command, `~/Library/Keychains`,
     `*.keychain`, `*.keychain-db`.
   - Key and token files: `.ssh` and `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`
     keys, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.netrc`,
     `.git-credentials`, `.npmrc`, `.pypirc`, `.pgpass`, `.password-store`,
     `~/.config/gh`, `~/.config/gcloud`, `.env` and `.env.*`, `credentials`,
     `credentials.json`, `*.pem`, `*.p12`, `*.pfx`, `*.p8`, `*.key`, `*.kdbx`.
-  - The alert topic: `<topic>` itself, the name of its keychain account and
-    its retired defaults key, anywhere in the prompt, for every tool (in a
-    Write's content too). NapCat's old defaults file
-    (`com.muratalkan.napcat.plist`) is a location rule only: it is caught
-    in a path, or in a word of a Bash command read as a path (see
-    "Precedence"), not in other text such as a Write's content.
+  - The alert topic (floor): `<topic>` itself, the name of its keychain
+    account and its retired defaults key, anywhere in the prompt, for every
+    tool (in a Write's content too). NapCat's old defaults file
+    (`com.muratalkan.napcat.plist`, floor) is also a location rule of this
+    family.
   - The relay placeholders in `ApprovalGate.maskMarkers`, anywhere in the
     preview, the same way (see "Relay placeholders" below).
 
@@ -136,7 +225,14 @@ entry has its own audit test case). Its other arguments are fixed:
 `run_in_background` absent or `false`, `dangerouslyDisableSandbox` absent or
 `false`, and `timeout` absent or a whole number of milliseconds from 1 to
 600,000; anything else there is `unclassifiable.argumentValue` (or
-`forbidden.privilegeEscalation` outside the sandbox).
+`forbidden.privilegeEscalation` outside the sandbox), under every setting.
+
+A listed command is still kept when anything else in the prompt names the
+floor: the description Claude Code sends alongside it (the model writes it,
+and it never leaves the Mac) included. `git status` with the description
+"Run the NapCat unit tests" is `floor.ownNames`; with "Show working tree
+status" it forwards. A listed command whose description holds the relay's
+credential placeholder is `forbidden.secretAccess`.
 
 The positive grammar still runs first, as a refusal filter only: printable
 ASCII, plain words joined by standalone `&&`, `||`, `|` or `;`. Each class
@@ -272,8 +368,9 @@ decide which code such a prompt is kept with.
   `Bash` can forward.
 - **MCP tools** (`mcp__…`) are `localOnly.mcp` in the MVP, whatever their
   arguments name, unless a check that comes first in "Precedence" (the
-  tool name's shape, the preview's size or form, the alert topic, a relay
-  placeholder, hidden text) gives its own code.
+  tool name's shape, the preview's size or form, the floor, a relay
+  placeholder, hidden text) gives its own code: NapCat's own connector
+  (`mcp__napcat…`) is `floor.ownNames`.
 - **The preview** must be one strict JSON object of at most 32 KiB and at
   most 3,000 code points as relayed:
   empty, plain text, an array or a string, truncated, trailing text or comma,

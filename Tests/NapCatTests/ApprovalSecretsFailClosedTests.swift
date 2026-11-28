@@ -77,7 +77,38 @@ struct ApprovalSecretsFailClosedTests {
         #expect(world.sink.saved.count == 1)
         world.receive("cdefg", preview: #"{"command":"echo napcat-TESTONLYk3m9q2w7"}"#)
         #expect(world.sink.saved.count == 1, "and the known topic is a secret again")
-        #expect(world.audits.last?.hasSuffix(" suppressed.gate.forbidden.secretAccess") == true)
+        #expect(world.audits.last?.hasSuffix(" suppressed.gate.floor.alertTopic") == true)
+    }
+
+    /// The topic as the gate's floor is handed it (#253), from the lid
+    /// guard's answer: none readable is unreadable, none set is absent, one
+    /// is its value, and more than one is unreadable.
+    @Test func theLidGuardsAnswerMapsToTheFloorsTopic() {
+        let topic = "napcat-TESTONLYk3m9q2w7"
+        func unreadable(_ read: ApprovalFloorTopic) -> Bool { if case .unreadable = read { return true } else { return false } }
+        func absent(_ read: ApprovalFloorTopic) -> Bool { if case .absent = read { return true } else { return false } }
+        func value(_ read: ApprovalFloorTopic) -> [UInt8]? { if case .value(let bytes) = read { return bytes } else { return nil } }
+        #expect(unreadable(ApprovalIntake.floorTopic(nil)), "none readable")
+        #expect(absent(ApprovalIntake.floorTopic([])), "none set")
+        #expect(value(ApprovalIntake.floorTopic([topic])) == Array(topic.utf8), "one topic")
+        #expect(value(ApprovalIntake.floorTopic([""])) == [], "an empty one, which the floor reads as unreadable")
+        #expect(unreadable(ApprovalIntake.floorTopic([topic, "napcat-TESTONLYother"])), "two at once")
+    }
+
+    /// A topic the floor cannot check for (an empty value, or more than one
+    /// at once) keeps every prompt, with the floor's code; none reaches the
+    /// record store.
+    @Test(arguments: [[""], ["napcat-TESTONLYk3m9q2w7", "napcat-TESTONLYother"]] as [[String]])
+    func aTopicTheFloorCannotCheckForKeepsEveryPrompt(_ secrets: [String]) {
+        let world = World(secrets: secrets)
+        for (index, prompt) in Self.forwardable.enumerated() {
+            world.receive(IntakeHarness.requestIDs(4)[index], tool: prompt.tool, preview: prompt.preview)
+        }
+        #expect(world.sink.saved.isEmpty)
+        #expect(world.audits.count == Self.forwardable.count)
+        for code in world.audits {
+            #expect(code.hasSuffix(" suppressed.gate.floorUnreadable.topic"), "\(code)")
+        }
     }
 
     @Test func theFoldIsTheGatesAnswerOnlyWhileTheSecretsAreKnown() {

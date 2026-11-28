@@ -1255,7 +1255,7 @@ struct DecisionSinkStructureTests {
         "guard let id = newPromptID(), prompts[id] == nil else { return audit(.promptIDUnavailable) }",
         "let copy = ApprovalGate.forwardedPreview(toolName: request.toolName, inputPreview: request.inputPreview)", "let known = secrets()",
         "let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,",
-        "secrets: known ?? []).failingClosed(secretsKnown: known != nil)", ".requiringCopy(copy)",
+        "topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)", ".requiringCopy(copy)",
         "let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())",
         "prompts[id] = Entry(connection: connection, request: request.requestID, lifecycle: opened.lifecycle,",
         "forwardable: classification.forwardedTool)", "perform(opened.transition, for: id, classified: (classification, copy))", "}",
@@ -1341,6 +1341,11 @@ struct DecisionSinkStructureTests {
                 $0.replacingOccurrences(of: receiveHead, with: "    func receive(_ line: [UInt8]) {}\n\n" + receiveHead) }),
             ("the pinned body kept in an inactive block, the real one changed", Self.mutate(sources, intake) {
                 $0.replacingOccurrences(of: capacity, with: "").replacingOccurrences(of: constant, with: decoy) }),
+            // #253: the gate's call as it was before the floor and the
+            // policy (the alert topic as a list of secrets, no set).
+            ("the gate's call as it was", Self.mutate(sources, intake) {
+                $0.replacingOccurrences(of: "topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(",
+                                        with: "secrets: known ?? []).failingClosed(") }),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
@@ -3155,6 +3160,16 @@ struct DecisionSinkStructureTests {
         "nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingRows(_ pane: PairingPaneState) -> [SettingsRow] {": 1,
+        // #252: the Advanced section.
+        #"nonisolated static let advancedTitle = "Advanced""#: 1, "nonisolated static let advancedIntro =": 1,
+        "nonisolated static let advancedUnavailable =": 1, #"nonisolated static let advancedAdminTitle = "Admin commands""#: 1,
+        "nonisolated static let advancedAdminCaption =": 1,
+        #"nonisolated static let advancedClaudeSettingsTitle = "Claude settings and startup files""#: 1,
+        "nonisolated static let advancedClaudeSettingsCaption =": 1, #"nonisolated static let advancedSecretsTitle = "Secrets""#: 1,
+        "nonisolated static let advancedSecretsCaption =": 1,
+        #"nonisolated static let advancedPhoneTitle = "Let my iPhone turn these on""#: 1,
+        "nonisolated static let advancedPhoneCaption =": 1, "nonisolated static let advancedNeverSent =": 1,
+        "nonisolated static var approvalsAdvancedRow: SettingsRow {": 1,
     ]
     /// The wire's extension of its channel, line by line.
     static let channelMembers: [String: Int] = [
