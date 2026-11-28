@@ -563,9 +563,9 @@ ends with nothing left running, it does not look at the message. Since hook
 version 9, the two entries matched to `AskUserQuestion` (Claude Code's tool for
 asking you a question) hand the hook that question, its options and, once you
 answer, your answer. The hook copies them to the temporary file with the rest;
-of those two events it reads only the tool's name (besides the event name and
-session id it reads for every event), and none of the question or the answer
-is kept, logged or sent.
+of those two events it reads the event name, the session id and
+`background_tasks`, as it does for every event, and the tool's name. None of
+the question or the answer is kept, logged or sent.
 
 ### Install and register — BY HAND
 
@@ -575,7 +575,10 @@ is kept, logged or sent.
 
 That copies the hook to the stable path `~/.claude/hooks/napcat-busy-hook.sh`
 (so `make clean` never removes it), creates the marker directory, and **prints**
-the exact registration to paste into `~/.claude/settings.json`. The installer
+the exact registration to paste into `~/.claude/settings.json`. The new copy
+is written under a temporary name and checked with `bash -n`, then put in
+place of the old one in a single rename; a copy that does not parse is refused
+and the old one is kept. The installer
 never edits `settings.json` itself. Merge these eight entries into your existing
 `"hooks"` object (replace `<HOME>` with your home directory — the installer
 prints the absolute paths for you):
@@ -599,9 +602,14 @@ MCP input request) apart from idle ones, keeping the session busy while Claude
 waits for you, so it needs to receive every notification type. The
 `PreToolUse` and `PostToolUse` entries are the opposite: each **keeps its
 `"matcher": "AskUserQuestion"`**, so the hook runs only around Claude Code's
-tool for asking you a question (see "Session alerts" below); it prints
-nothing and always exits 0, so it never blocks, delays or changes the
-question. If you already have `PreToolUse` or `PostToolUse` hooks, add the
+tool for asking you a question (see "Session alerts" below). Every path
+through the hook ends in exit 0 and it prints nothing, so it does not block or
+change the question. It runs before the question is shown and normally takes
+well under a second; the registration's 5-second timeout bounds it, and a
+hook that times out does not block the tool call. If the matcher is left off,
+the hook runs before and after every tool call instead: it still prints
+nothing, and for any other tool it changes nothing but adds a line to
+`hook.log`. If you already have `PreToolUse` or `PostToolUse` hooks, add the
 NapCat object to that array instead of a second key. **If you registered an
 earlier version of this hook**, add whichever of the `SubagentStop`,
 `PreToolUse` and `PostToolUse` entries you are missing, remove
@@ -617,9 +625,11 @@ before bash starts; registering the bare script path (shell form) would let thos
 run attacker code before the hook's own safeguards ever execute. Paste it exactly.
 Hooks load at session start, so **open a new Claude Code session** afterward.
 
-The hook is written so a bug in it can never break your Claude Code session: it
-always exits 0, never prints to stdout, does its marker write in the background,
-and does nothing at all if a kill-switch flag is present.
+The hook is written to stay out of your Claude Code session's way: every path
+through it ends in exit 0, it never prints to stdout, it does its marker write
+in the background, and it does nothing at all if a kill-switch flag is present.
+A copy of the hook that was cut short stops at once, without reading the event
+or writing anything.
 
 ### Kill switch
 
@@ -1049,9 +1059,11 @@ command, then delete
   until another hook event replaces it (your next prompt or the end of the
   turn at the latest), so a permission wait in between can be pushed as a
   question. If you answer at the very moment the question's waiting
-  notification fires, that push can be lost. Anything else that rewrites the
-  busy marker while a question is open (a subagent finishing, say) makes its
-  push use the plain wording. With a NapCat build older than hook version 9,
+  notification fires, that push can be lost, or the session can stay marked as
+  waiting on the question: the push may then still read as a question, and a
+  later wait in that turn may not push separately. Anything else that rewrites
+  the busy marker while a question is open (a subagent finishing, say) makes
+  its push use the plain wording. With a NapCat build older than hook version 9,
   a question wait pushes nothing at all, so relaunch NapCat before you
   reinstall the hook.
 - **A finish alert can come early with an older hook.** With a hook installed

@@ -109,12 +109,16 @@ trap exit\ 0 EXIT
 #
 # Hook v9 — a DIRECT QUESTION (Claude Code's AskUserQuestion tool). PreToolUse
 # and PostToolUse are registered with the matcher AskUserQuestion and are
-# OBSERVE-ONLY: like every event here they print nothing and exit 0, so the
-# tool call goes ahead exactly as it would without them. Beyond the fields
-# read for every event (the event name, the session id, background_tasks),
-# the hook reads only their tool name, which must be exactly AskUserQuestion
-# (any other is ignored, so a registration without the matcher marks
-# nothing); the question, its options and the answer are never read.
+# OBSERVE-ONLY: like every event here they print nothing and every path ends
+# in exit 0, so the tool call goes ahead as it would without them. The hook
+# runs before the question is shown and normally takes well under a second;
+# the registration's 5 s timeout bounds it, and a timed-out hook does not
+# block the tool call. Beyond the fields read for every event (the event
+# name, the session id, background_tasks), the hook reads only their tool
+# name, which must be exactly AskUserQuestion: any other is ignored, so a
+# registration without the matcher runs the hook before and after every tool
+# call, and for any other tool it changes nothing but logs one line. The
+# question, its options and the answer are never read.
 #   * PreToolUse writes the IN-FLIGHT token `question` (a question is about
 #     to be asked) when the marker is in flight, absent or unreadable; after
 #     Stop it leaves the marker alone.
@@ -151,7 +155,8 @@ trap exit\ 0 EXIT
 #   * Layer 6 KILL SWITCH: the first action after the damaged-file guard
 #     checks for a DISABLED flag and, if present, no-ops immediately.
 #   * Layer 4 FIRE-AND-FORGET: the marker write is backgrounded and atomic, so
-#     a stalled filesystem cannot delay the prompt; the script returns at once.
+#     the script never waits for it; the registration's 5 s timeout bounds the
+#     rest of the run, and a timed-out hook blocks nothing.
 #
 # Input and housekeeping hygiene:
 #   * stdin is size-capped, then validated as JSON with
@@ -734,7 +739,7 @@ main() {
       ;;
     PreToolUse|PostToolUse)
       # Hook v9 — observe-only (see the header): never a clear, never a new
-      # marker on PostToolUse, and nothing here can hold up the tool call.
+      # marker on PostToolUse, and nothing here blocks the tool call.
       if [ "$tool" != "$QUESTION_TOOL" ]; then
         log "ignore reason=other-tool event=$event"
       elif [ "$event" = PreToolUse ]; then

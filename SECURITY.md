@@ -74,10 +74,15 @@ registered, with the matcher `AskUserQuestion`, for the `PreToolUse` and
 `PostToolUse` events of Claude Code's tool for asking you a question: those
 details carry the question, its options and your answer, which the hook
 copies to the same temporary file and deletes with it. Of those details it
-reads only the tool's name (besides the event name and session id it reads
-for every event), records in the busy marker only that a question is open,
-prints nothing and always exits 0, so it never blocks or changes the
-question. The README's
+reads the event name, the session id and `background_tasks`, as it does for
+every event, and the tool's name; it records in the busy marker only that a
+question is open. Every path through the hook ends in exit 0 and it prints
+nothing, so it does not block or change the question. It runs before the
+question is shown and normally takes well under a second; the registration's
+5-second timeout bounds it, and a hook that times out does not block the tool
+call. If the matcher is left off, the hook runs before and after every tool
+call: it still prints nothing, and for any other tool it changes nothing but
+adds a line to `hook.log`. The README's
 [Claude busy detection](README.md#claude-busy-detection-track-b--optional-read-only)
 section has the details.
 
