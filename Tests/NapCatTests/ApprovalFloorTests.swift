@@ -750,6 +750,8 @@ struct ApprovalFloorTests {
             Parity(name: "generic-password", group: .keychain, relation: .contains,
                    definitions: uninstall.split(separator: "\n").map(String.init).filter { $0.contains("/usr/bin/security ") },
                    source: "the uninstall script's keychain commands"),
+            Parity(name: "claude-code", group: .claudeCodeHelpers, relation: .equal, definitions: ApprovalChannel.confirmedClients.map(\.name),
+                   source: "the Claude Code client names the channel server confirms"),
             Parity(name: "managed-settings", group: .claudeCodeHelpers, relation: .prefix,
                    definitions: [ChannelPolicyProbe.settingsFileName, ChannelPolicyProbe.dropInDirectoryName],
                    source: "the managed settings file and folder the probe reads"),
@@ -780,6 +782,52 @@ struct ApprovalFloorTests {
                 #expect(Self.groups([.naming(definition)]).contains(parity.group), "\(definition) is caught")
             }
         }
+    }
+
+    /// The other way round, the privileged commands: each command NapCat
+    /// runs through sudo is a match of its privileged footprint.
+    static func footprintFailures(_ commands: [[String]]) -> [String] {
+        commands.map { $0.joined(separator: " ") }.filter { !groups([.naming($0)]).contains(.privilegedFootprint) }
+            .map { "\($0) is not a footprint match" }
+    }
+
+    @Test func everyPrivilegedCommandIsAFootprintMatch() {
+        let commands: [[String]] = PrivilegedCommand.allCases.map(\.argv)
+        #expect(Set(PrivilegedCommand.allCases.map(\.executablePath)).count >= 2, "vacuity: both helpers' commands are read")
+        #expect(Self.footprintFailures(commands).isEmpty, "\(Self.footprintFailures(commands))")
+        // The lint can fail: a command outside the footprint is seen.
+        #expect(!Self.footprintFailures(commands + [["/usr/bin/pmset", "-g"]]).isEmpty)
+    }
+
+    /// Every `napcat-` string literal in `code`, in any letter case, as
+    /// written in the source (escapes included).
+    static func napCatLiterals(in code: String) throws -> [String] {
+        let pattern = try NSRegularExpression(pattern: #""((?i:napcat-)(?:[^"\\\n]|\\.)*)""#)
+        let whole = NSRange(code.startIndex..., in: code)
+        return pattern.matches(in: code, range: whole).compactMap { Range($0.range(at: 1), in: code).map { String(code[$0]) } }
+    }
+
+    static func ownNameFailures(_ literals: [(file: String, literal: String)]) -> [String] {
+        literals.filter { !groups([.naming($0.literal)]).contains(.ownNames) }.map { "\($0.file): \($0.literal) is not an own-name match" }
+    }
+
+    /// The other way round, NapCat's own strings: every `napcat-` string
+    /// literal of the wire target, outside the floor's own tables, is a
+    /// match of NapCat's own names.
+    @Test func everyNapCatStringOfTheWireTargetIsAnOwnName() throws {
+        var literals: [(file: String, literal: String)] = []
+        for file in WireContractTests.constantsFiles + WireContractTests.pureFiles where file != Self.floorFile {
+            literals += try Self.napCatLiterals(in: WireContractTests.wireCode(file)).map { (file: file, literal: $0) }
+        }
+        #expect(literals.count >= 10, "vacuity: \(literals.map { $0.literal })")
+        #expect(literals.contains { $0.literal == AlertWire.subscriptionID } && literals.contains { $0.literal == ApprovalSigning.decisionDomain },
+                "vacuity: the constants files and the pure files are read")
+        #expect(Self.ownNameFailures(literals).isEmpty, "\(Self.ownNameFailures(literals))")
+        // The lint can fail: a made-up string planted in a wire file is seen.
+        let plants = "\nlet zz = \"napcat-zz-v1\"\nlet zy = \"NapCat-zy\\t\"\n"
+        let planted = try Self.napCatLiterals(in: WireContractTests.wireCode("AlertWire.swift") + plants)
+        #expect(planted.contains("napcat-zz-v1") && planted.contains("NapCat-zy\\t"), "\(planted)")
+        #expect(!Self.ownNameFailures(planted.map { (file: "AlertWire.swift", literal: $0) }).isEmpty)
     }
 
     /// The floor agrees with the gate: every rule the gate keeps for these
@@ -858,7 +906,7 @@ struct ApprovalFloorTests {
     /// and Apple's own names, and the keychain account reserved for the
     /// forwarding policy.
     static let namesWithNoDefinitionHere: Set<String> = [
-        "forwarding-policy", "seckeychain", "internet-password", "claude-code", "remote-settings.json", "com.anthropic.claudecode",
+        "forwarding-policy", "seckeychain", "internet-password", "remote-settings.json", "com.anthropic.claudecode",
         "mcpjsonservers", "projectmcpservers", "development-channels", "permissionrequest", "permissiondecision",
         "developer id application", "cktool",
     ]
