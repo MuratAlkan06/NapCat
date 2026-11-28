@@ -3145,11 +3145,15 @@ struct DecisionSinkStructureTests {
         #"nonisolated static let unpairButtonTitle = "Unpair…""#: 1, #"nonisolated static let unpairAlertTitle = "Unpair iPhone?""#: 1,
         "nonisolated static let unpairAlertText =": 1, #"nonisolated static let unpairAlertConfirm = "Unpair""#: 1,
         #"nonisolated static let unpairAlertCancel = "Cancel""#: 1,
-        // #240: the refused Unpair's line, its button and its spoken label.
-        "nonisolated static let unpairFailedLine =": 1, #"nonisolated static let unpairRetryButtonTitle = "Try Again""#: 1,
+        // #240: the refused Unpair's line, the panel's wording of it, its
+        // button and its spoken label; the panel's pairing line.
+        "nonisolated static let unpairFailedLine =": 1,
+        #"nonisolated static let unpairFailedPanelLine = "Unpair failed — try again in Settings › Claude""#: 1,
+        #"nonisolated static let unpairRetryButtonTitle = "Try Again""#: 1,
         #"nonisolated static let unpairRetryAccessibilityLabel = "Try again to remove the iPhone's key""#: 1,
         "nonisolated static func pairingPairedLine(since: Date) -> String {": 1,
         "nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {": 1,
+        "nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingRows(_ pane: PairingPaneState) -> [SettingsRow] {": 1,
     ]
     /// The wire's extension of its channel, line by line.

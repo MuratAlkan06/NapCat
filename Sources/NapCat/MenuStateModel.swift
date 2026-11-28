@@ -648,10 +648,11 @@ final class MenuStateModel: ObservableObject {
         return Self.remoteApprovalsPolicyLine(finding: remoteApprovalsFinding)
     }
 
-    /// Settings › Claude's pairing line (nil without the pairing
-    /// controller). #240: a refused Unpair makes it a warning, so it has its
-    /// twin below the cards (`ClaudeSurfacedLines`).
-    var pairingLine: PanelLine? { pairingPane.map(Self.pairingStatusLine) }
+    /// Settings › Claude's pairing line as the panel words it (nil without
+    /// the pairing controller), at the pane's severity. #240: a refused
+    /// Unpair makes it a warning, so it has its twin below the cards
+    /// (`ClaudeSurfacedLines`), saying where to try again.
+    var pairingLine: PanelLine? { pairingPane.map(Self.pairingPanelLine) }
 
     /// Badge on the footer's Settings gear (slice W, issue #78): the worst
     /// severity among the SETTINGS-RESIDENT lines — those whose home or fix

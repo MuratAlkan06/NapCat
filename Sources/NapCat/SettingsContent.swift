@@ -305,10 +305,12 @@ extension MenuStateModel {
         "NapCat turns Remote approvals off and asks your keychain to remove this iPhone's key. If the key can't be removed, Settings tells you. Pairing again takes about two minutes."
     nonisolated static let unpairAlertConfirm = "Unpair"
     nonisolated static let unpairAlertCancel = "Cancel"
-    /// #240: what Settings › Claude (and the panel, below the cards) says
-    /// after the keychain refused Unpair's deletion, and its button.
+    /// #240: what Settings › Claude says after the keychain refused Unpair's
+    /// deletion, what the panel says below the cards (it has no Try Again,
+    /// so it says where to find one), and the button.
     nonisolated static let unpairFailedLine =
-        "Unpair failed — the iPhone's key couldn't be removed; try again in Settings › Claude"
+        "Unpair failed — the iPhone's key couldn't be removed from your keychain"
+    nonisolated static let unpairFailedPanelLine = "Unpair failed — try again in Settings › Claude"
     nonisolated static let unpairRetryButtonTitle = "Try Again"
     nonisolated static let unpairRetryAccessibilityLabel = "Try again to remove the iPhone's key"
 
@@ -330,6 +332,15 @@ extension MenuStateModel {
         case .rotating: return PanelLine(text: pairingRotatingLine, severity: .nominal)
         case .unpairFailed: return PanelLine(text: unpairFailedLine, severity: .warning)
         }
+    }
+
+    /// The pairing line's panel twin: the pane's line, at the pane's
+    /// severity, in the panel's words where they differ — #240, after a
+    /// refused Unpair, where to try again.
+    nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {
+        let line = pairingStatusLine(pane)
+        guard pane == .unpairFailed else { return line }
+        return PanelLine(text: unpairFailedPanelLine, severity: line.severity)
     }
 
     nonisolated static func pairingRows(_ pane: PairingPaneState) -> [SettingsRow] {

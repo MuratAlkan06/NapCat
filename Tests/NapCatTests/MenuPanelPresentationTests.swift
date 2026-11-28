@@ -1344,7 +1344,8 @@ struct MenuPanelPresentationTests {
 
     /// Issue #240, through the model: after the keychain refused Unpair's
     /// deletion (the key still reads back) the pairing line is a warning in
-    /// Settings › Claude, on the gear's badge and below the cards; the
+    /// Settings › Claude, on the gear's badge and below the cards (each line
+    /// in its own words); the
     /// Remote approvals toggle, switched back on, counts no pairing — it
     /// says to pair first, never "Local only" over the key the owner asked
     /// to remove. Try Again through the model clears it all.
@@ -1365,9 +1366,14 @@ struct MenuPanelPresentationTests {
                 pairing.items.setFailDeletes(true)
                 pairing.controller.unpair()
                 model.refresh()
-                let warning = MenuStateModel.pairingStatusLine(.unpairFailed)
-                #expect(model.pairingPane == .unpairFailed && model.pairingLine == warning && warning.severity == .warning)
-                #expect(model.claudePane.sections.last?.rows.suffix(2) == ArraySlice(MenuStateModel.pairingRows(.unpairFailed)))
+                // Each place in its own words: Settings says what failed,
+                // the panel where to try again.
+                let settingsWarning = PanelLine(text: "Unpair failed — the iPhone's key couldn't be removed from your keychain",
+                                                severity: .warning)
+                let warning = PanelLine(text: "Unpair failed — try again in Settings › Claude", severity: .warning)
+                #expect(model.pairingPane == .unpairFailed && model.pairingLine == warning)
+                #expect(model.claudePane.sections.last?.rows.suffix(2) == [
+                    .pairingStatus(line: settingsWarning, fingerprint: nil, hint: nil), .pairingButtons(paired: false, retry: true)])
                 #expect(model.settingsBadge == .warning, "the gear says where it lives")
                 #expect(MenuStateModel.placement(ofSettingsLine: warning.severity) == .topLevel, "and its twin renders")
                 #expect(!model.remoteApprovalsPaired, "a refused Unpair is not a pairing")
