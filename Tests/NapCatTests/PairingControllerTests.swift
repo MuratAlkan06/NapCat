@@ -462,6 +462,35 @@ struct PairingControllerTests {
         #expect(relaunch.controller.paneState == .notPaired && relaunch.killSwitches == 1 && relaunch.audits == [.unpaired])
     }
 
+    /// A stored item NapCat cannot read — a text not this build's, or a
+    /// read the keychain refuses — has its own pane state (no longer Not
+    /// paired), and Unpair, the same confirmed Unpair, removes it. Refused,
+    /// it is an outstanding Unpair like any other.
+    @Test func anUnreadableItemHasItsOwnStateAndUnpairRemovesIt() throws {
+        let world = PairingWorld()
+        world.items.replaceValue("not a pairing")
+        world.controller.refreshPaired()
+        #expect(world.controller.paired == .unreadable && world.controller.paneState == .unreadable)
+        world.items.setReadAnswer(.failed(status: -25308))
+        world.controller.refreshPaired()
+        #expect(world.controller.paneState == .unreadable, "a refused read too")
+        world.items.setReadAnswer(nil)
+        world.controller.begin()
+        #expect(!world.controller.state.rotating && world.controller.paneState == .pairing, "a pairing begun is a first one")
+        world.controller.cancel()
+
+        world.controller.unpair()
+        #expect(world.items.storedValue == nil && world.controller.paneState == .notPaired)
+        #expect(world.killSwitches == 1 && world.audits.last == .unpaired)
+
+        let refused = PairingWorld()
+        refused.items.replaceValue("not a pairing")
+        refused.controller.refreshPaired()
+        refused.items.setFailDeletes(true)
+        refused.controller.unpair()
+        #expect(refused.controller.paneState == .unpairFailed && refused.items.storedValue == "not a pairing")
+    }
+
     /// Zero idle cost: no tick before a ceremony, none after one ends.
     @Test func nothingTicksWhileNoCeremonyIsLive() async {
         let world = PairingWorld()

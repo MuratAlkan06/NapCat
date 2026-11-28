@@ -63,6 +63,10 @@ enum PairingPaneState: Equatable, Sendable {
     /// (`PairedPhoneRead.unpairOutstanding`) until a deletion or a new
     /// pairing goes through, across relaunches.
     case unpairFailed
+    /// #247: an item is stored that NapCat cannot read (the keychain refused
+    /// the read, or the text is not a pairing this build reads) and no
+    /// Unpair of it is outstanding: no pairing, with Unpair… to remove it.
+    case unreadable
 }
 
 @MainActor
@@ -168,7 +172,8 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
         case .unpairOutstanding: return .unpairFailed
         case .paired(let phone):
             return running ? .rotating(phone.fingerprint, since: phone.pairedAt) : .paired(phone.fingerprint, since: phone.pairedAt)
-        case .notPaired, .unreadable: return running ? .pairing : .notPaired
+        case .unreadable: return running ? .pairing : .unreadable
+        case .notPaired: return running ? .pairing : .notPaired
         }
     }
 

@@ -335,17 +335,24 @@ extension MenuStateModel {
     nonisolated static let unpairFailedPanelLine = "Unpair failed — try again in Settings › Claude"
     nonisolated static let unpairRetryButtonTitle = "Try Again"
     nonisolated static let unpairRetryAccessibilityLabel = "Try again to remove the iPhone's key"
+    /// #247: what Settings › Claude says while an item is stored that
+    /// NapCat cannot read, and what the panel says below the cards (where to
+    /// remove it).
+    nonisolated static let pairingUnreadableLine =
+        "Key unreadable — the iPhone's key stored in your keychain can't be read"
+    nonisolated static let pairingUnreadablePanelLine = "Key unreadable — remove it or pair again in Settings › Claude"
 
     /// `Paired — iPhone, since Nov 24, 2026`.
     nonisolated static func pairingPairedLine(since: Date) -> String {
         "Paired — iPhone, since " + since.formatted(.dateTime.month(.abbreviated).day().year())
     }
 
-    /// The pairing's status line: nominal in every state but one (never
+    /// The pairing's status line: nominal in every state but two (never
     /// paired is the default, not a problem), so it raises no gear badge
     /// then. #240: a refused Unpair is a warning — the badge, and the
-    /// panel's twin below the cards. ("Changed" is reserved: no honest
-    /// signal for it exists, so it is not shown.)
+    /// panel's twin below the cards — and so (#247) is an item NapCat cannot
+    /// read. ("Changed" is reserved: no honest signal for it exists, so it
+    /// is not shown.)
     nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {
         switch pane {
         case .notPaired: return PanelLine(text: pairingNotPairedLine, severity: .nominal)
@@ -353,16 +360,21 @@ extension MenuStateModel {
         case .paired(_, let since): return PanelLine(text: pairingPairedLine(since: since), severity: .nominal)
         case .rotating: return PanelLine(text: pairingRotatingLine, severity: .nominal)
         case .unpairFailed: return PanelLine(text: unpairFailedLine, severity: .warning)
+        case .unreadable: return PanelLine(text: pairingUnreadableLine, severity: .warning)
         }
     }
 
     /// The pairing line's panel twin: the pane's line, at the pane's
     /// severity, in the panel's words where they differ — #240, after a
-    /// refused Unpair, where to try again.
+    /// refused Unpair, where to try again; #247, for an item NapCat cannot
+    /// read, where to remove it.
     nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {
         let line = pairingStatusLine(pane)
-        guard pane == .unpairFailed else { return line }
-        return PanelLine(text: unpairFailedPanelLine, severity: line.severity)
+        switch pane {
+        case .unpairFailed: return PanelLine(text: unpairFailedPanelLine, severity: line.severity)
+        case .unreadable: return PanelLine(text: pairingUnreadablePanelLine, severity: line.severity)
+        case .notPaired, .pairing, .paired, .rotating: return line
+        }
     }
 
     nonisolated static func pairingRows(_ pane: PairingPaneState) -> [SettingsRow] {
@@ -375,6 +387,10 @@ extension MenuStateModel {
         case .unpairFailed:
             return [.pairingStatus(line: pairingStatusLine(pane), fingerprint: nil, hint: nil),
                     .pairingButtons(paired: false, retry: true)]
+        case .unreadable:
+            // #247: no code to show; Pair a New iPhone… replaces the item,
+            // and Unpair… (the same confirmed Unpair) removes it.
+            return [.pairingStatus(line: pairingStatusLine(pane), fingerprint: nil, hint: nil), .pairingButtons(paired: true)]
         }
     }
 

@@ -3175,6 +3175,9 @@ struct DecisionSinkStructureTests {
         #"nonisolated static let unpairFailedPanelLine = "Unpair failed — try again in Settings › Claude""#: 1,
         #"nonisolated static let unpairRetryButtonTitle = "Try Again""#: 1,
         #"nonisolated static let unpairRetryAccessibilityLabel = "Try again to remove the iPhone's key""#: 1,
+        // #247: the line for an item NapCat cannot read, and its panel twin.
+        "nonisolated static let pairingUnreadableLine =": 1,
+        #"nonisolated static let pairingUnreadablePanelLine = "Key unreadable — remove it or pair again in Settings › Claude""#: 1,
         "nonisolated static func pairingPairedLine(since: Date) -> String {": 1,
         "nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {": 1,
