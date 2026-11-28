@@ -148,6 +148,7 @@ struct WireContractTests {
     /// approval path: the caller reads the path, the rule only reads bytes.
     static let pureFiles = ["ApprovalChannel.swift", "ApprovalChannelPolicy.swift", "ApprovalClassification.swift",
                             "ApprovalFloor.swift",
+                            "ApprovalForwardingPolicy.swift",
                             "ApprovalPreview.swift", "ApprovalProjectLabel.swift", "ApprovalSigning.swift",
                             "ApprovalStateMachine.swift", "PairingFingerprint.swift"]
 
