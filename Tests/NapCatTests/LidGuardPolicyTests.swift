@@ -208,6 +208,32 @@ struct LidGuardPolicyTests {
         #expect(LidGuardPolicy.validateTopic(raw) == expected)
     }
 
+    /// F4: a stored topic is valid exactly as stored only when it is the
+    /// value the alerts are sent to, unchanged; remote approvals read an
+    /// item holding anything else as unreadable.
+    @Test(arguments: [
+        ("napcat-lid-8f3k2p", true),
+        ("napcat_Lid_42", true),
+        ("A", true),
+        (String(repeating: "a", count: 64), true),
+        ("", false),
+        ("   ", false),
+        ("\n", false),
+        (" napcat-lid-8f3k2p", false),
+        ("napcat-lid-8f3k2p ", false),
+        ("napcat-lid-8f3k2p\n", false),
+        ("\tnapcat-lid-8f3k2p\t", false),
+        ("\u{00A0}napcat-lid-8f3k2p", false),
+        (String(repeating: "a", count: 65), false),
+        ("napcat/lid", false),
+        ("nap cat", false),
+        ("napcät", false),
+    ])
+    func aTopicIsValidAsStoredOnlyAsTheValueTheAlertsAreSentTo(stored: String, valid: Bool) {
+        #expect(LidGuardPolicy.isNormalizedTopic(stored) == valid)
+        #expect(valid == (LidGuardPolicy.normalizedTopic(stored) == stored), "the alerts' own rule, reused")
+    }
+
     @Test func topicLengthCapMatchesTheNtfyGrammar() {
         #expect(LidGuardTuning.maxTopicLength == 64)
     }
