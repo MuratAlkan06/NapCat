@@ -145,8 +145,9 @@ percent-decoded.
 
 Two codes keep a prompt the floor cannot judge, `floorUnreadable.<reason>`:
 
-- `topic`: an alert topic exists but could not be read, or is empty, so no
-  prompt can be checked for it: every prompt is kept.
+- `topic`: the gate is told an alert topic exists but is handed no
+  value it can read, so no prompt can be checked against it and every
+  prompt is kept.
 - `notPrintableASCII`: a string the tool's row reads as a command or a path
   holds a byte outside printable ASCII. The row's own rules refuse such a
   string first today (`commandOutsideGrammar`, `pathNotCanonical`).

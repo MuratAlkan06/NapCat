@@ -1478,12 +1478,12 @@ once.
   "Precedence" gives each step's codes.
 - **The floor's codes.** `floor.<group>` for a match (the first group, in
   the floor's order) and `floorUnreadable.<reason>` when the floor cannot
-  judge the prompt (`topic`: an alert topic exists and cannot be read as a
-  valid value; `notPrintableASCII`). A floor outcome keeps the prompt at
-  once, under every setting; it is its own code, never a risky kind. A
-  preview over the gate's size limit is kept before the floor runs. The
-  intake reads the lid guard's answer for the topic: none readable is
-  unreadable, none set is absent, one value is that value.
+  judge the prompt (`topic`: the gate is told an alert topic exists but is
+  handed no value it can read; `notPrintableASCII`). A floor outcome keeps
+  the prompt at once, under every setting; it is its own code, never a
+  risky kind. A preview over the gate's size limit is kept before the
+  floor runs. The intake reads the lid guard's answer for the topic: none
+  readable is unreadable, none set is absent, one value is that value.
 - **Risky kinds.** Every forbidden family the row finds, and the relay's
   credential placeholder (the secrets kind), is noted, every one, not only
   the first. A prompt is forwarded only when the set admits its kind and
