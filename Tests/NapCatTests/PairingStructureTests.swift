@@ -1015,6 +1015,11 @@ struct PairingStructureTests {
     static let structMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }"
     static let enumMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .enum) }"
     static let classMirror = "var customMirror: Mirror { Mirror(self, children: [], displayStyle: .class) }"
+    /// The alert topic the gate's floor is handed (#253): a public type of
+    /// the wire, so its members are public, its conformance on its
+    /// declaration.
+    static let floorFile = "ApprovalFloor.swift"
+    static let topicMirror = "public " + enumMirror
     /// Each line holds two matches (the type and its construction).
     static let mirrorSites: [String: [String: Int]] = [
         ceremonyFile: [structMirror: 2, enumMirror: 2],
@@ -1022,6 +1027,7 @@ struct PairingStructureTests {
         controllerFile: ["nonisolated " + classMirror: 2],
         slotFile: [structMirror: 2],
         storeFile: [structMirror: 2],
+        floorFile: [topicMirror: 2],
     ]
     /// R1: `customMirror` is named once on each of those lines — its
     /// declaration — and nowhere else.
@@ -1050,11 +1056,14 @@ struct PairingStructureTests {
         (controllerFile, members("pairing (redacted)", classMirror, nonisolated: true)),
         (slotFile, redaction("PairedKeyStore", "paired key slot (redacted)", structMirror)),
         (storeFile, redaction("KeychainTopicStore", "keychain item (redacted)", structMirror)),
+        (floorFile, "public enum ApprovalFloorTopic: Sendable, " + redactionConformances + " {"),
+        (floorFile, "public var description: String { \"alert topic (redacted)\" } public var debugDescription: String { description } "
+            + topicMirror),
     ]
     /// The types that redact themselves, file by file, and the members that
     /// do it: each declared once per type, in its redaction (no other
     /// `description` and the like in their files).
-    static let redactingTypes = [ceremonyFile: 2, sheetFile: 2, controllerFile: 1, slotFile: 1, storeFile: 1]
+    static let redactingTypes = [ceremonyFile: 2, sheetFile: 2, controllerFile: 1, slotFile: 1, storeFile: 1, floorFile: 1]
     static let redactionMembers = [#"\bvar\s+description\b"#, #"\bvar\s+debugDescription\b"#, #"\bvar\s+customMirror\b"#]
     static let qrViewSites: [String: [String: Int]] = [
         sheetFile: ["QRCodeView(payload: payload)": 1, "struct QRCodeView: View {": 1, "extension QRCodeView" + conformance: 1],

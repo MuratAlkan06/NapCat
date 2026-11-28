@@ -126,7 +126,7 @@ struct ApprovalSeamEndToEndTests {
         world.handshake()
         world.stdin(RelayHarness.permissionRequest("abcde", preview: #"{"command":"sudo pmset -a disablesleep 1"}"#))
         let id = PromptID(high: 0xE2E, low: 1)!
-        #expect(world.audits.next() == "prompt=\(id.hex) suppressed.gate.forbidden.privilegeEscalation")
+        #expect(world.audits.next() == "prompt=\(id.hex) suppressed.gate.floor.privilegedFootprint")
         #expect(world.sink.saved.next(within: 0.2) == nil)
         world.host.withIntake {
             $0.decide(.verified(ApprovalDecision(promptID: id, verdict: .allow, wireVersion: 1, signatureVerified: true)))
