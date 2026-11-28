@@ -117,8 +117,10 @@ struct RemoteApprovalsStructureTests {
     // MARK: - The secrets fail closed
 
     /// The production host gets the lid guard's fail-closed answer (nil while
-    /// the topic could not be read), and the intake folds a nil into a
-    /// refusal right on the gate's answer — before the lifecycle opens.
+    /// the topic could not be read), and the intake folds a nil right on the
+    /// gate's answer — before the lifecycle opens: every keep passes with the
+    /// gate's own code, a forward is kept with the floor's code, and the
+    /// intake writes no family code of its own.
     static func secretsFailures(intake: String, toggle: String) -> [String] {
         func flat(_ text: String) -> String { MenuPanelStructureTests.flat(text) }
         var failures: [String] = []
@@ -128,13 +130,16 @@ struct RemoteApprovalsStructureTests {
         let fold = "let known = secrets() let classification = ApprovalGate.classify(toolName: request.toolName, "
             + "inputPreview: request.inputPreview, topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)"
         if !flat(intake).contains(fold) {
-            failures.append("the intake must fold unknown secrets into a refusal on the gate's own answer")
+            failures.append("the intake must fold unknown secrets right on the gate's own answer")
         }
         if MenuPanelStructureTests.occurrences(of: "secrets()", in: intake) != 1 {
             failures.append("the secrets are read once per prompt, in one place")
         }
-        if !flat(intake).contains("secretsKnown ? self : .suppress(.forbidden(.secretAccess))") {
-            failures.append("unknown secrets must mean secret access")
+        if !flat(intake).contains("secretsKnown || forwardedTool == nil ? self : .suppress(.floorUnreadable(.topic))") {
+            failures.append("unknown secrets must keep a forward with the floor's code, and every keep with the gate's")
+        }
+        if intake.contains(".forbidden(") || intake.contains("secretAccess") {
+            failures.append("the intake writes no family code of its own: a kept prompt carries the gate's code")
         }
         return failures
     }
@@ -143,12 +148,21 @@ struct RemoteApprovalsStructureTests {
         let intake = try MenuPanelStructureTests.code("ApprovalIntake.swift")
         let toggle = try MenuPanelStructureTests.code("RemoteApprovalsController.swift")
         #expect(Self.secretsFailures(intake: intake, toggle: toggle).isEmpty, "\(Self.secretsFailures(intake: intake, toggle: toggle))")
+        let held = "secretsKnown || forwardedTool == nil ? self : .suppress(.floorUnreadable(.topic))"
+        #expect(MenuPanelStructureTests.occurrences(of: held, in: intake) == 1, "vacuity: the fold's body is in the intake once")
         let mutants: [(String, String, String)] = [
             ("the stored topic, unreadable read as none", intake, toggle.replacingOccurrences(
                 of: "lidGuard.approvalSecrets", with: "[lidGuard.storedTopic]")),
             ("the fold dropped", intake.replacingOccurrences(of: ".failingClosed(secretsKnown: known != nil)", with: ""), toggle),
-            ("unknown read as none", intake.replacingOccurrences(
-                of: "secretsKnown ? self : .suppress(.forbidden(.secretAccess))", with: "self"), toggle),
+            ("unknown read as none", intake.replacingOccurrences(of: held, with: "self"), toggle),
+            // #265: the fold as it was, every prompt rewritten to a family
+            // code of the intake's own; every keep rewritten to the floor's
+            // code; and a family code written elsewhere in the intake.
+            ("the old rewrite restored", intake.replacingOccurrences(
+                of: held, with: "secretsKnown ? self : .suppress(.forbidden(.secretAccess))"), toggle),
+            ("every keep rewritten", intake.replacingOccurrences(
+                of: held, with: "secretsKnown ? self : .suppress(.floorUnreadable(.topic))"), toggle),
+            ("a family code elsewhere", intake + "\nlet zzKept = ApprovalClassification.suppress(.forbidden(.privilegeEscalation))", toggle),
             // #253: the gate's call as it was before the floor and the
             // policy (the alert topic as a list of secrets, no set).
             ("the gate's call as it was", intake.replacingOccurrences(
