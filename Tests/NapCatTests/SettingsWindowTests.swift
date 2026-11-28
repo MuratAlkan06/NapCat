@@ -1617,6 +1617,26 @@ struct SettingsWindowTests {
     static let advancedRowCase = "case let .approvalsAdvanced(title, intro, unavailable, switches, phone, never):"
         + " SettingsAdvancedSection(title: title, intro: intro, unavailable: unavailable, switches: switches,"
         + " phone: phone, never: never)"
+    /// The row's arm, the switch's last, pinned whole: the call as written,
+    /// then the braces closing the switch, `body` and `SettingsRowView`.
+    /// So nothing follows the call: a modifier there (`.disabled(true)`,
+    /// or a gesture acting on the model) would reach the whole section.
+    static let advancedRowArmShape = advancedRowCase + " } } }"
+    static let advancedRowArmFailure = "the Advanced row must build the section once, from its own values,"
+        + " with no model and nothing after the call"
+
+    /// The row's arm as written: `SettingsRowView` flattened from the
+    /// arm's case to the struct's end, or nil unless that case is there
+    /// exactly once.
+    static func advancedRowArm(in views: String) -> String? {
+        let label = "case let .approvalsAdvanced("
+        guard let rowView = MenuPanelStructureTests.structChunk("SettingsRowView", in: views),
+              Self.occurrences(of: label, in: rowView) == 1,
+              let arm = rowView.components(separatedBy: label).last else {
+            return nil
+        }
+        return MenuPanelStructureTests.flat(label + arm)
+    }
 
     /// `shape`: the whole pin, or nil to read the section's rules alone.
     static func advancedSectionFailures(views: String, shape: String? = advancedSectionShape) -> [String] {
@@ -1640,9 +1660,9 @@ struct SettingsWindowTests {
         for token in Self.advancedSectionForbidden where chunk.contains(token) {
             failures.append("'\(token)' in the Advanced section — no setter, no stored value, no model, no motion")
         }
-        if Self.occurrences(of: "SettingsAdvancedSection(", in: views) != 1
-            || !MenuPanelStructureTests.flat(views).contains(Self.advancedRowCase) {
-            failures.append("the Advanced row must build the section once, from its own values, with no model")
+        let arm = Self.advancedRowArm(in: views)
+        if Self.occurrences(of: "SettingsAdvancedSection(", in: views) != 1 || arm != Self.advancedRowArmShape {
+            failures.append("\(Self.advancedRowArmFailure): \(arm ?? "no single arm in SettingsRowView")")
         }
         if views.contains("DisclosureGroup") {
             failures.append("a stock disclosure animates: no DisclosureGroup in Settings")
@@ -1655,8 +1675,10 @@ struct SettingsWindowTests {
     /// pinned whole; each rule also holds on its own (the canaries below
     /// are read without the whole pin). The motion lints over every
     /// Settings file stay as they were (MenuPanelStructureTests), and the
-    /// section names no animation, transition or stock disclosure.
-    @Test func theAdvancedSectionOpensCollapsedStillAndSetsNothing() throws {
+    /// section names no animation, transition or stock disclosure. The row
+    /// builds it with nothing appended to the call. On the main actor: the
+    /// chevron's names are the view's own statics, isolated with it.
+    @Test @MainActor func theAdvancedSectionOpensCollapsedStillAndSetsNothing() throws {
         let views = try Self.code(Self.settingsViewFile)
         #expect(Self.advancedSectionFailures(views: views).isEmpty, "\(Self.advancedSectionFailures(views: views))")
         #expect(MenuPanelStructureTests.motionGateFailures(views: views).isEmpty, "the press is still the one animation")
@@ -1686,6 +1708,25 @@ struct SettingsWindowTests {
             #expect(canary.views != views, "canary setup '\(canary.name)'")
             #expect(!Self.advancedSectionFailures(views: canary.views, shape: nil).isEmpty, "canary '\(canary.name)' was NOT caught")
             #expect(!Self.advancedSectionFailures(views: canary.views).isEmpty, "canary '\(canary.name)' passes the whole pin")
+        }
+
+        // The call site, pinned whole: a modifier appended to the call is
+        // caught, and by that rule alone, since the section's own source
+        // is untouched.
+        let call = "phone: phone, never: never)\n"
+        #expect(Self.occurrences(of: call, in: views) == 1, "canary setup: the call ends once, in the row's arm")
+        let callSiteCanaries: [(name: String, views: String)] = [
+            ("the section disabled at its call site", line(call, call + "                .disabled(true)\n")),
+            ("a tap at the call site that sets the model",
+             line(call, call + "                .onTapGesture { model.setRemoteApprovalsEnabled(true) }\n")),
+        ]
+        for canary in callSiteCanaries {
+            #expect(canary.views != views, "canary setup '\(canary.name)'")
+            for failures in [Self.advancedSectionFailures(views: canary.views, shape: nil),
+                             Self.advancedSectionFailures(views: canary.views)] {
+                #expect(failures.count == 1 && failures[0].hasPrefix(Self.advancedRowArmFailure),
+                        "canary '\(canary.name)' was NOT caught by the call-site pin: \(failures)")
+            }
         }
     }
 
