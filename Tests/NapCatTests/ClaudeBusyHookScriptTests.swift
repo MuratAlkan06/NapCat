@@ -891,6 +891,66 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    /// The event name and the session id are read as strings only: an
+    /// object, a number, a boolean or an array there is ignored exactly like
+    /// the field left out — the same one log line, exit 0, nothing on
+    /// stdout, the session's marker byte-identical and no other marker. (In
+    /// raw form an object prints its keys and a number its digits, so
+    /// `{"Stop":1}` passed as a Stop, an object keyed by a session id named
+    /// that session, and 12345678 was a valid session id.)
+    @Test func aNonStringEventNameOrSessionIdIsIgnoredLikeAMissingOne() {
+        let session = "e3000004-0034-4abc-8def-000000000034"
+        var cases: [(json: String, missing: String)] = []
+        for value in [#"{"Stop":1}"#, #"{"UserPromptSubmit":1}"#, "12", "true", #"["Stop"]"#] {
+            cases.append((#"{"hook_event_name":\#(value),"session_id":"\#(session)"}"#, #"{"session_id":"\#(session)"}"#))
+        }
+        for value in [#"{"\#(session)":1}"#, "12345678", "true", #"["\#(session)"]"#] {
+            for event in ["Stop", "UserPromptSubmit"] {
+                cases.append((#"{"hook_event_name":"\#(event)","session_id":\#(value)}"#, #"{"hook_event_name":"\#(event)"}"#))
+            }
+        }
+        for (json, missing) in cases {
+            withHome { home in
+                primeMarker(session, home: home)
+                let marker = markerDir(home).appendingPathComponent(session)
+                let planted = FileManager.default.contents(atPath: marker.path)
+                var logged: [String] = []
+                for payload in [missing, json] {
+                    let result = runHook(json: payload, home: home)
+                    #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(payload)")
+                    logged.append(hookLog(home).split(separator: "\n").last.map { String($0.drop { $0 != " " }) } ?? "")
+                }
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(logged[0].hasPrefix(" ignore reason=") && logged[1] == logged[0],
+                        "\(json) must log what the missing field logs (\(logged[0])), got \(logged[1])")
+                #expect(hookLog(home).split(separator: "\n").count == 3, "\(json): the set line and the two ignore lines")
+                #expect(FileManager.default.contents(atPath: marker.path) == planted, "\(json): the marker is left as it was")
+                #expect(sessionShapedFiles(in: markerDir(home)) == [session], "\(json): no other marker")
+            }
+        }
+    }
+
+    /// Canary: read the two fields in any type again and an object keyed
+    /// Stop clears the marker, and a number names a session of its own.
+    @Test func nonStringEventAndSessionCanary() throws {
+        try withThrowingHome { home in
+            let url = try mutantHook(home) {
+                $0.replacingOccurrences(of: "plutil -extract hook_event_name raw -expect string -o -",
+                                        with: "plutil -extract hook_event_name raw -o -")
+                    .replacingOccurrences(of: "plutil -extract session_id raw -expect string -o -",
+                                          with: "plutil -extract session_id raw -o -")
+            }
+            let session = "e3000005-0035-4abc-8def-000000000035"
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("UserPromptSubmit", at: marker)
+            _ = runScript(url, json: #"{"hook_event_name":{"Stop":1},"session_id":"\#(session)"}"#, home: home)
+            #expect(waitForFile(marker, present: false), "read in any type, an object keyed Stop clears the marker")
+            _ = runScript(url, json: #"{"hook_event_name":"UserPromptSubmit","session_id":12345678}"#, home: home)
+            #expect(waitForFile(markerDir(home).appendingPathComponent("12345678"), present: true),
+                    "read in any type, a number names a session")
+        }
+    }
+
     /// Canary (H3): log the raw event again and the forged line lands in
     /// hook.log — proves the event=invalid rows have teeth.
     @Test func rawEventLoggingCanary() throws {

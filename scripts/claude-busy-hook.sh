@@ -608,12 +608,17 @@ main() {
     log "ignore reason=stdin-not-json"
     return 0
   fi
-  event=$(plutil -extract hook_event_name raw -o - "$payload" 2>/dev/null) || event=""
+  # The event name and the session id are read as strings only (`-expect
+  # string`): a number, object or array there reads as absent, exactly like a
+  # missing field (in raw form an object would print its KEYS, a number its
+  # digits). On failure plutil writes its error to stdout, so the capture is
+  # discarded.
+  event=$(plutil -extract hook_event_name raw -expect string -o - "$payload" 2>/dev/null) || event=""
   # The only form of the event name the ignore paths may log: `?` when absent,
   # the name itself when it passes valid_event, `invalid` otherwise.
   logevent=${event:-?}
   [ -n "$event" ] && ! valid_event "$event" && logevent=invalid
-  session=$(plutil -extract session_id raw -o - "$payload" 2>/dev/null) || session=""
+  session=$(plutil -extract session_id raw -expect string -o - "$payload" 2>/dev/null) || session=""
   bg_running=no
   has_running_background_task "$payload" && bg_running=yes
   # Hook v8 — only a Stop that the reconcile below keeps because background
