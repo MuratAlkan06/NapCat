@@ -1391,17 +1391,22 @@ struct SettingsWindowTests {
         #expect(flat.contains("Button(\"Check for Updates…\") { model.checkForUpdates() }"
                               + " .buttonStyle(SettingsPressButtonStyle(look: .bezel)) .disabled(checking)"),
                 "the update check presses on the bezel and rests while a check is out")
-        // S-PAIR-C1 (#168): the pairing buttons, on the bezel too.
-        #expect(flat.contains("case let .pairingButtons(paired): HStack(spacing: PanelMetrics.regular) {"
-                              + " Button(paired ? MenuStateModel.pairNewButtonTitle : MenuStateModel.pairButtonTitle)"
-                              + " { model.beginPairing() } if paired { Button(MenuStateModel.unpairButtonTitle) { model.unpair() } }"
-                              + " } .buttonStyle(SettingsPressButtonStyle(look: .bezel))"),
-                "Pair iPhone… / Pair a New iPhone… and Unpair… press on the bezel")
+        // S-PAIR-C1 (#168): the pairing buttons, on the bezel too — AMENDED
+        // (#240): after a refused Unpair, Try Again first, in the same row
+        // and style, spoken in full.
+        let pairingButtons: String = "case let .pairingButtons(paired, retry): HStack(spacing: PanelMetrics.regular) {"
+            + " if retry { Button(MenuStateModel.unpairRetryButtonTitle) { model.retryUnpair() }"
+            + " .accessibilityLabel(MenuStateModel.unpairRetryAccessibilityLabel) }"
+            + " Button(paired ? MenuStateModel.pairNewButtonTitle : MenuStateModel.pairButtonTitle)"
+            + " { model.beginPairing() } if paired { Button(MenuStateModel.unpairButtonTitle) { model.unpair() } }"
+            + " } .buttonStyle(SettingsPressButtonStyle(look: .bezel))"
+        #expect(flat.contains(pairingButtons), "Try Again, Pair iPhone… / Pair a New iPhone… and Unpair… press on the bezel")
         #expect(Self.occurrences(of: "Button(\"", in: views) == 3 && Self.occurrences(of: "SendFeedbackButton(", in: views) == 1
                 && Self.occurrences(of: "Button(paired ? ", in: views) == 1
                 && Self.occurrences(of: "Button(MenuStateModel.unpairButtonTitle)", in: views) == 1
-                && Self.occurrences(of: "Button(", in: views) == 6
-                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these six")
+                && Self.occurrences(of: "Button(MenuStateModel.unpairRetryButtonTitle)", in: views) == 1
+                && Self.occurrences(of: "Button(", in: views) == 7
+                && Self.occurrences(of: "Button {", in: views) == 0, "the Settings buttons are exactly these seven")
         #expect(Self.occurrences(of: ".buttonStyle(", in: views) == 4, "every button under the one style")
         for token in [".buttonStyle(.", "PanelPressFadeButtonStyle", "BorderedButtonStyle", "LinkButtonStyle",
                       "PlainButtonStyle", "onLongPressGesture", "DragGesture", ".gesture(", "NSTrackingArea"] {

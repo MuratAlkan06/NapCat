@@ -1342,6 +1342,47 @@ struct MenuPanelPresentationTests {
         }
     }
 
+    /// Issue #240, through the model: after the keychain refused Unpair's
+    /// deletion (the key still reads back) the pairing line is a warning in
+    /// Settings › Claude, on the gear's badge and below the cards; the
+    /// Remote approvals toggle, switched back on, counts no pairing — it
+    /// says to pair first, never "Local only" over the key the owner asked
+    /// to remove. Try Again through the model clears it all.
+    @Test @MainActor func aRefusedUnpairIsAWarningAndPairsNothing() throws {
+        let approvals = try ApprovalsWorld()
+        let pairing = PairingWorld()
+        let notPaired = PanelLine(text: "Not paired — pair your iPhone in Settings › Claude", severity: .info)
+        try withDetection { detection in
+            detection.sample()
+            try withModel(detection: detection, remoteApprovals: approvals.controller, pairing: pairing.controller) { model, _, _ in
+                let phone: PairedPhone = try PairedKeyStoreTests.phone()
+                #expect(PairedKeyStore(items: pairing.items).commit(phone))
+                pairing.controller.refreshPaired()
+                model.refresh()
+                #expect(model.remoteApprovalsPaired && model.pairingLine?.severity == .nominal)
+                #expect(model.settingsBadge == .nominal, "vacuity: nothing else raises the badge")
+
+                pairing.items.setFailDeletes(true)
+                pairing.controller.unpair()
+                model.refresh()
+                let warning = MenuStateModel.pairingStatusLine(.unpairFailed)
+                #expect(model.pairingPane == .unpairFailed && model.pairingLine == warning && warning.severity == .warning)
+                #expect(model.claudePane.sections.last?.rows.suffix(2) == ArraySlice(MenuStateModel.pairingRows(.unpairFailed)))
+                #expect(model.settingsBadge == .warning, "the gear says where it lives")
+                #expect(MenuStateModel.placement(ofSettingsLine: warning.severity) == .topLevel, "and its twin renders")
+                #expect(!model.remoteApprovalsPaired, "a refused Unpair is not a pairing")
+                model.setRemoteApprovalsEnabled(true)
+                #expect(model.remoteApprovalsEnabled && model.remoteApprovalsStatus == notPaired, "on again, it pairs nothing")
+                model.setRemoteApprovalsEnabled(false)
+
+                pairing.items.setFailDeletes(false)
+                model.retryUnpair()
+                #expect(model.pairingPane == .notPaired && pairing.items.storedValue == nil)
+                #expect(model.pairingLine?.severity == .nominal && !model.remoteApprovalsPaired && model.settingsBadge == .nominal)
+            }
+        }
+    }
+
     /// Without the detection stack there is no Claude state to report, so the
     /// footer shows no status caption at all instead of claiming "idle".
     @Test @MainActor func debugWiringShowsNoClaudeStatus() throws {

@@ -293,6 +293,149 @@ struct PairingControllerTests {
         #expect(world.killSwitches == 2 && world.audits == [.unpaired, .unpairFailed], "the kill switch runs regardless")
     }
 
+    // MARK: - #240: an Unpair the keychain refused
+
+    /// A world with `phone` paired and the pane read, counting the pane's
+    /// change callbacks into `changes`.
+    static func paired(_ world: PairingWorld, changes: @escaping @MainActor () -> Void = {}) throws -> PairedPhone {
+        let phone = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
+                                             pairedAt: world.clock))
+        #expect(PairedKeyStore(items: world.items).commit(phone))
+        world.controller.refreshPaired()
+        #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
+        world.controller.onPaneChange = changes
+        return phone
+    }
+
+    /// The keychain refuses the deletion and the re-read still finds the
+    /// key: the pane says Unpair failed, not Paired, the kill switch ran and
+    /// the refusal is logged. Try Again with the keychain now willing
+    /// deletes it: Not paired, and the refusal is forgotten.
+    @Test func aRefusedUnpairIsShownWhileTheKeyStillReads() throws {
+        let world = PairingWorld()
+        var changes = 0
+        let phone = try Self.paired(world) { changes += 1 }
+        world.items.setFailDeletes(true)
+        world.controller.unpair()
+        #expect(world.controller.paneState == .unpairFailed, "not Paired: the owner asked for the key to go")
+        #expect(world.controller.paired == .paired(phone), "the slot as read: the key is still stored")
+        #expect(world.items.storedValue == PairedKeyStore.text(of: phone))
+        #expect(world.killSwitches == 1 && world.audits == [.unpairFailed])
+        #expect(changes == 1, "the pane hears of it once")
+        world.controller.refreshPaired()
+        #expect(world.controller.paneState == .unpairFailed, "a menu or Settings open keeps it")
+
+        world.items.setFailDeletes(false)
+        world.controller.retryUnpair()
+        #expect(world.items.storedValue == nil && world.items.deleteCount == 2, "Try Again deletes again")
+        #expect(world.controller.paneState == .notPaired && world.controller.paired == .notPaired)
+        #expect(world.killSwitches == 2 && world.audits == [.unpairFailed, .unpaired], "Try Again is Unpair again")
+        #expect(changes == 2)
+        world.controller.retryUnpair()
+        #expect(world.items.deleteCount == 2 && world.killSwitches == 2 && world.audits.count == 2,
+                "no refusal stands: Try Again does nothing")
+    }
+
+    /// The keychain refuses the deletion AND the read after it: the SAME
+    /// state, never "Not paired" while the key may still be stored. Try
+    /// Again still refused keeps it; once the deletion goes through, Not
+    /// paired.
+    @Test func aRefusedUnpairIsShownWhenTheReadIsRefusedToo() throws {
+        let world = PairingWorld()
+        _ = try Self.paired(world)
+        world.items.setFailDeletes(true)
+        world.items.setReadAnswer(.failed(status: -25308))
+        world.controller.unpair()
+        #expect(world.controller.paired == .unreadable, "vacuity: the read was refused")
+        #expect(world.controller.paneState == .unpairFailed, "not Not paired")
+        #expect(world.killSwitches == 1 && world.audits == [.unpairFailed])
+
+        world.controller.retryUnpair()
+        #expect(world.controller.paneState == .unpairFailed, "refused again: it stays")
+        #expect(world.items.deleteCount == 2 && world.killSwitches == 2 && world.audits == [.unpairFailed, .unpairFailed])
+        world.controller.refreshPaired()
+        #expect(world.controller.paneState == .unpairFailed)
+
+        world.items.setFailDeletes(false)
+        world.items.setReadAnswer(nil)
+        world.controller.retryUnpair()
+        #expect(world.controller.paneState == .notPaired && world.items.storedValue == nil)
+        #expect(world.audits == [.unpairFailed, .unpairFailed, .unpaired])
+    }
+
+    /// A deletion that goes through: today's pane, row for row.
+    @Test func anUnpairThatGoesThroughShowsTodaysPane() throws {
+        let world = PairingWorld()
+        var changes = 0
+        _ = try Self.paired(world) { changes += 1 }
+        world.controller.unpair()
+        #expect(world.controller.paneState == .notPaired && world.killSwitches == 1 && world.audits == [.unpaired])
+        #expect(MenuStateModel.pairingRows(world.controller.paneState) == MenuStateModel.pairingRows(.notPaired))
+        #expect(changes == 1, "one change: the slot read")
+        world.controller.retryUnpair()
+        #expect(world.items.deleteCount == 1 && world.killSwitches == 1, "Try Again only after a refusal")
+    }
+
+    /// From a refused Unpair, a new pairing is a first one (the sheet never
+    /// says the old pairing keeps working). A save that fails leaves the
+    /// refusal standing; one that goes through replaces the key and clears
+    /// it.
+    @Test func pairingANewIPhoneAfterARefusedUnpairClearsIt() async throws {
+        let world = PairingWorld()
+        let old = try Self.paired(world)
+        world.items.setFailDeletes(true)
+        world.controller.unpair()
+        #expect(world.controller.paneState == .unpairFailed)
+
+        world.records.answer(.found(.response(try PhoneHalf.response())))
+        world.controller.begin()
+        #expect(!world.controller.state.rotating && world.controller.sheetContent.title == "Pair iPhone")
+        #expect(world.audits.last == .begun(rotating: false))
+        #expect(world.controller.paneState == .unpairFailed, "it stays on screen while the code is up")
+        await world.advance(to: 2.5)
+        world.items.setFailWrites(true)
+        world.controller.codesMatch()
+        #expect(world.controller.state.phase == .ended(.saveFailed))
+        world.controller.cancel()
+        #expect(world.controller.paneState == .unpairFailed && world.controller.paired == .paired(old), "nothing was saved")
+
+        let response = try PhoneHalf.response()
+        world.records.answer(.found(.response(response)))
+        world.items.setFailWrites(false)
+        world.controller.begin()
+        await world.advance(to: 5)
+        world.controller.codesMatch()
+        let phone = try #require(PairedPhone(publicKey: response.publicKey, pairedAt: world.clock))
+        #expect(world.items.storedValue == PairedKeyStore.text(of: phone), "the new key replaced the old")
+        #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
+        world.controller.cancel()
+        await world.controller.settle()
+        #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
+        world.controller.retryUnpair()
+        #expect(world.items.storedValue == PairedKeyStore.text(of: phone), "a late Try Again unpairs nothing")
+    }
+
+    /// The refusal lives for this run only: at the next launch the pane is
+    /// what the slot reads — Paired while the key reads back; Not paired
+    /// while the read is refused (a truthful line for that is a follow-up).
+    @Test func aRelaunchShowsWhatTheSlotReads() throws {
+        let first = PairingWorld()
+        let phone = try Self.paired(first)
+        first.items.setFailDeletes(true)
+        first.controller.unpair()
+        #expect(first.controller.paneState == .unpairFailed)
+
+        let relaunch = PairingWorld()
+        relaunch.items.replaceValue(first.items.storedValue)
+        relaunch.controller.refreshPaired()
+        #expect(relaunch.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
+        let unreadable = PairingWorld()
+        unreadable.items.replaceValue(first.items.storedValue)
+        unreadable.items.setReadAnswer(.failed(status: -25308))
+        unreadable.controller.refreshPaired()
+        #expect(unreadable.controller.paneState == .notPaired)
+    }
+
     /// Zero idle cost: no tick before a ceremony, none after one ends.
     @Test func nothingTicksWhileNoCeremonyIsLive() async {
         let world = PairingWorld()

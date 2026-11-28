@@ -507,9 +507,37 @@ struct PairingPresentationTests {
             .pairingButtons(paired: true)])
         #expect([MenuStateModel.pairButtonTitle, MenuStateModel.pairNewButtonTitle, MenuStateModel.unpairButtonTitle]
                 == ["Pair iPhone…", "Pair a New iPhone…", "Unpair…"])
+        // #240: the confirmation says only what holds when the keychain
+        // refuses the deletion.
         #expect([MenuStateModel.unpairAlertTitle, MenuStateModel.unpairAlertText, MenuStateModel.unpairAlertConfirm,
-                  MenuStateModel.unpairAlertCancel] == ["Unpair iPhone?", "NapCat deletes the stored key and stops remote "
-                    + "approvals through the kill switch. Pairing again takes about two minutes.", "Unpair", "Cancel"])
+                  MenuStateModel.unpairAlertCancel] == ["Unpair iPhone?", "NapCat turns Remote approvals off and asks your "
+                    + "keychain to remove this iPhone's key. If the key can't be removed, Settings tells you. Pairing again "
+                    + "takes about two minutes.", "Unpair", "Cancel"])
+    }
+
+    /// #240: after the keychain refused Unpair's deletion, the pane's line
+    /// is a warning — its severity word first for VoiceOver — with no code
+    /// and no hint, then Try Again (spoken in full) and Pair iPhone…. Every
+    /// other state's buttons are as before, with no Try Again.
+    @Test func aRefusedUnpairShowsAWarningAndTryAgain() {
+        let text = "Unpair failed — the iPhone's key couldn't be removed; try again in Settings › Claude"
+        let line = PanelLine(text: text, severity: .warning)
+        #expect(MenuStateModel.pairingStatusLine(.unpairFailed) == line)
+        #expect(MenuStateModel.pairingRows(.unpairFailed) == [
+            .pairingStatus(line: line, fingerprint: nil, hint: nil), .pairingButtons(paired: false, retry: true)])
+        #expect(PanelSeverityTint.spoken(line) == "Warning: " + text)
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel, "a warning never hides in Settings")
+        #expect([MenuStateModel.unpairRetryButtonTitle, MenuStateModel.unpairRetryAccessibilityLabel]
+                == ["Try Again", "Try again to remove the iPhone's key"])
+        let code = PairingFingerprint(lowercaseHex: "8a2c854aa45c")!
+        let since = Date(timeIntervalSince1970: 1_800_000_000)
+        let others: [PairingPaneState] = [.notPaired, .pairing, .paired(code, since: since), .rotating(code, since: since)]
+        for pane in others {
+            #expect(MenuStateModel.pairingStatusLine(pane).severity == .nominal, "\(pane)")
+            #expect(MenuStateModel.pairingRows(pane).allSatisfy { row in
+                if case .pairingButtons(_, let retry) = row { !retry } else { true }
+            }, "\(pane): no Try Again")
+        }
     }
 
     /// Unpair takes a deliberate click (design review M4): the alert's Unpair

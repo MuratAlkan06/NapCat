@@ -244,8 +244,13 @@ struct SettingsRowView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-        case let .pairingButtons(paired):
+        case let .pairingButtons(paired, retry):
+            // #240: after a refused Unpair, Try Again comes first.
             HStack(spacing: PanelMetrics.regular) {
+                if retry {
+                    Button(MenuStateModel.unpairRetryButtonTitle) { model.retryUnpair() }
+                        .accessibilityLabel(MenuStateModel.unpairRetryAccessibilityLabel)
+                }
                 Button(paired ? MenuStateModel.pairNewButtonTitle : MenuStateModel.pairButtonTitle) { model.beginPairing() }
                 if paired {
                     Button(MenuStateModel.unpairButtonTitle) { model.unpair() }

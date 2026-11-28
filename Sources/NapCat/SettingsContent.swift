@@ -97,7 +97,8 @@ enum SettingsRow: Equatable, Sendable {
     /// pairing does.
     case pairingStatus(line: PanelLine, fingerprint: PairingFingerprint?, hint: String?)
     /// Never paired: Pair iPhone…. Paired: Pair a New iPhone… and Unpair….
-    case pairingButtons(paired: Bool)
+    /// #240, after a refused Unpair (`retry`): Try Again, then Pair iPhone….
+    case pairingButtons(paired: Bool, retry: Bool = false)
 }
 
 /// One titled group of rows.
@@ -301,24 +302,33 @@ extension MenuStateModel {
     nonisolated static let unpairButtonTitle = "Unpair…"
     nonisolated static let unpairAlertTitle = "Unpair iPhone?"
     nonisolated static let unpairAlertText =
-        "NapCat deletes the stored key and stops remote approvals through the kill switch. Pairing again takes about two minutes."
+        "NapCat turns Remote approvals off and asks your keychain to remove this iPhone's key. If the key can't be removed, Settings tells you. Pairing again takes about two minutes."
     nonisolated static let unpairAlertConfirm = "Unpair"
     nonisolated static let unpairAlertCancel = "Cancel"
+    /// #240: what Settings › Claude (and the panel, below the cards) says
+    /// after the keychain refused Unpair's deletion, and its button.
+    nonisolated static let unpairFailedLine =
+        "Unpair failed — the iPhone's key couldn't be removed; try again in Settings › Claude"
+    nonisolated static let unpairRetryButtonTitle = "Try Again"
+    nonisolated static let unpairRetryAccessibilityLabel = "Try again to remove the iPhone's key"
 
     /// `Paired — iPhone, since Nov 24, 2026`.
     nonisolated static func pairingPairedLine(since: Date) -> String {
         "Paired — iPhone, since " + since.formatted(.dateTime.month(.abbreviated).day().year())
     }
 
-    /// The pairing's status line: every state is nominal (never paired is
-    /// the default, not a problem), so it raises no gear badge. ("Changed"
-    /// is reserved: no honest signal for it exists, so it is not shown.)
+    /// The pairing's status line: nominal in every state but one (never
+    /// paired is the default, not a problem), so it raises no gear badge
+    /// then. #240: a refused Unpair is a warning — the badge, and the
+    /// panel's twin below the cards. ("Changed" is reserved: no honest
+    /// signal for it exists, so it is not shown.)
     nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {
         switch pane {
         case .notPaired: return PanelLine(text: pairingNotPairedLine, severity: .nominal)
         case .pairing: return PanelLine(text: pairingRunningLine, severity: .nominal)
         case .paired(_, let since): return PanelLine(text: pairingPairedLine(since: since), severity: .nominal)
         case .rotating: return PanelLine(text: pairingRotatingLine, severity: .nominal)
+        case .unpairFailed: return PanelLine(text: unpairFailedLine, severity: .warning)
         }
     }
 
@@ -329,6 +339,9 @@ extension MenuStateModel {
                     .pairingButtons(paired: false)]
         case .paired(let fingerprint, _), .rotating(let fingerprint, _):
             return [.pairingStatus(line: pairingStatusLine(pane), fingerprint: fingerprint, hint: nil), .pairingButtons(paired: true)]
+        case .unpairFailed:
+            return [.pairingStatus(line: pairingStatusLine(pane), fingerprint: nil, hint: nil),
+                    .pairingButtons(paired: false, retry: true)]
         }
     }
 }
