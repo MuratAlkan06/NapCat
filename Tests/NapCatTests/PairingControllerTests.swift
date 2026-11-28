@@ -68,13 +68,18 @@ final class ManualPairingTicker: PairingTicker {
 }
 
 /// F4 slice S-PAIR-C1 (#168): the shell around the ceremony, over fakes — a
-/// scripted pairing record, an in-memory slot, an in-memory remembered name,
-/// a hand-set clock and a hand-fired tick. No CloudKit, keychain, defaults or
-/// timer is touched.
+/// scripted pairing record, an in-memory slot, an in-memory outstanding-Unpair
+/// record (#247), an in-memory remembered name, a hand-set clock and a
+/// hand-fired tick. No CloudKit, keychain, defaults, file or timer is touched.
 @MainActor
 final class PairingWorld {
     let records: ScriptedPairingRecords
-    let items = FakeTopicStore()
+    let items: FakeTopicStore
+    /// #247: the outstanding-Unpair record's medium (what reaches the disk in
+    /// the app), and the record over it (fresh for every world: a relaunch
+    /// is a new world over the same two fakes).
+    let unpairMedium: FakeTopicStore
+    let unpairs: UnpairRecord
     var remembered: String?
     var clock = Date(timeIntervalSince1970: 1_800_000_000)
     var killSwitches = 0
@@ -86,10 +91,17 @@ final class PairingWorld {
     var liveTickers = 0
     private(set) var controller: PairingController!
 
-    init(records: ScriptedPairingRecords = ScriptedPairingRecords()) {
+    /// A handle on the controller's slot: the same item, the same record.
+    var keys: PairedKeyStore { PairedKeyStore(items: items, unpairs: unpairs) }
+
+    init(records: ScriptedPairingRecords = ScriptedPairingRecords(), items: FakeTopicStore = FakeTopicStore(),
+         unpairMedium: FakeTopicStore = FakeTopicStore()) {
         self.records = records
+        self.items = items
+        self.unpairMedium = unpairMedium
+        unpairs = UnpairRecord(medium: unpairMedium)
         controller = PairingController(
-            source: records, keys: PairedKeyStore(items: items),
+            source: records, keys: PairedKeyStore(items: items, unpairs: unpairs),
             readRemembered: { [unowned self] in remembered }, writeRemembered: { [unowned self] in remembered = $0 },
             makeNonce: { [unowned self] in nonce }, clock: { [unowned self] in clock },
             killSwitch: { [unowned self] in killSwitches += 1 }, audit: { [unowned self] in audits.append($0) },
@@ -107,6 +119,7 @@ final class PairingWorld {
         controller.tick()
         await controller.settle()
     }
+
 }
 
 @MainActor
@@ -163,7 +176,7 @@ struct PairingControllerTests {
         let world = PairingWorld(records: ScriptedPairingRecords([.found(.response(response))]))
         let old = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
                                            pairedAt: Date(timeIntervalSince1970: 1_700_000_000)))
-        #expect(PairedKeyStore(items: world.items).commit(old))
+        #expect(world.keys.commit(old))
         world.controller.begin()
         #expect(world.controller.paneState == .rotating(old.fingerprint, since: old.pairedAt))
         #expect(world.controller.state.rotating)
@@ -281,14 +294,14 @@ struct PairingControllerTests {
         let world = PairingWorld()
         let phone = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
                                              pairedAt: world.clock))
-        #expect(PairedKeyStore(items: world.items).commit(phone))
+        #expect(world.keys.commit(phone))
         world.controller.refreshPaired()
         #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
         world.controller.unpair()
         #expect(world.items.storedValue == nil && world.killSwitches == 1 && world.audits == [.unpaired])
         #expect(world.controller.paneState == .notPaired)
         world.items.setFailDeletes(true)
-        #expect(PairedKeyStore(items: world.items).commit(phone))
+        #expect(world.keys.commit(phone))
         world.controller.unpair()
         #expect(world.killSwitches == 2 && world.audits == [.unpaired, .unpairFailed], "the kill switch runs regardless")
     }
@@ -300,7 +313,7 @@ struct PairingControllerTests {
     static func paired(_ world: PairingWorld, changes: @escaping @MainActor () -> Void = {}) throws -> PairedPhone {
         let phone = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
                                              pairedAt: world.clock))
-        #expect(PairedKeyStore(items: world.items).commit(phone))
+        #expect(world.keys.commit(phone))
         world.controller.refreshPaired()
         #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
         world.controller.onPaneChange = changes
@@ -318,8 +331,8 @@ struct PairingControllerTests {
         world.items.setFailDeletes(true)
         world.controller.unpair()
         #expect(world.controller.paneState == .unpairFailed, "not Paired: the owner asked for the key to go")
-        #expect(world.controller.paired == .paired(phone), "the slot as read: the key is still stored")
-        #expect(world.items.storedValue == PairedKeyStore.text(of: phone))
+        #expect(world.controller.paired == .unpairOutstanding, "#247: the slot reads the Unpair as outstanding")
+        #expect(world.items.storedValue == PairedKeyStore.text(of: phone), "vacuity: the key is still stored")
         #expect(world.killSwitches == 1 && world.audits == [.unpairFailed])
         #expect(changes == 1, "the pane hears of it once")
         world.controller.refreshPaired()
@@ -346,7 +359,7 @@ struct PairingControllerTests {
         world.items.setFailDeletes(true)
         world.items.setReadAnswer(.failed(status: -25308))
         world.controller.unpair()
-        #expect(world.controller.paired == .unreadable, "vacuity: the read was refused")
+        #expect(world.controller.paired == .unpairOutstanding, "the read was refused, and the record holds it")
         #expect(world.controller.paneState == .unpairFailed, "not Not paired")
         #expect(world.killSwitches == 1 && world.audits == [.unpairFailed])
 
@@ -398,7 +411,8 @@ struct PairingControllerTests {
         world.controller.codesMatch()
         #expect(world.controller.state.phase == .ended(.saveFailed))
         world.controller.cancel()
-        #expect(world.controller.paneState == .unpairFailed && world.controller.paired == .paired(old), "nothing was saved")
+        #expect(world.controller.paneState == .unpairFailed && world.controller.paired == .unpairOutstanding)
+        #expect(world.items.storedValue == PairedKeyStore.text(of: old), "nothing was saved")
 
         let response = try PhoneHalf.response()
         world.records.answer(.found(.response(response)))
@@ -408,6 +422,7 @@ struct PairingControllerTests {
         world.controller.codesMatch()
         let phone = try #require(PairedPhone(publicKey: response.publicKey, pairedAt: world.clock))
         #expect(world.items.storedValue == PairedKeyStore.text(of: phone), "the new key replaced the old")
+        #expect(world.unpairMedium.storedValue == nil, "#247: and the record went with it")
         #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
         world.controller.cancel()
         await world.controller.settle()
@@ -418,25 +433,33 @@ struct PairingControllerTests {
                 && world.killSwitches == 1, "a late Try Again unpairs nothing")
     }
 
-    /// The refusal lives for this run only: at the next launch the pane is
-    /// what the slot reads — Paired while the key reads back; Not paired
-    /// while the read is refused (a truthful line for that is a follow-up).
-    @Test func aRelaunchShowsWhatTheSlotReads() throws {
+    // MARK: - #247: a refused Unpair binds the slot, across relaunches
+
+    /// The refusal survives a relaunch: the next launch's controller, slot
+    /// and record (fresh objects over the same two fakes) still read the
+    /// Unpair as outstanding — while the key reads back and while the read
+    /// is refused — and Try Again there removes the key and the record.
+    @Test func aRefusedUnpairSurvivesARelaunch() throws {
         let first = PairingWorld()
         let phone = try Self.paired(first)
         first.items.setFailDeletes(true)
         first.controller.unpair()
         #expect(first.controller.paneState == .unpairFailed)
+        #expect(first.unpairMedium.storedValue != nil, "vacuity: the record reached the disk")
 
-        let relaunch = PairingWorld()
-        relaunch.items.replaceValue(first.items.storedValue)
+        let relaunch = PairingWorld(items: first.items, unpairMedium: first.unpairMedium)
         relaunch.controller.refreshPaired()
-        #expect(relaunch.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
-        let unreadable = PairingWorld()
-        unreadable.items.replaceValue(first.items.storedValue)
-        unreadable.items.setReadAnswer(.failed(status: -25308))
-        unreadable.controller.refreshPaired()
-        #expect(unreadable.controller.paneState == .notPaired)
+        #expect(relaunch.controller.paneState == .unpairFailed && relaunch.controller.paired == .unpairOutstanding)
+        #expect(relaunch.items.storedValue == PairedKeyStore.text(of: phone), "vacuity: the key is still stored")
+        relaunch.items.setReadAnswer(.failed(status: -25308))
+        relaunch.controller.refreshPaired()
+        #expect(relaunch.controller.paneState == .unpairFailed, "a refused read is held too")
+        relaunch.items.setReadAnswer(nil)
+
+        relaunch.items.setFailDeletes(false)
+        relaunch.controller.retryUnpair()
+        #expect(relaunch.items.storedValue == nil && relaunch.unpairMedium.storedValue == nil, "the key, then the record")
+        #expect(relaunch.controller.paneState == .notPaired && relaunch.killSwitches == 1 && relaunch.audits == [.unpaired])
     }
 
     /// Zero idle cost: no tick before a ceremony, none after one ends.
@@ -491,7 +514,7 @@ struct PairingControllerTests {
     @Test func noReflectionReachesThePairedKeySlot() throws {
         let world = PairingWorld()
         let controller: PairingController = world.controller
-        let slot = PairedKeyStore(items: world.items)
+        let slot = world.keys
         let attacker = try #require(PairedPhone(publicKey: Array(P256.Signing.PrivateKey().publicKey.x963Representation),
                                                 pairedAt: world.clock))
         let routes: [(String, Any?)] = [
@@ -502,6 +525,7 @@ struct PairingControllerTests {
             ("the record source, by its label", Mirror(reflecting: controller).descendant("source")),
             ("the slot's item, from the slot", Mirror(reflecting: slot).descendant("items")),
             ("the slot's item, through an array", [slot].customMirror.descendant(0, "items")),
+            ("#247: the slot's Unpair record, by its label", Mirror(reflecting: slot).descendant("unpairs")),
         ]
         for (name, reached) in routes {
             #expect(reached == nil, "\(name) reached a part")

@@ -73,7 +73,7 @@ struct PairedKeyStoreTests {
 
     @Test func theSlotReadsCommitsAndUnpairs() throws {
         let items = FakeTopicStore()
-        let store = PairedKeyStore(items: items)
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: FakeTopicStore()))
         #expect(store.read() == .notPaired)
         let first = try Self.phone()
         #expect(store.commit(first))
@@ -89,7 +89,7 @@ struct PairedKeyStoreTests {
 
     @Test func aFailedCommitLeavesTheSlotAsItWas() throws {
         let items = FakeTopicStore()
-        let store = PairedKeyStore(items: items)
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: FakeTopicStore()))
         let first = try Self.phone()
         #expect(store.commit(first))
         items.setFailWrites(true)
@@ -99,12 +99,80 @@ struct PairedKeyStoreTests {
 
     @Test func aKeychainThatRefusesOrHoldsJunkReadsUnreadable() {
         let items = FakeTopicStore("not a pairing")
-        let store = PairedKeyStore(items: items)
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: FakeTopicStore()))
         #expect(store.read() == .unreadable)
         items.setReadAnswer(.failed(status: errSecUserCanceled))
         #expect(store.read() == .unreadable)
         items.setReadAnswer(.notFound)
         #expect(store.read() == .notPaired)
+    }
+
+    // MARK: - #247: an Unpair that has not gone through
+
+    /// Unpair records the item it is asked to remove BEFORE the keychain is
+    /// asked to delete it; a refused deletion leaves the record, and the slot
+    /// reads the Unpair as outstanding whatever the item holds; the record
+    /// goes only after a deletion that went through.
+    @Test func unpairRecordsTheItemBeforeTheDeletionAndKeepsItWhileRefused() throws {
+        let items = FakeTopicStore()
+        let medium = FakeTopicStore()
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: medium))
+        let phone = try Self.phone()
+        #expect(store.commit(phone))
+        var calls: [String] = []
+        items.setObserver { calls.append("keychain." + $0) }
+        medium.setObserver { calls.append("record." + $0) }
+        items.setFailDeletes(true)
+        #expect(!store.unpair())
+        #expect(calls == ["keychain.read", "record.write", "keychain.delete"], "\(calls)")
+        let digest = ApprovalSigning.lowercaseHex(Array(SHA256.hash(data: Data(PairedKeyStore.text(of: phone).utf8))))
+        #expect(medium.storedValue == "napcat-unpair-v1\nitem:" + digest + "\n", "the record names the item by its digest")
+        #expect(store.read() == .unpairOutstanding && items.storedValue == PairedKeyStore.text(of: phone))
+
+        calls.removeAll()
+        items.setFailDeletes(false)
+        #expect(store.unpair())
+        #expect(calls.filter { $0.hasSuffix(".delete") } == ["keychain.delete", "record.delete"], "\(calls)")
+        #expect(medium.storedValue == nil && store.read() == .notPaired)
+    }
+
+    /// A key written replaces whatever the record named, so the record goes
+    /// after it — never before, and not when the write is refused.
+    @Test func aNewKeyWrittenEndsAnOutstandingUnpair() throws {
+        let items = FakeTopicStore()
+        let medium = FakeTopicStore()
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: medium))
+        #expect(store.commit(try Self.phone()))
+        items.setFailDeletes(true)
+        #expect(!store.unpair())
+        items.setFailWrites(true)
+        #expect(!store.commit(try Self.phone(Self.otherKey)))
+        #expect(medium.storedValue != nil && store.read() == .unpairOutstanding, "a refused write ends nothing")
+        items.setFailWrites(false)
+        let second = try Self.phone(Self.otherKey)
+        #expect(store.commit(second))
+        #expect(medium.storedValue == nil && store.read() == .paired(second))
+    }
+
+    /// An Unpair run while the keychain refused the read cannot name the
+    /// item: its record names none, so it holds whatever is stored, until a
+    /// deletion goes through. An empty slot is held by no record.
+    @Test func aRecordNamingNoItemHoldsWhateverIsStored() throws {
+        let items = FakeTopicStore()
+        let medium = FakeTopicStore()
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: medium))
+        let phone = try Self.phone()
+        #expect(store.commit(phone))
+        items.setReadAnswer(.failed(status: errSecInteractionNotAllowed))
+        items.setFailDeletes(true)
+        #expect(!store.unpair())
+        #expect(medium.storedValue == "napcat-unpair-v1\nitem:unknown\n")
+        items.setReadAnswer(nil)
+        #expect(store.read() == .unpairOutstanding, "the item reads again, and the record holds it")
+        items.replaceValue(PairedKeyStore.text(of: try Self.phone(Self.otherKey)))
+        #expect(store.read() == .unpairOutstanding, "whatever the item holds")
+        items.replaceValue(nil)
+        #expect(store.read() == .notPaired, "an empty slot is held by none")
     }
 
     // MARK: - The real store's item (recording fake keychain)
@@ -124,7 +192,7 @@ struct PairedKeyStoreTests {
                 == KeychainTopicStore.itemLabel, "the topic's label is unchanged")
 
         // A pairing is one add, then an update in place: one item, swapped whole.
-        let store = PairedKeyStore(items: items)
+        let store = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: FakeTopicStore()))
         #expect(store.commit(try Self.phone()))
         #expect(store.commit(try Self.phone(Self.otherKey)))
         #expect(fake.calls.map(\.name) == ["update", "add", "update"])

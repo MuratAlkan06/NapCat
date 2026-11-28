@@ -1323,7 +1323,7 @@ struct MenuPanelPresentationTests {
             #expect(model.remoteApprovalsStatus == notPaired)
 
             let phone: PairedPhone = try PairedKeyStoreTests.phone()
-            #expect(PairedKeyStore(items: pairing.items).commit(phone))
+            #expect(pairing.keys.commit(phone))
             model.refresh()
             #expect(model.remoteApprovalsStatus == notPaired, "the slot as last read: a model refresh does not read it")
             pairing.controller.refreshPaired()
@@ -1357,7 +1357,7 @@ struct MenuPanelPresentationTests {
             detection.sample()
             try withModel(detection: detection, remoteApprovals: approvals.controller, pairing: pairing.controller) { model, _, _ in
                 let phone: PairedPhone = try PairedKeyStoreTests.phone()
-                #expect(PairedKeyStore(items: pairing.items).commit(phone))
+                #expect(pairing.keys.commit(phone))
                 pairing.controller.refreshPaired()
                 model.refresh()
                 #expect(model.remoteApprovalsPaired && model.pairingLine?.severity == .nominal)

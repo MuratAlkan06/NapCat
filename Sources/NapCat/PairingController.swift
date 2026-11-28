@@ -59,8 +59,9 @@ enum PairingPaneState: Equatable, Sendable {
     /// until the new code is confirmed.
     case rotating(PairingFingerprint, since: Date)
     /// #240: Unpair asked the keychain to delete the key and the keychain
-    /// refused, whatever the slot reads since. Remembered until NapCat
-    /// quits, or until a deletion or a new pairing goes through.
+    /// refused. #247: the slot reads the Unpair as outstanding
+    /// (`PairedPhoneRead.unpairOutstanding`) until a deletion or a new
+    /// pairing goes through, across relaunches.
     case unpairFailed
 }
 
@@ -95,10 +96,6 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
     /// Bumped by every begin, so a late fetch for an earlier ceremony is
     /// dropped.
     private var generation = 0
-    /// #240: the last Unpair's deletion was refused, and neither a deletion
-    /// nor a new pairing has gone through since. In memory only: a launch
-    /// starts clear, and the pane then shows what the slot reads.
-    private var unpairFailed = false
     /// The record work under way (fetches, deletions), for `settle()`.
     private var work: [Task<Void, Never>] = []
 
@@ -159,17 +156,20 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
 
     // MARK: - What Settings and the sheet render
 
-    /// A refused Unpair shows first, in every phase and whatever the slot
-    /// reads: the key may still be stored even when the read fails too.
+    /// A refused Unpair shows first, in every phase: the slot reads it as
+    /// outstanding (#247), whether or not the item itself still reads.
     var paneState: PairingPaneState {
-        if unpairFailed { return .unpairFailed }
         let running: Bool
         switch state.phase {
         case .showing, .comparing, .committing: running = true
         case .idle, .paired, .ended: running = false
         }
-        guard case .paired(let phone) = paired else { return running ? .pairing : .notPaired }
-        return running ? .rotating(phone.fingerprint, since: phone.pairedAt) : .paired(phone.fingerprint, since: phone.pairedAt)
+        switch paired {
+        case .unpairOutstanding: return .unpairFailed
+        case .paired(let phone):
+            return running ? .rotating(phone.fingerprint, since: phone.pairedAt) : .paired(phone.fingerprint, since: phone.pairedAt)
+        case .notPaired, .unreadable: return running ? .pairing : .notPaired
+        }
     }
 
     var sheetContent: PairingSheetContent {
@@ -195,9 +195,9 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
         }
         generation += 1
         // #240: after a refused Unpair the owner asked for the key to go, so
-        // a pairing begun then is a first one: its sheet never says the old
-        // pairing keeps working.
-        let rotating = if case .paired = paired, !unpairFailed { true } else { false }
+        // a pairing begun then is a first one (the slot reads it as no
+        // pairing, #247): its sheet never says the old pairing keeps working.
+        let rotating = if case .paired = paired { true } else { false }
         run(.begin(nonce: nonce, rotating: rotating, now: clock().timeIntervalSince1970))
     }
 
@@ -214,26 +214,24 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
     /// The one-second tick (the ticker's; tests call it by hand).
     func tick() { run(.tick(now: clock().timeIntervalSince1970)) }
 
-    /// Unpair, after the owner confirmed it: the slot is deleted, and the
+    /// Unpair, after the owner confirmed it: the slot records the item as
+    /// the one to remove and asks the keychain to delete it, and the
     /// remote-approvals toggle goes off through its kill switch — whatever
-    /// the deletion came to. #240: a refused deletion is remembered, so the
-    /// pane says so whatever the re-read finds; one that goes through
-    /// clears it.
+    /// the deletion came to. A refused deletion leaves the slot reading the
+    /// Unpair as outstanding (#240, #247), so the pane says so, across
+    /// relaunches; one that goes through ends it.
     func unpair() {
         let gone = keys.unpair()
         killSwitch()
         audit(gone ? .unpaired : .unpairFailed)
-        let before = (read: paired, failed: unpairFailed)
-        unpairFailed = !gone
-        paired = keys.read()
-        if paired != before.read || unpairFailed != before.failed { onPaneChange?() }
+        refreshPaired()
     }
 
     /// #240: Try Again, after a refused Unpair — the same Unpair, already
-    /// confirmed (the deletion, then the kill switch). Nothing while no
-    /// refusal stands, so a late click never unpairs a phone paired since.
+    /// confirmed, so no alert. Nothing while the pane shows no refusal, so a
+    /// late click never unpairs a phone paired since.
     func retryUnpair() {
-        guard unpairFailed else { return }
+        guard paired == .unpairOutstanding else { return }
         unpair()
     }
 
@@ -286,11 +284,9 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
                 }
             }
         }
-        if slotChanged {
-            paired = keys.read()
-            // #240: a new key written replaces the one Unpair could not remove.
-            if case .paired = state.phase { unpairFailed = false }
-        }
+        // #240, #247: a new key written replaces the one Unpair could not
+        // remove, and the slot then reads it as the pairing.
+        if slotChanged { paired = keys.read() }
         let live = state.phase.isLive
         if live, ticker == nil { ticker = makeTicker { [weak self] in self?.tick() } }
         if !live { ticker?.cancel(); ticker = nil }

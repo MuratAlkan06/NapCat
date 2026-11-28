@@ -24,6 +24,9 @@ struct ApprovalChannelStructureTests {
     /// Slice S2: the Mac toggle, the only place the host is built and the
     /// probe run.
     static let toggleFile = "RemoteApprovalsController.swift"
+    /// #247: the outstanding-Unpair record, whose real file sits in the
+    /// approvals folder beside the socket.
+    static let unpairRecordFile = "UnpairRecord.swift"
     /// The I/O files S1 added.
     static let s1Files = [seamFile, relayFile, serverFile, intakeFile, hostFile, probeFile]
 
@@ -819,14 +822,21 @@ struct ApprovalChannelStructureTests {
         }
         // The real socket path is resolved by the server's entry point and
         // (slice S2) by the Mac toggle's one factory — once each, nowhere
-        // else.
+        // else. AMENDED (#247): the approvals folder's home is resolved once
+        // more, for the outstanding-Unpair record's real file beside the
+        // socket (`unpairRecordFile`), never the socket's path.
         for (name, text) in sources {
             let resolutions = count("SeamPaths.homeDirectory(", in: text)
-            let allowed = name == serverFile || name == toggleFile ? 1 : 0
+            let allowed = name == serverFile || name == toggleFile || name == unpairRecordFile ? 1 : 0
             if resolutions != allowed {
-                failures.append("\(resolutions) real socket path resolution(s) in \(name) — only the server's entry point "
-                    + "and the toggle's factory may, once each")
+                failures.append("\(resolutions) real socket path resolution(s) in \(name) — only the server's entry point, "
+                    + "the toggle's factory and the Unpair record's real file may, once each")
             }
+        }
+        let record = text(unpairRecordFile, in: sources)
+        if count("SeamPaths.socketPath(", in: record) != 0
+            || count(PairingStructureTests.realFileLine, in: record) != 1 {
+            failures.append("the Unpair record resolves the home once, for its own file's binding, and never the socket's path")
         }
         let toggle = text(toggleFile, in: sources)
         if let factory = toggle.range(of: "static func makeIfEnabled("), let resolve = toggle.range(of: "SeamPaths.homeDirectory("),
@@ -854,6 +864,9 @@ struct ApprovalChannelStructureTests {
             ("the model resolves the real path", Self.mutate(sources, "MenuStateModel.swift") {
                 $0 + "\nlet h = SeamPaths.homeDirectory()" }),
             ("the toggle resolves it twice", Self.mutate(sources, Self.toggleFile) { $0 + "\nlet h = SeamPaths.homeDirectory()" }),
+            ("the Unpair record resolves it twice", Self.mutate(sources, Self.unpairRecordFile) { $0 + "\nlet h = SeamPaths.homeDirectory()" }),
+            ("the Unpair record names the socket", Self.mutate(sources, Self.unpairRecordFile) {
+                $0 + "\nlet h = SeamPaths.socketPath(home: \"x\")" }),
         ]
         for (name, mutant) in mutants {
             #expect(!Self.serverFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")

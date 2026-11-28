@@ -83,6 +83,15 @@ import Testing
 ///
 /// 8. Unpair runs after the owner's confirmation, or as Try Again while a
 ///    refused deletion stands; every Unpair runs the kill switch.
+///
+/// AMENDED (#247): lock 8 pins every mention of the slot's
+/// outstanding-Unpair record, which replaced the controller's in-memory
+/// flag; lock 1 pins the slot's item at its new sites and the wiring's new
+/// line; lock 4 keeps the C1 tests off the real record; and lock 9 is new —
+///
+/// 9. The real Unpair record (its file in the approvals folder) is declared
+///    in its own file and named by the app's wiring alone, and no test file
+///    names it.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -142,7 +151,9 @@ struct PairingStructureTests {
     /// file names them (KeychainTopicStoreTests.noTestFileCanReachTheRealKeychain).
     static let realItem = "pairedPhone" + "Keychain"
     static let realCalls = "security" + "Framework"
-    static let wiringLine = "keys: PairedKeyStore(items: KeychainTopicStore." + realItem + "),"
+    /// AMENDED (#247): the slot is handed the real outstanding-Unpair record
+    /// on the same line (`realRecord`, lock 9).
+    static let wiringLine = "keys: PairedKeyStore(items: KeychainTopicStore." + realItem + ", unpairs: UnpairRecord." + realRecord + "),"
     static let itemLine = "static let " + realItem + " = KeychainTopicStore(item: .pairedPhone, calls: ." + realCalls + ")"
 
     /// The slot and its item: built by the app's wiring alone; written by
@@ -159,9 +170,12 @@ struct PairingStructureTests {
             itemLine: 1,
             "var label: String { item == .pairedPhone ? Self.pairedPhoneItemLabel : Self.itemLabel }": 1]],
          "the paired-key item's name is used by the keychain store only"),
+        // AMENDED (#247): every call on the slot's item is pinned
+        // (`slotItemCalls`): its reads, its one write (commit) and its one
+        // deletion (the slot's removal).
         (#"\bitems\s*\.\s*(?:write|delete|read)\b"#,
-         [slotFile: ["switch items.read() {": 1, "items.write(Self.text(of: phone))": 1, "items.delete()": 1]],
-         "the slot's item is read, written (by commit) and deleted (by unpair) at one site each"),
+         [slotFile: slotItemCalls],
+         "the slot's item is read at its pinned sites, written (by commit) and deleted (by the slot's removal) at one site each"),
         // The C1 security review's R3: the item is the slot's alone (private,
         // `slotItemSites`), and no member access or key path anywhere names
         // it (M1 aliased it, M2 reached it by key path).
@@ -204,11 +218,16 @@ struct PairingStructureTests {
 
     /// R3: every `items` in the slot's own file — the item is private (so
     /// the compiler keeps every other file off it), handed on once by the
-    /// init, and used at its three sites.
+    /// init, and used at its pinned sites (AMENDED, #247: `slotItemCalls`).
     static let slotItemSites: [String: [String: Int]] = [
-        slotFile: ["private let items: any TopicStore": 1, "init(items: any TopicStore) {": 1, "self.items = items": 2,
-                   "switch items.read() {": 1, "items.write(Self.text(of: phone))": 1, "items.delete()": 1],
+        slotFile: slotItemCalls.merging(["private let items: any TopicStore": 1, "init(items: any TopicStore, unpairs: UnpairRecord) {": 1,
+                                         "self.items = items": 2]) { $1 },
     ]
+    /// #247: every call on the slot's item — its reads, its one write and
+    /// its one deletion.
+    static let slotItemCalls: [String: Int] = [
+        "let held = items.read()": 1, "unpairs.record(items.read())": 1,
+        "guard items.write(Self.text(of: phone)) else { return false }": 1, "guard items.delete() else { return false }": 1]
 
     static func compareFailures(_ sources: Sources) -> [String] {
         let ceremony = text(ceremonyFile, in: sources)
@@ -232,7 +251,7 @@ struct PairingStructureTests {
             failures += appSiteFailures(pattern, in: sources, allowed: allowed, rule: rule)
         }
         failures += appSiteFailures(#"\bitems\b"#, in: sources.filter { $0.name == slotFile }, allowed: slotItemSites,
-                                    rule: "the slot's item is private to it, handed on once and used at its three sites")
+                                    rule: "the slot's item is private to it, handed on once and used at its pinned sites")
         // S-PAIR-C1.5 (the C1 security delta check's (d)): inside the keychain store every use of its
         // calls is pinned, and the item's account is set at one place, from
         // its name — no hand-built query reaches the paired item.
@@ -659,7 +678,9 @@ struct PairingStructureTests {
     static let liveTokens = ["pairedPhone" + "Keychain", "login" + "Keychain", "security" + "Framework", "Sec" + "Item",
                              "UserDefaults.standard", "makeIfEnabled(", "TimerPairingTicker", "secureNonce", "Pairing" + "Announcer",
                              "CKContainer", "CKDatabase", "SecRandomCopyBytes", "NSApp.", "makeKeyAndOrderFront",
-                             "makeLive" + "PairingDatabase", "Live" + "PairingRecordDatabase"]
+                             "makeLive" + "PairingDatabase", "Live" + "PairingRecordDatabase",
+                             // #247: the real outstanding-Unpair record (lock 9).
+                             realRecord]
 
     static func liveFailures(_ tests: Sources) -> [String] {
         tests.flatMap { name, text in
@@ -1518,24 +1539,27 @@ struct PairingStructureTests {
 
     // MARK: - 8. Unpair: after the owner's confirmation, or as Try Again (#240)
 
-    /// The slot's deletion is reached by the controller's Unpair alone, and
-    /// that by the owner's confirmed alert and by Try Again alone; Try Again
-    /// is the Settings button's, through the model, and runs Unpair only
-    /// while a refusal stands (so a late click never unpairs a phone paired
-    /// since). Every Unpair runs the kill switch, whatever the deletion came
-    /// to, and remembers a refusal; the refusal is set there alone and
-    /// cleared by a deletion that goes through or a key written.
+    /// The slot's deletion is reached by the controller's Unpair and Try
+    /// Again alone, and those by the owner's confirmed alert and by the
+    /// Settings button, through the model, alone. Try Again runs only while
+    /// the pane shows a refusal (so a late click never unpairs a phone
+    /// paired since). Every Unpair runs the kill switch, whatever the
+    /// deletion comes to.
     ///
-    /// Every `unpair` is pinned as a whole word, so a reference taken
-    /// unapplied (`let go = p.unpair`, then `go()`) is off the list as well
-    /// as a call; the word's other lines are the alert's Unpair button, a
-    /// local of that name. Every mention of the refusal flag is pinned too,
-    /// so no write escapes however it is spelled (`=`, `.toggle()`,
-    /// `&unpairFailed`, `self.`, a key path): in every file, each one not
-    /// behind a dot (the audit's and the pane's cases are declared bare),
-    /// and in the controller, which keeps the flag private, each one behind
-    /// a dot as well (those two cases, used). The model's Try Again is
-    /// pinned whole, so its call cannot move into `refresh()`.
+    /// AMENDED (#247): the refusal is no flag of the controller's any more:
+    /// it is the slot's outstanding-Unpair record, written by the slot's
+    /// Unpair alone, before the deletion, and removed only after a deletion
+    /// that went through or a key written.
+    ///
+    /// Every `unpair`, `retryUnpair` and `removeRecorded` is pinned as a
+    /// whole word, so a reference taken unapplied (`let go = p.unpair`, then
+    /// `go()`) is off the list as well as a call; the word's other lines are
+    /// the alert's Unpair button, a local of that name. Every mention of the
+    /// record (`unpairs`) is pinned too, in every file, so no write or
+    /// removal of it escapes however it is spelled; behind a dot it is the
+    /// slot's init's alone. The bodies that order the kill switch, the record
+    /// and the deletion are pinned whole, and so is the model's Try Again, so
+    /// its call cannot move into `refresh()`.
     static let unpairSites: [String: [String: Int]] = [
         slotFile: ["func unpair() -> Bool {": 1],
         controllerFile: ["func unpair() {": 1, "let gone = keys.unpair()": 1, "unpair()": 1],
@@ -1544,53 +1568,81 @@ struct PairingStructureTests {
                                   "unpair.hasDestructiveAction = true": 1, "unpair.keyEquivalent = \"\"": 1],
         "MenuStateModel.swift": ["func unpair() { requestUnpair?() }": 1],
         "SettingsPanes.swift": ["Button(MenuStateModel.unpairButtonTitle) { model.unpair() }": 1],
+        // #247: two string literals, the record's header and its file's name.
+        "UnpairRecord.swift": [#"static let header = "napcat-unpair-v1""#: 1, #"static let fileName = "unpair-outstanding""#: 1],
     ]
     static let retrySites: [String: [String: Int]] = [
         controllerFile: ["func retryUnpair() {": 1],
         "MenuStateModel.swift": ["func retryUnpair() {": 1, "pairing?.retryUnpair()": 1],
         "SettingsPanes.swift": ["Button(MenuStateModel.unpairRetryButtonTitle) { model.retryUnpair() }": 1],
     ]
-    /// Every mention of `unpairFailed` not behind a dot: the audit's case,
-    /// the pane's case, and the flag's declaration, reads and writes.
+    /// Every mention of `unpairFailed` not behind a dot: the audit's case and
+    /// the pane's (AMENDED, #247: no flag of that name is left).
     static let refusalSites: [String: [String: Int]] = [
         ceremonyFile: ["case unpairFailed": 1],
-        controllerFile: ["case unpairFailed": 1, "private var unpairFailed = false": 1,
-                         "if unpairFailed { return .unpairFailed }": 1,
-                         "let rotating = if case .paired = paired, !unpairFailed { true } else { false }": 1,
-                         "let before = (read: paired, failed: unpairFailed)": 1, "unpairFailed = !gone": 1,
-                         "if paired != before.read || unpairFailed != before.failed { onPaneChange?() }": 1,
-                         "guard unpairFailed else { return }": 1,
-                         "if case .paired = state.phase { unpairFailed = false }": 1],
+        controllerFile: ["case unpairFailed": 1],
     ]
     /// Every mention of `unpairFailed` behind a dot in the controller: the
-    /// pane's case and the audit's, nothing through `self` or a key path.
+    /// pane's case, from the slot's reading, and the audit's, nothing through
+    /// `self` or a key path.
     static let refusalMemberSites: [String: [String: Int]] = [
-        controllerFile: ["if unpairFailed { return .unpairFailed }": 1, "audit(gone ? .unpaired : .unpairFailed)": 1],
+        controllerFile: ["case .unpairOutstanding: return .unpairFailed": 1, "audit(gone ? .unpaired : .unpairFailed)": 1],
     ]
-    static let unpairBody = "func unpair() { let gone = keys.unpair() killSwitch() audit(gone ? .unpaired : .unpairFailed)"
-        + " let before = (read: paired, failed: unpairFailed) unpairFailed = !gone paired = keys.read()"
-        + " if paired != before.read || unpairFailed != before.failed { onPaneChange?() } }"
-    static let retryBody = "func retryUnpair() { guard unpairFailed else { return } unpair() }"
+    /// #247: every mention of the record, in every file — the slot's member
+    /// and init, its read's check, Unpair's record, its removals (after a
+    /// key written, after a deletion) — and the app's wiring, which hands the
+    /// real one in.
+    static let recordSites: [String: [String: Int]] = [
+        slotFile: ["private let unpairs: UnpairRecord": 1, "init(items: any TopicStore, unpairs: UnpairRecord) {": 1,
+                   "self.unpairs = unpairs": 2, "if unpairs.holds(held) { return .unpairOutstanding }": 1,
+                   "unpairs.record(items.read())": 1, "unpairs.clear()": 2],
+        "NapCatApp.swift": [wiringLine: 1],
+    ]
+    static let recordMemberSites: [String: [String: Int]] = [slotFile: ["self.unpairs = unpairs": 1]]
+    static let removalSites: [String: [String: Int]] = [
+        slotFile: ["return removeRecorded()": 1, "private func removeRecorded() -> Bool {": 1],
+    ]
+    static let unpairBody = "func unpair() { let gone = keys.unpair() killSwitch() audit(gone ? .unpaired : .unpairFailed) refreshPaired() }"
+    static let retryBody = "func retryUnpair() { guard paired == .unpairOutstanding else { return } unpair() }"
     static let modelRetryBody = "func retryUnpair() { pairing?.retryUnpair() refresh() }"
+    /// #247: the slot's side, whole — Unpair records the item before the
+    /// deletion; the record goes after a deletion that went through, or a
+    /// key written.
+    static let slotUnpairBody = "func unpair() -> Bool { unpairs.record(items.read()) return removeRecorded() }"
+    static let slotRemovalBody = "private func removeRecorded() -> Bool { guard items.delete() else { return false } unpairs.clear()"
+        + " return true }"
+    static let slotCommitBody = "func commit(_ phone: PairedPhone) -> Bool { guard items.write(Self.text(of: phone)) else { return false }"
+        + " unpairs.clear() return true }"
 
     static func unpairFailures(_ sources: Sources) -> [String] {
         let controller = text(controllerFile, in: sources)
         guard controller.contains("final class PairingController") else { return ["the controller is missing — the Unpair lock would be vacuous"] }
         let model = text("MenuStateModel.swift", in: sources)
         guard model.contains("final class MenuStateModel") else { return ["the model is missing — the Unpair lock would be vacuous"] }
+        let slot = text(slotFile, in: sources)
+        guard slot.contains("struct PairedKeyStore") else { return ["the slot is missing — the Unpair lock would be vacuous"] }
         var failures = appSiteFailures(#"\bunpair\b"#, in: sources, allowed: unpairSites,
-                                       rule: "the slot is deleted by Unpair alone, run by the confirmed alert and Try Again alone")
+                                       rule: "the slot is deleted by Unpair and Try Again alone, run by the confirmed alert and the button alone")
         failures += appSiteFailures(#"\bretryUnpair\b"#, in: sources, allowed: retrySites,
                                     rule: "Try Again is the Settings button's, through the model, to the controller")
         failures += appSiteFailures(#"(?<!\.)\bunpairFailed\b"#, in: sources, allowed: refusalSites,
-                                    rule: "a refusal is set by Unpair alone, and cleared by its deletion or a key written")
+                                    rule: "the refusal is the slot's record, no flag: the audit's and the pane's cases alone")
         failures += appSiteFailures(#"\.\s*unpairFailed\b"#, in: sources.filter { $0.name == controllerFile },
                                     allowed: refusalMemberSites,
-                                    rule: "the controller names the refusal behind a dot as the pane's and the audit's cases alone")
+                                    rule: "the controller names the refusal behind a dot as the pane's case, from the slot's reading, and the audit's alone")
+        failures += appSiteFailures(#"\bunpairs\b"#, in: sources, allowed: recordSites,
+                                    rule: "the record is written by Unpair before the deletion, and goes after a deletion or a key written, alone")
+        failures += appSiteFailures(#"\.\s*unpairs\b"#, in: sources, allowed: recordMemberSites,
+                                    rule: "nothing reaches the record through a member access or a key path but the slot's init")
+        failures += appSiteFailures(#"\bremoveRecorded\b"#, in: sources, allowed: removalSites,
+                                    rule: "the slot's one removal is reached from its Unpair alone")
         for (body, file, what) in [
-            (unpairBody, controller, "every Unpair runs the kill switch and remembers a refusal — exactly as pinned"),
-            (retryBody, controller, "Try Again runs Unpair only while a refusal stands — exactly as pinned"),
+            (unpairBody, controller, "every Unpair runs the kill switch and the slot's Unpair in their order — exactly as pinned"),
+            (retryBody, controller, "Try Again runs only while the pane shows a refusal — exactly as pinned"),
             (modelRetryBody, model, "the model's Try Again calls the controller's, then refreshes — exactly as pinned"),
+            (slotUnpairBody, slot, "the slot's Unpair records the item before the deletion — exactly as pinned"),
+            (slotRemovalBody, slot, "the record goes only after a deletion that went through — exactly as pinned"),
+            (slotCommitBody, slot, "the record goes only after a key written — exactly as pinned"),
         ] where ApprovalChannelStructureTests.count(body, in: MenuPanelStructureTests.flat(file)) != 1 {
             failures.append(what)
         }
@@ -1601,8 +1653,12 @@ struct PairingStructureTests {
         let sources = try ApprovalChannelStructureTests.sources()
         #expect(Self.unpairFailures(sources).isEmpty, "\(Self.unpairFailures(sources))")
         let controller = Self.controllerFile
+        let slot = Self.slotFile
         let model = "MenuStateModel.swift"
-        let readLine = "        let read = keys.read()\n"
+        let heldLine = "        let held = items.read()\n"
+        let killAfter = "        killSwitch()\n        audit(gone"
+        let recordFirst = "        unpairs.record(items.read())\n        return removeRecorded()\n"
+        let removal = "        guard items.delete() else { return false }\n        unpairs.clear()\n"
         let retryCall = "        pairing?.retryUnpair()\n"
         let refreshHead = "    func refresh() {\n"
         let movedRetry = Self.mutate(sources, model) {
@@ -1611,7 +1667,7 @@ struct PairingStructureTests {
         }
         let mutants: [(String, Sources)] = [
             ("Try Again without its guard", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: "        guard unpairFailed else { return }\n", with: "") }),
+                $0.replacingOccurrences(of: "        guard paired == .unpairOutstanding else { return }\n", with: "") }),
             ("Try Again straight to Unpair from the model", Self.mutate(sources, model) {
                 $0.replacingOccurrences(of: "pairing?.retryUnpair()", with: "pairing?.unpair()") }),
             ("Unpair with no alert, from the model", Self.mutate(sources, model) { $0 + "\nfunc zz(_ p: PairingController?) { p?.unpair() }" }),
@@ -1620,48 +1676,130 @@ struct PairingStructureTests {
             ("Try Again from the panel", Self.mutate(sources, "MenuPanelView.swift") {
                 $0 + "\nstruct ZZ: View { let model: MenuStateModel; var body: some View { Button(\"x\") { model.retryUnpair() } } }" }),
             ("the kill switch only after a deletion", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: "        killSwitch()\n        audit(gone", with: "        if gone { killSwitch() }\n        audit(gone") }),
-            ("the refusal forgotten at a read", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: "        let read = keys.read()\n", with: "        let read = keys.read()\n        unpairFailed = false\n") }),
-            ("the refusal kept from a read that failed", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: "unpairFailed = !gone", with: "unpairFailed = !gone && keys.read() != .unreadable") }),
+                $0.replacingOccurrences(of: killAfter, with: "        if gone { killSwitch() }\n        audit(gone") }),
+            // #247: the record.
+            ("the record cleared before the deletion", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: removal, with: "        unpairs.clear()\n        guard items.delete() else { return false }\n") }),
+            ("the record written after the deletion", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: recordFirst, with: "        let gone = removeRecorded()\n        unpairs.record(items.read())\n"
+                                        + "        return gone\n") }),
+            ("the record cleared at a read", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: heldLine, with: heldLine + "        unpairs.clear()\n") }),
+            ("the record cleared through self", Self.mutate(sources, slot) {
+                $0.replacingOccurrences(of: heldLine, with: heldLine + "        self.unpairs.clear()\n") }),
+            ("the record reached by key path", Self.mutate(sources, model) { $0 + "\nlet zz = \\PairedKeyStore.unpairs" }),
+            ("a record of that name in another file", Self.mutate(sources, model) {
+                $0 + "\nfunc zz(_ unpairs: UnpairRecord) { unpairs.clear() }" }),
+            ("a second road to the removal", Self.mutate(sources, slot) {
+                $0 + "\nextension PairedKeyStore { func zz() -> Bool { removeRecorded() } }" }),
             // Unapplied: no call to count, so only the whole word sees them.
             ("an unapplied Unpair", Self.mutate(sources, model) {
                 $0 + "\nfunc zz(_ p: PairingController) {\n    let go = p.unpair\n    go()\n}" }),
             ("the slot's deletion taken unapplied", Self.mutate(sources, controller) {
                 $0 + "\nfunc zz(_ k: PairedKeyStore) -> Bool {\n    let del = k.unpair\n    return del()\n}" }),
-            // The refusal written however it is spelled, and its name in
-            // another file.
-            ("the refusal toggled off at a read", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: readLine, with: readLine + "        if unpairFailed { unpairFailed.toggle() }\n") }),
-            ("the refusal cleared through inout", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: readLine, with: readLine + "        zzClear(&unpairFailed)\n") }),
-            ("the refusal cleared through self", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: readLine, with: readLine + "        self.unpairFailed = false\n") }),
-            ("the refusal cleared by key path", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: readLine, with: readLine + "        self[keyPath: \\.unpairFailed] = false\n") }),
-            ("a flag of that name in another file", Self.mutate(sources, model) {
-                $0 + "\nfunc zz(_ unpairFailed: inout Bool) { unpairFailed.toggle() }" }),
             ("the model's Try Again call moved into refresh", movedRetry),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.unpairFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
-        // Vacuity: the read the refusal canaries plant after, and the move
-        // itself (the call gone from Try Again, now first in refresh, its
-        // sites unchanged — only the pinned body sees it).
-        #expect(ApprovalChannelStructureTests.count(readLine, in: Self.text(controller, in: sources)) == 1)
+        // Vacuity: the lines the canaries plant at, and the move itself (the
+        // call gone from Try Again, now first in refresh, its sites unchanged
+        // — only the pinned body sees it).
+        var anchors: [(String, String)] = [(heldLine, slot), (recordFirst, slot), (removal, slot)]
+        anchors.append((killAfter, controller))
+        for (anchor, file) in anchors {
+            #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(file, in: sources)) == 1, "vacuity: \(anchor)")
+        }
         let moved = Self.text(model, in: movedRetry)
         #expect(!moved.contains(retryCall + "        refresh()\n") && moved.contains(refreshHead + retryCall))
         #expect(Self.appSiteFailures(#"\bretryUnpair\b"#, in: movedRetry, allowed: Self.retrySites, rule: "").isEmpty)
         // Over-match controls: words that only contain the pinned ones, the
-        // audit's and the pane's own `.unpairFailed`, a comparison, and a
-        // whole-line comment naming the shapes.
+        // pane's own `.unpairFailed`, a comparison, and a whole-line comment
+        // naming the shapes.
         #expect(Self.unpairFailures(Self.mutate(sources, model) {
-            $0 + "\nlet zzUnpaired = 1, unpairCount = 2, retryUnpairs = 3, isUnpairFailed = 4, zz = MenuStateModel.unpairAlertConfirm"
+            $0 + "\nlet zzUnpaired = 1, unpairCount = 2, retryUnpairs = 3, isUnpairFailed = 4, unpairsCount = 5, removeRecordedAt = 6,"
+                + " zz = MenuStateModel.unpairAlertConfirm"
                 + "\nfunc zz(_ p: PairingPaneState) -> Bool { p == .unpairFailed }"
-                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never pairing?.unpair() here, never unpairFailed = false")
+                + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never pairing?.unpair() here, never unpairs.clear()")
         }).isEmpty)
+    }
+
+    // MARK: - 9. The real Unpair record is the app wiring's alone (#247)
+
+    /// The outstanding-Unpair record's real file is in the user's approvals
+    /// folder. Its two bindings — the file, and the record over it — are
+    /// declared in the record's file and named by the app's wiring alone; no
+    /// other source builds a record or a record file (a second record would
+    /// keep a second copy for the run); and no test file names either
+    /// binding (spelled split here), so no test reaches the real folder.
+    /// Files are read by their paths from the repository root.
+    static let recordPath = "Sources/NapCat/UnpairRecord.swift"
+    static let appWiringPath = "Sources/NapCat/NapCatApp.swift"
+    static let realRecord = "approvals" + "Folder"
+    static let realRecordLine = "static let " + realRecord + " = UnpairRecord(medium: UnpairRecordFile." + realRecord + ")"
+    static let realFileLine = "static let " + realRecord + " = UnpairRecordFile(path: SeamPaths.homeDirectory().map {"
+    static let realRecordSites: [String: [String: Int]] = [
+        recordPath: [realRecordLine: 2, realFileLine: 1],
+        appWiringPath: [wiringLine: 1],
+    ]
+    static let recordConstructionSites: [String: [String: Int]] = [recordPath: [realRecordLine: 1, realFileLine: 1]]
+
+    /// The Swift files of `directories`, by path, comment-stripped or raw.
+    static func filesByPath(_ directories: [String], strip: (String) -> String) throws -> Sources {
+        let root = LidGuardStructureTests.repoRoot()
+        return try directories.flatMap { directory -> Sources in
+            let names = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(directory).path)
+                .filter { $0.hasSuffix(".swift") }.sorted()
+            return try names.map { name in
+                let path = directory + "/" + name
+                return (path, strip(try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)))
+            }
+        }
+    }
+
+    static func realRecordFailures(sources: Sources, tests: Sources) -> [String] {
+        guard sources.contains(where: { $0.name == recordPath }), sources.contains(where: { $0.name == appWiringPath }),
+              !tests.isEmpty else {
+            return ["the record's file, the wiring or the tests are missing — the real-record lock would be vacuous"]
+        }
+        var failures = appSiteFailures(#"\b"# + realRecord + #"\b"#, in: sources, allowed: realRecordSites,
+                                       rule: "the real record and its file are declared in the record's file and named by the app's wiring alone")
+        let construction = ApprovalRecordPathStructureTests.constructionPattern("UnpairRecord") + "|"
+            + ApprovalRecordPathStructureTests.constructionPattern("UnpairRecordFile")
+        failures += appSiteFailures(construction, in: sources, allowed: recordConstructionSites,
+                                    rule: "a record and a record file are built in the record's file alone, as the real ones")
+        failures += tests.filter { $0.text.contains(realRecord) }.map { "\($0.name) names the real record — no test reaches the approvals folder" }
+        return ApprovalRecordPathStructureTests.unique(failures)
+    }
+
+    @Test func theRealUnpairRecordIsTheAppWiringsAlone() throws {
+        let sources = try Self.filesByPath(ApprovalChannelStructureTests.directories, strip: LidGuardStructureTests.codeOnly)
+        let tests = try Self.filesByPath(["Tests/NapCatTests"], strip: { $0 })
+        #expect(Self.realRecordFailures(sources: sources, tests: tests).isEmpty, "\(Self.realRecordFailures(sources: sources, tests: tests))")
+        #expect(tests.contains { $0.name == "Tests/NapCatTests/UnpairRecordTests.swift" }, "vacuity: the record's own tests are read")
+        let planted: (String, String) -> Sources = { path, line in
+            sources.map { $0.name == path ? ($0.name, $0.text + "\n" + line) : $0 }
+        }
+        let mutants: [(String, Sources, Sources)] = [
+            ("the real record named by the model", planted("Sources/NapCat/MenuStateModel.swift", "let zz = UnpairRecord." + Self.realRecord),
+             tests),
+            ("the real file named by the controller", planted("Sources/NapCat/PairingController.swift",
+                                                              "let zz = UnpairRecordFile." + Self.realRecord + ".delete()"), tests),
+            ("a second record built in the app", planted(Self.appWiringPath, "let zz = UnpairRecord(medium: KeychainTopicStore.zz)"), tests),
+            ("a record file built on another path", planted("Sources/NapCat/MenuContentView.swift", "let zz = UnpairRecordFile.init(path: p)"),
+             tests),
+            ("a test naming the real record", sources, tests.map {
+                $0.name == "Tests/NapCatTests/UnpairRecordTests.swift" ? ($0.name, $0.text + "\nlet zz = UnpairRecord." + Self.realRecord) : $0 }),
+        ]
+        for (name, mutantSources, mutantTests) in mutants {
+            #expect(mutantSources.map { $0.text } != sources.map { $0.text } || mutantTests.map { $0.text } != tests.map { $0.text },
+                    "canary '\(name)' did not apply")
+            #expect(!Self.realRecordFailures(sources: mutantSources, tests: mutantTests).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // Over-match controls: names that only contain the pinned ones.
+        #expect(Self.realRecordFailures(sources: planted("Sources/NapCat/MenuStateModel.swift",
+                                                         "let zzApprovalsFolderCount = 1, UnpairRecordFiles = 2, isUnpairRecord = 3"),
+                                        tests: tests).isEmpty)
     }
 }

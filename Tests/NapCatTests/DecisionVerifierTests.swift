@@ -60,10 +60,12 @@ struct DecisionVerifierTests {
     }
 
     /// S-PAIR-C2: the paired-phone slot over an in-memory item (never the
-    /// keychain), holding `key`'s public half when one is given.
-    static func slot(_ items: FakeTopicStore = FakeTopicStore(), paired key: P256.Signing.PrivateKey? = phone) throws
-        -> PairedKeyStore {
-        let keys = PairedKeyStore(items: items)
+    /// keychain), holding `key`'s public half when one is given. #247: and
+    /// over `unpairs`, an outstanding-Unpair record over an in-memory medium
+    /// (never the approvals folder).
+    static func slot(_ items: FakeTopicStore = FakeTopicStore(), unpairs: UnpairRecord = UnpairRecord(medium: FakeTopicStore()),
+                     paired key: P256.Signing.PrivateKey? = phone) throws -> PairedKeyStore {
+        let keys = PairedKeyStore(items: items, unpairs: unpairs)
         if let key {
             let paired: PairedPhone = try #require(PairedPhone(publicKey: Array(key.publicKey.x963Representation),
                                                                pairedAt: Date(timeIntervalSince1970: 1_800_000_000)))
@@ -370,19 +372,21 @@ struct DecisionVerifierTests {
     /// new pairing's key is the only one the next verification trusts.
     @Test func anUnpairBetweenTwoVerificationsMakesTheSecondRefuse() throws {
         let items = FakeTopicStore()
-        let keys = try Self.slot(items)
+        let unpairs = UnpairRecord(medium: FakeTopicStore())
+        let keys = try Self.slot(items, unpairs: unpairs)
         let evidence = try Self.signed()
         var lines: [String] = []
         let reads = items.readCount
         #expect(Self.decision(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { lines.append($0.code) }) != nil)
         #expect(items.readCount == reads + 1, "the slot is read at the verification")
         #expect(keys.unpair())
+        let unpaired = items.readCount
         #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { lines.append($0.code) } == .unverified(.noPairedKey))
-        #expect(items.readCount == reads + 2, "and read again at the next one")
+        #expect(items.readCount == unpaired + 1, "and read again at the next one")
         #expect(lines == ["prompt=\(Self.promptID.hex) decision.unverified.noPairedKey"])
         // A new pairing: the old key's signature no longer verifies, the new one's does.
         let newPhone = P256.Signing.PrivateKey()
-        let repaired = try Self.slot(items, paired: newPhone)
+        let repaired = try Self.slot(items, unpairs: unpairs, paired: newPhone)
         #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: repaired) { _ in } == .unverified(.signatureInvalid))
         #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in } == .unverified(.signatureInvalid),
                 "every handle on the slot reads the slot")
@@ -395,14 +399,83 @@ struct DecisionVerifierTests {
         let evidence = try Self.signed()
         let unread = FakeTopicStore()
         unread.setReadAnswer(.failed(status: -25308))
+        let none = UnpairRecord(medium: FakeTopicStore())
         let slots: [(String, PairedKeyStore)] = [
             ("never paired", try Self.slot(paired: nil)),
-            ("the keychain refused", PairedKeyStore(items: unread)),
-            ("a stored text not this build's", PairedKeyStore(items: FakeTopicStore("napcat-paired-v1\nkey:04\n"))),
+            ("the keychain refused", PairedKeyStore(items: unread, unpairs: none)),
+            ("a stored text not this build's", PairedKeyStore(items: FakeTopicStore("napcat-paired-v1\nkey:04\n"), unpairs: none)),
         ]
         for (name, keys) in slots {
             #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in } == .unverified(.noPairedKey), "\(name)")
         }
+    }
+
+    // MARK: - #247: an outstanding Unpair binds the verifier's read
+
+    /// The owner asked Unpair to remove the key and the keychain refused:
+    /// a decision that key signed, exactly right, does not verify — now, and
+    /// after a relaunch (a fresh slot and record over the same two fakes).
+    /// Once a deletion goes through the record is gone, and a NEW pairing's
+    /// key verifies as any pairing's does.
+    @Test func aKeyUnderAnOutstandingUnpairVerifiesNothingAcrossARelaunch() throws {
+        let items = FakeTopicStore()
+        let medium = FakeTopicStore()
+        let keys = try Self.slot(items, unpairs: UnpairRecord(medium: medium))
+        let evidence = try Self.signed()
+        #expect(Self.decision(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in }) != nil, "vacuity: it verifies")
+        items.setFailDeletes(true)
+        #expect(!keys.unpair())
+        #expect(items.storedValue != nil && medium.storedValue != nil, "vacuity: the key and the record are both stored")
+        var lines: [String] = []
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { lines.append($0.code) } == .unverified(.noPairedKey))
+        #expect(lines == ["prompt=\(Self.promptID.hex) decision.unverified.noPairedKey"])
+
+        let relaunched = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: medium))
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: relaunched) { _ in } == .unverified(.noPairedKey),
+                "a relaunch keeps the refusal")
+        items.setFailDeletes(false)
+        #expect(relaunched.unpair())
+        #expect(items.storedValue == nil && medium.storedValue == nil, "the key, then the record")
+
+        let newPhone = P256.Signing.PrivateKey()
+        let repaired = try Self.slot(items, unpairs: UnpairRecord(medium: medium), paired: newPhone)
+        #expect(Self.decision(DecisionVerifier.verify(try Self.signed(by: newPhone), copy: Self.copy, keys: repaired) { _ in }) != nil,
+                "the new pairing's key verifies")
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: repaired) { _ in } == .unverified(.signatureInvalid))
+    }
+
+    /// Fail-closed: a record that cannot be read — the read refused, a
+    /// text not the record's form, or the item's digest garbled — holds
+    /// whatever key the slot holds, even when no Unpair ever ran; and a
+    /// record the disk would not write still holds for this run.
+    @Test func aRecordThatCannotBeReadOrWrittenRefuses() throws {
+        let evidence = try Self.signed()
+        let item: String = "item:"
+        let unreadable: [(String, TopicStoreRead)] = [
+            ("the read refused", .failed(status: 13)),
+            ("another form", .found("not a record")),
+            ("a short digest", .found(UnpairRecord.header + "\n" + item + "abcd\n")),
+            ("an uppercase digest", .found(UnpairRecord.header + "\n" + item + String(repeating: "A", count: 64) + "\n")),
+        ]
+        for (name, found) in unreadable {
+            // The key is paired first (a key written ends any record), then
+            // the record turns up as it is.
+            let medium = FakeTopicStore()
+            let keys = try Self.slot(unpairs: UnpairRecord(medium: medium))
+            #expect(Self.decision(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in }) != nil, "\(name): vacuity")
+            medium.setReadAnswer(found)
+            #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in } == .unverified(.noPairedKey), "\(name)")
+        }
+
+        let items = FakeTopicStore()
+        let medium = FakeTopicStore()
+        let keys = try Self.slot(items, unpairs: UnpairRecord(medium: medium))
+        medium.setFailWrites(true)
+        items.setFailDeletes(true)
+        #expect(!keys.unpair())
+        #expect(medium.storedValue == nil, "vacuity: the disk refused the record")
+        #expect(DecisionVerifier.verify(evidence, copy: Self.copy, keys: keys) { _ in } == .unverified(.noPairedKey),
+                "this run keeps the record the disk refused")
     }
 
     // MARK: - The lifecycle keeps its own checks

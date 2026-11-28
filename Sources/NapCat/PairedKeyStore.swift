@@ -22,6 +22,13 @@ import NapCatWire
 // it. `commit` is reached from the ceremony's Codes Match alone
 // (PairingStructureTests).
 //
+// AN UNPAIR THAT HAS NOT GONE THROUGH (#247): Unpair records the item it is
+// asked to remove (`UnpairRecord`) before the keychain is asked to delete it,
+// and every read of the slot — the decision verifier's included — reads that
+// record: while it holds what the slot holds, the slot reads
+// `.unpairOutstanding`, no pairing, during this run and after a relaunch.
+// The record goes once the deletion went through or a new key was written.
+//
 // NOTHING ARMS here. Since S-PAIR-C2 (#181) the decision verifier reads this
 // slot at each verification, its one reader on the decision path (`read()`
 // pinned whole, DecisionSinkStructureTests), and nothing in the app hands
@@ -56,25 +63,38 @@ enum PairedPhoneRead: Equatable, Sendable {
     /// The keychain refused, or the item is not a pairing this build reads.
     /// Counts as no pairing (fail-dark); a new pairing replaces it.
     case unreadable
+    /// #247: the owner asked Unpair to remove the stored item and the
+    /// removal has not gone through (`UnpairRecord`). Counts as no pairing,
+    /// whatever the item holds; a deletion or a new pairing ends it.
+    case unpairOutstanding
 }
 
 /// The paired-phone slot over a keychain text item (`TopicStore`: the app
-/// hands it `KeychainTopicStore.pairedPhoneKeychain`; tests a fake).
+/// hands it `KeychainTopicStore.pairedPhoneKeychain`; tests a fake) and the
+/// outstanding-Unpair record (#247: the app hands it
+/// `UnpairRecord.approvalsFolder`; tests a record over a fake).
 struct PairedKeyStore: Sendable {
     /// Private (the C1 security review's R3): nothing but the slot's own
     /// `read`, `commit` and `unpair` reaches the item — no alias of it and no
     /// key path to it (PairingStructureTests).
     private let items: any TopicStore
+    /// #247: what an Unpair asked to remove, until the removal went through.
+    private let unpairs: UnpairRecord
 
-    init(items: any TopicStore) {
+    init(items: any TopicStore, unpairs: UnpairRecord) {
         self.items = items
+        self.unpairs = unpairs
     }
 
     /// The stored text's first line.
     static let header = "napcat-paired-v1"
 
+    /// The slot as it reads now. #247: an item an outstanding Unpair holds
+    /// reads as `.unpairOutstanding`, whatever it holds.
     func read() -> PairedPhoneRead {
-        switch items.read() {
+        let held = items.read()
+        if unpairs.holds(held) { return .unpairOutstanding }
+        switch held {
         case .found(let text): return Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable
         case .notFound: return .notPaired
         case .failed: return .unreadable
@@ -83,14 +103,27 @@ struct PairedKeyStore: Sendable {
 
     /// THE one write: `phone` becomes the paired phone, replacing any
     /// earlier pairing in one step. True only when the keychain reported
-    /// success; on false the slot is as it was.
+    /// success; on false the slot is as it was. #247: a key written replaces
+    /// whatever an outstanding Unpair named, so the record goes after it.
     func commit(_ phone: PairedPhone) -> Bool {
-        items.write(Self.text(of: phone))
+        guard items.write(Self.text(of: phone)) else { return false }
+        unpairs.clear()
+        return true
     }
 
-    /// Deletes the slot. True when it is gone — deleted now, or never there.
+    /// Unpair, once the owner confirmed it: the item the slot holds now is
+    /// recorded as the one to remove (#247), BEFORE the keychain is asked to
+    /// delete it. True when the slot is empty — deleted now, or never there.
     func unpair() -> Bool {
-        items.delete()
+        unpairs.record(items.read())
+        return removeRecorded()
+    }
+
+    /// The deletion: the record goes only once the keychain deleted the item.
+    private func removeRecorded() -> Bool {
+        guard items.delete() else { return false }
+        unpairs.clear()
+        return true
     }
 
     // MARK: - The stored text (pure, read strictly)

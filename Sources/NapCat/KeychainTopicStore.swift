@@ -33,6 +33,9 @@ enum TopicStoreRead: Equatable, Sendable {
 /// the keychain, not in UserDefaults (issue #103, audit F-2). The app's one
 /// conformer is `KeychainTopicStore.loginKeychain`; tests substitute a fake
 /// and never reach the real keychain (lint-locked in KeychainTopicStoreTests).
+/// (The same seam keeps the paired key's item, `PairedKeyStore`, and — #247,
+/// in a file, not the keychain — the outstanding-Unpair record,
+/// `UnpairRecordFile`.)
 protocol TopicStore: Sendable {
     func read() -> TopicStoreRead
     /// Creates or replaces the item. True only when the keychain reported
