@@ -936,8 +936,10 @@ arms anything.
     keychain to delete the key and turns Remote approvals off through its
     kill switch, whatever the deletion came to. When the keychain refuses
     the deletion (#240) the pane's pairing line is a warning, "Unpair
-    failed — …", whatever the slot reads after (its twin shows below the
-    menu's cards, and the gear carries the badge), and its buttons are Try
+    failed — the iPhone's key couldn't be removed from your keychain",
+    whatever the slot reads after; its twin below the menu's cards says
+    "Unpair failed — try again in Settings › Claude" (the panel has no Try
+    Again), and the gear carries the badge. The pane's buttons are Try
     Again — the same Unpair, already confirmed, so no second alert, and
     nothing unless a refusal stands — and Pair iPhone…. Until a deletion or
     a new pairing goes through, or NapCat quits, the Remote approvals

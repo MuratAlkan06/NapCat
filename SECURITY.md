@@ -90,7 +90,7 @@ one write. **Unpair…** in Settings › Claude asks the keychain to delete it
 and turns Remote approvals off either way. If the keychain refuses, the
 item stays and NapCat logs `pairing.unpairFailed`; Settings › Claude says
 the key could not be removed and offers **Try Again**, and the menu shows
-the same warning, until a deletion or a new pairing goes through or NapCat
+a warning too, until a deletion or a new pairing goes through or NapCat
 quits. After a relaunch Settings › Claude shows what it reads: the pairing,
 as long as the item can be read. `scripts/uninstall.sh` deletes it too, as
 you and without printing it. The keychain's access prompt guards reading
