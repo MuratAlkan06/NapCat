@@ -60,8 +60,11 @@ final class LidGuardController: @unchecked Sendable {
     /// the startup read could not get it (a keychain error, a refused
     /// access, bytes that are not text), or it holds a value that is not
     /// valid exactly as stored (`LidGuardPolicy.isNormalizedTopic`; an empty
-    /// one included). Cleared once a new topic is saved. Remote approvals
-    /// then keep every prompt on the Mac.
+    /// one included). Also set, whatever the value, when the launch could
+    /// not finish moving the topic into the keychain (`.kept`): this
+    /// session's topic was not read from the item itself. Cleared once a
+    /// new topic is saved. Remote approvals then keep every prompt on the
+    /// Mac.
     private var topicUnreadable = false
     /// In-memory ONLY. Persisting it would cache intent across relaunches.
     private var lastFiredAt: Double?
@@ -108,8 +111,9 @@ final class LidGuardController: @unchecked Sendable {
     /// nothing is deleted or rewritten because of it. An item that holds a
     /// value not valid exactly as stored (`LidGuardPolicy.isNormalizedTopic`,
     /// an empty one included) is `unreadable` too; that value is still this
-    /// session's topic. Only no item at all reads as no topic to remote
-    /// approvals.
+    /// session's topic. So is a launch that could not finish the move,
+    /// whatever value it kept. Only no item at all reads as no topic to
+    /// remote approvals.
     private static func startupTopic(defaults: UserDefaults, store: TopicStore) -> (topic: String, unreadable: Bool) {
         switch TopicKeychainMigration.run(defaults: defaults, store: store) {
         case .moved(let value):
@@ -118,9 +122,11 @@ final class LidGuardController: @unchecked Sendable {
             return (value, !value.isEmpty && !LidGuardPolicy.isNormalizedTopic(value))
         case .kept(let value):
             Self.logger.error("startup: could not move the ntfy setting into the keychain — kept in place, retrying next launch")
-            // The item may still be there (a refused delete, an unverified
-            // write), so an empty value is not "no item".
-            return (value, !LidGuardPolicy.isNormalizedTopic(value))
+            // The move was left unfinished (a refused write or delete, a
+            // read-back that differed): the item may hold another value, or
+            // none, so remote approvals read it as unreadable, whatever this
+            // value is. It stays this session's topic for the alerts.
+            return (value, true)
         case .discardedJunk:
             Self.logger.notice("startup: deleted an unusable legacy ntfy value (not a string)")
         case .nothingToMove:
@@ -231,10 +237,13 @@ final class LidGuardController: @unchecked Sendable {
 
     /// F4: the strings the remote-approvals category gate must keep on the
     /// Mac — the topic, from memory (never the store), exactly the value the
-    /// alerts are sent to — or nil while a topic item exists that holds no
-    /// valid value this session could read (`topicUnreadable`): the gate
-    /// cannot look for a secret it does not know, so every prompt then stays
-    /// local (fail closed). No item at all is an empty list, not nil.
+    /// alerts are sent to, read from the item itself at launch or saved to
+    /// it since — or nil while this session holds no such value
+    /// (`topicUnreadable`: an item that holds no valid value this session
+    /// could read, or a launch that could not finish moving the topic into
+    /// the keychain): the gate cannot look for a secret it does not know, so
+    /// every prompt then stays local (fail closed). No item at all is an
+    /// empty list, not nil.
     var approvalSecrets: [String]? {
         lock.lock()
         defer { lock.unlock() }

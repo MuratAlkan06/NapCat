@@ -985,12 +985,25 @@ struct TopicItemRow: Sendable, CustomTestStringConvertible {
         TopicItemRow(name: "moved: an empty value (the item deleted)", legacy: "", item: "napcat-older-2b7x5c",
                      reading: .absent, sentTo: nil),
         TopicItemRow(name: "moved: not in normal form", legacy: topic + " ", reading: .unreadable, sentTo: topic),
-        TopicItemRow(name: "kept: a valid value", legacy: topic, failWrites: true, reading: .value(topic), sentTo: topic),
+        TopicItemRow(name: "kept: a valid value", legacy: topic, failWrites: true, reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "kept: a valid value, the item holding another", legacy: topic, item: "napcat-older-2b7x5c",
+                     failWrites: true, reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "kept: the read-back differs", legacy: topic,
+                     readAnswer: .found("napcat-older-2b7x5c"), reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "kept: the read-back fails", legacy: topic,
+                     readAnswer: .failed(status: errSecInteractionNotAllowed), reading: .unreadable, sentTo: topic),
         TopicItemRow(name: "kept: an empty value", legacy: "", item: "napcat-older-2b7x5c", failDeletes: true,
                      reading: .unreadable, sentTo: nil),
         TopicItemRow(name: "kept: not in normal form", legacy: " " + topic, failWrites: true,
                      reading: .unreadable, sentTo: topic),
     ]
+
+    /// Whether the launch's move writes the item: only one the keychain
+    /// accepts (a write, or a delete for an empty value).
+    var moveWrites: Bool {
+        guard let legacy else { return false }
+        return legacy.isEmpty ? !failDeletes : !failWrites
+    }
 
     /// A lid guard launched over this row's defaults and store (both fakes:
     /// an isolated suite and a `FakeTopicStore`).
@@ -1020,13 +1033,16 @@ struct TopicItemRow: Sendable, CustomTestStringConvertible {
 /// The lid guard owns the topic, so it answers what the category gate must
 /// keep on the Mac: the in-memory topic, exactly the value the alerts are
 /// sent to; nothing when there is no item — and nil (fail closed) while an
-/// item exists that holds no valid value this session could read, until a
-/// new topic is saved.
+/// item exists that holds no valid value this session could read, or the
+/// launch could not finish moving the topic into the keychain, until a new
+/// topic is saved.
 struct LidGuardApprovalSecretsTests {
     /// An alert-topic item that exists reads as unreadable unless it holds a
-    /// valid value; that value is handed over exactly as the alerts are sent
-    /// to it, and only no item at all is absent. The alerts' own topic is
-    /// what it was.
+    /// valid value, read from the item itself at launch; that value is
+    /// handed over exactly as the alerts are sent to it, and only no item at
+    /// all is absent. A launch that could not finish the move reads as
+    /// unreadable. The alerts' own topic is what it was, and only a move the
+    /// keychain accepts writes the item.
     @Test(arguments: TopicItemRow.all)
     func anAlertTopicItemReadsAsUnreadableUnlessItHoldsAValidValue(_ row: TopicItemRow) {
         row.launch { harness in
@@ -1040,6 +1056,9 @@ struct LidGuardApprovalSecretsTests {
             #expect(harness.controller.storedDestination?.topic == row.sentTo, "the alerts are sent where they were")
             if case .value(let value) = row.reading {
                 #expect(harness.controller.storedDestination?.topic == value, "the gate is handed the value alerts are sent to")
+            }
+            if !row.moveWrites {
+                #expect(harness.topicStore.storedValue == row.item, "the launch leaves the item as it was")
             }
         }
     }
@@ -1057,6 +1076,62 @@ struct LidGuardApprovalSecretsTests {
         }
         TopicItemRow(name: "not in normal form", item: " " + TopicItemRow.topic, reading: .unreadable,
                      sentTo: TopicItemRow.topic).launch { harness in
+            harness.controller.setTopic("")
+            #expect(harness.topicStore.storedValue == nil, "cleared: the item is deleted")
+            #expect(harness.controller.approvalSecrets == [], "and then there is none")
+        }
+    }
+
+    /// Over every launch the gate reads as unreadable, a save the keychain
+    /// refuses changes nothing: the gate is still told unreadable and the
+    /// alerts keep their topic. A saved topic is then what the gate is
+    /// handed.
+    @Test(arguments: TopicItemRow.all.filter { $0.reading == .unreadable })
+    func anUnreadableTopicStaysUnreadableUntilATopicIsSaved(_ row: TopicItemRow) {
+        row.launch { harness in
+            let store = harness.topicStore
+            let item = store.storedValue
+            store.setFailWrites(true)
+            #expect(harness.controller.setTopic("napcat-new-2m8x4k") == .valid("napcat-new-2m8x4k"))
+            #expect(harness.controller.topicSaveFailed)
+            #expect(harness.controller.approvalSecrets == nil, "a refused save changes nothing")
+            #expect(harness.controller.storedDestination?.topic == row.sentTo, "the alerts keep their topic")
+            #expect(store.storedValue == item)
+
+            store.setFailWrites(false)
+            harness.controller.setTopic("napcat-new-2m8x4k")
+            #expect(!harness.controller.topicSaveFailed)
+            #expect(harness.controller.approvalSecrets == ["napcat-new-2m8x4k"], "a saved topic is what the gate is handed")
+            #expect(harness.controller.storedDestination?.topic == "napcat-new-2m8x4k")
+            #expect(store.storedValue == "napcat-new-2m8x4k")
+        }
+    }
+
+    /// After a launch that could not finish moving the topic into the
+    /// keychain, the gate is told unreadable while the session holds the
+    /// value that launch kept: re-saving that value touches nothing (an
+    /// unchanged topic is never rewritten), so it stays unreadable until a
+    /// relaunch, which retries the move and hands over the value it moved. A
+    /// cleared topic deletes the item, and then there is none.
+    @Test func aSaveAfterAnUnfinishedMoveDecidesWhatTheGateIsTold() {
+        let kept = TopicItemRow(name: "kept: a valid value, the item holding another", legacy: TopicItemRow.topic,
+                                item: "napcat-older-2b7x5c", failWrites: true, reading: .unreadable,
+                                sentTo: TopicItemRow.topic)
+        kept.launch { harness in
+            let store = harness.topicStore
+            store.setFailWrites(false)
+            let writes = store.writeCount
+            #expect(harness.controller.setTopic(TopicItemRow.topic) == .valid(TopicItemRow.topic))
+            #expect(store.writeCount == writes, "re-saving the kept value touches nothing")
+            #expect(harness.controller.approvalSecrets == nil, "so the gate is still told unreadable")
+            #expect(store.storedValue == "napcat-older-2b7x5c")
+            #expect(harness.controller.storedDestination?.topic == TopicItemRow.topic)
+
+            let relaunch = LidGuardHarness(defaults: harness.defaults, sender: RecordingMessageSender(), topicStore: store)
+            #expect(relaunch.controller.approvalSecrets == [TopicItemRow.topic], "the relaunch finishes the move")
+            #expect(store.storedValue == TopicItemRow.topic)
+        }
+        kept.launch { harness in
             harness.controller.setTopic("")
             #expect(harness.topicStore.storedValue == nil, "cleared: the item is deleted")
             #expect(harness.controller.approvalSecrets == [], "and then there is none")

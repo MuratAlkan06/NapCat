@@ -235,8 +235,9 @@ final class ApprovalIntake {
     /// switch tells the Mac nothing). The app builds its host with
     /// `armed: { false }`: no build arms it yet. `secrets`: strings that
     /// must never leave the Mac (the alert topic) — nil while an alert-topic
-    /// item exists that holds no valid value NapCat could read, and then
-    /// every prompt stays local (fail closed). `now`: monotonic seconds.
+    /// item exists that holds no valid value NapCat could read, or the launch
+    /// could not finish moving the topic into the keychain, and then every
+    /// prompt stays local (fail closed). `now`: monotonic seconds.
     init(armed: @escaping () -> Bool, secrets: @escaping () -> [String]?, newPromptID: @escaping () -> PromptID?,
          now: @escaping () -> Int, records: ApprovalRecordSink, sendFrame: @escaping (ConnectionKey, String) -> Void,
          closeConnection: @escaping (ConnectionKey) -> Void, audit: @escaping (ApprovalAuditEvent) -> Void) {
@@ -431,7 +432,8 @@ final class ApprovalIntake {
 
     /// The alert topic as the gate's floor reads it, from the secrets the
     /// lid guard gave (`secrets`): nil (an item that holds no valid value
-    /// NapCat could read) is `unreadable`, none (no item) is `absent`, one
+    /// NapCat could read, or a launch that could not finish moving the topic
+    /// into the keychain) is `unreadable`, none (no item) is `absent`, one
     /// is its value (the lid guard gives exactly the value the alerts are
     /// sent to; an empty one the floor reads as unreadable), and more than
     /// one, which no single check covers, is `unreadable`.

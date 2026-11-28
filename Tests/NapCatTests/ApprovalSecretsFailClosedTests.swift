@@ -128,7 +128,9 @@ struct ApprovalSecretsFailClosedTests {
 
     /// End to end, over the lid guard's own answer from a fake store: an
     /// alert-topic item that exists reads as unreadable unless it holds a
-    /// valid value, and then every listed command stays on the Mac with the
+    /// valid value, read from the item itself at launch (a launch that could
+    /// not finish moving the topic into the keychain reads as unreadable),
+    /// and then every listed command stays on the Mac with the
     /// intake's code for a topic it cannot look for. No item, or a valid
     /// value, forward the listed commands as before, and a prompt holding
     /// that value is kept by the floor.
