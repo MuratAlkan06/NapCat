@@ -11,17 +11,32 @@ import Testing
 /// for it, so EVERY prompt stays local (fail closed). No topic configured is
 /// a different case: nothing to look for, nothing withheld.
 struct ApprovalSecretsFailClosedTests {
-    /// An ARMED intake over fakes, with the secrets answer under test.
+    /// An ARMED intake over fakes, with the secrets answer under test: the
+    /// one given, or the lid guard's own, asked for every prompt as the
+    /// app's host asks it.
     final class World {
         let sink = RecordingApprovalSink()
         var audits: [String] = []
         var secrets: [String]?
+        let lidGuard: LidGuardController?
         private var nextLow: UInt64 = 0
 
-        init(secrets: [String]?) { self.secrets = secrets }
+        init(secrets: [String]?) {
+            self.secrets = secrets
+            lidGuard = nil
+        }
+
+        init(lidGuard: LidGuardController) {
+            secrets = nil
+            self.lidGuard = lidGuard
+        }
 
         lazy var intake = ApprovalIntake(
-            armed: { true }, secrets: { [unowned self] in secrets },
+            armed: { true },
+            secrets: { [unowned self] in
+                if let lidGuard { return lidGuard.approvalSecrets }
+                return secrets
+            },
             newPromptID: { [unowned self] in
                 nextLow += 1
                 return PromptID(high: 0x5EC, low: nextLow)
@@ -108,6 +123,38 @@ struct ApprovalSecretsFailClosedTests {
         #expect(world.audits.count == Self.forwardable.count)
         for code in world.audits {
             #expect(code.hasSuffix(" suppressed.gate.floorUnreadable.topic"), "\(code)")
+        }
+    }
+
+    /// End to end, over the lid guard's own answer from a fake store: an
+    /// alert-topic item that exists reads as unreadable unless it holds a
+    /// valid value, and then every listed command stays on the Mac with the
+    /// intake's code for a topic it cannot look for. No item, or a valid
+    /// value, forward the listed commands as before, and a prompt holding
+    /// that value is kept by the floor.
+    @Test(arguments: TopicItemRow.all)
+    func theLidGuardsAnswerDecidesWhetherAListedCommandLeaves(_ row: TopicItemRow) {
+        row.launch { harness in
+            let world = World(lidGuard: harness.controller)
+            for (index, prompt) in Self.forwardable.enumerated() {
+                world.receive(IntakeHarness.requestIDs(4)[index], tool: prompt.tool, preview: prompt.preview)
+            }
+            switch row.reading {
+            case .unreadable:
+                #expect(world.sink.saved.isEmpty)
+                #expect(world.audits.count == Self.forwardable.count, "\(world.audits)")
+                for code in world.audits {
+                    #expect(code.hasSuffix(" suppressed.gate.forbidden.secretAccess"), "\(code)")
+                }
+                #expect(world.intake.recentForwardableTools(within: ApprovalIntake.waitingContextSeconds).isEmpty)
+            case .absent:
+                #expect(world.sink.saved.count == Self.forwardable.count, "\(world.audits)")
+            case .value(let topic):
+                #expect(world.sink.saved.count == Self.forwardable.count, "\(world.audits)")
+                world.receive(IntakeHarness.requestIDs(4)[3], preview: #"{"command":"echo \#(topic)"}"#)
+                #expect(world.sink.saved.count == Self.forwardable.count, "the value is a secret")
+                #expect(world.audits.last?.hasSuffix(" suppressed.gate.floor.alertTopic") == true, "\(world.audits)")
+            }
         }
     }
 

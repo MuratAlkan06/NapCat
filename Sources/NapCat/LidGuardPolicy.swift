@@ -340,6 +340,14 @@ enum LidGuardPolicy {
         return nil
     }
 
+    /// F4: whether a stored topic is a valid value exactly as stored — the
+    /// value the alerts are sent to (`normalizedTopic`), unchanged. An empty
+    /// value is not. Remote approvals read an alert-topic item holding
+    /// anything else as unreadable, and then keep every prompt on the Mac.
+    static func isNormalizedTopic(_ stored: String) -> Bool {
+        normalizedTopic(stored) == stored
+    }
+
     // MARK: Server validation
 
     /// An https ORIGIN and nothing more. A path, query, fragment, or embedded

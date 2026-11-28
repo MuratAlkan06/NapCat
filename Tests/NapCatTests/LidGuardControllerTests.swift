@@ -4,6 +4,7 @@
 import AppKit
 import Testing
 @testable import NapCat
+import NapCatWire
 
 // MARK: - Test doubles (shared with PersistenceTests)
 
@@ -936,11 +937,132 @@ enum SleepStateControllerMirrorProbe {
 
 // MARK: - F4: the secrets the remote-approvals gate looks for
 
+/// One way a launch finds the alert-topic item (and the plaintext value an
+/// older build left, which the launch moves first), and what remote
+/// approvals read it as. Synthetic values only; fakes only.
+struct TopicItemRow: Sendable, CustomTestStringConvertible {
+    enum Reading: Equatable, Sendable {
+        case absent
+        case value(String)
+        case unreadable
+    }
+
+    let name: String
+    /// The plaintext value under the retired defaults key (nil: none).
+    var legacy: String? = nil
+    /// The keychain item's value (nil: no item).
+    var item: String? = nil
+    /// What every read of the item answers instead (nil: the item).
+    var readAnswer: TopicStoreRead? = nil
+    var failWrites = false
+    var failDeletes = false
+    /// What remote approvals read.
+    let reading: Reading
+    /// The topic the alerts are sent to this session (nil: none), as before.
+    let sentTo: String?
+
+    var testDescription: String { name }
+
+    static let topic = "napcat-lid-8f3k2p"
+
+    static let all: [TopicItemRow] = [
+        TopicItemRow(name: "no item", reading: .absent, sentTo: nil),
+        TopicItemRow(name: "an item with a valid value", item: topic, reading: .value(topic), sentTo: topic),
+        TopicItemRow(name: "an empty item", item: "", reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "an item of spaces", item: "   ", reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "not in normal form: a leading space", item: " " + topic, reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "not in normal form: a trailing newline", item: topic + "\n", reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "not in normal form: tabs", item: "\t" + topic + "\t", reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "not valid: a slash", item: "napcat/lid", reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "not valid: over 64 characters", item: String(repeating: "a", count: 65),
+                     reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "not valid: outside ASCII", item: "napcät", reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "an item the keychain did not return", item: topic,
+                     readAnswer: .failed(status: errSecUserCanceled), reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "an item that is not text", item: topic,
+                     readAnswer: .failed(status: errSecDecode), reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "moved: a valid value", legacy: topic, reading: .value(topic), sentTo: topic),
+        TopicItemRow(name: "moved: an empty value (the item deleted)", legacy: "", item: "napcat-older-2b7x5c",
+                     reading: .absent, sentTo: nil),
+        TopicItemRow(name: "moved: not in normal form", legacy: topic + " ", reading: .unreadable, sentTo: topic),
+        TopicItemRow(name: "kept: a valid value", legacy: topic, failWrites: true, reading: .value(topic), sentTo: topic),
+        TopicItemRow(name: "kept: an empty value", legacy: "", item: "napcat-older-2b7x5c", failDeletes: true,
+                     reading: .unreadable, sentTo: nil),
+        TopicItemRow(name: "kept: not in normal form", legacy: " " + topic, failWrites: true,
+                     reading: .unreadable, sentTo: topic),
+    ]
+
+    /// A lid guard launched over this row's defaults and store (both fakes:
+    /// an isolated suite and a `FakeTopicStore`).
+    func launch(_ body: (LidGuardHarness) -> Void) {
+        let suite = "com.muratalkan.napcat.tests.lidguard.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        if let legacy { defaults.set(legacy, forKey: RetiredDefaultsKey.lidGuardNtfyTopic) }
+        let store = FakeTopicStore(item)
+        store.setFailWrites(failWrites)
+        store.setFailDeletes(failDeletes)
+        if let readAnswer { store.setReadAnswer(readAnswer) }
+        body(LidGuardHarness(defaults: defaults, sender: RecordingMessageSender(), topicStore: store))
+    }
+
+    /// The floor's topic as a `Reading` (its bytes as text: the rows' values
+    /// are ASCII).
+    static func reading(_ topic: ApprovalFloorTopic) -> Reading {
+        switch topic {
+        case .absent: return .absent
+        case .value(let bytes): return .value(String(decoding: bytes, as: UTF8.self))
+        case .unreadable: return .unreadable
+        }
+    }
+}
+
 /// The lid guard owns the topic, so it answers what the category gate must
-/// keep on the Mac: the in-memory topic, nothing when none is configured —
-/// and nil (fail closed) while a topic exists that the startup read could not
-/// get, until a new one is saved.
+/// keep on the Mac: the in-memory topic, exactly the value the alerts are
+/// sent to; nothing when there is no item — and nil (fail closed) while an
+/// item exists that holds no valid value this session could read, until a
+/// new topic is saved.
 struct LidGuardApprovalSecretsTests {
+    /// An alert-topic item that exists reads as unreadable unless it holds a
+    /// valid value; that value is handed over exactly as the alerts are sent
+    /// to it, and only no item at all is absent. The alerts' own topic is
+    /// what it was.
+    @Test(arguments: TopicItemRow.all)
+    func anAlertTopicItemReadsAsUnreadableUnlessItHoldsAValidValue(_ row: TopicItemRow) {
+        row.launch { harness in
+            let secrets = harness.controller.approvalSecrets
+            #expect(TopicItemRow.reading(ApprovalIntake.floorTopic(secrets)) == row.reading)
+            switch row.reading {
+            case .absent: #expect(secrets == [])
+            case .value(let value): #expect(secrets == [value])
+            case .unreadable: #expect(secrets == nil)
+            }
+            #expect(harness.controller.storedDestination?.topic == row.sentTo, "the alerts are sent where they were")
+            if case .value(let value) = row.reading {
+                #expect(harness.controller.storedDestination?.topic == value, "the gate is handed the value alerts are sent to")
+            }
+        }
+    }
+
+    /// Saving a valid topic over an item that held no valid value makes it
+    /// known; clearing it deletes the item, and then there is none.
+    @Test func aSavedTopicReplacesAnItemWithNoValidValue() {
+        TopicItemRow(name: "an empty item", item: "", reading: .unreadable, sentTo: nil).launch { harness in
+            #expect(harness.controller.approvalSecrets == nil)
+            harness.controller.setTopic("")
+            #expect(harness.controller.approvalSecrets == nil, "an empty save over an empty item touches nothing")
+            #expect(harness.topicStore.storedValue == "")
+            harness.controller.setTopic("napcat-new-2m8x4k")
+            #expect(harness.controller.approvalSecrets == ["napcat-new-2m8x4k"])
+        }
+        TopicItemRow(name: "not in normal form", item: " " + TopicItemRow.topic, reading: .unreadable,
+                     sentTo: TopicItemRow.topic).launch { harness in
+            harness.controller.setTopic("")
+            #expect(harness.topicStore.storedValue == nil, "cleared: the item is deleted")
+            #expect(harness.controller.approvalSecrets == [], "and then there is none")
+        }
+    }
+
     @Test func theTopicIsTheSecretAndNoTopicIsNone() {
         withLidGuardHarness(topicStore: FakeTopicStore("napcat-lid-8f3k2p")) { harness in
             #expect(harness.controller.approvalSecrets == ["napcat-lid-8f3k2p"])

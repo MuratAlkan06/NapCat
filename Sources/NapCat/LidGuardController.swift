@@ -56,10 +56,12 @@ final class LidGuardController: @unchecked Sendable {
     /// Whether the last `setTopic` could not save to the store (it then kept
     /// the previous topic). In-memory; the editor reads it right after Save.
     private var lastTopicSaveFailed = false
-    /// A topic exists in the store but the startup read could not get it (a
-    /// keychain error, a refused access, bytes that are not text) — so this
-    /// session's in-memory topic is not the real one. Cleared once a new
-    /// topic is saved. Remote approvals then keep every prompt on the Mac.
+    /// A topic item exists but this session holds no valid value from it:
+    /// the startup read could not get it (a keychain error, a refused
+    /// access, bytes that are not text), or it holds a value that is not
+    /// valid exactly as stored (`LidGuardPolicy.isNormalizedTopic`; an empty
+    /// one included). Cleared once a new topic is saved. Remote approvals
+    /// then keep every prompt on the Mac.
     private var topicUnreadable = false
     /// In-memory ONLY. Persisting it would cache intent across relaunches.
     private var lastFiredAt: Double?
@@ -103,15 +105,22 @@ final class LidGuardController: @unchecked Sendable {
     /// of an ad-hoc rebuild, waits for the user's answer to the keychain's
     /// Allow dialog. An unreadable item starts the session with no topic —
     /// and says so (`unreadable`), so remote approvals can fail closed;
-    /// nothing is deleted or rewritten because of it.
+    /// nothing is deleted or rewritten because of it. An item that holds a
+    /// value not valid exactly as stored (`LidGuardPolicy.isNormalizedTopic`,
+    /// an empty one included) is `unreadable` too; that value is still this
+    /// session's topic. Only no item at all reads as no topic to remote
+    /// approvals.
     private static func startupTopic(defaults: UserDefaults, store: TopicStore) -> (topic: String, unreadable: Bool) {
         switch TopicKeychainMigration.run(defaults: defaults, store: store) {
         case .moved(let value):
             Self.logger.notice("startup: moved the ntfy setting into the keychain and deleted the plaintext copy")
-            return (value, false)
+            // An empty value was moved as a delete, verified gone: no item.
+            return (value, !value.isEmpty && !LidGuardPolicy.isNormalizedTopic(value))
         case .kept(let value):
             Self.logger.error("startup: could not move the ntfy setting into the keychain — kept in place, retrying next launch")
-            return (value, false)
+            // The item may still be there (a refused delete, an unverified
+            // write), so an empty value is not "no item".
+            return (value, !LidGuardPolicy.isNormalizedTopic(value))
         case .discardedJunk:
             Self.logger.notice("startup: deleted an unusable legacy ntfy value (not a string)")
         case .nothingToMove:
@@ -119,7 +128,7 @@ final class LidGuardController: @unchecked Sendable {
         }
         switch store.read() {
         case .found(let value):
-            return (value, false)
+            return (value, !LidGuardPolicy.isNormalizedTopic(value))
         case .notFound:
             return ("", false)
         case .failed(let status):
@@ -221,10 +230,11 @@ final class LidGuardController: @unchecked Sendable {
     }
 
     /// F4: the strings the remote-approvals category gate must keep on the
-    /// Mac — the topic, from memory (never the store) — or nil while a topic
-    /// exists that this session could not read: the gate cannot look for a
-    /// secret it does not know, so every prompt then stays local (fail
-    /// closed). No topic configured is an empty list, not nil.
+    /// Mac — the topic, from memory (never the store), exactly the value the
+    /// alerts are sent to — or nil while a topic item exists that holds no
+    /// valid value this session could read (`topicUnreadable`): the gate
+    /// cannot look for a secret it does not know, so every prompt then stays
+    /// local (fail closed). No item at all is an empty list, not nil.
     var approvalSecrets: [String]? {
         lock.lock()
         defer { lock.unlock() }
