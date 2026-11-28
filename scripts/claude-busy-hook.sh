@@ -1,5 +1,5 @@
 #!/bin/bash
-# napcat-hook-version: 8
+# napcat-hook-version: 9
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
 #
@@ -9,8 +9,9 @@
 # the installed copy is out of date. Keep it on line 2; bump it whenever this
 # script's behavior changes.
 #
-# Registered in ~/.claude/settings.json for six events and maintains a
-# per-session "work is in flight" marker under
+# Registered in ~/.claude/settings.json for eight entries (six events, plus
+# PreToolUse and PostToolUse matched to the AskUserQuestion tool — hook v9)
+# and maintains a per-session "work is in flight" marker under
 #   $HOME/Library/Application Support/NapCat/claude-busy/<session_id>
 # NapCat only READS these markers (it never writes one). The pushes the app
 # sends (the lid alert, session alerts) are built from the app's own state in
@@ -33,8 +34,9 @@
 #   * WAITING types (Claude is blocked on the user — a permission prompt, an
 #     MCP elicitation, a background session needing input, a usage-limit wait
 #     that will not continue on its own) KEEP the marker, rewritten with the
-#     synthetic event token `waiting` so NapCat can tell "waiting on you" from
-#     a background-task keep without new marker grammar;
+#     synthetic event token `waiting` (`waiting-question` while a question is
+#     pending, hook v9) so NapCat can tell "waiting on you" from a
+#     background-task keep without new marker grammar;
 #   * RESUME types (work continues — quota auto-resume fired, an elicitation
 #     answered/completed) KEEP it with the real event name;
 #   * everything else — the idle / auth / agent-completed types and ANY
@@ -60,7 +62,8 @@
 # the clear is a no-op.
 #
 # B-2 — the marker's event token ENCODES THE PHASE of the main turn:
-#   IN-FLIGHT  = UserPromptSubmit, Notification, waiting
+#   IN-FLIGHT  = UserPromptSubmit, Notification, waiting, question,
+#                waiting-question (the last two since hook v9)
 #   POST-STOP  = Stop, StopFailure, SessionEnd, SubagentStop, waiting-after-stop
 # (A `SessionEnd` marker exists only when background work outlived the
 # session: the main turn is over, so it is POST-STOP and the last subagent
@@ -100,6 +103,27 @@
 # and the transcript is never opened. The message itself is never written
 # anywhere: not to hook.log, not to the marker, not to a file of its own
 # (see final_message_check).
+#
+# Hook v9 — a DIRECT QUESTION (Claude Code's AskUserQuestion tool). PreToolUse
+# and PostToolUse are registered with the matcher AskUserQuestion and are
+# OBSERVE-ONLY: like every event here they print nothing and exit 0, so the
+# tool call goes ahead exactly as it would without them. Beyond the fields
+# read for every event (the event name, the session id, background_tasks),
+# the hook reads only their tool name, which must be exactly AskUserQuestion
+# (any other is ignored, so a registration without the matcher marks
+# nothing); the question, its options and the answer are never read.
+#   * PreToolUse writes the IN-FLIGHT token `question` (a question is about
+#     to be asked) when the marker is in flight, absent or unreadable; after
+#     Stop it leaves the marker alone.
+#   * A WAITING-type Notification while the marker says `question` or
+#     `waiting-question` writes `waiting-question` instead of `waiting`, so
+#     NapCat's waiting alert can say it is a question.
+#   * PostToolUse (the question was answered) rewrites either question token
+#     as `Notification`, which ends the waiting episode; any other marker is
+#     left alone, and none is created.
+# Every other event overwrites or clears the two tokens exactly as it does
+# any in-flight token. A v8 marker never holds them, so it is handled as
+# before.
 #
 # HARD UX-SAFETY LAYERS (a buggy hook must never be able to break the user's
 # Claude Code experience — lint-enforced by ClaudeBusyHookScriptTests):
@@ -172,6 +196,10 @@ EP_MARKER_RE='^v1 ts=[0-9]+ event=[^ ]+ pid=[0-9]+ src=[^ ]+ ep=([^ ]+)$'
 EP_RE='^[1-9][0-9]{0,9}$'
 WAITING_EVENT=waiting
 WAITING_AFTER_STOP_EVENT=waiting-after-stop
+# Hook v9 — the two question tokens, and the one tool name they are about.
+QUESTION_EVENT=question
+WAITING_QUESTION_EVENT=waiting-question
+QUESTION_TOOL=AskUserQuestion
 MAX_STDIN=262144
 NL=$'\n'
 CR=$'\r'
@@ -351,7 +379,7 @@ marker_phase() {
   esac
   [[ $tok =~ $TOKEN_RE ]] || { printf none; return 0; }
   case "$tok" in
-    UserPromptSubmit|Notification|waiting)
+    UserPromptSubmit|Notification|waiting|question|waiting-question)
       printf inflight ;;
     Stop|StopFailure|SessionEnd|SubagentStop|waiting-after-stop)
       printf poststop ;;
@@ -380,6 +408,42 @@ marker_episode() {
   [[ $ep =~ $EP_RE ]] || return 0
   printf '%s' "$ep"
   return 0
+}
+
+# Hook v9 — read-only, VALIDATED question probe of the CURRENT marker. Prints
+# `yes` when the first line's event token is exactly `question` or
+# `waiting-question`, and `no` otherwise (no marker, a FIFO or other
+# non-regular file, an unparseable line, any other token). Same read
+# discipline as marker_phase: a REGULAR file only, at most 256 bytes, NULs
+# mapped to `#`, first line only; an exact match leaves no room for a CR or
+# a spliced token. The token itself is never printed or logged.
+#   $1 marker path
+marker_question() {
+  local line tok
+  [ -f "$1" ] || { printf no; return 0; }
+  line=$(head -c 256 "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#')
+  line=${line%%"$NL"*}
+  [[ $line =~ $MARKER_RE ]] || { printf no; return 0; }
+  tok=${BASH_REMATCH[1]}
+  case "$tok" in
+    "$QUESTION_EVENT"|"$WAITING_QUESTION_EVENT") printf yes ;;
+    *) printf no ;;
+  esac
+  return 0
+}
+
+# Hook v9 — read-only, VALIDATED tool probe: succeeds iff the payload's
+# `tool_name` is a string that is exactly QUESTION_TOOL. Prints nothing; the
+# value never reaches hook.log. `-expect string` refuses every non-string;
+# plutil's raw output ends in one newline, and the `x` sentinel keeps a
+# newline that is part of the VALUE (as in notification_type), so
+# "AskUserQuestion<LF>" fails; NULs are mapped to `#` first (bash 3.2 would
+# drop them). Absent, not a string, or unparseable ⇒ fails.
+#   $1 payload file
+question_tool() {
+  local t
+  t=$( (set -o pipefail; plutil -extract tool_name raw -expect string -o - "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#') && printf x ) || return 1
+  [ "$t" = "$QUESTION_TOOL${NL}x" ]
 }
 
 # Hook v8 — the PURE judgement: no file, no other process, and no output but
@@ -489,7 +553,7 @@ main() {
   mkdir -p "$STATE_DIR" 2>/dev/null
   chmod 700 "$STATE_DIR" 2>/dev/null
 
-  local now src payload event logevent session marker bg_running ntype tclass tinfo phase pinfo token asked
+  local now src payload event logevent session marker bg_running ntype tclass tinfo phase pinfo token asked tool
   now=$(date +%s)
   src=unknown
   [ -n "${SUPERCONDUCTOR_MANAGED_AGENT:-}" ] && src=sc
@@ -550,6 +614,13 @@ main() {
   # on the latency-sensitive UserPromptSubmit path).
   ntype=""
   [ "$event" = Notification ] && ntype=$(notification_type "$payload")
+  # Hook v9 — only the two tool events read the tool name, and only to
+  # compare it with QUESTION_TOOL; nothing else of their payload is read
+  # beyond the fields every event reads above.
+  tool=""
+  if [ "$event" = PreToolUse ] || [ "$event" = PostToolUse ]; then
+    question_tool "$payload" && tool=$QUESTION_TOOL
+  fi
   rm -f "$payload" 2>/dev/null
   trap - EXIT TERM INT
 
@@ -601,6 +672,9 @@ main() {
       if [ "$tclass" = waiting ]; then
         token=$WAITING_EVENT
         [ "$phase" = poststop ] && token=$WAITING_AFTER_STOP_EVENT
+        # Hook v9 — a wait on a direct question keeps saying so (both
+        # question tokens are in flight, so a post-Stop marker never reads).
+        [ "$phase" = inflight ] && [ "$(marker_question "$marker")" = yes ] && token=$WAITING_QUESTION_EVENT
         ( write_marker "$marker" "$now" "$token" "$src" ) &
         log "keep session=$session event=$event$tinfo$pinfo reason=waiting-on-user pid=$PPID src=$src"
       elif [ "$tclass" = resume ]; then
@@ -637,6 +711,26 @@ main() {
       else
         rm -f "$marker" 2>/dev/null
         log "clear session=$session event=$event$tinfo$pinfo"
+      fi
+      ;;
+    PreToolUse|PostToolUse)
+      # Hook v9 — observe-only (see the header): never a clear, never a new
+      # marker on PostToolUse, and nothing here can hold up the tool call.
+      if [ "$tool" != "$QUESTION_TOOL" ]; then
+        log "ignore reason=other-tool event=$event"
+      elif [ "$event" = PreToolUse ]; then
+        phase=$(marker_phase "$marker")
+        if [ "$phase" = poststop ]; then
+          log "ignore reason=poststop-question session=$session event=$event"
+        else
+          ( write_marker "$marker" "$now" "$QUESTION_EVENT" "$src" ) &
+          log "keep session=$session event=$event phase=$phase reason=question-asked pid=$PPID src=$src"
+        fi
+      elif [ "$(marker_question "$marker")" = yes ]; then
+        ( write_marker "$marker" "$now" Notification "$src" ) &
+        log "keep session=$session event=$event reason=question-answered pid=$PPID src=$src"
+      else
+        log "ignore reason=no-question session=$session event=$event"
       fi
       ;;
     *)
