@@ -24,8 +24,9 @@ prompt ID to draw) is logged by its `seam.` code. The log holds what
 NapCat decided: an answer given at the Mac does not reach NapCat, so it is
 not in the log.
 The codes are the gate's own:
-`forbidden.<family>`, `localOnly.mcp`, `localOnly.fileEdit`,
-`localOnly.read` and `unclassifiable.<reason>`. In the
+`floor.<group>`, `floorUnreadable.<reason>`, `forbidden.<family>`,
+`localOnly.mcp`, `localOnly.fileEdit`, `localOnly.read` and
+`unclassifiable.<reason>`. In the
 examples, `~` stands for an absolute home directory and `<topic>` for the
 alert topic; the tests use synthetic values for both.
 
@@ -74,6 +75,58 @@ intake then applies its own holds: a topic that exists but could not be read
 keeps every prompt as `forbidden.secretAccess`, and while the feature is
 unarmed (every build so far) each prompt the gate classified is logged
 `suppressed.notArmed` instead of the gate's code.
+
+## The never-sent floor
+
+The floor names what a prompt may never carry off the Mac, whatever any
+setting says. It reads the tool name and the raw preview first, before
+anything else but the tool name's shape and the preview's size, and every
+decoded key and string again once the preview is read (see "Precedence").
+A match keeps the prompt with `floor.<group>`, for the first group, in this
+order, that matches:
+
+- `alertTopic`: the alert topic's own bytes.
+- `ownNames`: NapCat's bundle and keychain names, its preference keys, its
+  helper, watchdog, socket and receipt, its record zone, subscriptions,
+  policy header and signing domains, its connector's tools
+  (`mcp__napcat…`), and the word `napcat` (`NapCat.app`, `pkill -x NapCat`,
+  `~/Library/Preferences/com.muratalkan.napcat.plist`).
+- `privilegedFootprint`: the root helper's folder (`/usr/local/napcat`),
+  the sleep setting (`pmset -a disablesleep 1`), the sudoers file, the
+  failsafe login item, the busy hook and the install scripts.
+- `sourceTree`: NapCat's source folders and build files.
+- `keychain`: the keychain as a whole: the `security` command in any letter
+  case, the keychain files, the keychain API's names and the tool's item
+  verbs (`find-generic-password`).
+- `claudeCodeHelpers`: the files and settings that decide which helpers
+  Claude Code runs and how its prompts are answered (`~/.claude.json`,
+  `.mcp.json`, the managed settings and their folder), and the `claude`
+  command.
+- `signingAndICloud`: code signing (`codesign`), the certificate kind and
+  team NapCat is signed with, provisioning profiles and Apple's CloudKit
+  tool.
+
+Each string is read as written, with every quote and backslash removed,
+percent-decoded, and with doubled and `/./` slashes written once, in any
+letter case; a word name (`napcat`, `security`, `claude`) matches a whole
+word, also glued to an option cluster (`open -aNapCat`); free text is also
+read case-folded, so a look-alike letter that folds to a name's letter (the
+Kelvin sign, the long s) reads as that letter. The topic is matched by its
+exact bytes, as written, without quotes and backslashes, and
+percent-decoded.
+
+Two codes keep a prompt the floor cannot judge, `floorUnreadable.<reason>`:
+
+- `topic`: an alert topic exists but could not be read, or is empty, so no
+  prompt can be checked for it: every prompt is kept.
+- `notPrintableASCII`: a string the tool's row reads as a command or a path
+  holds a byte outside printable ASCII. The row's own rules refuse such a
+  string first today (`commandOutsideGrammar`, `pathNotCanonical`).
+
+A floor outcome is final: it keeps the prompt under every setting, and it
+comes before every other code the prompt could have (see "Precedence").
+Anything the floor does not name is left to the gate's other rules, which
+keep every prompt they cannot classify.
 
 ## The forbidden families
 

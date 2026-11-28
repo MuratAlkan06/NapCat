@@ -13,6 +13,10 @@ import Testing
 /// exec-capable options, encoding tricks), Bash forwards only an exact listed
 /// command (slice S-GATE: each split-audited), no Read forwards whatever its
 /// path (#231), and every unknown or malformed input must fail closed.
+/// Since #253 the never-sent floor comes first (a row the floor names keeps
+/// the floor's code), every family is collected, and the gate is run under
+/// the set the app hands it, the listed commands alone (and, where a test
+/// says so, under each of the nine sets).
 /// Fixtures are synthetic — no real topic, no real home directory.
 struct ApprovalClassificationTests {
     // MARK: - Fixtures
@@ -74,6 +78,8 @@ struct ApprovalClassificationTests {
     }
 
     static func forbidden(_ family: ForbiddenFamily) -> ApprovalClassification { .suppress(.forbidden(family)) }
+    /// Kept by the never-sent floor (#253): it names something of `group`.
+    static func floor(_ group: ApprovalFloorGroup) -> ApprovalClassification { .suppress(.floor(group)) }
     static func unclassifiable(_ reason: Unclassifiable) -> ApprovalClassification { .suppress(.unclassifiable(reason)) }
     static let outside = unclassifiable(.commandOutsideGrammar)
     static let notInTable = unclassifiable(.commandNotInTable)
@@ -81,15 +87,22 @@ struct ApprovalClassificationTests {
     /// A Read that passes every check: kept on the Mac with its own code.
     static let keptRead = ApprovalClassification.suppress(.localOnlyRead)
 
-    static func classify(_ row: Row, secrets: [String] = []) -> ApprovalClassification {
-        ApprovalGate.classify(toolName: row.tool, inputPreview: row.preview, secrets: secrets)
+    /// The gate's answer under the listed commands alone (the one set the
+    /// app hands it), with the alert topic `topic`.
+    static func classify(_ row: Row, topic: ApprovalFloorTopic = .absent) -> ApprovalClassification {
+        gate(row.tool, row.preview, topic: topic)
+    }
+
+    static func gate(_ tool: String, _ preview: String, topic: ApprovalFloorTopic = .absent,
+                     policy: ApprovalForwardingSet = .listedOnly) -> ApprovalClassification {
+        ApprovalGate.classify(toolName: tool, inputPreview: preview, topic: topic, policy: policy)
     }
 
     // MARK: - Forbidden families: never forwarded
 
     static let privilegeEscalation: [Row] = [
         bash("sudo ls", forbidden(.privilegeEscalation)),
-        bash("sudo -n /usr/local/napcat/smc -k CHTE -r", forbidden(.privilegeEscalation)),
+        bash("sudo -n /usr/local/napcat/smc -k CHTE -r", floor(.ownNames)),
         bash("SUDO ls", forbidden(.privilegeEscalation)),
         bash("/usr/bin/sudo ls", forbidden(.privilegeEscalation)),
         bash("ls && sudo make", forbidden(.privilegeEscalation)),
@@ -100,18 +113,18 @@ struct ApprovalClassificationTests {
         bash("osascript -e 'do shell script \"id\" with administrator privileges'", forbidden(.privilegeEscalation)),
         bash("launchctl list", forbidden(.privilegeEscalation)),
         bash("chown root file", forbidden(.privilegeEscalation)),
-        bash("pmset -a disablesleep 1", forbidden(.privilegeEscalation)),
-        bash("ls /usr/local/napcat", forbidden(.privilegeEscalation)),
-        bash("cat /etc/sudoers", forbidden(.privilegeEscalation)),
+        bash("pmset -a disablesleep 1", floor(.privilegedFootprint)),
+        bash("ls /usr/local/napcat", floor(.ownNames)),
+        bash("cat /etc/sudoers", floor(.privilegedFootprint)),
         bash("ls /Library/LaunchDaemons", forbidden(.privilegeEscalation)),
         bash("cat /private/etc/hosts", forbidden(.privilegeEscalation)),
-        write("/etc/sudoers.d/napcat", forbidden(.privilegeEscalation)),
-        write("/usr/local/napcat/smc", forbidden(.privilegeEscalation)),
+        write("/etc/sudoers.d/napcat", floor(.ownNames)),
+        write("/usr/local/napcat/smc", floor(.ownNames)),
         write("/usr/local/bin/git", forbidden(.privilegeEscalation)),
         write("/Library/LaunchDaemons/com.example.plist", forbidden(.privilegeEscalation)),
         write("/Library/PrivilegedHelperTools/helper", forbidden(.privilegeEscalation)),
         write("\(base)/bin/sudo", forbidden(.privilegeEscalation)),
-        read("/private/etc/sudoers", forbidden(.privilegeEscalation)),
+        read("/private/etc/sudoers", floor(.privilegedFootprint)),
         raw("Bash", object([("command", quote("ls")), ("dangerouslyDisableSandbox", "true")]),
             forbidden(.privilegeEscalation), "Bash outside the sandbox"),
     ]
@@ -120,22 +133,22 @@ struct ApprovalClassificationTests {
         bash("cat ~/.claude/settings.json", forbidden(.configurationOrHooks)),
         bash("ls .claude", forbidden(.configurationOrHooks)),
         bash("cat CLAUDE.md", forbidden(.configurationOrHooks)),
-        bash("cat .mcp.json", forbidden(.configurationOrHooks)),
+        bash("cat .mcp.json", floor(.claudeCodeHelpers)),
         bash("mkdir -p .git/hooks", forbidden(.configurationOrHooks)),
         bash("ls .husky", forbidden(.configurationOrHooks)),
         bash("git config core.hooksPath hooks", forbidden(.configurationOrHooks)),
-        bash("claude mcp add evil", forbidden(.configurationOrHooks)),
+        bash("claude mcp add evil", floor(.claudeCodeHelpers)),
         bash("crontab -l", forbidden(.configurationOrHooks)),
         bash("cat ~/.zshrc", forbidden(.configurationOrHooks)),
         write("/Users/someone/.claude/settings.json", forbidden(.configurationOrHooks)),
-        write("/Users/someone/.claude/hooks/napcat-busy-hook.sh", forbidden(.configurationOrHooks)),
+        write("/Users/someone/.claude/hooks/napcat-busy-hook.sh", floor(.privilegedFootprint)),
         write("\(base)/.claude/settings.local.json", forbidden(.configurationOrHooks)),
         write("/Users/someone/.CLAUDE/settings.json", forbidden(.configurationOrHooks)),
-        write("/Users/someone/.claude.json", forbidden(.configurationOrHooks)),
-        write("\(base)/.mcp.json", forbidden(.configurationOrHooks)),
+        write("/Users/someone/.claude.json", floor(.claudeCodeHelpers)),
+        write("\(base)/.mcp.json", floor(.claudeCodeHelpers)),
         write("\(base)/CLAUDE.md", forbidden(.configurationOrHooks)),
         write("\(base)/sub/CLAUDE.local.md", forbidden(.configurationOrHooks)),
-        write("/Library/Application Support/ClaudeCode/managed-settings.json", forbidden(.configurationOrHooks)),
+        write("/Library/Application Support/ClaudeCode/managed-settings.json", floor(.claudeCodeHelpers)),
         write("\(base)/.git/hooks/pre-commit", forbidden(.configurationOrHooks)),
         write("\(base)/.git/config", forbidden(.configurationOrHooks)),
         write("/Users/someone/.gitconfig", forbidden(.configurationOrHooks)),
@@ -151,20 +164,20 @@ struct ApprovalClassificationTests {
     ]
 
     static let secretAccess: [Row] = [
-        bash("security find-generic-password -s x -w", forbidden(.secretAccess)),
+        bash("security find-generic-password -s x -w", floor(.keychain)),
         bash("cat ~/.ssh/id_rsa", forbidden(.secretAccess)),
-        bash("ls ~/Library/Keychains", forbidden(.secretAccess)),
+        bash("ls ~/Library/Keychains", floor(.keychain)),
         bash("cat ~/.aws/credentials", forbidden(.secretAccess)),
         bash("cat .env", forbidden(.secretAccess)),
         bash("cat .env.local", forbidden(.secretAccess)),
         bash("cat server.pem", forbidden(.secretAccess)),
         bash("cat ~/.config/gh/hosts.yml", forbidden(.secretAccess)),
-        bash("echo ntfy-topic", forbidden(.secretAccess)),
-        bash("echo lidGuardNtfyTopic", forbidden(.secretAccess)),
+        bash("echo ntfy-topic", floor(.ownNames)),
+        bash("echo lidGuardNtfyTopic", floor(.ownNames)),
         read("/Users/someone/.ssh/id_ed25519", forbidden(.secretAccess)),
         read("/Users/someone/.SSH/config", forbidden(.secretAccess)),
-        read("/Users/someone/Library/Keychains/login.keychain-db", forbidden(.secretAccess)),
-        read("/Users/someone/Library/Preferences/com.muratalkan.napcat.plist", forbidden(.secretAccess)),
+        read("/Users/someone/Library/Keychains/login.keychain-db", floor(.keychain)),
+        read("/Users/someone/Library/Preferences/com.muratalkan.napcat.plist", floor(.ownNames)),
         read("\(base)/.env", forbidden(.secretAccess)),
         read("\(base)/.env.production", forbidden(.secretAccess)),
         read("\(base)/certs/dev.p12", forbidden(.secretAccess)),
@@ -176,7 +189,7 @@ struct ApprovalClassificationTests {
         read("/Users/someone/.kube/config", forbidden(.secretAccess)),
         read("/Users/someone/.gnupg/private-keys-v1.d/x.key", forbidden(.secretAccess)),
         raw("Write", object([("file_path", quote("\(base)/notes.txt")), ("content", quote("account ntfy-topic"))]),
-            forbidden(.secretAccess), "the topic's keychain account named in content"),
+            floor(.ownNames), "the topic's keychain account named in content"),
     ]
 
     static let familyRows: [Row] = privilegeEscalation + configurationOrHooks + secretAccess
@@ -208,32 +221,45 @@ struct ApprovalClassificationTests {
         }
     }
 
+    /// What a generated row is kept as: its family, or, where the table of
+    /// changed codes (`ApprovalGateOracleTests.codeChanges`) lists the row,
+    /// the floor's code it lists (the floor names the row's text first).
+    static func kept(_ note: String, _ family: ForbiddenFamily) -> ApprovalClassification {
+        guard let code = ApprovalGateOracleTests.codeChanges[note]?.now,
+              let floor = everySuppression.first(where: { $0.auditCode == code }) else { return forbidden(family) }
+        return .suppress(floor)
+    }
+
     /// Each path rule suppresses Write, Read and a Bash word, in any letter
-    /// case, as its own family.
+    /// case, as its own family (or as the floor's code, where the floor
+    /// names the path).
     @Test func everyPathRuleSuppressesEveryPathTool() {
         #expect(ApprovalGate.pathRules.count >= 40, "vacuity: the table is loaded")
+        var floorKept = 0
         for rule in ApprovalGate.pathRules {
             let path = Self.samplePath(rule.pattern)
-            let expected = Self.forbidden(rule.family)
-            for row in [Self.write(path, expected), Self.write(path.uppercased(), expected), Self.read(path, expected),
-                        Self.bash("cat '\(path)'", expected)] {
+            for row in [Self.write(path, Self.localOnly), Self.write(path.uppercased(), Self.localOnly), Self.read(path, Self.keptRead),
+                        Self.bash("cat '\(path)'", Self.notInTable)] {
+                let expected = Self.kept(row.note, rule.family)
                 #expect(Self.classify(row) == expected, "\(row.note)")
+                if expected != Self.forbidden(rule.family) { floorKept += 1 }
             }
         }
+        #expect(floorKept > 0 && floorKept < 4 * ApprovalGate.pathRules.count, "vacuity: \(floorKept) kept by the floor")
     }
 
     @Test func everyCommandFamilyIsForbidden() {
         for rule in ApprovalGate.commandFamilies {
-            let row = Self.bash(rule.words.joined(separator: " ") + " x", Self.forbidden(rule.family))
-            #expect(Self.classify(row) == row.expected, "\(row.note)")
+            let row = Self.bash(rule.words.joined(separator: " ") + " x", Self.notInTable)
+            #expect(Self.classify(row) == Self.kept(row.note, rule.family), "\(row.note)")
         }
     }
 
     @Test func everyCommandNeedleIsForbiddenInAnyCase() {
         for needle in ApprovalGate.commandNeedles {
             for text in [needle.text, needle.text.uppercased()] {
-                let row = Self.bash("echo '\(text)'", Self.forbidden(needle.family))
-                #expect(Self.classify(row) == row.expected, "\(row.note)")
+                let row = Self.bash("echo '\(text)'", Self.notInTable)
+                #expect(Self.classify(row) == Self.kept(row.note, needle.family), "\(row.note)")
             }
         }
     }
@@ -362,7 +388,7 @@ struct ApprovalClassificationTests {
         bash("cd / && ls", notInTable),
         bash("find . -delete", notInTable),
         bash("LS", notInTable),
-        bash("Security find-generic-password", notInTable),
+        bash("Security find-generic-password", floor(.keychain)),
     ]
 
     static let options: [Row] = [
@@ -705,7 +731,7 @@ struct ApprovalClassificationTests {
         let preview = Self.object([("command", Self.quote("make test")), ("description", Self.quote("Run the tests")),
                                    ("timeout", "120000"), ("run_in_background", "false"),
                                    ("dangerouslyDisableSandbox", "false")])
-        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: preview) == .forward(.bash))
+        #expect(Self.gate("Bash", preview) == .forward(.bash))
     }
 
     /// The Reads that forwarded until #231: each passes every check, and each
@@ -922,9 +948,9 @@ struct ApprovalClassificationTests {
         for row in rows {
             #expect(Self.classify(row) == row.expected, "\(row.note)")
         }
-        let holding = Self.read("\(Self.base)/\(Self.topic).txt", Self.forbidden(.secretAccess))
-        #expect(Self.classify(holding, secrets: [Self.topic]) == holding.expected, "the alert topic in a Read's path")
-        #expect(Self.classify(holding, secrets: []) == Self.keptRead, "control: without the secret the same Read is kept as itself")
+        let holding = Self.read("\(Self.base)/\(Self.topic).txt", Self.floor(.alertTopic))
+        #expect(Self.classify(holding, topic: Self.topicValue) == holding.expected, "the alert topic in a Read's path")
+        #expect(Self.classify(holding) == Self.keptRead, "control: without the secret the same Read is kept as itself")
     }
 
     /// Where a Read may point: the home folder and folders under it that no
@@ -955,7 +981,9 @@ struct ApprovalClassificationTests {
     /// forbidden family first, then a malformed path), or else
     /// `localOnly.read`. Never a forward.
     static func readOutcome(_ path: String) -> ApprovalClassification {
-        ApprovalGate.pathRefusal(Array(path.utf8)).map { .suppress($0) } ?? keptRead
+        var found = ApprovalGate.Findings()
+        let refusal = ApprovalGate.pathRefusal(Array(path.utf8), &found)
+        return (found.families.first.map { .forbidden($0) } ?? refusal).map { .suppress($0) } ?? keptRead
     }
 
     /// THE PROPERTY (#231): no Read prompt is forwarded, for any path. Every
@@ -1017,7 +1045,7 @@ struct ApprovalClassificationTests {
         ]
         #expect(Set(ordinary.keys) == Set(ApprovalTool.allCases), "every tool")
         for tool in ApprovalTool.allCases {
-            let found = ApprovalGate.classify(toolName: tool.rawValue, inputPreview: try #require(ordinary[tool]))
+            let found = Self.gate(tool.rawValue, try #require(ordinary[tool]))
             #expect((found == .forward(tool)) == (tool == .bash), "\(tool): \(found)")
             if case .forward(let forwarded) = found { #expect(forwarded == .bash) }
         }
@@ -1050,9 +1078,10 @@ struct ApprovalClassificationTests {
         raw("B\u{0430}sh", bashPreview("ls"), unclassifiable(.malformedToolName), "Cyrillic a in the tool name"),
         raw(String(repeating: "A", count: ApprovalGate.maxToolNameBytes + 1), "{}",
             unclassifiable(.malformedToolName), "tool name too long"),
-        // MCP: local-only in the MVP, whatever the arguments.
+        // MCP: local-only in the MVP, whatever the arguments (NapCat's own
+        // connector is the floor's, #253).
         raw("mcp__github__create_issue", object([("title", quote("x"))]), .suppress(.localOnlyMCP), "an MCP tool"),
-        raw("mcp__napcat__ping", "{}", .suppress(.localOnlyMCP), "an MCP tool with no arguments"),
+        raw("mcp__napcat__ping", "{}", floor(.ownNames), "an MCP tool with no arguments"),
         // The preview must be one strict JSON object.
         raw("Bash", "", unclassifiable(.previewNotStrictJSON), "empty preview"),
         raw("Bash", "ls -la", unclassifiable(.previewNotStrictJSON), "plain text preview"),
@@ -1241,19 +1270,31 @@ struct ApprovalClassificationTests {
         let multibyte = preview(String(repeating: "\u{00E9}", count: room))
         #expect(atCap.unicodeScalars.count == ApprovalGate.maxPreviewScalars)
         #expect(multibyte.utf8.count > ApprovalGate.maxPreviewScalars, "more bytes than the cap, as many code points")
-        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: atCap) == Self.forwardBash)
-        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: multibyte) == Self.forwardBash)
+        #expect(Self.gate("Bash", atCap) == Self.forwardBash)
+        #expect(Self.gate("Bash", multibyte) == Self.forwardBash)
         for over in [preview(String(repeating: "x", count: room + 1)), preview(String(repeating: "\u{00E9}", count: room + 1)),
                      preview(String(repeating: "x", count: 2 * ApprovalGate.maxPreviewScalars))] {
-            #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: over) == Self.unclassifiable(.previewTooLarge))
+            #expect(Self.gate("Bash", over) == Self.unclassifiable(.previewTooLarge))
         }
         #expect(ApprovalGate.maxPreviewScalars == 3_000)
+        // The size is decided before the floor reads anything (#253): a
+        // preview past the cap that names the floor is kept for its size,
+        // under every set; one at the cap is the floor's.
+        let named = preview("Run the NapCat tests " + String(repeating: "x", count: room))
+        let namedAtCap = preview("NapCat " + String(repeating: "x", count: room - 7))
+        for (_, set) in ApprovalGateOracleTests.nineSets {
+            #expect(Self.gate("Bash", named, topic: .unreadable, policy: set) == Self.unclassifiable(.previewTooLarge))
+            #expect(Self.gate("Bash", namedAtCap, policy: set) == Self.floor(.ownNames))
+        }
     }
 
-    /// A forbidden path with a space is still logged as its family.
+    /// A forbidden path with a space is still logged as its family, or as
+    /// the floor's code where the floor names it.
     @Test func aForbiddenPathWithASpaceKeepsItsFamily() {
         #expect(Self.classify(Self.read("/Library/Application Support/ClaudeCode/managed-settings.json",
-                                        Self.forbidden(.configurationOrHooks)))
+                                        Self.floor(.claudeCodeHelpers)))
+            == Self.floor(.claudeCodeHelpers))
+        #expect(Self.classify(Self.read("/Users/someone/My Project/.git/config", Self.forbidden(.configurationOrHooks)))
             == Self.forbidden(.configurationOrHooks))
         #expect(Self.classify(Self.read("/Users/someone/My Keys/.ssh/id_rsa", Self.forbidden(.secretAccess)))
             == Self.forbidden(.secretAccess))
@@ -1288,21 +1329,24 @@ struct ApprovalClassificationTests {
     }
 
     /// A forbidden path holding one of them is still logged as its family,
-    /// whichever family and wherever the character sits.
+    /// whichever family and wherever the character sits; one the floor
+    /// names is logged with the floor's code (#253), which comes first.
     @Test(arguments: ApprovalGate.pathBytesRefusedAfterFamilies)
     func aForbiddenPathWithARefusedCharacterKeepsItsFamily(_ byte: UInt8) {
         let character = Character(Unicode.Scalar(byte))
-        let paths: [(String, ForbiddenFamily)] = [
-            ("/etc/a\(character)b", .privilegeEscalation), ("/etc/sudoers\(character)", .privilegeEscalation),
-            ("/Users/someone/.claude/a\(character)b.json", .configurationOrHooks),
-            ("\(Self.base)/\(character)x/.git/config", .configurationOrHooks),
-            ("/Users/someone/.ssh/id\(character)rsa", .secretAccess), ("\(Self.base)/a\(character)b/.env", .secretAccess),
+        let paths: [(String, ApprovalSuppression)] = [
+            ("/etc/a\(character)b", .forbidden(.privilegeEscalation)), ("/etc/hosts\(character)", .forbidden(.privilegeEscalation)),
+            ("/etc/sudoers\(character)", .floor(.privilegedFootprint)),
+            ("/Users/someone/.claude/a\(character)b.json", .forbidden(.configurationOrHooks)),
+            ("\(Self.base)/\(character)x/.git/config", .forbidden(.configurationOrHooks)),
+            ("/Users/someone/.ssh/id\(character)rsa", .forbidden(.secretAccess)),
+            ("\(Self.base)/a\(character)b/.env", .forbidden(.secretAccess)),
         ]
-        for (path, family) in paths {
-            let found = Self.classify(Self.read(path, Self.forbidden(family)))
-            #expect(found == Self.forbidden(family), "\(path)")
+        for (path, code) in paths {
+            let found = Self.classify(Self.read(path, .suppress(code)))
+            #expect(found == .suppress(code), "\(path)")
             guard case .suppress(let suppression) = found else { continue }
-            #expect(suppression.auditCode == "forbidden.\(family.rawValue)", "the logged code names the family: \(path)")
+            #expect(suppression.auditCode == code.auditCode, "the logged code names the family or the floor's group: \(path)")
         }
     }
 
@@ -1407,7 +1451,7 @@ struct ApprovalClassificationTests {
     /// save.
     @Test func thereIsNoReadCopyWhateverItsMembers() {
         let relayed = #"{ "file_path": "/Users/someone/project/doc.pdf", "offset": 1, "limit": 200, "pages": "1-3" }"#
-        #expect(ApprovalGate.classify(toolName: "Read", inputPreview: relayed) == Self.keptRead)
+        #expect(Self.gate("Read", relayed) == Self.keptRead)
         #expect(ApprovalGate.forwardedPreview(toolName: "Read", inputPreview: relayed) == nil)
     }
 
@@ -1443,7 +1487,7 @@ struct ApprovalClassificationTests {
             let copy = try #require(ApprovalGate.forwardedPreview(toolName: row.tool, inputPreview: row.preview), "\(row.note)")
             let original = try #require(ApprovalPreview.parseObject(row.preview))
             #expect(ApprovalPreview.parseObject(copy) == original.filter { $0.key != "description" }, "\(row.note)")
-            #expect(ApprovalGate.classify(toolName: row.tool, inputPreview: copy) == row.expected, "\(row.note)")
+            #expect(Self.gate(row.tool, copy) == row.expected, "\(row.note)")
             #expect(try Self.ownQuotesOnly(copy), "\(row.note): \(copy)")
         }
     }
@@ -1460,33 +1504,40 @@ struct ApprovalClassificationTests {
     // MARK: - Secrets (the alert topic)
 
     static let topic = "napcat-TESTONLYa1b2c3d4e5f6"
+    static let topicValue = ApprovalFloorTopic.value(Array(topic.utf8))
 
+    /// The alert topic is on the gate's floor (#253): anywhere in a prompt,
+    /// as written, escaped or before the preview parses, it keeps the prompt
+    /// with the floor's code.
     @Test func aKnownSecretAnywhereIsSecretAccess() {
         let escaped = Self.topic.unicodeScalars.map { String(format: "\\u%04x", $0.value) }.joined()
         let rows = [
-            Self.bash("echo \(Self.topic)", Self.forbidden(.secretAccess)),
+            Self.bash("echo \(Self.topic)", Self.floor(.alertTopic)),
             Self.raw("Write", Self.object([("file_path", Self.quote("\(Self.base)/a.txt")), ("content", Self.quote("t=\(Self.topic)"))]),
-                     Self.forbidden(.secretAccess), "in content"),
+                     Self.floor(.alertTopic), "in content"),
             Self.raw("Write", Self.object([("file_path", Self.quote("\(Self.base)/a.txt")), ("content", "\"\(escaped)\"")]),
-                     Self.forbidden(.secretAccess), "JSON-escaped in content"),
+                     Self.floor(.alertTopic), "JSON-escaped in content"),
             Self.raw("Bash", Self.object([("command", Self.quote("ls")), ("description", Self.quote(Self.topic))]),
-                     Self.forbidden(.secretAccess), "in the Bash description argument"),
-            Self.raw("Bash", "{\"command\":\"\(Self.topic)", Self.forbidden(.secretAccess), "before the preview even parses"),
-            Self.read("\(Self.base)/\(Self.topic).txt", Self.forbidden(.secretAccess)),
+                     Self.floor(.alertTopic), "in the Bash description argument"),
+            Self.raw("Bash", "{\"command\":\"\(Self.topic)", Self.floor(.alertTopic), "before the preview even parses"),
+            Self.read("\(Self.base)/\(Self.topic).txt", Self.floor(.alertTopic)),
             Self.raw("mcp__x__\(Self.topic.replacingOccurrences(of: "-", with: "_"))", "{}", .suppress(.localOnlyMCP), "control"),
         ]
         for row in rows {
-            #expect(Self.classify(row, secrets: [Self.topic]) == row.expected, "\(row.note)")
+            #expect(Self.classify(row, topic: Self.topicValue) == row.expected, "\(row.note)")
         }
         let toolNameSecret = "SECRETNAME"
-        #expect(ApprovalGate.classify(toolName: "mcp__\(toolNameSecret)", inputPreview: "{}", secrets: [toolNameSecret])
-            == Self.forbidden(.secretAccess), "in the tool name")
+        #expect(Self.gate("mcp__\(toolNameSecret)", "{}", topic: .value(Array(toolNameSecret.utf8)))
+            == Self.floor(.alertTopic), "in the tool name")
         let described = Self.raw("Bash", Self.object([("command", Self.quote("git status")), ("description", Self.quote(Self.topic))]),
-                                 Self.forbidden(.secretAccess), "a listed command, the topic in its description")
-        #expect(Self.classify(described, secrets: [Self.topic]) == described.expected)
-        #expect(Self.classify(described, secrets: []) == Self.forwardBash, "control: without the secret the same prompt forwards")
-        #expect(Self.classify(Self.bash("git status", Self.forwardBash), secrets: [""]) == Self.forwardBash,
-                "an empty secret matches nothing")
+                                 Self.floor(.alertTopic), "a listed command, the topic in its description")
+        #expect(Self.classify(described, topic: Self.topicValue) == described.expected)
+        #expect(Self.classify(described) == Self.forwardBash, "control: without the secret the same prompt forwards")
+        // A topic the floor cannot check for keeps every prompt: one that
+        // could not be read, and an empty value.
+        for topic: ApprovalFloorTopic in [.unreadable, .value([])] {
+            #expect(Self.classify(Self.bash("git status", Self.forwardBash), topic: topic) == .suppress(.floorUnreadable(.topic)))
+        }
     }
 
     /// The gate's names for where the topic lives match the Mac app's own.
@@ -1499,7 +1550,9 @@ struct ApprovalClassificationTests {
     // MARK: - Audit vocabulary
 
     /// Every suppression the gate can return, one per audit code.
-    static let everySuppression: [ApprovalSuppression] = ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) }
+    static let everySuppression: [ApprovalSuppression] = ApprovalFloorGroup.allCases.map { ApprovalSuppression.floor($0) }
+        + ApprovalFloorUnreadable.allCases.map { ApprovalSuppression.floorUnreadable($0) }
+        + ForbiddenFamily.allCases.map { ApprovalSuppression.forbidden($0) }
         + [.localOnlyMCP, .localOnlyFileEdit, .localOnlyRead] + Unclassifiable.allCases.map { ApprovalSuppression.unclassifiable($0) }
 
     @Test func auditCodesAreAClosedVocabulary() {
@@ -1516,27 +1569,33 @@ struct ApprovalClassificationTests {
     }
 
     /// The refusal catalogue names every code the gate logs (an
-    /// `unclassifiable` one in full or by its reason alone, as the
-    /// catalogue's lists do), names no code the gate does not have, and its
-    /// list of the codes names every local-only one. (Only the vocabulary:
-    /// the catalogue's rows are not compared with the gate's.)
+    /// `unclassifiable` or a floor one in full or by its reason or group
+    /// alone, as the catalogue's lists do), names no code the gate does not
+    /// have, and its list of the codes names every local-only one. (Only the
+    /// vocabulary: the catalogue's rows are not compared with the gate's.)
     @Test func theCatalogueNamesExactlyTheGatesCodes() throws {
         let catalogue = try String(contentsOf: LidGuardStructureTests.repoRoot()
             .appendingPathComponent("design/remote-approvals-catalogue.md"), encoding: .utf8)
         let codes = Self.everySuppression.map(\.auditCode)
         for (suppression, code) in zip(Self.everySuppression, codes) {
             var named = catalogue.contains("`\(code)`")
-            if case .unclassifiable(let reason) = suppression { named = named || catalogue.contains("`\(reason.rawValue)`") }
+            switch suppression {
+            case .unclassifiable(let reason): named = named || catalogue.contains("`\(reason.rawValue)`")
+            case .floor(let group): named = named || catalogue.contains("`\(group.rawValue)`")
+            case .floorUnreadable(let reason): named = named || catalogue.contains("`\(reason.rawValue)`")
+            case .forbidden, .localOnlyMCP, .localOnlyFileEdit, .localOnlyRead: break
+            }
             #expect(named, "the catalogue never names \(code)")
         }
-        let cited = Set(ApprovalRecordPathStructureTests.matches(#"(?<![A-Za-z0-9_])(?:forbidden|localOnly|unclassifiable)\.[A-Za-z]+"#,
-                                                                  in: catalogue))
+        let prefixes = #"(?:forbidden|localOnly|unclassifiable|floorUnreadable|floor)\."#
+        let cited = Set(ApprovalRecordPathStructureTests.matches(#"(?<![A-Za-z0-9_])"# + prefixes + #"[A-Za-z]+"#, in: catalogue))
         #expect(!cited.isEmpty && cited.isSubset(of: codes), "codes the gate does not have: \(cited.subtracting(codes).sorted())")
         let anchor = try #require(catalogue.range(of: "The codes are the gate's own:"), "the catalogue's list of the codes")
         let rest = catalogue[anchor.upperBound...]
         let list = String(rest[..<(rest.range(of: "\n\n")?.lowerBound ?? rest.endIndex)])
-        let listed = Set(ApprovalRecordPathStructureTests.matches(#"`(?:forbidden|localOnly|unclassifiable)\.[^`]+`"#, in: list))
-        let expected = Set(["`forbidden.<family>`", "`unclassifiable.<reason>`"] + codes.filter { $0.hasPrefix("localOnly.") }.map { "`\($0)`" })
+        let listed = Set(ApprovalRecordPathStructureTests.matches("`" + prefixes + "[^`]+`", in: list))
+        let expected = Set(["`floor.<group>`", "`floorUnreadable.<reason>`", "`forbidden.<family>`", "`unclassifiable.<reason>`"]
+            + codes.filter { $0.hasPrefix("localOnly.") }.map { "`\($0)`" })
         #expect(listed == expected, "the catalogue's list of the codes: \(listed.sorted())")
     }
 
@@ -1566,25 +1625,158 @@ struct ApprovalClassificationTests {
         #expect(ApprovalPreview.parseObject(" {} ") == [], "whitespace around an empty object")
     }
 
+    // MARK: - The floor and the policy (#253)
+
+    /// The floor's second pass reads every decoded string as free text, and
+    /// its ASCII rule later reads the row's names: so the strings a row reads
+    /// as names are scanned for names exactly as free text is, which this
+    /// pins on every spelling of the floor's catalogue and on the corpus.
+    @Test func theNameScanReadsANameAsItReadsFreeText() {
+        var texts: [String] = ApprovalFloorTests.coveredSpellings.compactMap { $0.strings.first.map(ApprovalFloor.text(of:)) }
+        for index in 0..<2_000 {
+            guard let members = ApprovalPreview.parseObject(ApprovalGateOracleTests.corpusInput(index).preview) else { continue }
+            texts += ApprovalPreview.strings(in: members)
+        }
+        #expect(texts.count >= 3_000, "vacuity: \(texts.count) strings")
+        var named = 0
+        for text in texts {
+            for topic: ApprovalFloorTopic in [.absent, .value(Array(ApprovalFloorTests.topic.utf8))] {
+                let asName = ApprovalFloor.matchedGroups([.naming(text)], topic: topic)
+                #expect(asName == ApprovalFloor.matchedGroups([.freeText(text)], topic: topic), "\(text.debugDescription)")
+                if !asName.isEmpty { named += 1 }
+            }
+        }
+        #expect(named >= 300, "vacuity: \(named) strings name the floor")
+    }
+
+    /// The strings a row reads as names: its command and its paths, as
+    /// strings, in the preview's order; nothing else.
+    @Test func aRowsNamesAreItsCommandAndItsPaths() throws {
+        func names(_ tool: String, _ preview: String) throws -> [String] {
+            let row = try #require(ApprovalGate.toolTable.first { $0.tool.rawValue == tool })
+            return ApprovalGate.namingStrings(try #require(ApprovalPreview.parseObject(preview)), row)
+        }
+        #expect(try names("Bash", #"{"description":"d","command":"git status","timeout":5}"#) == ["git status"])
+        #expect(try names("Write", #"{"file_path":"/tmp/a","content":"c"}"#) == ["/tmp/a"])
+        #expect(try names("Edit", #"{"file_path":"/tmp/a","old_string":"o","new_string":"n","replace_all":true}"#) == ["/tmp/a"])
+        #expect(try names("NotebookEdit", #"{"notebook_path":"/tmp/n.ipynb","new_source":"s","cell_id":"c"}"#) == ["/tmp/n.ipynb"])
+        #expect(try names("Read", #"{"file_path":"/tmp/a","pages":"1-3","offset":1}"#) == ["/tmp/a"])
+        #expect(try names("Bash", #"{"command":["git","status"]}"#).isEmpty, "a command that is not a string is no name")
+    }
+
+    /// Every family a path or a command names is collected, not just the
+    /// first: each is a risky kind the prompt carries.
+    @Test func everyFamilyAPromptNamesIsCollected() {
+        let paths: [(String, Set<ApprovalRiskyKind>)] = [
+            ("/Users/someone/.claude/.env", [.claudeConfig, .secrets]), ("/etc/.ssh/x", [.privileged, .secrets]),
+            ("/Users/someone/project/.git/credentials", [.claudeConfig, .secrets]), ("/Users/someone/project/a.txt", []),
+        ]
+        for (path, kinds) in paths {
+            var found = ApprovalGate.Findings()
+            _ = ApprovalGate.pathRefusal(Array(path.utf8), &found)
+            #expect(found.riskyKinds == kinds, "\(path): \(found.families)")
+        }
+        let commands: [(String, Set<ApprovalRiskyKind>)] = [
+            ("cat ~/.ssh/x && ls ~/.config/git", [.secrets, .claudeConfig]), ("sudo ls ~/.claude", [.privileged, .claudeConfig]),
+            ("ls /etc && cat .env && cat .zshrc", [.privileged, .secrets, .claudeConfig]), ("git status", []),
+            ("cat a/../.ssh/x", [.secrets]),
+        ]
+        for (command, kinds) in commands {
+            var found = ApprovalGate.Findings()
+            _ = ApprovalGate.commandRefusal(Array(command.utf8), &found)
+            #expect(found.riskyKinds == kinds, "\(command): \(found.families)")
+        }
+        // The code is the first family found, as the gate logged it before.
+        #expect(Self.classify(Self.bash("sudo ls ~/.claude", Self.notInTable)) == Self.forbidden(.privilegeEscalation))
+        #expect(Self.classify(Self.read("/Users/someone/.claude/.env", Self.keptRead)) == Self.forbidden(.configurationOrHooks))
+    }
+
+    /// Kept for good under every set, with the code the gate has always
+    /// logged: an unsandboxed run, a background run, and a listed command
+    /// with an unknown argument. A listed command kept only for the
+    /// credential mask is logged with the first reason the set does not
+    /// admit, and every set admits the listed commands.
+    @Test func whatIsFinalStaysFinalUnderEverySet() {
+        let sets = ApprovalGateOracleTests.nineSets
+        let finals: [(String, ApprovalClassification)] = [
+            (#"{"command":"git status","dangerouslyDisableSandbox":true}"#, Self.forbidden(.privilegeEscalation)),
+            (#"{"command":"git status","run_in_background":true}"#, Self.unclassifiable(.argumentValue)),
+            (#"{"command":"git status","shell":"zsh"}"#, Self.unclassifiable(.unknownArgument)),
+            (#"{"command":"git status","description":"[REDACTED] \u200b"}"#, Self.forbidden(.secretAccess)),
+        ]
+        for (name, set) in sets {
+            #expect(set.kinds.contains(.listedCommand), "\(name) admits the listed commands")
+            for (preview, listedOnly) in finals.dropLast() {
+                #expect(Self.gate("Bash", preview, policy: set) == listedOnly, "\(name): \(preview)")
+            }
+            let masked = Self.gate("Bash", finals[3].0, policy: set)
+            #expect(masked == (set.riskyKinds.contains(.secrets) ? Self.unclassifiable(.hiddenText) : finals[3].1), "\(name): \(masked)")
+        }
+    }
+
     // MARK: - Structure locks
 
     static func gateCode() throws -> String { try WireContractTests.wireCode("ApprovalClassification.swift") }
 
     /// THERE IS NO DEFAULT-FORWARD BRANCH: `.forward(` is constructed exactly
-    /// once, after the table lookup whose miss refuses; no switch has a
-    /// catch-all; no row forwards by omission; and the description never
-    /// reaches the gate.
+    /// once, after the table lookup whose miss refuses and after the policy
+    /// and the gate's copy; no switch has a catch-all; no row forwards by
+    /// omission; the description never reaches the gate; the gate's steps
+    /// come in their order, each floor pass final; and the set the gate is
+    /// handed is read in its policy step and its codes alone.
     @Test func theGateHasNoDefaultForwardBranch() throws {
         let code = try Self.gateCode()
         #expect(Self.defaultForwardFailures(code).isEmpty, "\(Self.defaultForwardFailures(code))")
     }
 
-    static let missRefusal = "else {\n            return .suppress(.unclassifiable(.unknownTool))\n        }"
-    /// The row's own switch, directly before the single forward: a row with
-    /// a local-only code keeps its prompt with that code, read from the
-    /// table (never a code fixed here).
-    static let localOnlyRefusal = "if let localOnly = row.localOnly {\n            return .suppress(localOnly)\n        }\n"
+    static let missRefusal = "else {\n            return kept(.unclassifiable(.unknownTool))\n        }"
+    /// The gate's last steps, in one block, the single forward last: a row
+    /// with a local-only code keeps its prompt with that code, read from the
+    /// table (never a code fixed here); then the policy, which forwards only
+    /// when the set admits the row's kind and every risky kind found; then
+    /// the gate's own copy.
+    static let localOnlyRefusal = "if let localOnly = row.localOnly {\n            return kept(localOnly)\n        }\n"
+        + "        guard policy.admits(row.kind, carrying: found.riskyKinds) else {\n"
+        + "            return kept(.unclassifiable(.commandNotInTable))\n        }\n"
+        + "        guard forwardedPreview(toolName: toolName, inputPreview: inputPreview) != nil else {\n"
+        + "            return kept(.unclassifiable(.previewNotStrictJSON))\n        }\n"
         + "        return .forward(row.tool)"
+    /// The gate's signature: the tool name, the preview, the topic and the
+    /// effective set, none with a default (the description is never an
+    /// input).
+    static let signature = "public static func classify(toolName: String, inputPreview: String, topic: ApprovalFloorTopic,\n"
+        + "                                policy: ApprovalForwardingSet) -> ApprovalClassification {"
+    /// A floor pass, final: its outcome returns at once.
+    static func floorPass(_ strings: String) -> String {
+        "if let floor = floorRefusal(ApprovalFloor.outcome(of: \(strings), topic: topic)) {\n            return .suppress(floor)\n        }"
+    }
+    /// The gate's order, each step once, in this order: the size check and
+    /// directly after it the floor over the tool name and the raw preview;
+    /// the strict reader; hidden text and directly after it the floor over
+    /// every decoded string; the MCP tools; the table's miss; the row's
+    /// refusal and directly after it the floor's ASCII rule over the row's
+    /// names; and the last steps (`localOnlyRefusal`).
+    static let orderAnchors: [String] = [
+        "return .suppress(.unclassifiable(.previewTooLarge))\n        }\n        "
+            + floorPass("[.naming(toolName), .freeText(inputPreview)]"),
+        "guard let members = ApprovalPreview.parseObject(inputPreview) else {",
+        "return kept(.unclassifiable(.hiddenText))\n        }\n        " + floorPass("strings.map { .freeText($0) }"),
+        "if name.starts(with: mcpPrefix.utf8) {",
+        missRefusal,
+        "if let refusal = refusal(members, row, &found) {\n            return kept(refusal)\n        }\n"
+            + "        let names: [ApprovalFloorString] = ([toolName] + namingStrings(members, row)).map { .naming($0) }\n        "
+            + floorPass("names"),
+        localOnlyRefusal,
+    ]
+    /// Where the gate reads the set it is handed: its signature, the code a
+    /// kept prompt is logged with, and the policy's one guard.
+    static let policySites: [String: Int] = [
+        "policy: ApprovalForwardingSet) -> ApprovalClassification {": 1,
+        ".suppress(found.firstUnadmitted(by: policy) ?? reason)": 1,
+        "guard policy.admits(row.kind, carrying: found.riskyKinds) else {": 1,
+        "func firstUnadmitted(by policy: ApprovalForwardingSet) -> ApprovalSuppression? {": 1,
+        "families.first { !policy.riskyKinds.contains($0.riskyKind) }.map { .forbidden($0) }": 1,
+    ]
     /// A row forwards when its local-only code is nil, so no row may forward
     /// by leaving its code out: the member is declared on exactly this line,
     /// a `let` with no default (a `var` optional gets an implicit `nil`, and
@@ -1624,9 +1816,20 @@ struct ApprovalClassificationTests {
         if declarations.count != 1 {
             failures.append("the row's local-only code must be declared once, exactly as `\(localOnlyDeclaration)` (found \(declarations.count))")
         }
-        if !code.contains("public static func classify(toolName: String, inputPreview: String, secrets: [String] = [])") {
-            failures.append("classify's parameters changed (the description must never be an input)")
+        if !code.contains(signature) {
+            failures.append("classify's parameters changed (the description must never be an input; the topic and the set have no default)")
         }
+        var cursor = code.startIndex
+        for anchor in orderAnchors {
+            guard ApprovalChannelStructureTests.count(anchor, in: code) == 1,
+                  let found = code.range(of: anchor), found.lowerBound >= cursor else {
+                failures.append("the gate's order: '\(anchor.prefix(60))' must come once, after the step before it")
+                continue
+            }
+            cursor = found.upperBound
+        }
+        failures += ApprovalRecordPathStructureTests.siteFailures(#"\bpolicy\b"#, in: code, file: "ApprovalClassification.swift", allowed: policySites,
+                                            rule: "the gate reads the set it is handed in its policy step and its codes alone")
         return failures
     }
 
@@ -1634,25 +1837,52 @@ struct ApprovalClassificationTests {
     @Test func theDefaultForwardLockCatchesMutants() throws {
         let code = try Self.gateCode()
         let mutants = [
-            code.replacingOccurrences(of: "return .suppress(.unclassifiable(.unknownTool))", with: "return .forward(.bash)"),
+            code.replacingOccurrences(of: "return kept(.unclassifiable(.unknownTool))", with: "return .forward(.bash)"),
             code.replacingOccurrences(of: "        case (.path, _),", with: "        default: return nil\n        case (.path, _),"),
             code + "\nlet x = y ?? .forward(.bash)\n",
-            code.replacingOccurrences(of: "inputPreview: String, secrets", with: "inputPreview: String, description: String, secrets"),
+            code.replacingOccurrences(of: "inputPreview: String, topic", with: "inputPreview: String, description: String, topic"),
             code.replacingOccurrences(of: "if let localOnly = row.localOnly {", with: "if false, let localOnly = row.localOnly {"),
-            code.replacingOccurrences(of: "        if let localOnly = row.localOnly {\n            return .suppress(localOnly)\n        }\n",
+            code.replacingOccurrences(of: "        if let localOnly = row.localOnly {\n            return kept(localOnly)\n        }\n",
                                       with: ""),
-            code.replacingOccurrences(of: "            return .suppress(localOnly)\n", with: "            return .suppress(.localOnlyFileEdit)\n"),
+            code.replacingOccurrences(of: "            return kept(localOnly)\n", with: "            return kept(.localOnlyFileEdit)\n"),
+            // #253: the floor after the policy; a floor match that does not
+            // return; too-large decided after the floor; the second pass
+            // dropped; the policy step dropped, or reading a set of its own;
+            // a default on the topic or the set; and the old signature.
+            code.replacingOccurrences(of: "        " + Self.floorPass("[.naming(toolName), .freeText(inputPreview)]") + "\n", with: "")
+                .replacingOccurrences(of: "        return .forward(row.tool)\n",
+                                      with: "        " + Self.floorPass("[.naming(toolName), .freeText(inputPreview)]") + "\n        return .forward(row.tool)\n"),
+            code.replacingOccurrences(of: Self.floorPass("strings.map { .freeText($0) }"),
+                                      with: "if let floor = floorRefusal(ApprovalFloor.outcome(of: strings.map { .freeText($0) }, topic: topic)) {\n"
+                                        + "            _ = floor\n        }"),
+            code.replacingOccurrences(of: "        guard preview.count <= maxPreviewBytes, inputPreview.unicodeScalars.count <= maxPreviewScalars else {\n"
+                                        + "            return .suppress(.unclassifiable(.previewTooLarge))\n        }\n", with: "")
+                .replacingOccurrences(of: "        var found = Findings()\n", with: "        guard preview.count <= maxPreviewBytes, "
+                                        + "inputPreview.unicodeScalars.count <= maxPreviewScalars else {\n"
+                                        + "            return .suppress(.unclassifiable(.previewTooLarge))\n        }\n        var found = Findings()\n"),
+            code.replacingOccurrences(of: "        " + Self.floorPass("strings.map { .freeText($0) }") + "\n", with: ""),
+            code.replacingOccurrences(of: "        guard policy.admits(row.kind, carrying: found.riskyKinds) else {\n"
+                                        + "            return kept(.unclassifiable(.commandNotInTable))\n        }\n", with: ""),
+            code.replacingOccurrences(of: "guard policy.admits(row.kind, carrying: found.riskyKinds) else {",
+                                      with: "guard ApprovalForwardingSet.listedOnly.admits(row.kind, carrying: found.riskyKinds) else {"),
+            code.replacingOccurrences(of: "topic: ApprovalFloorTopic,\n", with: "topic: ApprovalFloorTopic = .absent,\n"),
+            code.replacingOccurrences(of: "policy: ApprovalForwardingSet) -> ApprovalClassification {",
+                                      with: "policy: ApprovalForwardingSet = .listedOnly) -> ApprovalClassification {"),
+            code.replacingOccurrences(of: Self.signature,
+                                      with: "public static func classify(toolName: String, inputPreview: String, secrets: [String] = []) -> ApprovalClassification {"),
             // A row that forwards by omission (#231): a second row written
             // with no code, spaced or not; the member made a `var`, given a
             // default, or both with the Bash row leaving its code out; an
             // init that defaults the code; and the member made a `var`
             // beside a decoy of its declaration line.
-            code.replacingOccurrences(of: "ToolRow(tool: .read, localOnly: .localOnlyRead,", with: "ToolRow(tool: .read, localOnly: nil,"),
-            code.replacingOccurrences(of: "ToolRow(tool: .read, localOnly: .localOnlyRead,", with: "ToolRow(tool: .read, localOnly:nil,"),
+            code.replacingOccurrences(of: "ToolRow(tool: .read, kind: .outsideRead, localOnly: .localOnlyRead,",
+                                      with: "ToolRow(tool: .read, kind: .outsideRead, localOnly: nil,"),
+            code.replacingOccurrences(of: "ToolRow(tool: .read, kind: .outsideRead, localOnly: .localOnlyRead,",
+                                      with: "ToolRow(tool: .read, kind: .outsideRead, localOnly:nil,"),
             code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: "        var localOnly: ApprovalSuppression?\n"),
             code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: Self.localOnlyDeclaration + " = nil\n"),
             code.replacingOccurrences(of: Self.localOnlyDeclaration + "\n", with: "        var localOnly: ApprovalSuppression? = nil\n")
-                .replacingOccurrences(of: "ToolRow(tool: .bash, localOnly: nil, ", with: "ToolRow(tool: .bash, "),
+                .replacingOccurrences(of: "ToolRow(tool: .bash, kind: .listedCommand, localOnly: nil, ", with: "ToolRow(tool: .bash, kind: .listedCommand, "),
             code.replacingOccurrences(of: "        var forwards: Bool {", with: "        init(tool: ApprovalTool, localOnly: ApprovalSuppression? = nil, "
                 + "required: [Argument], optional: [Argument]) {\n            self.tool = tool\n            self.localOnly = localOnly\n"
                 + "            self.required = required\n            self.optional = optional\n        }\n        var forwards: Bool {"),

@@ -156,7 +156,7 @@ struct ApprovalRecordRoutingTests {
         let holding = RoutedIntake()
         holding.secrets = [topic]
         holding.receive("abcde", preview: #"{"command":"git status","description":"echo "# + topic + #""}"#)
-        #expect(holding.codes == ["prompt=\(RoutedIntake.id(1).hex) suppressed.gate.forbidden.secretAccess"])
+        #expect(holding.codes == ["prompt=\(RoutedIntake.id(1).hex) suppressed.gate.floor.alertTopic"])
 
         for routed in [unarmed, unreadable, holding] {
             routed.intake.killSwitch()

@@ -266,7 +266,7 @@ struct RemoteApprovalsControllerTests {
         world.prompt("abcde", preview: #"{"command":"git status"}"#)
         let id = try #require(world.nextPrompt(endingIn: "suppressed.notArmed"),
                               "the gate would forward it; the unarmed host keeps it local")
-        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: #"{"command":"git status"}"#) == .forward(.bash),
+        #expect(ApprovalGate.classify(toolName: "Bash", inputPreview: #"{"command":"git status"}"#, topic: .absent, policy: .listedOnly) == .forward(.bash),
                 "vacuity: the prompt is one the gate forwards")
         world.decide(id)
         #expect(world.audits.next() == "prompt=\(id.hex) ignored.notForwarded")
