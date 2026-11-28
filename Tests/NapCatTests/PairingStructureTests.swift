@@ -92,6 +92,8 @@ import Testing
 /// 9. The real Unpair record (its file in the approvals folder) is declared
 ///    in its own file and named by the app's wiring alone, and no test file
 ///    names it.
+///
+/// AMENDED (#247): lock 8 runs the kill switch before the slot's Unpair.
 struct PairingStructureTests {
     typealias Sources = ApprovalChannelStructureTests.Sources
 
@@ -1551,6 +1553,9 @@ struct PairingStructureTests {
     /// Unpair alone, before the deletion, and removed only after a deletion
     /// that went through or a key written.
     ///
+    /// AMENDED (#247): every Unpair runs the kill switch FIRST, before the
+    /// slot is asked for anything.
+    ///
     /// Every `unpair`, `retryUnpair` and `removeRecorded` is pinned as a
     /// whole word, so a reference taken unapplied (`let go = p.unpair`, then
     /// `go()`) is off the list as well as a call; the word's other lines are
@@ -1602,7 +1607,7 @@ struct PairingStructureTests {
     static let removalSites: [String: [String: Int]] = [
         slotFile: ["return removeRecorded()": 1, "private func removeRecorded() -> Bool {": 1],
     ]
-    static let unpairBody = "func unpair() { let gone = keys.unpair() killSwitch() audit(gone ? .unpaired : .unpairFailed) refreshPaired() }"
+    static let unpairBody = "func unpair() { killSwitch() let gone = keys.unpair() audit(gone ? .unpaired : .unpairFailed) refreshPaired() }"
     static let retryBody = "func retryUnpair() { guard paired == .unpairOutstanding else { return } unpair() }"
     static let modelRetryBody = "func retryUnpair() { pairing?.retryUnpair() refresh() }"
     /// #247: the slot's side, whole — Unpair records the item before the
@@ -1656,7 +1661,7 @@ struct PairingStructureTests {
         let slot = Self.slotFile
         let model = "MenuStateModel.swift"
         let heldLine = "        let held = items.read()\n"
-        let killAfter = "        killSwitch()\n        audit(gone"
+        let killFirst = "        killSwitch()\n        let gone = keys.unpair()\n"
         let recordFirst = "        unpairs.record(items.read())\n        return removeRecorded()\n"
         let removal = "        guard items.delete() else { return false }\n        unpairs.clear()\n"
         let retryCall = "        pairing?.retryUnpair()\n"
@@ -1675,8 +1680,11 @@ struct PairingStructureTests {
             ("a backticked Unpair", Self.mutate(sources, "MenuContentView.swift") { $0 + "\nfunc zz(_ p: PairingController) { p.`unpair`() }" }),
             ("Try Again from the panel", Self.mutate(sources, "MenuPanelView.swift") {
                 $0 + "\nstruct ZZ: View { let model: MenuStateModel; var body: some View { Button(\"x\") { model.retryUnpair() } } }" }),
+            // #247: the kill switch first.
+            ("the deletion before the kill switch", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: killFirst, with: "        let gone = keys.unpair()\n        killSwitch()\n") }),
             ("the kill switch only after a deletion", Self.mutate(sources, controller) {
-                $0.replacingOccurrences(of: killAfter, with: "        if gone { killSwitch() }\n        audit(gone") }),
+                $0.replacingOccurrences(of: killFirst, with: "        let gone = keys.unpair()\n        if gone { killSwitch() }\n") }),
             // #247: the record.
             ("the record cleared before the deletion", Self.mutate(sources, slot) {
                 $0.replacingOccurrences(of: removal, with: "        unpairs.clear()\n        guard items.delete() else { return false }\n") }),
@@ -1707,7 +1715,7 @@ struct PairingStructureTests {
         // call gone from Try Again, now first in refresh, its sites unchanged
         // — only the pinned body sees it).
         var anchors: [(String, String)] = [(heldLine, slot), (recordFirst, slot), (removal, slot)]
-        anchors.append((killAfter, controller))
+        anchors.append((killFirst, controller))
         for (anchor, file) in anchors {
             #expect(ApprovalChannelStructureTests.count(anchor, in: Self.text(file, in: sources)) == 1, "vacuity: \(anchor)")
         }

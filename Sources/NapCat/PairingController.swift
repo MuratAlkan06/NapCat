@@ -219,15 +219,15 @@ final class PairingController: ObservableObject, CustomStringConvertible, Custom
     /// The one-second tick (the ticker's; tests call it by hand).
     func tick() { run(.tick(now: clock().timeIntervalSince1970)) }
 
-    /// Unpair, after the owner confirmed it: the slot records the item as
-    /// the one to remove and asks the keychain to delete it, and the
-    /// remote-approvals toggle goes off through its kill switch — whatever
-    /// the deletion came to. A refused deletion leaves the slot reading the
-    /// Unpair as outstanding (#240, #247), so the pane says so, across
-    /// relaunches; one that goes through ends it.
+    /// Unpair, after the owner confirmed it: the remote-approvals toggle
+    /// goes off through its kill switch FIRST (#247), so no refused or slow
+    /// deletion can leave it on; then the slot records the item as the one
+    /// to remove and asks the keychain to delete it. A refused deletion
+    /// leaves the slot reading the Unpair as outstanding (#240, #247), so the
+    /// pane says so, across relaunches; one that goes through ends it.
     func unpair() {
-        let gone = keys.unpair()
         killSwitch()
+        let gone = keys.unpair()
         audit(gone ? .unpaired : .unpairFailed)
         refreshPaired()
     }

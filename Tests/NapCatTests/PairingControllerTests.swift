@@ -67,6 +67,25 @@ final class ManualPairingTicker: PairingTicker {
     }
 }
 
+/// A log of what happened, in order, written from any thread (#247: the kill
+/// switch, and the keychain's and the record's calls).
+final class OrderLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+
+    func append(_ entry: String) {
+        lock.lock()
+        entries.append(entry)
+        lock.unlock()
+    }
+
+    var all: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
+    }
+}
+
 /// F4 slice S-PAIR-C1 (#168): the shell around the ceremony, over fakes — a
 /// scripted pairing record, an in-memory slot, an in-memory outstanding-Unpair
 /// record (#247), an in-memory remembered name, a hand-set clock and a
@@ -83,6 +102,8 @@ final class PairingWorld {
     var remembered: String?
     var clock = Date(timeIntervalSince1970: 1_800_000_000)
     var killSwitches = 0
+    /// The kill switch, as it ran among the fakes' calls (`watchOrder()`).
+    let order = OrderLog()
     var audits: [PairingAudit] = []
     var sheets: [Bool] = []
     var announcements: [String] = []
@@ -100,11 +121,15 @@ final class PairingWorld {
         self.items = items
         self.unpairMedium = unpairMedium
         unpairs = UnpairRecord(medium: unpairMedium)
+        let order = self.order
         controller = PairingController(
             source: records, keys: PairedKeyStore(items: items, unpairs: unpairs),
             readRemembered: { [unowned self] in remembered }, writeRemembered: { [unowned self] in remembered = $0 },
             makeNonce: { [unowned self] in nonce }, clock: { [unowned self] in clock },
-            killSwitch: { [unowned self] in killSwitches += 1 }, audit: { [unowned self] in audits.append($0) },
+            killSwitch: { [unowned self] in
+                killSwitches += 1
+                order.append("killSwitch")
+            }, audit: { [unowned self] in audits.append($0) },
             makeTicker: { [unowned self] fire in
                 liveTickers += 1
                 return ManualPairingTicker(fire) { [unowned self] in liveTickers -= 1 }
@@ -120,6 +145,17 @@ final class PairingWorld {
         await controller.settle()
     }
 
+    /// #247: the keychain's and the record's calls join `order`, after the
+    /// kill switch's, as `keychain.<call>` and `record.<call>`; `onDelete`
+    /// runs inside the keychain's deletion, before it does anything.
+    func watchOrder(onDelete: @escaping @Sendable () -> Void = {}) {
+        let order = self.order
+        items.setObserver { call in
+            order.append("keychain." + call)
+            if call == "delete" { onDelete() }
+        }
+        unpairMedium.setObserver { order.append("record." + $0) }
+    }
 }
 
 @MainActor
@@ -460,6 +496,65 @@ struct PairingControllerTests {
         relaunch.controller.retryUnpair()
         #expect(relaunch.items.storedValue == nil && relaunch.unpairMedium.storedValue == nil, "the key, then the record")
         #expect(relaunch.controller.paneState == .notPaired && relaunch.killSwitches == 1 && relaunch.audits == [.unpaired])
+    }
+
+    /// Unpair turns Remote approvals off BEFORE the keychain is asked to
+    /// delete the key (and before the record is written), whether the
+    /// deletion goes through or is refused; so does Try Again. The record is
+    /// written before the deletion, and goes only after one that went through.
+    @Test func theKillSwitchRunsBeforeTheKeychainIsAskedToDelete() throws {
+        for refused in [false, true] {
+            let world = PairingWorld()
+            _ = try Self.paired(world)
+            world.items.setFailDeletes(refused)
+            world.watchOrder()
+            world.controller.unpair()
+            let order = world.order.all
+            #expect(Array(order.prefix(4)) == ["killSwitch", "keychain.read", "record.write", "keychain.delete"],
+                    "refused \(refused): \(order)")
+            #expect(order.contains("record.delete") == !refused, "refused \(refused): the record goes after a deletion only")
+            guard refused else { continue }
+
+            world.items.setFailDeletes(false)
+            let before = world.order.all.count
+            world.controller.retryUnpair()
+            let retried: [String] = Array(world.order.all.dropFirst(before))
+            let deletion: Int = retried.firstIndex(of: "keychain.delete") ?? 0
+            let recordGone: Int = retried.firstIndex(of: "record.delete") ?? 0
+            #expect(retried.first == "killSwitch" && deletion > 0 && recordGone > deletion, "Try Again: \(retried)")
+        }
+    }
+
+    /// A deletion that hangs cannot hold the kill switch back: while the
+    /// keychain's deletion is still under way, the kill switch has already
+    /// run.
+    @Test func aDeletionThatHangsFindsTheKillSwitchAlreadyRun() throws {
+        for retry in [false, true] {
+            let world = PairingWorld()
+            _ = try Self.paired(world)
+            if retry {
+                world.items.setFailDeletes(true)
+                world.controller.unpair()
+                world.items.setFailDeletes(false)
+            }
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            let order = world.order
+            let start = order.all.count
+            let seen = OrderLog()
+            world.watchOrder {
+                entered.signal()
+                _ = release.wait(timeout: .now() + 10)
+            }
+            DispatchQueue.global().async {
+                _ = entered.wait(timeout: .now() + 10)
+                for entry in order.all.dropFirst(start) { seen.append(entry) }
+                release.signal()
+            }
+            if retry { world.controller.retryUnpair() } else { world.controller.unpair() }
+            #expect(seen.all.first == "killSwitch" && seen.all.last == "keychain.delete",
+                    "retry \(retry): while the deletion hung, \(seen.all)")
+        }
     }
 
     /// A stored item NapCat cannot read — a text not this build's, or a
