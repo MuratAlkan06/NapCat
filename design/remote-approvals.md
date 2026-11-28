@@ -223,8 +223,8 @@ interactive Claude Code sessions, away from the keyboard.
   tapped (owner ruling: such a read is not idle cost). Per-prompt cost is
   bounded to that prompt's pushes and record operations.
 - Existing hard rules stay intact: the app never invokes sudo for this
-  feature, the debug simulator is unaffected, and the six-event busy-hook
-  contract is unchanged.
+  feature, the debug simulator is unaffected, and the busy-hook contract is
+  unchanged.
 - Any channel registration installs through user-run rails like the existing
   hook installer, version-stamped and surfaced like the hook stamp. Status:
   the installer writes a version-stamped receipt (slice I1a, below), but

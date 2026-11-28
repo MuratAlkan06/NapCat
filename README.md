@@ -559,7 +559,13 @@ work is still running, the hook looks at the last 400 bytes of Claude's final
 message, on the Mac, to judge whether the turn ended with a question, and logs
 one word for it (`asks`, `no`, `absent` or `unreadable`). It keeps none of the
 text, and nothing acts on that word yet. On every other event, and when a turn
-ends with nothing left running, it does not look at the message.
+ends with nothing left running, it does not look at the message. Since hook
+version 9, the two entries matched to `AskUserQuestion` (Claude Code's tool for
+asking you a question) hand the hook that question, its options and, once you
+answer, your answer. The hook copies them to the temporary file with the rest;
+of those two events it reads only the tool's name (besides the event name and
+session id it reads for every event), and none of the question or the answer
+is kept, logged or sent.
 
 ### Install and register — BY HAND
 
@@ -757,7 +763,11 @@ session's marker until the main turn *and* every background subagent it started
 have ended, so the marker going away *is* the finish — NapCat pushes then.
 **Waiting:** when Claude stops mid-turn to wait for you (a permission prompt, an
 MCP input request, a usage-limit wait), the hook marks the session as waiting
-and NapCat pushes once for that wait.
+and NapCat pushes once for that wait. When the wait is a direct question
+(Claude Code's `AskUserQuestion` tool, with the two entries hook version 9
+registers), the push opens with "Claude is asking you a question" instead of
+"Claude is waiting for you"; the rest of it is the same. A push that stands for
+two or more waits keeps the plain wording.
 
 While armed, NapCat watches the marker folder with a file-system notification on
 that one folder — nothing polls, and with the toggle off the watcher does not
@@ -788,10 +798,13 @@ silences both pushes, and the row says so.
   or a wait that is over within about 2 seconds can be missed and push nothing.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
   — none still working"), which also keeps the feed clear of ntfy's rate limit.
-- **One waiting push per turn**, unless the session stops or resumes in between.
+- **One waiting push per turn**, unless the session stops or resumes in between,
+  or you answer a direct question: a later wait in that turn pushes again.
 - **The message vocabulary is closed** — counts and minutes only; nothing from
   your session ever leaves the Mac. For example: "A Claude session finished
-  after 42 min — 1 still working", "Claude is waiting for you — 12 min in".
+  after 42 min — 1 still working", "Claude is waiting for you — 12 min in",
+  "Claude is asking you a question — 3 min in". A question push never carries
+  the question itself.
   While the Remote approvals preview is switched on, a waiting push may add how
   many permission prompts wired sessions just opened, and their tool kind from
   a fixed list ("— 1 Bash permission prompt") — never a command, a path or any
@@ -1030,6 +1043,17 @@ command, then delete
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.
+- **The question wording is best-effort.** NapCat learns of a direct question
+  from the two hook events around Claude Code's `AskUserQuestion` tool. A
+  question you dismiss without answering leaves the session marked as asking
+  until another hook event replaces it (your next prompt or the end of the
+  turn at the latest), so a permission wait in between can be pushed as a
+  question. If you answer at the very moment the question's waiting
+  notification fires, that push can be lost. Anything else that rewrites the
+  busy marker while a question is open (a subagent finishing, say) makes its
+  push use the plain wording. With a NapCat build older than hook version 9,
+  a question wait pushes nothing at all, so relaunch NapCat before you
+  reinstall the hook.
 - **A finish alert can come early with an older hook.** With a hook installed
   before the main-turn tracking above, a subagent finishing mid-turn can clear
   the busy marker early and trigger a premature finish alert; refresh the hook
