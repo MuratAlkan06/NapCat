@@ -28,8 +28,9 @@ struct ApprovalChannelStructureTests {
     static let s1Files = [seamFile, relayFile, serverFile, intakeFile, hostFile, probeFile]
 
     /// Every Swift source of the four targets, comment-stripped (`strip`).
-    /// (File names are unique across them.) The top level only — which is
-    /// the whole target because `everyFolderALockListsIsFlat` holds.
+    /// (File names are unique across them today; a lock that must not lean
+    /// on that reads `pathSources`, #244.) The top level only — which is the
+    /// whole target because `everyFolderALockListsIsFlat` holds.
     static func sources(_ strip: (String) -> String = LidGuardStructureTests.codeOnly) throws -> Sources {
         let root = LidGuardStructureTests.repoRoot()
         return try directories.flatMap { directory -> Sources in
@@ -37,6 +38,97 @@ struct ApprovalChannelStructureTests {
             let names = try FileManager.default.contentsOfDirectory(atPath: url.path).filter { $0.hasSuffix(".swift") }.sorted()
             return try names.map { ($0, strip(try String(contentsOf: url.appendingPathComponent($0), encoding: .utf8))) }
         }
+    }
+
+    /// The files and the text of `sources(strip)`, named as the URL-loading
+    /// lock (#236) and the CloudKit import lock (#241) name them:
+    /// Sources/NapCat by file name, the other three targets by path from the
+    /// repository root (`LidGuardStructureTests.otherTargetSources`). A lock
+    /// that reads this form (#244: the socket-call lock, the server's
+    /// banned-word check, the gate-order lock, the keychain-call lock and the
+    /// check-name lock) names each pinned file outside Sources/NapCat by its
+    /// path, so a file of the same name in another target is not it.
+    static func pathSources(_ strip: (String) -> String = LidGuardStructureTests.codeOnly) throws -> Sources {
+        try LidGuardStructureTests.swiftSources(strip) + LidGuardStructureTests.otherTargetSources(strip)
+    }
+
+    /// The pinned files outside Sources/NapCat, by path, as `pathSources`
+    /// names them (#244).
+    static let seamPath = "Sources/NapCatSeam/" + seamFile
+    static let relayPath = "Sources/NapCatChannel/" + relayFile
+    static let serverPath = "Sources/NapCatChannel/" + serverFile
+    static let wirePath = "Sources/NapCatWire/ApprovalChannel.swift"
+    static let stateMachinePath = "Sources/NapCatWire/ApprovalStateMachine.swift"
+    static let classificationPath = "Sources/NapCatWire/ApprovalClassification.swift"
+    static let pinnedPaths = [seamPath, relayPath, serverPath, wirePath, stateMachinePath, classificationPath]
+
+    /// A file of `pinned`'s name in each of the four targets but its own,
+    /// named as `pathSources` names it (#244): the namesakes a lock that
+    /// matched by file name alone would take for the pinned file.
+    static func namesakes(of pinned: String) -> [String] {
+        let file = String(pinned.split(separator: "/").last ?? "")
+        return directories.map { $0 == "Sources/NapCat" ? file : $0 + "/" + file }.filter { $0 != pinned }
+    }
+
+    /// `sources` with a new file `name` holding `text`, where `pathSources`
+    /// reads it: after the files of its own target, before the next
+    /// target's (#244). So a namesake in Sources/NapCat comes before the
+    /// pinned file, as it would be read.
+    static func inserting(_ sources: Sources, _ name: String, _ text: String) -> Sources {
+        func target(_ name: String) -> Int {
+            let folder = name.contains("/") ? name.split(separator: "/").dropLast().joined(separator: "/") : "Sources/NapCat"
+            return directories.firstIndex(of: folder) ?? directories.count
+        }
+        var inserted = sources
+        inserted.insert((name: name, text: text), at: sources.firstIndex { target($0.name) > target(name) } ?? sources.endIndex)
+        return inserted
+    }
+
+    /// Whether a failure names `file` as these locks name the file a
+    /// failure is about: after " in ", before " —" or a comma, or at the end
+    /// (#244).
+    static func names(_ failures: [String], _ file: String) -> Bool {
+        let subject: String = " in " + file
+        let dashed: String = subject + " —"
+        let comma: String = subject + ","
+        return failures.contains { $0.contains(dashed) || $0.contains(comma) || $0.hasSuffix(subject) }
+    }
+
+    /// `pathSources` reads what `sources` reads, file for file, for both
+    /// forms the locks read, and names every file of the other three targets
+    /// by its path; each pinned path is one of them (vacuity of #244).
+    @Test func thePathSourcesReadWhatTheSourcesRead() throws {
+        for strip in [LidGuardStructureTests.codeOnly, LidGuardStructureTests.wholeLineCommentsRemoved] {
+            let byPath = try Self.pathSources(strip)
+            let byName = try Self.sources(strip)
+            #expect(byPath.map { $0.text } == byName.map { $0.text }
+                    && byPath.map { String($0.name.split(separator: "/").last ?? "") } == byName.map { $0.name },
+                    "vacuity: pathSources reads every file of the four targets, as sources() reads it")
+            let others = LidGuardStructureTests.networkingOtherTargets
+            #expect(Self.directories.count == 4 && others.count == 3, "the four Mac targets")
+            #expect(Set(byPath.filter { $0.name.contains("/") }.map { $0.name.split(separator: "/").dropLast().joined(separator: "/") })
+                    == Set(others), "vacuity: every other Mac target is read, each file named by its path")
+            for path in Self.pinnedPaths {
+                #expect(byPath.filter { $0.name == path }.count == 1 && !Self.text(path, in: byPath).isEmpty, "vacuity: \(path) is read, by path")
+            }
+        }
+        // The helpers: three namesakes for a pinned file in any target, and
+        // a new file read in its target's place.
+        #expect(Self.namesakes(of: Self.seamPath) == ["SeamSocket.swift", "Sources/NapCatChannel/SeamSocket.swift",
+                                                      "Sources/NapCatWire/SeamSocket.swift"])
+        #expect(Self.namesakes(of: "KeychainTopicStore.swift") == ["Sources/NapCatSeam/KeychainTopicStore.swift",
+                                                                   "Sources/NapCatChannel/KeychainTopicStore.swift",
+                                                                   "Sources/NapCatWire/KeychainTopicStore.swift"])
+        let small: Sources = [("A.swift", ""), ("Sources/NapCatSeam/B.swift", ""), ("Sources/NapCatWire/C.swift", "")]
+        #expect(Self.inserting(small, "Z.swift", "").map { $0.name }
+                == ["A.swift", "Z.swift", "Sources/NapCatSeam/B.swift", "Sources/NapCatWire/C.swift"])
+        #expect(Self.inserting(small, "Sources/NapCatChannel/Z.swift", "").map { $0.name }
+                == ["A.swift", "Sources/NapCatSeam/B.swift", "Sources/NapCatChannel/Z.swift", "Sources/NapCatWire/C.swift"])
+        #expect(Self.inserting(small, "Sources/NapCatWire/Z.swift", "").map { $0.name }
+                == ["A.swift", "Sources/NapCatSeam/B.swift", "Sources/NapCatWire/C.swift", "Sources/NapCatWire/Z.swift"])
+        #expect(Self.names(["'x' in Sources/NapCatSeam/SeamSocket.swift — y"], Self.seamPath)
+                && !Self.names(["'x' in Sources/NapCatSeam/SeamSocket.swift — y"], Self.seamFile)
+                && Self.names(["2 lifecycle open(s) in A.swift, read"], "A.swift") && Self.names(["1 'f(' in A.swift"], "A.swift"))
     }
 
     static func text(_ name: String, in sources: Sources) -> String { sources.first { $0.name == name }?.text ?? "" }
@@ -147,28 +239,47 @@ struct ApprovalChannelStructureTests {
     static let socketTokens = ["Darwin.socket(", "Darwin.bind(", "Darwin.listen(", "Darwin.accept(", "Darwin.connect(",
                                "getsockopt(", "setsockopt(", "LOCAL_PEERCRED", "LOCAL_PEERTOKEN", "socketpair("]
 
+    /// `sources`: `pathSources()` (#244: `sources()`, read before, names
+    /// every file by its file name alone, so a file called SeamSocket.swift
+    /// in another target was let off the ban, and one in Sources/NapCat was
+    /// read as the seam's file).
     static func socketConfinementFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        for (name, text) in sources where name != seamFile {
+        for (name, text) in sources where name != seamPath {
             for token in socketTokens where text.contains(token) {
-                failures.append("'\(token)' in \(name) — the seam's socket calls stay in \(seamFile)")
+                failures.append("'\(token)' in \(name) — the seam's socket calls stay in \(seamPath)")
             }
         }
-        let seam = text(seamFile, in: sources)
+        let seam = text(seamPath, in: sources)
         for token in socketTokens.dropLast() where !seam.contains(token) {
-            failures.append("'\(token)' not found in \(seamFile) — the lint would be vacuous")
+            failures.append("'\(token)' not found in \(seamPath) — the lint would be vacuous")
         }
         return failures
     }
 
     @Test func theSeamsSocketCallsLiveInOneFile() throws {
-        let sources = try Self.sources()
+        let sources = try Self.pathSources()
         #expect(Self.socketConfinementFailures(sources).isEmpty, "\(Self.socketConfinementFailures(sources))")
         for (file, planted) in [(Self.hostFile, "let s = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)"),
-                                (Self.relayFile, "_ = getsockopt(0, 0, 0, nil, nil)"),
+                                (Self.relayPath, "_ = getsockopt(0, 0, 0, nil, nil)"),
                                 (Self.intakeFile, "let c = LOCAL_PEERCRED")] {
-            #expect(!Self.socketConfinementFailures(Self.mutate(sources, file) { $0 + "\n" + planted }).isEmpty,
-                    "canary in \(file) was NOT caught")
+            let mutant = Self.mutate(sources, file) { $0 + "\n" + planted }
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary in \(file) did not apply")
+            #expect(!Self.socketConfinementFailures(mutant).isEmpty, "canary in \(file) was NOT caught")
+        }
+        // #244: a file under the seam's name in each other target, holding a
+        // socket call, is not the seam's file: the ban names it, by its path.
+        // One holding the seam's own text is named alone: the seam's file
+        // stays the one exempt.
+        let seam = Self.text(Self.seamPath, in: sources)
+        let namesakes = Self.namesakes(of: Self.seamPath)
+        #expect(namesakes.count == 3, "vacuity: a namesake in each other target")
+        for path in namesakes {
+            let mutant = Self.inserting(sources, path, "let zz = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)\n")
+            #expect(Self.names(Self.socketConfinementFailures(mutant), path), "canary at \(path) was NOT caught by the socket ban")
+            let twin = Self.socketConfinementFailures(Self.inserting(sources, path, seam))
+            #expect(!twin.isEmpty && twin.allSatisfy { $0.hasPrefix("'") && $0.contains(" in \(path) —") },
+                    "the seam's twin at \(path) was NOT named alone: \(twin)")
         }
     }
 
@@ -554,14 +665,18 @@ struct ApprovalChannelStructureTests {
     /// its client again (#150) before anything is held, classifies it, and
     /// only then opens its lifecycle with the gate's answer: the gate is
     /// called once, and the lifecycle opened once, there alone (the open
-    /// counted on the flattened code, #198).
+    /// counted on the flattened code, #198). `sources`: `pathSources()`
+    /// (#244: `sources()`, read before, names every file by its file name
+    /// alone, so a file in another target under the state machine's name
+    /// went unread, one under the gate's name could classify, and one under
+    /// the intake's name could classify and open once).
     static func gateOrderFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         let classify = "ApprovalGate.classify("
         // The gate's own file is read for the open, not for `classify`.
-        for (name, text) in sources where name != "ApprovalStateMachine.swift" {
+        for (name, text) in sources where name != stateMachinePath {
             let found: Int = count(classify, in: text)
-            if name != "ApprovalClassification.swift" && (name == intakeFile ? found != 1 : found != 0) {
+            if name != classificationPath && (name == intakeFile ? found != 1 : found != 0) {
                 failures.append("\(found) '\(classify)' in \(name)")
             }
             let wanted: Int = name == intakeFile ? 1 : 0
@@ -591,7 +706,7 @@ struct ApprovalChannelStructureTests {
     }
 
     @Test func theGateClassifiesEveryPromptBeforeItsLifecycleOpens() throws {
-        let sources = try Self.sources()
+        let sources = try Self.pathSources()
         #expect(Self.gateOrderFailures(sources).isEmpty, "\(Self.gateOrderFailures(sources))")
         let intake: String = Self.text(Self.intakeFile, in: sources)
         let indent: String = "        "
@@ -615,7 +730,7 @@ struct ApprovalChannelStructureTests {
         let openLine: String = "        let opened = ApprovalLifecycle.open(id: id, classification: classification, armed: armed(), now: now())\n"
         #expect(Self.count(openLine, in: intake) == 1, "vacuity: the lifecycle's one open is in the intake once")
         let intakeShapes: [Int] = Self.flatCounts(Self.openShapePattern, in: intake)
-        let declaredShapes: [Int] = Self.flatCounts(Self.openShapePattern, in: Self.text("ApprovalStateMachine.swift", in: sources))
+        let declaredShapes: [Int] = Self.flatCounts(Self.openShapePattern, in: Self.text(Self.stateMachinePath, in: sources))
         #expect(intakeShapes.allSatisfy { $0 == 1 } && declaredShapes.allSatisfy { $0 == 1 },
                 "vacuity: the call's shape reads the intake's one open and the open's declaration, once each")
         let newFile: (String) -> Sources = { text in sources + [(name: "ZZOpen.swift", text: text)] }
@@ -671,7 +786,7 @@ struct ApprovalChannelStructureTests {
             ("an alias's open named with its labels", newFile(short + "enum ZZ { static let zz = ZZShort.open(id:classification:armed:now:timeToLive:) }")),
             ("a bare open in an extension", newFile("extension ApprovalLifecycle { static func zz() -> ApprovalLifecycle { open" + arguments + ".lifecycle } }")),
             ("a longer name's open taken unapplied", newFile(prefixed + "enum ZZ { static let zz = ZZApprovalLifecycle.open }")),
-            ("a lifecycle opened in the gate's file", Self.mutate(sources, "ApprovalClassification.swift") {
+            ("a lifecycle opened in the gate's file", Self.mutate(sources, Self.classificationPath) {
                 $0 + "\nlet l = ApprovalLifecycle.open" + arguments }),
             // #211: the lifecycle's name and its `.open` apart across a
             // postfix `#if`, unapplied, in its active branch, an `#else` or an
@@ -712,6 +827,23 @@ struct ApprovalChannelStructureTests {
                                 ("a postfix #if around other members", postfix)] {
             #expect(control.map { $0.text } != sources.map { $0.text }, "the control '\(name)' applied")
             #expect(Self.gateOrderFailures(control).isEmpty, "over-match '\(name)': \(Self.gateOrderFailures(control))")
+        }
+        // #244: a file in another target under the state machine's, the
+        // gate's or the intake's name is not that file. A lifecycle opened in
+        // a namesake of the state machine, a classification in a namesake of
+        // the gate's file, and the intake's one classification and one open
+        // in a namesake of the intake are each named, by the namesake's path.
+        let classified: String = "let zz = ApprovalGate.classify(toolName: t, inputPreview: p)\n"
+        let openedElsewhere: String = "let zy = ApprovalLifecycle.open" + arguments + "\n"
+        var planted: [(path: String, text: String)] = []
+        planted += Self.namesakes(of: Self.stateMachinePath).map { ($0, openedElsewhere) }
+        planted += Self.namesakes(of: Self.classificationPath).map { ($0, classified) }
+        planted += Self.namesakes(of: Self.intakeFile).map { ($0, classified + openedElsewhere) }
+        #expect(planted.count == 9, "vacuity: three pinned files, a namesake of each in each other target")
+        for (path, text) in planted {
+            let mutant: Sources = Self.inserting(sources, path, text)
+            #expect(mutant.count == sources.count + 1, "canary at \(path) did not apply")
+            #expect(Self.names(Self.gateOrderFailures(mutant), path), "canary at \(path) was NOT named by the gate-order lock")
         }
     }
 
@@ -801,9 +933,18 @@ struct ApprovalChannelStructureTests {
     static let serverBannedTokens = ["FileManager", "getenv", "ProcessInfo", "environment", ".claude", "UserDefaults",
                                      "URLSession", "Process(", "posix_spawn", "print(", "FileHandle"]
 
+    /// `sources`: `pathSources()` (#244: `sources()`, read before, names
+    /// every file by its file name alone, so a file under the seam's, the
+    /// relay's, the server's or the wire's name read before it, in
+    /// Sources/NapCat say, was read in its place, and one in another target
+    /// under the server's name could resolve the real socket path). A file
+    /// the check reads that is not there fails it.
     static func serverFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        for name in [seamFile, relayFile, serverFile] {
+        for name in [seamPath, relayPath, serverPath, wirePath] where !sources.contains(where: { $0.name == name }) {
+            failures.append("\(name) not found — the server lint would be vacuous")
+        }
+        for name in [seamPath, relayPath, serverPath] {
             let code = text(name, in: sources)
             for token in serverBannedTokens where code.contains(token) {
                 failures.append("'\(token)' in \(name) — the server reads no configuration and writes stdout only through write(2)")
@@ -813,7 +954,7 @@ struct ApprovalChannelStructureTests {
         for (name, text) in sources where text.contains("\"notifications/claude/channel\"") {
             failures.append("\(name) names the channel message method — the server never sends one")
         }
-        let wire = text("ApprovalChannel.swift", in: sources)
+        let wire = text(wirePath, in: sources)
         if wire.contains("\"tools\"") || wire.contains("\\\"tools\\\"") || wire.contains("instructions") {
             failures.append("the handshake must declare the two channel capabilities only")
         }
@@ -822,7 +963,7 @@ struct ApprovalChannelStructureTests {
         // else.
         for (name, text) in sources {
             let resolutions = count("SeamPaths.homeDirectory(", in: text)
-            let allowed = name == serverFile || name == toggleFile ? 1 : 0
+            let allowed = name == serverPath || name == toggleFile ? 1 : 0
             if resolutions != allowed {
                 failures.append("\(resolutions) real socket path resolution(s) in \(name) — only the server's entry point "
                     + "and the toggle's factory may, once each")
@@ -841,22 +982,61 @@ struct ApprovalChannelStructureTests {
     }
 
     @Test func theServerReadsNoConfigurationAndNeverTalksToTheSession() throws {
-        let sources = try Self.sources()
+        let sources = try Self.pathSources()
         #expect(Self.serverFailures(sources).isEmpty, "\(Self.serverFailures(sources))")
         let mutants: [(String, Sources)] = [
-            ("the server reads the environment", Self.mutate(sources, Self.serverFile) { $0 + "\nlet h = getenv(\"HOME\")" }),
-            ("the relay prints", Self.mutate(sources, Self.relayFile) { $0 + "\nfunc p() { print(\"x\") }" }),
-            ("the seam reads a file", Self.mutate(sources, Self.seamFile) { $0 + "\nlet f = FileManager.default" }),
-            ("a channel message", Self.mutate(sources, "ApprovalChannel.swift") {
+            ("the server reads the environment", Self.mutate(sources, Self.serverPath) { $0 + "\nlet h = getenv(\"HOME\")" }),
+            ("the relay prints", Self.mutate(sources, Self.relayPath) { $0 + "\nfunc p() { print(\"x\") }" }),
+            ("the seam reads a file", Self.mutate(sources, Self.seamPath) { $0 + "\nlet f = FileManager.default" }),
+            ("a channel message", Self.mutate(sources, Self.wirePath) {
                 $0 + "\nstatic let m = \"notifications/claude/channel\"" }),
-            ("a tools capability", Self.mutate(sources, "ApprovalChannel.swift") { $0 + "\nlet t = \"\\\"tools\\\":{}\"" }),
+            ("a tools capability", Self.mutate(sources, Self.wirePath) { $0 + "\nlet t = \"\\\"tools\\\":{}\"" }),
             ("the host resolves the real path", Self.mutate(sources, Self.hostFile) { $0 + "\nlet h = SeamPaths.homeDirectory()" }),
             ("the model resolves the real path", Self.mutate(sources, "MenuStateModel.swift") {
                 $0 + "\nlet h = SeamPaths.homeDirectory()" }),
             ("the toggle resolves it twice", Self.mutate(sources, Self.toggleFile) { $0 + "\nlet h = SeamPaths.homeDirectory()" }),
         ]
         for (name, mutant) in mutants {
+            #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.serverFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // #244: a file in another target under the name of a file the check
+        // reads is not that file. With a namesake of the seam's, the relay's
+        // or the server's file in any other target (one read before the real
+        // file was read in its place), a banned word planted in the real file
+        // is still named, by its path; a namesake of the server's file may
+        // not resolve the real socket path; a namesake of the wire's file
+        // does not hide a capability planted in the wire; and a file the
+        // check reads, moved to another target, fails it.
+        let clean = "enum ZZNamesake {}\n"
+        var shadows: [(namesake: String, mutant: Sources, path: String)] = []
+        for (path, planted) in [(Self.seamPath, "\nlet f = FileManager.default"), (Self.relayPath, "\nfunc p() { print(\"x\") }"),
+                                (Self.serverPath, "\nlet h = getenv(\"HOME\")")] {
+            for namesake in Self.namesakes(of: path) {
+                shadows.append((namesake, Self.mutate(Self.inserting(sources, namesake, clean), path) { $0 + planted }, path))
+            }
+        }
+        #expect(shadows.count == 9, "vacuity: three read files, a namesake of each in each other target")
+        for (namesake, mutant, path) in shadows {
+            #expect(mutant.map { $0.text }.contains(clean) && mutant.count == sources.count + 1, "canary at \(namesake) did not apply")
+            #expect(Self.names(Self.serverFailures(mutant), path), "a banned word in \(path), beside a namesake at \(namesake), was NOT named")
+        }
+        for namesake in Self.namesakes(of: Self.serverPath) {
+            let mutant = Self.inserting(sources, namesake, "let h = SeamPaths.homeDirectory()\n")
+            #expect(Self.names(Self.serverFailures(mutant), namesake), "the namesake at \(namesake) resolving the real path was NOT named")
+        }
+        let capability = Self.mutate(sources, Self.wirePath) { $0 + "\nlet t = \"\\\"tools\\\":{}\"" }
+        for namesake in Self.namesakes(of: Self.wirePath) {
+            #expect(Self.serverFailures(Self.inserting(capability, namesake, clean))
+                        .contains("the handshake must declare the two channel capabilities only"),
+                    "a capability in the wire, beside a namesake at \(namesake), was NOT caught")
+        }
+        for path in [Self.seamPath, Self.relayPath, Self.serverPath, Self.wirePath] {
+            for namesake in Self.namesakes(of: path) {
+                let moved: Sources = sources.map { $0.name == path ? (name: namesake, text: $0.text) : $0 }
+                #expect(Self.serverFailures(moved).contains("\(path) not found — the server lint would be vacuous"),
+                        "\(path) moved to \(namesake) was NOT caught")
+            }
         }
     }
 
