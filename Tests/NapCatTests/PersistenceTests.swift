@@ -103,8 +103,9 @@ struct PersistenceTests {
     /// app builds (`makeIfEnabled`, on an isolated suite — the controller is
     /// never reconciled, so nothing is watched). Unset reads as 60 and is not
     /// eagerly written; a stored value is clamped on READ (29 → 30, 601 →
-    /// 600) and junk reads as 60. Every read is LIVE: the one controller built
-    /// at launch follows each later write — no rebuild, so no restart.
+    /// 600) and junk reads as 60, and the read never rewrites what is stored
+    /// (29 stays 29, junk stays junk). Every read is LIVE: the one controller
+    /// built at launch follows each later write — no rebuild, so no restart.
     @Test func finishAlertMinimumRunDefaultsTo60AndClampsOnRead() {
         withLidGuardHarness { lid in
             let built = FinishAlertController.makeIfEnabled(
@@ -121,9 +122,12 @@ struct PersistenceTests {
             for (stored, expected) in [(29, 30), (30, 30), (120, 120), (600, 600), (601, 600), (0, 0), (1, 30), (-1, 30)] {
                 lid.defaults.set(stored, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
                 #expect(finish.minimumRunSeconds == expected, "stored \(stored)")
+                #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) as? Int == stored,
+                        "reading never rewrites the stored \(stored)")
             }
             lid.defaults.set("junk", forKey: DefaultsKey.finishAlertMinimumRunSeconds)
             #expect(finish.minimumRunSeconds == 60, "a non-integer falls back to the default")
+            #expect(lid.defaults.string(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == "junk", "and stays as stored")
             lid.defaults.set(90.5, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
             #expect(finish.minimumRunSeconds == 60, "so does a fraction")
             lid.defaults.removeObject(forKey: DefaultsKey.finishAlertMinimumRunSeconds)

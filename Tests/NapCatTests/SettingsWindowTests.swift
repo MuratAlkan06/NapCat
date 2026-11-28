@@ -1531,6 +1531,26 @@ struct SettingsWindowTests {
             "the note replaces the controls for the gated state only")
     }
 
+    /// Issue #242: the minimum-run row is its popup (forwarding to the model)
+    /// and the caption that follows the floor. The Immediately caption runs
+    /// to two lines, so the caption keeps its full height — it wraps, as the
+    /// window's other captions do, and is never cut off.
+    @Test func theMinimumRunCaptionWrapsToItsFullHeight() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        #expect(Self.occurrences(of: "case let .minimumRun(label, seconds, choices, caption):", in: views) == 1)
+        let row = try #require(views.components(separatedBy: "case let .minimumRun(label, seconds, choices, caption):")
+            .dropFirst().first?.components(separatedBy: "case ").first)
+        #expect(MenuPanelStructureTests.flat(row) == [
+            "VStack(alignment: .leading, spacing: PanelMetrics.tight) {",
+            "Picker(label, selection: Binding( get: { seconds }, set: { model.setFinishAlertMinimumRunSeconds($0) } )) {",
+            "ForEach(choices, id: \\.self) { choice in",
+            "Text(MenuStateModel.sessionAlertsFloorText(seconds: choice)).tag(choice) } }",
+            ".accessibilityLabel(MenuStateModel.sessionAlertsFloorAccessibilityLabel)",
+            "Text(caption) .font(.caption) .foregroundStyle(.secondary) .fixedSize(horizontal: false, vertical: true)",
+            "}",
+        ].joined(separator: " "), "the minimum-run row was rewired: \(MenuPanelStructureTests.flat(row))")
+    }
+
     /// Every Settings control forwards to the SAME model action as its
     /// panel twin — never a second path to a controller.
     @Test func everySettingsControlForwardsToTheModel() throws {
