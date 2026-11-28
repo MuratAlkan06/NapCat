@@ -549,14 +549,16 @@ struct ApprovalFloorTests {
     // MARK: - The outcome
 
     /// The order: an unreadable topic, then the first matching group, then
-    /// a naming string outside printable ASCII, then no match.
+    /// a naming string outside printable ASCII (a URL as well), then no
+    /// match.
     @Test func theOutcomeOrder() {
         #expect(Self.outcome([.freeText("AbCdEf12 security")]) == .floor(.alertTopic))
         #expect(Self.groups([.freeText("AbCdEf12 security napcat")]) == [.alertTopic, .ownNames, .keychain])
         #expect(Self.outcome([.naming("ls \(Self.kelvin)"), .naming("security")]) == .floor(.keychain), "a name before ASCII")
         #expect(Self.outcome([.naming("ls \(Self.kelvin)")]) == .unreadable(.notPrintableASCII))
         #expect(Self.outcome([.freeText("ls \(Self.kelvin)")]) == .noMatch, "free text may hold any script")
-        for control in ["git\tstatus", "git status\n", "git\u{7F}", "caf\u{E9}", "\u{0}"] {
+        for control in ["git\tstatus", "git status\n", "git\u{7F}", "caf\u{E9}", "\u{0}", "https://example.invalid/caf\u{E9}",
+                        "file:///Users/someone/\u{4E16}\u{754C}.txt", "https://example.invalid/a\nb"] {
             #expect(Self.outcome([.naming(control)]) == .unreadable(.notPrintableASCII), "\(control.debugDescription)")
         }
         #expect(Self.outcome([.naming(" ~")]) == .noMatch, "space to tilde is printable")
@@ -607,12 +609,14 @@ struct ApprovalFloorTests {
 
     // MARK: - The tables
 
-    /// One table per group but the topic's, in group order; every name
-    /// lowercase printable ASCII, free of `//`, of `/./` and of every I/O
-    /// token the wire's purity scan reads; every word made of piece bytes
-    /// only (so it can match a piece); no name twice; and no table empty.
+    /// One table per group but the topic's, in group order, with these
+    /// words; every name lowercase printable ASCII, free of `//`, of `/./`
+    /// and of every I/O token the wire's purity scan reads; every word made
+    /// of piece bytes only (so it can match a piece); no name twice; and no
+    /// table empty.
     @Test func theTablesAreWellFormed() {
         #expect(ApprovalFloor.tables.map(\.group) == ApprovalFloorGroup.allCases.filter { $0 != .alertTopic })
+        #expect(ApprovalFloor.tables.map(\.words) == [["napcat"], [], [], ["security"], ["claude", "claude-code"], []])
         var seen: Set<String> = []
         for table in ApprovalFloor.tables {
             #expect(!(table.words + table.substrings).isEmpty, "\(table.group) has names")
