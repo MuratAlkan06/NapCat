@@ -99,13 +99,20 @@ synchronization, so iCloud Keychain never carries it off this Mac.
 It is not a secret, but it is what the Mac would trust a signed answer by,
 so its integrity matters: NapCat writes it only when you confirm, on the
 Mac, that both devices show the same code, and a new pairing replaces it in
-one write. **Unpair…** in Settings › Claude asks the keychain to delete it
-and turns Remote approvals off either way. If the keychain refuses, the
-item stays and NapCat logs `pairing.unpairFailed`; Settings › Claude says
-the key could not be removed and offers **Try Again**, and the menu shows
-a warning too, until a deletion or a new pairing goes through or NapCat
-quits. After a relaunch Settings › Claude shows what it reads: the pairing,
-as long as the item can be read. `scripts/uninstall.sh` deletes it too, as
+one write. **Unpair…** in Settings › Claude turns Remote approvals off
+first, then records the Unpair and asks the keychain to delete the item. If
+the keychain refuses, the item stays and NapCat logs
+`pairing.unpairFailed`; Settings › Claude says the key could not be removed
+and offers **Try Again**, and the menu shows a warning too, until a deletion
+or a new pairing goes through. The record (a file in
+`~/Library/Application Support/NapCat/approvals/` holding a digest of the
+stored item, no secret) keeps that state across relaunches: while it names
+the stored item, NapCat counts no pairing and verifies no answer signed by
+that key. It fails closed: a record NapCat cannot read holds whatever key
+is stored. **Try Again** deletes only the item that Unpair was asked to
+remove, never one paired since. A stored item NapCat cannot read has its
+own warning in Settings › Claude, and **Unpair…** removes it.
+`scripts/uninstall.sh` deletes it too, as
 you and without printing it. The keychain's access prompt guards reading
 this item, not replacing it: software already running as you can replace
 it without a prompt, so the key is as trustworthy as your user account, no

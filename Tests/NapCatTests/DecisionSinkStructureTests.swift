@@ -539,7 +539,8 @@ struct DecisionSinkStructureTests {
         "audit: (DecisionVerifierAudit) -> Void = DecisionVerifierLog.record) -> DecisionVerification {",
         "let pairedKey: P256.Signing.PublicKey? = switch keys.read() {",
         "case .paired(let phone): try? P256.Signing.PublicKey(x963Representation: phone.publicKey)",
-        "case .notPaired, .unreadable: nil", "}",
+        // AMENDED (#247): a key under an outstanding Unpair is no key.
+        "case .notPaired, .unreadable, .unpairOutstanding: nil", "}",
         "let verification = verification(of: evidence, copy: copy, pairedKey: pairedKey)",
         "if case .unverified(let reason) = verification {",
         "audit(DecisionVerifierAudit(promptID: PromptID(hex: evidence.promptID), reason: reason))", "}",
@@ -607,9 +608,12 @@ struct DecisionSinkStructureTests {
         "dispatchPrecondition(condition: .notOnQueue(queue))", "return queue.sync {", "guard let intake else { return nil }",
         "return body(intake)", "}", "}",
     ].joined(separator: " ")
-    /// The slot's read, whole: the keychain's answer, read now and kept nowhere.
+    /// The slot's read, whole: the keychain's answer, read now and kept
+    /// nowhere. AMENDED (#247): an answer the outstanding-Unpair record
+    /// holds reads as no pairing, whatever the item holds.
     static let slotReadWhole: String = [
-        #"static let header = "napcat-paired-v1" func read() -> PairedPhoneRead {"#, "switch items.read() {",
+        #"static let header = "napcat-paired-v1" func read() -> PairedPhoneRead {"#, "let held = items.read()",
+        "if unpairs.holds(held) { return .unpairOutstanding }", "switch held {",
         "case .found(let text): return Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable",
         "case .notFound: return .notPaired", "case .failed: return .unreadable", "}", "}",
     ].joined(separator: " ")
@@ -2760,10 +2764,14 @@ struct DecisionSinkStructureTests {
 
     /// D2's anchors (the slot's read, commit and unpair) and its plant,
     /// verbatim: a reading kept per handle, forgotten on the handle's own
-    /// commit or unpair alone.
+    /// commit or unpair alone. AMENDED (#247): today's read, commit and
+    /// unpair, which read and keep the outstanding-Unpair record; the plant
+    /// keeps a reading the same way over them.
     static let slotRead: String = """
             func read() -> PairedPhoneRead {
-                switch items.read() {
+                let held = items.read()
+                if unpairs.holds(held) { return .unpairOutstanding }
+                switch held {
                 case .found(let text): return Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable
                 case .notFound: return .notPaired
                 case .failed: return .unreadable
@@ -2776,11 +2784,16 @@ struct DecisionSinkStructureTests {
 
             func read() -> PairedPhoneRead {
                 if let kept = zzKept.value { return kept }
+                let held = items.read()
                 let now: PairedPhoneRead
-                switch items.read() {
-                case .found(let text): now = Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable
-                case .notFound: now = .notPaired
-                case .failed: now = .unreadable
+                if unpairs.holds(held) {
+                    now = .unpairOutstanding
+                } else {
+                    switch held {
+                    case .found(let text): now = Self.phone(from: text).map(PairedPhoneRead.paired) ?? .unreadable
+                    case .notFound: now = .notPaired
+                    case .failed: now = .unreadable
+                    }
                 }
                 zzKept.value = now
                 return now
@@ -2789,7 +2802,9 @@ struct DecisionSinkStructureTests {
         """
     static let slotCommit: String = """
             func commit(_ phone: PairedPhone) -> Bool {
-                items.write(Self.text(of: phone))
+                guard items.write(Self.text(of: phone)) else { return false }
+                unpairs.clear()
+                return true
             }
 
         """
@@ -2800,13 +2815,16 @@ struct DecisionSinkStructureTests {
             }
 
             private func zzWrite(_ phone: PairedPhone) -> Bool {
-                items.write(Self.text(of: phone))
+                guard items.write(Self.text(of: phone)) else { return false }
+                unpairs.clear()
+                return true
             }
 
         """
     static let slotUnpair: String = """
             func unpair() -> Bool {
-                items.delete()
+                unpairs.record(items.read())
+                return removeRecorded()
             }
 
         """
@@ -2817,7 +2835,8 @@ struct DecisionSinkStructureTests {
             }
 
             private func zzDelete() -> Bool {
-                items.delete()
+                unpairs.record(items.read())
+                return removeRecorded()
             }
 
         """
@@ -3156,6 +3175,9 @@ struct DecisionSinkStructureTests {
         #"nonisolated static let unpairFailedPanelLine = "Unpair failed — try again in Settings › Claude""#: 1,
         #"nonisolated static let unpairRetryButtonTitle = "Try Again""#: 1,
         #"nonisolated static let unpairRetryAccessibilityLabel = "Try again to remove the iPhone's key""#: 1,
+        // #247: the line for an item NapCat cannot read, and its panel twin.
+        "nonisolated static let pairingUnreadableLine =": 1,
+        #"nonisolated static let pairingUnreadablePanelLine = "Key unreadable — remove it or pair again in Settings › Claude""#: 1,
         "nonisolated static func pairingPairedLine(since: Date) -> String {": 1,
         "nonisolated static func pairingStatusLine(_ pane: PairingPaneState) -> PanelLine {": 1,
         "nonisolated static func pairingPanelLine(_ pane: PairingPaneState) -> PanelLine {": 1,
@@ -3529,6 +3551,11 @@ struct DecisionSinkStructureTests {
         "CloudKitMessageSender.swift": ["func send(": 1],
         "CompositeMessageSender.swift": ["func send(": 1],
         "KeychainTopicStore.swift": ["func write(_ topic: String) -> Bool": 1, "func write(_ topic: String) -> Bool {": 1],
+        // #247: the outstanding-Unpair record's file — its store's write, and
+        // its one C write, to the fresh file `mkostemp` made in that function.
+        "UnpairRecord.swift": [
+            "func write(_ text: String) -> Bool {": 1,
+            "let wrote = bytes.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress! + written, $0.count - written) }": 1],
         RecordPath.recordPathFile: [
             "func write(_ prompt: some GateApprovedPrompt, completion: @escaping @Sendable (ApprovalRecordOutcome) -> Void) {": 1],
     ]

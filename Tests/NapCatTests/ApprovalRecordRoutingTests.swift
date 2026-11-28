@@ -25,7 +25,7 @@ final class RoutedIntake {
     /// S-PAIR-C2: the paired-phone slot over an in-memory item (never the
     /// keychain), the record reader's lines and the verifier's refusals.
     let items = FakeTopicStore()
-    lazy var keys = PairedKeyStore(items: items)
+    lazy var keys = PairedKeyStore(items: items, unpairs: UnpairRecord(medium: FakeTopicStore()))
     var readings: [String] = []
     var refusals: [String] = []
 

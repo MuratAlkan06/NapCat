@@ -492,7 +492,7 @@ struct CloudKitPairingRecordsTests {
         var remembered: String?
         var clock = Date(timeIntervalSince1970: 1_800_000_000)
         let controller = PairingController(
-            source: CloudKitPairingRecords(database: { GuardedPairingDatabase(database) }), keys: PairedKeyStore(items: items),
+            source: CloudKitPairingRecords(database: { GuardedPairingDatabase(database) }), keys: PairedKeyStore(items: items, unpairs: UnpairRecord(medium: FakeTopicStore())),
             readRemembered: { remembered }, writeRemembered: { remembered = $0 }, makeNonce: { PhoneHalf.nonce },
             clock: { clock }, killSwitch: {}, audit: { _ in }, makeTicker: { _ in ManualPairingTicker({}, cancelled: {}) })
         controller.begin()

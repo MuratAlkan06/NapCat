@@ -684,9 +684,9 @@ final class MenuContentView: NSObject, NSMenuDelegate {
     }
 
     /// S-PAIR-C1: Unpair asks first; Try Again (#240), after a refused
-    /// deletion, re-runs it without a second alert. Confirmed, the keychain
-    /// is asked to delete the slot's key and the remote-approvals toggle
-    /// goes off through its kill switch, whatever the deletion came to.
+    /// deletion, re-runs it without a second alert. Confirmed, the
+    /// remote-approvals toggle goes off through its kill switch, and then
+    /// (#247) the keychain is asked to delete the slot's key.
     private func confirmUnpair() {
         let alert = Self.unpairAlert()
         guard alert.runModal() == .alertFirstButtonReturn else { return }

@@ -123,10 +123,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // F4 slice S-PAIR-C1 (pairing): beside the toggle it stops on
         // Unpair. Construction does no I/O; the paired-key slot is read as
         // Settings opens. A record name a ceremony left behind (NapCat quit
-        // or crashed mid-pairing) is deleted by that name now.
+        // or crashed mid-pairing) is deleted by that name now. #247: the slot
+        // reads the outstanding-Unpair record in the approvals folder at
+        // every read.
         let pairing = PairingController.makeIfEnabled(
             remoteApprovals: approvals,
-            keys: PairedKeyStore(items: KeychainTopicStore.pairedPhoneKeychain),
+            keys: PairedKeyStore(items: KeychainTopicStore.pairedPhoneKeychain, unpairs: UnpairRecord.approvalsFolder),
             defaults: defaults
         )
         pairing?.deleteRememberedRecord()

@@ -547,6 +547,25 @@ struct PairingPresentationTests {
         }
     }
 
+    /// #247: a stored item NapCat cannot read has its own line — a warning,
+    /// its severity word first for VoiceOver, with no code and no hint —
+    /// then Pair a New iPhone… (which replaces it) and Unpair… (the same
+    /// confirmed Unpair, which removes it), with no Try Again. The panel's
+    /// twin is the same warning in its own words: where to remove it.
+    @Test func anUnreadableItemShowsAWarningAndUnpair() {
+        let text = "Key unreadable — the iPhone's key stored in your keychain can't be read"
+        let line = PanelLine(text: text, severity: .warning)
+        #expect(MenuStateModel.pairingStatusLine(.unreadable) == line)
+        #expect(MenuStateModel.pairingRows(.unreadable) == [
+            .pairingStatus(line: line, fingerprint: nil, hint: nil), .pairingButtons(paired: true)])
+        #expect(PanelSeverityTint.spoken(line) == "Warning: " + text)
+        #expect(MenuStateModel.placement(ofSettingsLine: line.severity) == .topLevel, "a warning never hides in Settings")
+        let panelText = "Key unreadable — remove it or pair again in Settings › Claude"
+        #expect(MenuStateModel.pairingPanelLine(.unreadable) == PanelLine(text: panelText, severity: .warning))
+        #expect(MenuStateModel.pairingRows(.unreadable) != MenuStateModel.pairingRows(.notPaired), "not the never-paired rows")
+        #expect(MenuStateModel.pairingStatusLine(.unreadable) != MenuStateModel.pairingStatusLine(.unpairFailed))
+    }
+
     /// Unpair takes a deliberate click (design review M4): the alert's Unpair
     /// is marked destructive and answers no key, Cancel keeps Esc, and
     /// nothing answers Return. Unpair stays the first button (the owner's

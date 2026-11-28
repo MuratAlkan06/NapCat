@@ -512,7 +512,8 @@ It builds controls only: nothing can be forwarded yet.
   prompts yet"), and while no iPhone is paired
   it says to pair one first ("Not paired — pair your iPhone in Settings ›
   Claude", #205), as it does while a refused Unpair stands (#240: until a
-  deletion or a new pairing goes through, or NapCat quits).
+  deletion or a new pairing goes through; since #247 across relaunches) and
+  while the stored key cannot be read (#247).
   No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
   apply: a pre-arming revision of the category gate (done: S-GATE, #145) and
@@ -672,13 +673,14 @@ this section points at them.
     valid value read from the item itself at launch or saved to it since,
     and so does a launch that could not finish moving the topic into the
     keychain (#254; done, see "The gate's order (#253)").
-  - A refused Unpair is remembered in memory only and only by the pane:
-    the decision verifier reads the slot itself, so the key the owner
-    asked to remove would still verify, during the run and after a
-    relaunch. Before arming: the verifier's read refuses a key under an
-    outstanding Unpair; the refusal survives a relaunch; an item that is
-    there but unreadable has its own line and a way to remove it; Unpair
-    runs the kill switch before the keychain call (#247).
+  - Done (#247): the slot's read, the decision verifier's included,
+    refuses a key under an outstanding Unpair, and that survives a
+    relaunch (the outstanding-Unpair record, see slice S-PAIR's slot); an
+    item that is there but unreadable has its own line in Settings ›
+    Claude, and Unpair… removes it; Unpair runs the kill switch before the
+    keychain call; Try Again acts only on the item the refused Unpair was
+    asked to remove. Still owed (#268): a refused Unpair holds across
+    relaunches in every case.
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
     re-check; done, see slice S1's seam and intake), #221 (no answer
@@ -795,8 +797,9 @@ arms anything.
   if the keychain refuses, the key stays, the `pairing` log says
   `pairing.unpairFailed`, and Settings › Claude says the key could not be
   removed and offers Try Again until a deletion or a new pairing goes
-  through or NapCat quits (#240; after a relaunch it shows what the slot
-  reads: the pairing, while the slot can be read). Re-enrolling Face ID
+  through (#240). Since #247 the Unpair is recorded before the keychain
+  call, and the slot, the decision verifier's read included, reads the key
+  it names as no pairing until it is gone, across relaunches. Re-enrolling Face ID
   invalidates the phone's key in hardware; the phone then unpairs itself
   and asks to pair again. A new or restored phone arrives unpaired (Secure
   Enclave keys never leave their device). Each case is recovered by the
@@ -929,6 +932,26 @@ arms anything.
     Mac holds the old key or the new one, never a mix; Unpair asks the
     keychain to delete it (a refused deletion leaves it in place).
     A stored text in any other form reads as no pairing.
+  - *The outstanding-Unpair record* (#247, `UnpairRecord`). Unpair writes
+    it before the keychain is asked to delete the key: two lines,
+    `napcat-unpair-v1` and `item:` followed by the SHA-256 of the stored
+    item's text in lowercase hex (no secret: the item holds a public key),
+    or `item:unknown` when the keychain refused the read as Unpair ran. It
+    is one file in the approvals folder beside the seam's socket,
+    `unpair-outstanding`, mode 0600, read as a regular file only and never
+    through a symlink, written to a fresh file and renamed over the old one;
+    the folder is made 0700 when missing, and a folder that is not a real
+    directory of this user's takes no write. Every read of the slot reads
+    it: while it holds what the slot holds, the slot reads
+    `unpairOutstanding`, which counts as no pairing. Fail-closed: a record
+    that names no item, that cannot be read, or that reads in any other
+    form holds whatever item is stored (an empty slot is held by none). It
+    is removed only after the keychain deleted the item, after a new key was
+    written over it, or when Try Again finds the item it names gone. The
+    running NapCat also keeps its own copy from before the write, so the
+    refusal holds in the running app whether or not the record is written;
+    a record the disk will not remove stands, there and here. No new secret
+    and no new keychain item.
   - *The ceremony* (`PairingCeremonyState`, a pure state machine, and
     `PairingController`, its shell). Pair iPhone… in Settings › Claude
     makes a fresh nonce, remembers the record's name (never the nonce) for
@@ -972,23 +995,34 @@ arms anything.
     each state's line as it changes, the code character by character, and
     the countdown at one minute and ten seconds only. No motion beyond the
     Settings buttons' press. Unpair… asks first — its Unpair button is
-    marked destructive and answers no key, and Esc cancels — then asks the
-    keychain to delete the key and turns Remote approvals off through its
-    kill switch, whatever the deletion came to. When the keychain refuses
+    marked destructive and answers no key, and Esc cancels — then turns
+    Remote approvals off through its kill switch first, whatever the
+    deletion will come to (#247: so a refused or slow deletion never leaves
+    it on), records the Unpair, and asks the keychain to delete the key.
+    When the keychain refuses
     the deletion (#240) the pane's pairing line is a warning, "Unpair
     failed — the iPhone's key couldn't be removed from your keychain",
     whatever the slot reads after; its twin below the menu's cards says
     "Unpair failed — try again in Settings › Claude" (the panel has no Try
     Again), and the gear carries the badge. The pane's buttons are Try
-    Again — the same Unpair, already confirmed, so no second alert, and
-    nothing unless a refusal stands — and Pair iPhone…. Until a deletion or
-    a new pairing goes through, or NapCat quits, the Remote approvals
-    switch counts no pairing: switched back on, it says to pair first. The
-    refusal is kept in memory only: after a relaunch the pane shows what
-    the slot reads, and a slot that cannot be read shows as not paired, as
-    before (a line of its own for an item that is there but unreadable is
-    a follow-up). The decision verifier is unchanged: it reads the slot
-    itself, and nothing hands it a decision in this build.
+    Again — already confirmed, so no second alert; nothing unless the pane
+    shows the refusal; the kill switch first; and (#247) bound to the item
+    that Unpair recorded: it deletes that item only while the slot still
+    holds it, so a pairing made since is never deleted by it (and the pane,
+    which then shows that pairing, offers no Try Again) — and Pair iPhone….
+    Until a deletion or a new pairing goes through, the Remote approvals
+    switch counts no pairing: switched back on, it says to pair first. Since
+    #247 the refusal is the slot's outstanding-Unpair record, so it survives
+    a relaunch: the pane, the switch and the decision verifier read it as
+    before the relaunch. A stored item NapCat cannot read (the keychain
+    refuses the read, or the text is not a pairing this build reads) has a
+    line of its own, a warning, "Key unreadable — the iPhone's key stored in
+    your keychain can't be read", whose twin below the cards says "Key
+    unreadable — remove it or pair again in Settings › Claude" (the gear
+    carries the badge); its buttons are Pair a New iPhone… (a pairing
+    replaces the item) and Unpair…, the same confirmed Unpair, which
+    removes it. The decision verifier reads the slot itself, and nothing
+    hands it a decision in this build.
   - *Not live in C1.* The app's record seam was a stub that found and
     deleted nothing, so a ceremony showed its code and ended with its
     window; no release could ship with the pairing button over it. Tests
@@ -1227,8 +1261,10 @@ arms anything.
     `decision.signed` (it was `decision.unverifiable` while no key existed).
   - *The key, read at each verification.* The verifier reads the paired key
     from the slot (`PairedKeyStore.read()`) at each verification, on one
-    line, and keeps nothing: a verification after an Unpair whose deletion
-    went through finds no key and refuses (`noPairedKey`), and after a new
+    line, and keeps nothing: a verification after an Unpair finds no key
+    and refuses (`noPairedKey`) — after one whose deletion went through,
+    and (#247) after one still outstanding, whose record makes the slot
+    read its key as no pairing, across relaunches — and after a new
     pairing only the new key's
     signatures verify. Lint-locked: the slot is read at that one site, the
     checks that take a key are reached from that entry alone, no approval
