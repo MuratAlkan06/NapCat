@@ -551,15 +551,19 @@ It builds controls only: nothing can be forwarded yet.
   of its count. Nothing in the app sets that evidence yet (the record path
   that will is not live, and the host is never armed), so no push is dropped
   and every push reads as before.
-- **Hardening.** A topic that exists but could not be read keeps every prompt
-  local. The host holds at most 64 servers and, per server, 64 of its 256
-  prompts; part of a frame left unfinished for 5 seconds closes the link, and
-  a server quiet for a minute with nothing waiting on the phone is let go (it
-  reconnects with its next prompt; the same round lets the TTL withdraw an
-  expired prompt). The probe opens a document non-blocking and checks it is a
-  regular file within the size cap before reading any of it. Nothing the host
-  hands out holds it, so a host or listener released without a stop leaves no
-  socket, link or timer behind.
+- **Hardening.** An alert-topic item that exists reads as unreadable unless
+  it holds a valid value, exactly the value the alerts are sent to, read
+  from the item itself at launch or saved to it since; a launch that could
+  not finish moving the topic into the keychain reads as unreadable; and
+  then every prompt stays local. The host holds at most 64 servers and, per
+  server, 64 of its 256 prompts; part of a frame left unfinished for 5
+  seconds closes the link, and a server quiet for a minute with nothing
+  waiting on the phone is let go (it reconnects with its next prompt; the
+  same round lets the TTL withdraw an expired prompt). The probe opens a
+  document non-blocking and checks it is a regular file within the size cap
+  before reading any of it. Nothing the host hands out holds it, so a host
+  or listener released without a stop leaves no socket, link or timer
+  behind.
 - **Tests.** Real sockets in scratch directories, injected clocks and short
   limits, the toggle over an in-memory setting: no test reads the real
   defaults, keychain or home, registers a channel or starts a process. The
@@ -665,8 +669,10 @@ this section points at them.
     so it cannot stop a waiting push from being dropped. Before anything
     produces evidence, such a prompt must also block the drop for the
     10-second window.
-  - An alert-topic item that exists must read as unreadable unless it
-    holds a valid value, before arming.
+  - An alert-topic item that exists reads as unreadable unless it holds a
+    valid value read from the item itself at launch or saved to it since,
+    and so does a launch that could not finish moving the topic into the
+    keychain (#254; done, see "The gate's order (#253)").
   - Done (#247): the slot's read, the decision verifier's included,
     refuses a key under an outstanding Unpair, and that survives a
     relaunch (the outstanding-Unpair record, see slice S-PAIR's slot); an
@@ -1530,8 +1536,12 @@ once.
   handed no value it can read; `notPrintableASCII`). A floor outcome keeps
   the prompt at once, under every setting; it is its own code, never a
   risky kind. A preview over the gate's size limit is kept before the
-  floor runs. The intake reads the lid guard's answer for the topic: none
-  readable is unreadable, none set is absent, one value is that value.
+  floor runs. The intake reads the lid guard's answer for the topic: an
+  item that exists is unreadable unless it holds a valid value exactly as
+  stored, the value the alerts are sent to, read from the item itself at
+  launch or saved to it since, and then that value is the one the gate is
+  handed; a launch that could not finish moving the topic into the keychain
+  is unreadable; only no item at all is absent (#254).
 - **Risky kinds.** Every forbidden family the row finds, and the relay's
   credential placeholder (the secrets kind), is noted, every one, not only
   the first. A prompt is forwarded only when the set admits its kind and

@@ -93,6 +93,14 @@ struct ApprovalRecordPathStructureTests {
         try ApprovalChannelStructureTests.sources(LidGuardStructureTests.wholeLineCommentsRemoved)
     }
 
+    /// `uncutSources()`'s files and form, Sources/NapCat named by file name
+    /// and the other three targets by path
+    /// (`ApprovalChannelStructureTests.pathSources`, #244), so no file
+    /// outside Sources/NapCat matches a pinned name.
+    static func uncutPathSources() throws -> Sources {
+        try ApprovalChannelStructureTests.pathSources(LidGuardStructureTests.wholeLineCommentsRemoved)
+    }
+
     /// Every match of `pattern` in `text`, as written.
     static func matches(_ pattern: String, in text: String) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["<bad pattern \(pattern)>"] }
@@ -757,14 +765,16 @@ struct ApprovalRecordPathStructureTests {
     /// outrank the pinned call, as P2' did, whatever type it extends.
     static let checkNames: [(name: String, home: String?)] = [
         ("isValidSignature", nil), ("hash", nil),
-        ("decisionMessage", "ApprovalSigning.swift"), ("shownDigestInput", "ApprovalSigning.swift"),
+        ("decisionMessage", signingPath), ("shownDigestInput", signingPath),
     ]
 
     /// The CryptoKit types the check is spelled in (none has a home in the
     /// four targets), and the canonical-bytes enum, extended only in its own
-    /// file.
+    /// file — named by its path (#244: by its file name alone, read before,
+    /// a file under its name in another target could declare the canonical
+    /// builders and extend the enum).
     static let cryptoTypes = ["P256", "SHA256", "SHA256Digest", "Digest", "HMAC", "SymmetricKey"]
-    static let signingFile = "ApprovalSigning.swift"
+    static let signingPath = "Sources/NapCatWire/ApprovalSigning.swift"
 
     /// A declaration of `name`, however the gap after its keyword is spelled.
     static func declarationPattern(_ name: String) -> String {
@@ -782,10 +792,10 @@ struct ApprovalRecordPathStructureTests {
         return [#"\bextension\b[^{]*?\b"# + type + #"\b"#, #"\btypealias\b[^\n]*\b"# + type + #"\b"#, aliased]
     }
 
-    /// `sources`: `uncutSources()`.
+    /// `sources`: `uncutPathSources()` (#244).
     static func cryptoMeaningFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
-        let extended: [(types: [String], home: String?)] = [(cryptoTypes, nil), (["ApprovalSigning"], signingFile)]
+        let extended: [(types: [String], home: String?)] = [(cryptoTypes, nil), (["ApprovalSigning"], signingPath)]
         for (name, uncut) in sources {
             for copy in LidGuardStructureTests.constructorScanCopies(uncut) {
                 for (declared, home) in checkNames {
@@ -809,7 +819,7 @@ struct ApprovalRecordPathStructureTests {
     }
 
     @Test func nothingRedefinesWhatTheVerifiersCheckIsSpelledIn() throws {
-        let sources = try Self.uncutSources()
+        let sources = try Self.uncutPathSources()
         #expect(Self.cryptoMeaningFailures(sources).isEmpty, "\(Self.cryptoMeaningFailures(sources))")
         let verifier = Self.verifierFile
         let checked = "guard pairedKey.isValidSignature(signature, for: SHA256.hash(data: message)) else {"
@@ -846,9 +856,9 @@ struct ApprovalRecordPathStructureTests {
                 $0 + "\nfunc decisionMessage(wireVersion: Int, promptID: PromptID) -> [UInt8]? { nil }" }),
             ("the shown digest's input redeclared in the app", Self.mutate(sources, "NapCatApp.swift") {
                 $0 + "\nlet shownDigestInput: (String, String, String) -> [UInt8] = { _, _, _ in [] }" }),
-            ("a second canonical builder in its home", Self.mutate(sources, Self.signingFile) {
+            ("a second canonical builder in its home", Self.mutate(sources, Self.signingPath) {
                 $0 + "\nextension ApprovalSigning {\n    static func decisionMessage(_ any: Int) -> [UInt8]? { nil }\n}" }),
-            ("the home's builder renamed away", Self.mutate(sources, Self.signingFile) {
+            ("the home's builder renamed away", Self.mutate(sources, Self.signingPath) {
                 $0.replacingOccurrences(of: "public static func shownDigestInput(", with: "public static func shownInput(") }),
             // Extensions of each type, however the header is spelled.
             ("a module-qualified digest extension", Self.mutate(sources, "NapCatApp.swift") {
@@ -883,7 +893,29 @@ struct ApprovalRecordPathStructureTests {
                 + "\nextension ApprovalSigningVectors {}\nextension SHA256Holder {}"
                 + LidGuardStructureTests.wholeLineCommentsRemoved(
                     "\n/// never func isValidSignature, never extension P256, never typealias K = SHA256Digest")
-        }, Self.signingFile) { $0 + "\nextension ApprovalSigning {}" }).isEmpty)
+        }, Self.signingPath) { $0 + "\nextension ApprovalSigning {}" }).isEmpty)
+        // #244: the canonical bytes' home is the NapCatWire file, by path. A
+        // file under its name in each other target that declares each builder
+        // once and extends the enum, or holds the home's own text, is named,
+        // by its path.
+        let home = Self.text(Self.signingPath, in: sources)
+        #expect(home.contains("public static func decisionMessage(") && home.contains("public static func shownDigestInput("),
+                "vacuity: the home is read, by path, and declares both builders")
+        let builders = "extension ApprovalSigning {\n    static func decisionMessage(zz: Int) -> [UInt8]? { nil }\n"
+            + "    static func shownDigestInput(zz: Int) -> [UInt8] { [] }\n}\n"
+        let namesakes = ApprovalChannelStructureTests.namesakes(of: Self.signingPath)
+        #expect(namesakes.count == 3, "vacuity: a namesake in each other target")
+        for path in namesakes {
+            for (kind, text) in [("the builders and an extension", builders), ("the home's twin", home)] {
+                let mutant = ApprovalChannelStructureTests.inserting(sources, path, text)
+                let failures = Self.cryptoMeaningFailures(mutant)
+                let declared: String = "'decisionMessage' declared in \(path) — only \(Self.signingPath) declares it, "
+                    + "so no overload outranks the verifier's call"
+                #expect(mutant.count == sources.count + 1, "canary '\(kind)' at \(path) did not apply")
+                #expect(failures.contains(declared) && ApprovalChannelStructureTests.names(failures, path),
+                        "canary '\(kind)' at \(path) was NOT named by the check-name lock: \(failures)")
+            }
+        }
         // Each pattern compiles and bites through the lock's own engine.
         let probes: [(String, String)] = [
             (Self.declarationPattern("hash"), "static func\n    hash(data: D)"),

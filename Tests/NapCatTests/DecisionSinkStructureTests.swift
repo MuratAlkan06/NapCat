@@ -1312,7 +1312,7 @@ struct DecisionSinkStructureTests {
         #expect(!Self.wholeFailures(reopened, pin).isEmpty, "the second open was NOT caught by receive's pin")
         let others: [String] = Self.othersCatching(reopened, besides: "whole bodies", baseline: Self.pinBaseline(sources))
         #expect(others.isEmpty, "the second open is receive's pin's to catch here, but \(others) caught it too")
-        let s1: Sources = try ApprovalChannelStructureTests.sources()
+        let s1: Sources = try ApprovalChannelStructureTests.pathSources()
         let s1Reopened: Sources = ApprovalChannelStructureTests.mutate(s1, intake, reopen)
         #expect(ApprovalChannelStructureTests.gateOrderFailures(s1).isEmpty && !ApprovalChannelStructureTests.gateOrderFailures(s1Reopened).isEmpty,
                 "the second open was NOT caught by S1's gate-order lock")

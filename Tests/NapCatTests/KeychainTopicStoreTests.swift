@@ -561,11 +561,17 @@ struct KeychainTopicStoreTests {
     /// each of the four calls is named exactly once, as a WORD, on its line
     /// in the binding, in every scan copy — so an unapplied reference, a
     /// second call or a call moved off its line all fail.
+    ///
+    /// AMENDED (#244): the four targets are named as
+    /// `ApprovalChannelStructureTests.pathSources()` names them. Read by file
+    /// name alone before, a file under the store's name in another target
+    /// was let off the ban; by path, the store's name is the Sources/NapCat
+    /// file's alone.
     static func itemCallFailures(_ sources: [(name: String, text: String)]) -> [String] {
         var failures: [String] = []
         for (name, text) in sources where name != storeFile {
             let found = itemCallNames(in: text)
-            if !found.isEmpty { failures.append("\(found) in \(name) — keychain access belongs in \(storeFile)") }
+            if !found.isEmpty { failures.append("\(found) in \(name) — keychain access belongs in \(storeFile) in Sources/NapCat") }
         }
         guard let store = sources.first(where: { $0.name == storeFile })?.text else {
             return failures + ["\(storeFile) not found — the item-call lint would be vacuous"]
@@ -589,12 +595,12 @@ struct KeychainTopicStoreTests {
     /// targets (NapCatWire included) — and, since the C1.5 security review's
     /// R4, there exactly once each, on its line in the binding.
     @Test func onlyKeychainTopicStoreNamesTheSecurityItemCalls() throws {
-        let sources = try ApprovalChannelStructureTests.sources()
+        let sources = try ApprovalChannelStructureTests.pathSources()
         #expect(Self.itemCallFailures(sources).isEmpty, "\(Self.itemCallFailures(sources))")
         #expect(Set(Self.itemCallBindings.keys) == Set(Self.itemCallTokens), "vacuity: one binding line for each call")
         let wire = LidGuardStructureTests.repoRoot().appendingPathComponent("Sources/NapCatWire/AlertWire.swift")
         #expect(Self.itemCallNames(in: try String(contentsOf: wire, encoding: .utf8)).isEmpty)
-        #expect(sources.contains { $0.name == "AlertWire.swift" }, "vacuity: the scan covers NapCatWire")
+        #expect(sources.contains { $0.name == "Sources/NapCatWire/AlertWire.swift" }, "vacuity: the scan covers NapCatWire, by path")
 
         // R4: RP4', as planted, and its neighbours.
         let prefix = "Sec" + "Item"
@@ -615,7 +621,7 @@ struct KeychainTopicStoreTests {
                 $0.replacingOccurrences(of: "add: { attributes in " + prefix + "Add(attributes as CFDictionary, nil) },",
                                         with: "add: { attributes in\n            " + prefix + "Add(attributes as CFDictionary, nil)\n        },") }),
             ("a relative of the calls", mutate(store) { $0 + "\nlet zz = " + prefix + "Export" }),
-            ("a call in another target", mutate(ApprovalChannelStructureTests.seamFile) {
+            ("a call in another target", mutate(ApprovalChannelStructureTests.seamPath) {
                 $0 + "\nlet zz = " + prefix + "CopyMatching" }),
         ]
         for (name, mutant) in mutants {
@@ -632,9 +638,25 @@ struct KeychainTopicStoreTests {
             $0 + "\nlet zz = errSecItemNotFound, zzItemAdd = 1"
                 + LidGuardStructureTests.codeOnly("\n/// never " + prefix + "Add outside the binding")
         }).isEmpty)
+        // #244: a file under the store's name in another target is not the
+        // store. One there holding an item call, or the store's own text, is
+        // named by the ban, by its path.
+        let storeText = ApprovalChannelStructureTests.text(store, in: sources)
+        let namesakes = ApprovalChannelStructureTests.namesakes(of: store)
+        #expect(namesakes.count == 3 && namesakes.allSatisfy { $0.contains("/") }, "vacuity: a namesake in each other target, by path")
+        for path in namesakes {
+            for (kind, text) in [("an item call", "let zz = " + prefix + "Delete(q)\n"), ("the store's twin", storeText)] {
+                let mutant = ApprovalChannelStructureTests.inserting(sources, path, text)
+                #expect(mutant.count == sources.count + 1, "canary '\(kind)' at \(path) did not apply")
+                #expect(ApprovalChannelStructureTests.names(Self.itemCallFailures(mutant), path),
+                        "canary '\(kind)' at \(path) was NOT named by the item-call ban")
+            }
+        }
 
         // The binding to the real calls is used only where it is defined, and
         // nothing anywhere asks for a synchronizable or data-protection item.
+        // (#244: the sources name the other targets' files by path, so the
+        // name below is the Sources/NapCat file's alone.)
         for (name, text) in sources where text.contains("." + "security" + "Framework") {
             #expect(name == "KeychainTopicStore.swift", "\(name) binds the real keychain calls")
         }
