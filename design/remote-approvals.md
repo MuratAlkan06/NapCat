@@ -492,7 +492,8 @@ It builds controls only: nothing can be forwarded yet.
   the Mac; the row says so ("Local only — the iPhone app cannot answer
   prompts yet"), and while no iPhone is paired
   it says to pair one first ("Not paired — pair your iPhone in Settings ›
-  Claude", #205), as it does after an Unpair the keychain refused (#240).
+  Claude", #205), as it does while a refused Unpair stands (#240: until a
+  deletion or a new pairing goes through, or NapCat quits).
   No CloudKit record operation
   exists in this slice. Before any slice makes forwarding real, two gates
   apply: a pre-arming revision of the category gate (done: S-GATE, #145) and
@@ -644,6 +645,13 @@ this section points at them.
     so it cannot stop a waiting push from being dropped. Before anything
     produces evidence, such a prompt must also block the drop for the
     10-second window.
+  - A refused Unpair is remembered in memory only and only by the pane:
+    the decision verifier reads the slot itself, so the key the owner
+    asked to remove would still verify, during the run and after a
+    relaunch. Before arming: the verifier's read refuses a key under an
+    outstanding Unpair; the refusal survives a relaunch; an item that is
+    there but unreadable has its own line and a way to remove it; Unpair
+    runs the kill switch before the keychain call (#247).
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
     re-check; done, see slice S1's seam and intake), #221 (no answer
@@ -926,14 +934,16 @@ arms anything.
     "Pair a New iPhone", and says the current pairing keeps working —
     never "Not Paired" while the old key works. (After a refused Unpair,
     below, a pairing begun is a first one: the owner asked for the old key
-    to go, so the sheet never says it keeps working.) Esc ends the sheet in
-    every state (in the comparison, whose two buttons each decide
-    something, through a Cancel with no button of its own); no button is
-    the default, so nothing answers Return and only a click on Codes
-    Match writes the key. The QR payload is drawn and never spoken,
-    copied, logged or shown as a tooltip; VoiceOver hears each state's
-    line as it changes, the code character by character, and the
-    countdown at one minute and ten seconds only. No motion beyond the
+    to go, so the sheet never says it keeps working; if that ceremony ends
+    without a save its title is "Not Paired" although the old key is still
+    stored, and the pane behind it keeps saying the key couldn't be
+    removed.) Esc ends the sheet in every state (in the comparison, whose
+    two buttons each decide something, through a Cancel with no button of
+    its own); no button is the default, so nothing answers Return and only
+    a click on Codes Match writes the key. The QR payload is drawn and
+    never spoken, copied, logged or shown as a tooltip; VoiceOver hears
+    each state's line as it changes, the code character by character, and
+    the countdown at one minute and ten seconds only. No motion beyond the
     Settings buttons' press. Unpair… asks first — its Unpair button is
     marked destructive and answers no key, and Esc cancels — then asks the
     keychain to delete the key and turns Remote approvals off through its
