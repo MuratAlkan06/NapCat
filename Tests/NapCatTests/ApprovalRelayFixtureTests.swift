@@ -8,11 +8,11 @@ import Testing
 
 /// The relay's own previews (#253): the twenty-three permission prompts
 /// Claude Code 2.1.326 relayed in a recorded session, each with its tool
-/// name and its preview exactly as relayed (its spacing, its escapes and
-/// the relay's own elision), the home folder written as `/Users/someone`.
+/// name and its preview as relayed (its spacing, its escapes and the
+/// relay's own elision), neutralised: the home folder written as
+/// `/Users/someone`, the recording machine's markers and names removed.
 /// Under the listed commands alone the gate keeps every one, with the code
-/// shown; the frozen oracle keeps each with the same code, but where the
-/// floor names the prompt.
+/// shown, and the frozen oracle keeps each with the same code.
 struct ApprovalRelayFixtureTests {
     struct Fixture: Sendable, CustomTestStringConvertible {
         let capture: Int
@@ -36,17 +36,17 @@ struct ApprovalRelayFixtureTests {
     /// In the order they were relayed. Repeats are the same prompt relayed
     /// again.
     static let fixtures: [Fixture] = [
-        Fixture(1, "Bash", "{ \"command\": \"echo napcat-drill-ask channel-check\", \"description\": \"Print the drill channel-check line\" }",
+        Fixture(1, "Bash", "{ \"command\": \"echo example-server-ask channel-check\", \"description\": \"Print the drill channel-check line\" }",
                 Self.notInTable, "an echo an ask rule relayed"),
-        Fixture(2, "Bash", "{ \"command\": \"echo napcat-drill-ask bash-in-bypass\", \"description\": \"Print the drill bash-in-bypass line\" }",
+        Fixture(2, "Bash", "{ \"command\": \"echo example-server-ask bash-in-bypass\", \"description\": \"Print the drill bash-in-bypass line\" }",
                 Self.notInTable),
-        Fixture(3, "Bash", "{ \"command\": \"echo napcat-drill-ask bash-in-bypass\", \"description\": \"Print the drill bash-in-bypass line\" }",
+        Fixture(3, "Bash", "{ \"command\": \"echo example-server-ask bash-in-bypass\", \"description\": \"Print the drill bash-in-bypass line\" }",
                 Self.notInTable),
-        Fixture(4, "Bash", "{ \"command\": \"echo napcat-drill-ask bash-in-bypass\", \"description\": \"Print the drill bash-in-bypass line\" }",
+        Fixture(4, "Bash", "{ \"command\": \"echo example-server-ask bash-in-bypass\", \"description\": \"Print the drill bash-in-bypass line\" }",
                 Self.notInTable),
         Fixture(5, "Write", "{ \"file_path\": \"/Users/someone/capture-drill-scratch-2026-11-27/project/askrule/ask-write.txt\", \"content\": \"hello from the ask rule\\n\" }",
                 .suppress(.localOnlyFileEdit), "a one-line write"),
-        Fixture(6, "Bash", "{ \"command\": \"GITHUB_WORKFLOW_OK=1 git -C gitrepo commit --allow-empty -F - <<'EOF'\\ndrill: first line\\n\\nsecond paragraph of the message\\nEOF\", \"description\": \"Create an empty commit with a two-paragraph message\" }",
+        Fixture(6, "Bash", "{ \"command\": \"git -C gitrepo commit --allow-empty -F - <<'EOF'\\ndrill: first line\\n\\nsecond paragraph of the message\\nEOF\", \"description\": \"Create an empty commit with a two-paragraph message\" }",
                 Self.outside, "a commit message over several lines (a here-document)"),
         Fixture(7, "Bash", "{ \"command\": \"echo \\\"year $(date +%Y)\\\" > subst-out.txt && ls *.txt\", \"description\": \"Write the current year to a text file and list text files\" }",
                 Self.outside, "a substitution and a redirection"),
@@ -66,8 +66,8 @@ struct ApprovalRelayFixtureTests {
                 .suppress(.forbidden(.privilegeEscalation)), "a read outside the project"),
         Fixture(15, "WebSearch", "{ \"query\": \"IANA reserved example domains\", \"mode\": \"standard\" }",
                 .suppress(.unclassifiable(.unknownTool)), "a web search"),
-        Fixture(16, "mcp__napcat-drill__drill_echo", "{ \"text\": \"nested test\", \"nested\": {\"level1\":{\"level2\":[\"a\",1,true,null],\"k\":\"v\"}} }",
-                .suppress(.floor(.ownNames)), "a connector tool with nested arguments"),
+        Fixture(16, "mcp__example-server__drill_echo", "{ \"text\": \"nested test\", \"nested\": {\"level1\":{\"level2\":[\"a\",1,true,null],\"k\":\"v\"}} }",
+                .suppress(.localOnlyMCP), "a connector tool with nested arguments"),
         Fixture(17, "Read", "{ \"file_path\": \"/etc/hosts\" }",
                 .suppress(.forbidden(.privilegeEscalation))),
         Fixture(18, "Bash", "{ \"command\": \"rm -rf /Users/someone/capture-drill-scratch-2026-11-27/rm-target/*\", \"description\": \"Delete everything inside the drill's rm-target folder\" }",
@@ -89,22 +89,53 @@ struct ApprovalRelayFixtureTests {
         let answer = ApprovalGate.classify(toolName: fixture.tool, inputPreview: fixture.preview, topic: .absent, policy: .listedOnly)
         #expect(answer == fixture.expected)
         let oracle = FrozenApprovalGate.classify(toolName: fixture.tool, inputPreview: fixture.preview)
-        guard case .suppress(.floor) = answer else {
-            #expect(oracle == answer, "the oracle's code")
-            return
+        #expect(oracle == answer, "the oracle's code")
+    }
+
+    static let opensWithAssignment = "a command opens with an environment assignment"
+    static let foreignHome = "a home folder other than /Users/someone/"
+
+    /// Why a preview is not neutral; empty when it is. A command must not
+    /// open with an environment assignment (`NAME=value` before the
+    /// command), read in the raw text and in the decoded command. Every
+    /// home folder must be `/Users/someone/`: each `/Users/`, in any case,
+    /// in the raw text and in every decoded key and string, is followed by
+    /// `someone/`.
+    static func notNeutral(_ preview: String) -> [String] {
+        let members = ApprovalPreview.parseObject(preview) ?? []
+        var reasons: [String] = []
+        var assigns = preview.range(of: #""command"\s*:\s*"\s*[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil
+        if case .string(let command)? = members.first(where: { $0.key == "command" })?.value,
+           command.range(of: #"^\s*[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil {
+            assigns = true
         }
-        #expect(oracle == .suppress(.localOnlyMCP), "the one the floor names: a connector named like NapCat's")
+        if assigns {
+            reasons.append(Self.opensWithAssignment)
+        }
+        if !([preview] + ApprovalPreview.strings(in: members)).allSatisfy(Self.everyHomeIsSomeone) {
+            reasons.append(Self.foreignHome)
+        }
+        return reasons
+    }
+
+    static func everyHomeIsSomeone(_ text: String) -> Bool {
+        var rest = text[...]
+        while let found = rest.range(of: "/Users/", options: .caseInsensitive) {
+            rest = rest[found.upperBound...]
+            guard rest.hasPrefix("someone/") else { return false }
+        }
+        return true
     }
 
     /// The set is the relayed one: twenty-three, in order, every tool and
-    /// shape the session relayed, the home folder neutral, and no request
-    /// or session field among them.
+    /// shape the session relayed, neutral (see `notNeutral`), and no
+    /// request or session field among them.
     @Test func theFixturesAreTheRelayedPreviews() throws {
         let fixtures = Self.fixtures
         #expect(fixtures.map(\.capture) == Array(1...23))
-        #expect(Set(fixtures.map(\.tool)) == ["Bash", "Write", "Edit", "Read", "WebSearch", "mcp__napcat-drill__drill_echo"])
+        #expect(Set(fixtures.map(\.tool)) == ["Bash", "Write", "Edit", "Read", "WebSearch", "mcp__example-server__drill_echo"])
         for fixture in fixtures {
-            #expect(!fixture.preview.contains("/Users/") || fixture.preview.contains("/Users/someone/"), "capture \(fixture.capture)")
+            #expect(Self.notNeutral(fixture.preview) == [], "capture \(fixture.capture)")
             for field in ["request_id", "client_info", "server_pid"] {
                 #expect(!fixture.preview.contains(field), "capture \(fixture.capture) holds \(field)")
             }
@@ -123,5 +154,31 @@ struct ApprovalRelayFixtureTests {
         // The background run arrives as a real boolean.
         let background = try #require(fixtures.first { $0.capture == 23 })
         #expect(ApprovalPreview.parseObject(background.preview)?.last == PreviewMember(key: "run_in_background", value: .bool(true)))
+    }
+
+    /// The neutrality check bites: a command that opens with an environment
+    /// assignment, in the raw text or only once decoded, and a home folder
+    /// other than `/Users/someone/`, even beside it or only once decoded,
+    /// are each refused; their near misses are not.
+    @Test func theNeutralityCheckBites() {
+        let canaries: [(preview: String, reasons: [String])] = [
+            (#"{ "command": "SOME_FLAG=1 git status" }"#, [Self.opensWithAssignment]),
+            (#"{ "command": "  _x2=a git status", "description": "Show the status" }"#, [Self.opensWithAssignment]),
+            (#"{ "command": "\nA=1 ls" }"#, [Self.opensWithAssignment]),
+            (#"{ "command": "A=1 ls"#, [Self.opensWithAssignment]),
+            (#"{ "file_path": "/Users/someone/a.txt", "content": "see /Users/another/b.txt" }"#, [Self.foreignHome]),
+            (#"{ "file_path": "/Users/another/a.txt" }"#, [Self.foreignHome]),
+            (#"{ "file_path": "/users/another/a.txt" }"#, [Self.foreignHome]),
+            (#"{ "file_path": "\/Users\/another\/a.txt" }"#, [Self.foreignHome]),
+            (#"{ "command": "A=1 cat /Users/someone/a.txt /Users/another/b.txt" }"#, [Self.opensWithAssignment, Self.foreignHome]),
+            (#"{ "command": "git -c user.name=x commit" }"#, []),
+            (#"{ "command": "echo A=1" }"#, []),
+            (#"{ "command": "1A=x ls" }"#, []),
+            (#"{ "description": "A=1 is the setting" }"#, []),
+            (#"{ "file_path": "/Users/someone/a.txt", "content": "see /Users/someone/b.txt" }"#, []),
+        ]
+        for canary in canaries {
+            #expect(Self.notNeutral(canary.preview) == canary.reasons, "\(canary.preview)")
+        }
     }
 }
