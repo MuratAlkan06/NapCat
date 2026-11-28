@@ -673,8 +673,8 @@ this section points at them.
     item that is there but unreadable has its own line in Settings ›
     Claude, and Unpair… removes it; Unpair runs the kill switch before the
     keychain call; Try Again acts only on the item the refused Unpair was
-    asked to remove. Still owed: a record the disk refuses to write holds
-    until NapCat quits, not across a relaunch.
+    asked to remove. Still owed (#268): a refused Unpair holds across
+    relaunches in every case.
   - The tracked pre-arming issues: #149 (Read's pages/offset/limit strictly
     validated), #150 (serverVersion bump and an intake-side client
     re-check; done, see slice S1's seam and intake), #221 (no answer
@@ -942,9 +942,10 @@ arms anything.
     form holds whatever item is stored (an empty slot is held by none). It
     is removed only after the keychain deleted the item, after a new key was
     written over it, or when Try Again finds the item it names gone. The
-    running NapCat keeps its own copy from before the write, so a record the
-    disk refuses still holds until NapCat quits; one the disk will not
-    remove stands, there and here. No new secret and no new keychain item.
+    running NapCat also keeps its own copy from before the write, so the
+    refusal holds in the running app whether or not the record is written;
+    a record the disk will not remove stands, there and here. No new secret
+    and no new keychain item.
   - *The ceremony* (`PairingCeremonyState`, a pure state machine, and
     `PairingController`, its shell). Pair iPhone… in Settings › Claude
     makes a fresh nonce, remembers the record's name (never the nonce) for
