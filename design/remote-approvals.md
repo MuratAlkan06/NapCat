@@ -167,7 +167,9 @@ interactive Claude Code sessions, away from the keyboard.
   prompts that can leave the Mac are Bash prompts whose whole command is one
   of the listed commands. The gate judges the prompt, not what an approved
   command then does: a listed command runs the project's own build files,
-  tests and git configuration.
+  tests and git configuration. `Sources/NapCatWire` also holds the name
+  tables and text scans of a never-sent floor (`ApprovalFloor`), which the
+  gate does not call yet.
 - **Classification and display rely on the tool name and the parsed input
   preview, never on the description.** The S-1 spike showed why: the
   description is often the tool's generic text, while the preview carries the
