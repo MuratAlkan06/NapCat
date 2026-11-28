@@ -379,7 +379,8 @@ struct PairingControllerTests {
     /// From a refused Unpair, a new pairing is a first one (the sheet never
     /// says the old pairing keeps working). A save that fails leaves the
     /// refusal standing; one that goes through replaces the key and clears
-    /// it.
+    /// it, so a late Try Again, with the keychain willing by then, deletes
+    /// nothing and runs no kill switch.
     @Test func pairingANewIPhoneAfterARefusedUnpairClearsIt() async throws {
         let world = PairingWorld()
         let old = try Self.paired(world)
@@ -411,8 +412,10 @@ struct PairingControllerTests {
         world.controller.cancel()
         await world.controller.settle()
         #expect(world.controller.paneState == .paired(phone.fingerprint, since: phone.pairedAt))
+        world.items.setFailDeletes(false)
         world.controller.retryUnpair()
-        #expect(world.items.storedValue == PairedKeyStore.text(of: phone), "a late Try Again unpairs nothing")
+        #expect(world.items.storedValue == PairedKeyStore.text(of: phone) && world.items.deleteCount == 1
+                && world.killSwitches == 1, "a late Try Again unpairs nothing")
     }
 
     /// The refusal lives for this run only: at the next launch the pane is

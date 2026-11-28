@@ -1516,10 +1516,23 @@ struct PairingStructureTests {
     /// since). Every Unpair runs the kill switch, whatever the deletion came
     /// to, and remembers a refusal; the refusal is set there alone and
     /// cleared by a deletion that goes through or a key written.
+    ///
+    /// Every `unpair` is pinned as a whole word, so a reference taken
+    /// unapplied (`let go = p.unpair`, then `go()`) is off the list as well
+    /// as a call; the word's other lines are the alert's Unpair button, a
+    /// local of that name. Every mention of the refusal flag is pinned too,
+    /// so no write escapes however it is spelled (`=`, `.toggle()`,
+    /// `&unpairFailed`, `self.`, a key path): in every file, each one not
+    /// behind a dot (the audit's and the pane's cases are declared bare),
+    /// and in the controller, which keeps the flag private, each one behind
+    /// a dot as well (those two cases, used). The model's Try Again is
+    /// pinned whole, so its call cannot move into `refresh()`.
     static let unpairSites: [String: [String: Int]] = [
         slotFile: ["func unpair() -> Bool {": 1],
         controllerFile: ["func unpair() {": 1, "let gone = keys.unpair()": 1, "unpair()": 1],
-        "MenuContentView.swift": ["pairing?.unpair()": 1],
+        "MenuContentView.swift": ["pairing?.unpair()": 1,
+                                  "let unpair = alert.addButton(withTitle: MenuStateModel.unpairAlertConfirm)": 1,
+                                  "unpair.hasDestructiveAction = true": 1, "unpair.keyEquivalent = \"\"": 1],
         "MenuStateModel.swift": ["func unpair() { requestUnpair?() }": 1],
         "SettingsPanes.swift": ["Button(MenuStateModel.unpairButtonTitle) { model.unpair() }": 1],
     ]
@@ -1528,28 +1541,48 @@ struct PairingStructureTests {
         "MenuStateModel.swift": ["func retryUnpair() {": 1, "pairing?.retryUnpair()": 1],
         "SettingsPanes.swift": ["Button(MenuStateModel.unpairRetryButtonTitle) { model.retryUnpair() }": 1],
     ]
+    /// Every mention of `unpairFailed` not behind a dot: the audit's case,
+    /// the pane's case, and the flag's declaration, reads and writes.
     static let refusalSites: [String: [String: Int]] = [
-        controllerFile: ["private var unpairFailed = false": 1, "unpairFailed = !gone": 1,
+        ceremonyFile: ["case unpairFailed": 1],
+        controllerFile: ["case unpairFailed": 1, "private var unpairFailed = false": 1,
+                         "if unpairFailed { return .unpairFailed }": 1,
+                         "let rotating = if case .paired = paired, !unpairFailed { true } else { false }": 1,
+                         "let before = (read: paired, failed: unpairFailed)": 1, "unpairFailed = !gone": 1,
+                         "if paired != before.read || unpairFailed != before.failed { onPaneChange?() }": 1,
+                         "guard unpairFailed else { return }": 1,
                          "if case .paired = state.phase { unpairFailed = false }": 1],
+    ]
+    /// Every mention of `unpairFailed` behind a dot in the controller: the
+    /// pane's case and the audit's, nothing through `self` or a key path.
+    static let refusalMemberSites: [String: [String: Int]] = [
+        controllerFile: ["if unpairFailed { return .unpairFailed }": 1, "audit(gone ? .unpaired : .unpairFailed)": 1],
     ]
     static let unpairBody = "func unpair() { let gone = keys.unpair() killSwitch() audit(gone ? .unpaired : .unpairFailed)"
         + " let before = (read: paired, failed: unpairFailed) unpairFailed = !gone paired = keys.read()"
         + " if paired != before.read || unpairFailed != before.failed { onPaneChange?() } }"
     static let retryBody = "func retryUnpair() { guard unpairFailed else { return } unpair() }"
+    static let modelRetryBody = "func retryUnpair() { pairing?.retryUnpair() refresh() }"
 
     static func unpairFailures(_ sources: Sources) -> [String] {
         let controller = text(controllerFile, in: sources)
         guard controller.contains("final class PairingController") else { return ["the controller is missing — the Unpair lock would be vacuous"] }
-        var failures = appSiteFailures(#"\bunpair\s*\("#, in: sources, allowed: unpairSites,
+        let model = text("MenuStateModel.swift", in: sources)
+        guard model.contains("final class MenuStateModel") else { return ["the model is missing — the Unpair lock would be vacuous"] }
+        var failures = appSiteFailures(#"\bunpair\b"#, in: sources, allowed: unpairSites,
                                        rule: "the slot is deleted by Unpair alone, run by the confirmed alert and Try Again alone")
         failures += appSiteFailures(#"\bretryUnpair\b"#, in: sources, allowed: retrySites,
                                     rule: "Try Again is the Settings button's, through the model, to the controller")
-        failures += appSiteFailures(#"\bunpairFailed\s*=(?!=)"#, in: sources, allowed: refusalSites,
+        failures += appSiteFailures(#"(?<!\.)\bunpairFailed\b"#, in: sources, allowed: refusalSites,
                                     rule: "a refusal is set by Unpair alone, and cleared by its deletion or a key written")
-        let flat = MenuPanelStructureTests.flat(controller)
-        for (body, what) in [(unpairBody, "every Unpair runs the kill switch and remembers a refusal — exactly as pinned"),
-                             (retryBody, "Try Again runs Unpair only while a refusal stands — exactly as pinned")]
-        where ApprovalChannelStructureTests.count(body, in: flat) != 1 {
+        failures += appSiteFailures(#"\.\s*unpairFailed\b"#, in: sources.filter { $0.name == controllerFile },
+                                    allowed: refusalMemberSites,
+                                    rule: "the controller names the refusal behind a dot as the pane's and the audit's cases alone")
+        for (body, file, what) in [
+            (unpairBody, controller, "every Unpair runs the kill switch and remembers a refusal — exactly as pinned"),
+            (retryBody, controller, "Try Again runs Unpair only while a refusal stands — exactly as pinned"),
+            (modelRetryBody, model, "the model's Try Again calls the controller's, then refreshes — exactly as pinned"),
+        ] where ApprovalChannelStructureTests.count(body, in: MenuPanelStructureTests.flat(file)) != 1 {
             failures.append(what)
         }
         return ApprovalRecordPathStructureTests.unique(failures)
@@ -1560,6 +1593,13 @@ struct PairingStructureTests {
         #expect(Self.unpairFailures(sources).isEmpty, "\(Self.unpairFailures(sources))")
         let controller = Self.controllerFile
         let model = "MenuStateModel.swift"
+        let readLine = "        let read = keys.read()\n"
+        let retryCall = "        pairing?.retryUnpair()\n"
+        let refreshHead = "    func refresh() {\n"
+        let movedRetry = Self.mutate(sources, model) {
+            $0.replacingOccurrences(of: retryCall + "        refresh()\n", with: "        refresh()\n")
+                .replacingOccurrences(of: refreshHead, with: refreshHead + retryCall)
+        }
         let mutants: [(String, Sources)] = [
             ("Try Again without its guard", Self.mutate(sources, controller) {
                 $0.replacingOccurrences(of: "        guard unpairFailed else { return }\n", with: "") }),
@@ -1576,16 +1616,41 @@ struct PairingStructureTests {
                 $0.replacingOccurrences(of: "        let read = keys.read()\n", with: "        let read = keys.read()\n        unpairFailed = false\n") }),
             ("the refusal kept from a read that failed", Self.mutate(sources, controller) {
                 $0.replacingOccurrences(of: "unpairFailed = !gone", with: "unpairFailed = !gone && keys.read() != .unreadable") }),
+            // Unapplied: no call to count, so only the whole word sees them.
+            ("an unapplied Unpair", Self.mutate(sources, model) {
+                $0 + "\nfunc zz(_ p: PairingController) {\n    let go = p.unpair\n    go()\n}" }),
+            ("the slot's deletion taken unapplied", Self.mutate(sources, controller) {
+                $0 + "\nfunc zz(_ k: PairedKeyStore) -> Bool {\n    let del = k.unpair\n    return del()\n}" }),
+            // The refusal written however it is spelled, and its name in
+            // another file.
+            ("the refusal toggled off at a read", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: readLine, with: readLine + "        if unpairFailed { unpairFailed.toggle() }\n") }),
+            ("the refusal cleared through inout", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: readLine, with: readLine + "        zzClear(&unpairFailed)\n") }),
+            ("the refusal cleared through self", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: readLine, with: readLine + "        self.unpairFailed = false\n") }),
+            ("the refusal cleared by key path", Self.mutate(sources, controller) {
+                $0.replacingOccurrences(of: readLine, with: readLine + "        self[keyPath: \\.unpairFailed] = false\n") }),
+            ("a flag of that name in another file", Self.mutate(sources, model) {
+                $0 + "\nfunc zz(_ unpairFailed: inout Bool) { unpairFailed.toggle() }" }),
+            ("the model's Try Again call moved into refresh", movedRetry),
         ]
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != sources.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.unpairFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
         }
+        // Vacuity: the read the refusal canaries plant after, and the move
+        // itself (the call gone from Try Again, now first in refresh, its
+        // sites unchanged — only the pinned body sees it).
+        #expect(ApprovalChannelStructureTests.count(readLine, in: Self.text(controller, in: sources)) == 1)
+        let moved = Self.text(model, in: movedRetry)
+        #expect(!moved.contains(retryCall + "        refresh()\n") && moved.contains(refreshHead + retryCall))
+        #expect(Self.appSiteFailures(#"\bretryUnpair\b"#, in: movedRetry, allowed: Self.retrySites, rule: "").isEmpty)
         // Over-match controls: words that only contain the pinned ones, the
         // audit's and the pane's own `.unpairFailed`, a comparison, and a
         // whole-line comment naming the shapes.
         #expect(Self.unpairFailures(Self.mutate(sources, model) {
-            $0 + "\nlet zzUnpaired = 1, unpairCount = 2, retryUnpairs = 3, isUnpairFailed = 4"
+            $0 + "\nlet zzUnpaired = 1, unpairCount = 2, retryUnpairs = 3, isUnpairFailed = 4, zz = MenuStateModel.unpairAlertConfirm"
                 + "\nfunc zz(_ p: PairingPaneState) -> Bool { p == .unpairFailed }"
                 + LidGuardStructureTests.wholeLineCommentsRemoved("\n/// never pairing?.unpair() here, never unpairFailed = false")
         }).isEmpty)
