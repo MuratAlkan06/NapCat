@@ -50,8 +50,8 @@ The gate checks a prompt in this order:
    preview's size (`unclassifiable.previewTooLarge`). The floor reads
    nothing larger.
 2. The never-sent floor, over the tool name and the raw preview
-   (`floor.<group>`, or `floorUnreadable.topic` while a topic exists that
-   could not be read; see "The never-sent floor").
+   (`floor.<group>`, or `floorUnreadable.topic` while a topic exists but
+   the gate is handed no value it can read; see "The never-sent floor").
 3. The relay's credential placeholder, in the tool name or anywhere in the
    raw preview (`forbidden.secretAccess`), then the relay's other
    placeholders in the raw preview (`unclassifiable.previewNotFaithful`).
@@ -98,11 +98,12 @@ So a Read that names the alert topic is `floor.alertTopic`; a Read of a
 forbidden location keeps its family's code (or the floor's, where the floor
 names the path) unless its preview, its keys or its path's shape are
 malformed, and a malformed Read keeps its `unclassifiable` code; every other
-Read is `localOnly.read`. NapCat's intake then applies its own holds: a
-topic that exists but could not be read keeps every prompt as
-`forbidden.secretAccess`, and while the feature is unarmed (every build so
-far) each prompt the gate classified is logged `suppressed.notArmed` instead
-of the gate's code.
+Read is `localOnly.read`. NapCat's intake then applies its own holds: an
+alert-topic item that exists reads as unreadable unless it holds a valid
+value (exactly the value the alerts are sent to), and then every prompt is
+kept as `forbidden.secretAccess`; and while the feature is unarmed (every
+build so far) each prompt the gate classified is logged
+`suppressed.notArmed` instead of the gate's code.
 
 ## The never-sent floor
 
