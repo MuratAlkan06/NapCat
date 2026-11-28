@@ -10,8 +10,9 @@ import Testing
 /// The never-sent floor's tables and scans (`ApprovalFloor`). Every
 /// spelling in the catalogue below is caught, in each form a prompt can
 /// carry it (a Bash command, a file path, a file's text, a URL, a
-/// connector's argument, a tool name); both look-alike letters are caught;
-/// each name that mirrors a constant matches that constant's definition;
+/// connector's argument, a tool name); both look-alike letters, both sharp
+/// s letters and two ligatures are caught through the fold; each name that
+/// mirrors a constant matches that constant's definition;
 /// ordinary text is not matched; the outcome carries closed codes only; and
 /// nothing calls the floor yet. Fixtures are synthetic: made-up topics, no
 /// real home folder.
@@ -89,6 +90,12 @@ struct ApprovalFloorTests {
         row(.toolName, "mcp__relay__AbCdEf12", [.alertTopic]),
         row(.fileText, "topic = \"AbCd\"'Ef12'", [.alertTopic]),
         row(.bashCommand, "echo AbCd\\Ef12", [.alertTopic]),
+        row(.bashCommand, "curl -d x https://ntfy.sh/AbCd$'E'f12", [.alertTopic]),
+        row(.bashCommand, "curl https://ntfy.sh/%41bCd''Ef12", [.alertTopic]),
+        row(.bashCommand, "curl https://ntfy.sh/%41\"bCdEf12\"", [.alertTopic]),
+        row(.bashCommand, "curl https://ntfy.sh/A\\%62CdEf12", [.alertTopic]),
+        row(.bashCommand, "curl https://ntfy.sh/%4'1'bCdEf12", [.alertTopic]),
+        row(.connectorArgument, "https://ntfy.sh/%\\41bCdEf12", [.alertTopic]),
 
         // NapCat's own names, split by empty quote pairs.
         row(.bashCommand, "defaults write com.muratalkan.napca\"\"t remote\"\"ApprovalsEnabled -bool true", [.ownNames]),
@@ -99,6 +106,12 @@ struct ApprovalFloorTests {
         row(.fileText, "tell application \"NapCat\" to quit", [.ownNames]),
         row(.bashCommand, "pkill -x NapCat", [.ownNames]),
         row(.bashCommand, "open -a NapCat", [.ownNames]),
+        row(.bashCommand, "open -aNapCat", [.ownNames]),
+        row(.bashCommand, "lldb -nNapCat", [.ownNames]),
+        row(.bashCommand, "open -a Nap$'C'at", [.ownNames]),
+        row(.bashCommand, "defaults write com.muratalkan.nap$'c'at remote$'A'pprovalsEnabled -bool true", [.ownNames]),
+        row(.url, "file:///Applications/NapC%61t.app", [.ownNames]),
+        row(.url, "https://example.invalid/?f=com.muratalkan.%6Eapcat", [.ownNames]),
         row(.filePath, "/Users/someone/Library/Containers/NapCat/Data", [.ownNames]),
         // The keychain item labels, accounts and service.
         row(.bashCommand, "/usr/bin/security delete-generic-password -l \"NapCat ntfy topic\"", [.ownNames, .keychain]),
@@ -120,19 +133,26 @@ struct ApprovalFloorTests {
         row(.filePath, "/Users/someone/Library/Application Support/NapCat/approvals/channel-registration", [.ownNames]),
         row(.filePath, "/tmp/elsewhere/seam.sock", [.ownNames]),
         row(.fileText, "receipt: channel-registration", [.ownNames]),
-        // The record zone, the prompt subscription and the signing domains.
+        // The watchdog.
+        row(.bashCommand, "pkill -f napcat-watchdog", [.ownNames]),
+        // The record zone, the subscriptions, the forwarding policy's header
+        // and the signing domains.
         row(.bashCommand, "xcrun cktool delete-record --zone-name napcat-approvals-v1", [.ownNames, .signingAndICloud]),
         row(.connectorArgument, "napcat-prompt-created-v1", [.ownNames]),
+        row(.connectorArgument, "napcat-alert-created-v1", [.ownNames]),
+        row(.fileText, "napcat-forwarding-v1\n", [.ownNames]),
         row(.fileText, "napcat-decision-v1\nwire:1\n", [.ownNames]),
         row(.fileText, "napcat-shown-v1", [.ownNames]),
         row(.fileText, "napcat-pair-confirm-v1", [.ownNames]),
-        // NapCat's connector tools.
+        // NapCat's connector tools, also as a plugin's.
         row(.toolName, "mcp__napcat__reply", [.ownNames]),
         row(.toolName, "mcp__NapCat__reply", [.ownNames]),
+        row(.toolName, "mcp__plugin_napcat_napcat__reply", [.ownNames]),
 
         // The privileged footprint.
         row(.bashCommand, "ls /usr/local/napcat", [.ownNames, .privilegedFootprint]),
         row(.bashCommand, "cd / && ls usr/local/napcat", [.ownNames, .privilegedFootprint]),
+        row(.url, "file:///usr/local/n%61pcat/smc", [.ownNames, .privilegedFootprint]),
         row(.bashCommand, "pmset -a disablesleep 1", [.privilegedFootprint]),
         row(.bashCommand, "cat /private/etc/sudoers", [.privilegedFootprint]),
         row(.filePath, "/etc/sudoers.d/napcat", [.ownNames, .privilegedFootprint]),
@@ -143,12 +163,21 @@ struct ApprovalFloorTests {
         row(.bashCommand, "./scripts/install-claude-busy-hook.sh", [.privilegedFootprint]),
         row(.bashCommand, "./scripts/uninstall-claude-busy-hook.sh", [.privilegedFootprint]),
 
-        // The source tree, in a checkout under another name and under its own.
+        // The source tree.
         row(.filePath, "/Users/someone/src/fork/Sources/NapCatWire/ApprovalClassification.swift", [.sourceTree]),
+        row(.bashCommand, "vi Sources//NapCatWire/ApprovalClassification.swift", [.sourceTree]),
+        row(.bashCommand, "vi Sources/./NapCatWire/ApprovalClassification.swift", [.sourceTree]),
+        row(.bashCommand, "cd Sources && vi NapCatWire/ApprovalClassification.swift", [.sourceTree]),
+        row(.bashCommand, "vi NapCatSeam/SeamSocket.swift", [.sourceTree]),
+        row(.filePath, "NapCatChannel/main.swift", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/Tests/NapCatTests/ScaffoldTests.swift", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/ios/NapCatPhone/project.yml", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/third_party/smc/smc.c", [.sourceTree]),
+        row(.bashCommand, "vi third_party//smc/smc.c", [.sourceTree]),
+        row(.bashCommand, "vi third_party/./smc/smc.c", [.sourceTree]),
         row(.bashCommand, "cp dist/smc /tmp/smc", [.sourceTree]),
+        row(.bashCommand, "cp dist//smc /tmp/smc", [.sourceTree]),
+        row(.bashCommand, "cp dist/./smc /tmp/smc", [.sourceTree]),
         row(.filePath, "/Users/someone/src/fork/Resources/NapCat.entitlements", [.sourceTree]),
         row(.filePath, "/Users/someone/src/NapCat/scripts/setup.sh", [.ownNames, .sourceTree]),
         row(.filePath, "/Users/someone/src/NapCat/Makefile", [.ownNames, .sourceTree]),
@@ -160,12 +189,17 @@ struct ApprovalFloorTests {
         row(.bashCommand, "\\security find-certificate -a", [.keychain]),
         row(.bashCommand, "sec\"\"urity find-certificate -a", [.keychain]),
         row(.bashCommand, "'security' find-certificate -a", [.keychain]),
+        row(.bashCommand, "sec$'u'rity find-certificate -a", [.keychain]),
+        row(.bashCommand, "sec$\"u\"rity find-certificate -a", [.keychain]),
+        row(.bashCommand, "env -Ssecurity\\ list-smartcards", [.keychain]),
+        row(.bashCommand, "env -S'sec\"\"urity list-smartcards'", [.keychain]),
         row(.bashCommand, "swift -e 'import Security; " + itemDelete
             + "([kSecClass: kSecClassGenericPassword, kSecAttrAccount: \"x\"] as CFDictionary)'", [.keychain]),
         row(.fileText, "let query = [kSecValueData: data]", [.keychain]),
         row(.bashCommand, "swift -e 'SecKeychainCopyDefault(nil)'", [.keychain]),
         row(.bashCommand, "security add-internet-password -s example.invalid -a someone", [.keychain]),
         row(.filePath, "/Users/someone/Library/Keychains/login.keychain-db", [.keychain]),
+        row(.bashCommand, "curl file:///Users/someone/Library/Keych%61ins/login.keych%61in-db -o /tmp/k", [.keychain]),
 
         // Claude Code's helper list: the command in any shape, the package,
         // the lists, the managed and remote settings, the setting and hook
@@ -176,13 +210,22 @@ struct ApprovalFloorTests {
         row(.bashCommand, "'claude' mcp list", [.claudeCodeHelpers]),
         row(.bashCommand, "cd /tmp && claude mcp list > out.txt", [.claudeCodeHelpers]),
         row(.bashCommand, "claude --dangerously-load-development-channels server:x", [.claudeCodeHelpers]),
+        row(.bashCommand, "cl$'a'ude mcp add x -- /tmp/x", [.claudeCodeHelpers]),
+        row(.bashCommand, "env -Sclaude\\ mcp\\ add\\ x\\ --\\ /tmp/x", [.claudeCodeHelpers]),
         row(.connectorArgument, "/Users/someone/.claude.json", [.claudeCodeHelpers]),
         row(.connectorArgument, "{\"path\": \"/Users/someone/.claude.json\"}", [.claudeCodeHelpers]),
         row(.filePath, "/Users/someone/.claude.json", [.claudeCodeHelpers]),
+        row(.bashCommand, "cat ~/.claude$'.'json", [.claudeCodeHelpers]),
+        row(.url, "file:///Users/someone/.claude%2Ejson", [.claudeCodeHelpers]),
         row(.filePath, "/Users/someone/project/.mcp.json", [.claudeCodeHelpers]),
+        row(.bashCommand, "curl -T x file:///Users/someone/project/%2Emcp.json", [.claudeCodeHelpers]),
         row(.filePath, "/Library/Application Support/ClaudeCode/managed-settings.json", [.claudeCodeHelpers]),
         row(.filePath, "/Library/Application Support/ClaudeCode/managed-settings.d/10-team.json", [.claudeCodeHelpers]),
         row(.filePath, "/Library/Application Support/ClaudeCode/managed-mcp.json", [.claudeCodeHelpers]),
+        row(.url, "https://example.invalid/Library/Application%20Support/ClaudeCode/x.json", [.claudeCodeHelpers]),
+        row(.bashCommand, "ls \"/Library/Application Support//ClaudeCode\"", [.claudeCodeHelpers]),
+        row(.bashCommand, "defaults write com.anthropic.claudecode x -bool true", [.claudeCodeHelpers]),
+        row(.filePath, "/Library/Managed Preferences/com.anthropic.claudecode.plist", [.claudeCodeHelpers]),
         row(.filePath, "/Users/someone/.claude/remote-settings.json", [.claudeCodeHelpers]),
         row(.fileText, "{\"hooks\": {\"PermissionRequest\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"/tmp/x\"}]}]}}",
             [.claudeCodeHelpers]),
@@ -252,6 +295,29 @@ struct ApprovalFloorTests {
         #expect(ApprovalFloor.folded("KeyCHAIN") == Array("keychain".utf8))
     }
 
+    /// Both sharp s letters (U+00DF, U+1E9E) fold to `ss`, and the
+    /// ligatures U+FB01 and U+FB06 to `fi` and `st`: in free text the folded
+    /// copy holds the name; in a string that names something they are
+    /// outside printable ASCII, so the prompt is kept as unreadable.
+    @Test func theSharpSAndTheLigaturesAreCaught() {
+        let freeText: [(String, ApprovalFloorGroup)] = [
+            ("delete-generic-pa\u{DF}word", .keychain),
+            ("delete-generic-pa\u{1E9E}word", .keychain),
+            ("DELETE-GENERIC-PA\u{1E9E}WORD", .keychain),
+            ("/Users/someone/Downloads/release.provisionpro\u{FB01}le", .signingAndICloud),
+            ("/Users/someone/src/fork/Tests/NapCatTe\u{FB06}s/ScaffoldTests.swift", .sourceTree),
+        ]
+        for (text, group) in freeText {
+            #expect(Self.groups([.freeText(text)]) == [group], "\(text)")
+            #expect(Self.outcome([.freeText(text)]) == .floor(group), "\(text)")
+            #expect(Self.outcome([.naming(text)]) == .unreadable(.notPrintableASCII), "named: \(text)")
+        }
+        #expect(ApprovalFloor.folded("\u{DF}") == Array("ss".utf8))
+        #expect(ApprovalFloor.folded("\u{1E9E}") == Array("ss".utf8))
+        #expect(ApprovalFloor.folded("\u{FB01}") == Array("fi".utf8))
+        #expect(ApprovalFloor.folded("\u{FB06}") == Array("st".utf8))
+    }
+
     /// ASCII letters match in any case, in every copy.
     @Test func namesMatchInAnyLetterCase() {
         for text in ["KEYCHAIN", "Security", "NAPCAT", "Com.MuratAlkan.NapCat", "CLAUDE", "CodeSign", "SEAM.SOCK"] {
@@ -262,36 +328,63 @@ struct ApprovalFloorTests {
 
     // MARK: - Every name, in every shape
 
+    /// `text`'s first byte written as `%` and two hex digits.
+    static func firstBytePercentEncoded(_ text: String) -> String {
+        let first: UInt8 = text.utf8.first ?? 0
+        return "%" + String(first, radix: 16, uppercase: true) + String(text.dropFirst())
+    }
+
     /// Each word matches standing alone, quoted, escaped, between path
-    /// separators, before a joiner and in capitals, and does not match
-    /// inside a longer word.
+    /// separators, before a joiner, in capitals, split by `$` and an empty
+    /// quote pair, with its first letter percent-encoded, and glued to a
+    /// one-letter option; and does not match inside a longer word.
     @Test func everyWordMatchesAsAWholePieceOnly() {
         for table in ApprovalFloor.tables {
             for word in table.words {
+                let head = String(word.prefix(1)), tail = String(word.dropFirst())
                 for text in ["run \(word) now", "'\(word)'", "\"\(word)\"", "\\\(word)", "/opt/\(word)/bin", "\(word);", "x=\(word)",
-                             word.uppercased()] {
+                             word.uppercased(), "\(head)$''\(tail)", "\(head)$\"\"\(tail)", Self.firstBytePercentEncoded(word),
+                             "env -S\(word)", "open -a\(word.uppercased())"] {
                     #expect(Self.groups([.naming(text)]).contains(table.group), "\(text)")
                     #expect(Self.groups([.freeText(text)]).contains(table.group), "free text: \(text)")
                 }
-                for text in ["pre\(word)", "\(word)s"] {
+                for text in ["pre\(word)", "\(word)s", "-a\(word)s"] {
                     #expect(!Self.groups([.naming(text)]).contains(table.group), "\(text) holds \(word) inside a longer word")
                 }
             }
         }
     }
 
-    /// Each substring matches inside a longer text, in capitals, and split
-    /// by an empty quote pair or a backslash.
+    /// Each substring matches inside a longer text, in capitals, split by
+    /// an empty quote pair, a backslash or `$` and an empty quote pair, with
+    /// its first byte percent-encoded, and with each of its slashes written
+    /// twice or as `/./`.
     @Test func everySubstringMatchesAnywhere() {
         for table in ApprovalFloor.tables {
             for name in table.substrings {
                 let head = String(name.prefix(1)), tail = String(name.dropFirst())
-                for text in ["xx\(name)yy", "XX\(name.uppercased())YY", "\(head)\"\"\(tail)", "\(head)''\(tail)", "\(head)\\\(tail)"] {
+                var texts = ["xx\(name)yy", "XX\(name.uppercased())YY", "\(head)\"\"\(tail)", "\(head)''\(tail)", "\(head)\\\(tail)",
+                             "\(head)$''\(tail)", "\(head)$\"\"\(tail)", "xx" + Self.firstBytePercentEncoded(name)]
+                if name.contains("/") {
+                    texts += [name.replacingOccurrences(of: "/", with: "//"), name.replacingOccurrences(of: "/", with: "/./")]
+                }
+                for text in texts {
                     #expect(Self.groups([.naming(text)]).contains(table.group), "\(text)")
                     #expect(Self.groups([.freeText(text)]).contains(table.group), "free text: \(text)")
                 }
             }
         }
+    }
+
+    /// The readings, each once: as written, without quotes, backslashes and
+    /// `$`, either of the two percent-decoded, and each of those four with
+    /// every run of slashes written as one and every `/./` as `/`.
+    @Test func theNameScanReadsEachReadingOnce() {
+        let readings = ApprovalFloor.readings(Array("a//$'b'%41".utf8)).map { String(decoding: $0, as: UTF8.self) }
+        #expect(readings == ["a//$'b'%41", "a//b%41", "a//$'b'A", "a//bA", "a/$'b'%41", "a/b%41", "a/$'b'A", "a/bA"])
+        #expect(ApprovalFloor.readings(Array("git status".utf8)) == [Array("git status".utf8)], "a plain text is read once")
+        #expect(ApprovalFloor.slashesCollapsed(Array("a//b///c/./d/././e".utf8)) == Array("a/b/c/d/e".utf8))
+        #expect(ApprovalFloor.slashesCollapsed(Array("./a/.b/c.".utf8)) == Array("./a/.b/c.".utf8), "other dots stay")
     }
 
     /// The split: every byte that is not an ASCII letter, digit, `_`, `.`,
@@ -305,7 +398,7 @@ struct ApprovalFloorTests {
             #expect(Self.groups([.freeText(text)]).contains(.keychain), "\(text.debugDescription)")
         }
         for joiner in ["_", ".", "+", "-"] {
-            #expect(ApprovalFloor.pieces(Array("a\(joiner)security".utf8)).count == 1, "\(joiner) stays in the piece")
+            #expect(ApprovalFloor.pieces(Array("a\(joiner)b".utf8)).count == 1, "one piece")
         }
         #expect(ApprovalFloor.pieces(Array("a/b c=d:e;f(g'h\"i\\j@k,l\tm\nn".utf8)).count == 14)
     }
@@ -314,8 +407,9 @@ struct ApprovalFloorTests {
 
     /// Ordinary prompts and text match nothing: the gate's own listed
     /// commands, everyday paths and text, a folder whose name holds the
-    /// app's name inside a longer word, and longer words that hold a word
-    /// name.
+    /// app's name inside a longer word, longer words that hold a word name,
+    /// everyday options, variables, percent signs and slashes, and other
+    /// connectors' tools.
     @Test func ordinaryTextMatchesNothing() {
         var controls: [ApprovalFloorString] = ApprovalGate.bashCommands.map { .naming($0) }
         controls += [
@@ -331,6 +425,14 @@ struct ApprovalFloorTests {
             .freeText("Find the release notes for version 1.5"),
             .freeText("Gr\u{FC}\u{DF}e aus K\u{F6}ln, \u{17F}ch\u{F6}n, \u{41F}\u{440}\u{438}\u{432}\u{435}\u{442}, \u{4E16}\u{754C}"),
             .freeText("{\"command\":\"git status\"}"),
+            .naming("ls -la --color=auto src//lib/./util"), .naming("grep -rn -e pattern -f file.txt ."),
+            .naming("tar -xzf archive.tar.gz -C /tmp/out"), .naming("echo $HOME $PATH ${USER}"),
+            .naming("curl -sS https://example.com/a%20b/c%2Fd?q=100%25"), .naming("rg -isecurityx"), .naming("make -j8 -Ccore"),
+            .naming("swift build -c release -Xswiftc -O"), .naming("printf '%s\\n' \"$x\""), .naming("cc -lclaudex"),
+            .naming("open -a Safari https://example.com"), .naming("git log -n5 --oneline"), .naming("cat a//b/./c.txt"),
+            .freeText("price is $5, 100% sure; see a//b and ./c"),
+            .freeText("Stra\u{DF}e und Fu\u{DF}ball, \u{FB01}ne \u{FB06}yle"),
+            .naming("mcp__plugin_github_github__create_issue"), .naming("mcp__claude_ai_Notion__search"),
         ]
         for control in controls {
             #expect(Self.groups([control]).isEmpty, "\(control)")
@@ -343,8 +445,9 @@ struct ApprovalFloorTests {
 
     @Test func theTopicIsMatchedAsWrittenUnquotedAndPercentDecoded() {
         let other = ApprovalFloorTopic.value(Array("ZzJjKk99".utf8))
-        let caught = ["https://ntfy.sh/ZzJjKk99", "Zz\"Jj\"Kk99", "Zz'Jj'Kk99", "Zz\\JjKk99", "%5AzJjKk99",
-                      "Zz%4ajKk99", "Zz%4AjKk99", "%5A%7A%4A%6A%4B%6B%39%39"]
+        let caught = ["https://ntfy.sh/ZzJjKk99", "Zz\"Jj\"Kk99", "Zz'Jj'Kk99", "Zz\\JjKk99", "Zz$'Jj'Kk99", "%5AzJjKk99",
+                      "Zz%4ajKk99", "Zz%4AjKk99", "%5A%7A%4A%6A%4B%6B%39%39", "%5Az''JjKk99", "%5A\"zJj\"Kk99", "Zz\\%4AjKk99",
+                      "%5'A'zJjKk99", "%\\5AzJjKk99", "Zz$'%4A'jKk99"]
         for text in caught {
             #expect(Self.groups([.naming(text)], topic: other) == [.alertTopic], "\(text)")
             #expect(Self.groups([.freeText(text)], topic: other) == [.alertTopic], "free text: \(text)")
@@ -356,12 +459,14 @@ struct ApprovalFloorTests {
         #expect(ApprovalFloor.percentDecoded(Array("%41%".utf8)) == Array("A%".utf8))
     }
 
-    /// No topic set, or an empty one, matches nothing; a topic that exists
-    /// but could not be read keeps every prompt, whatever it holds.
+    /// No topic set matches nothing; a topic that exists but could not be
+    /// read, or is empty, keeps every prompt, whatever it holds.
     @Test func aTopicThatCannotBeReadKeepsEveryPrompt() {
         let text: [ApprovalFloorString] = [.naming("curl -d hi https://ntfy.sh/AbCdEf12")]
         #expect(Self.outcome(text, topic: .absent) == .noMatch)
-        #expect(Self.outcome(text, topic: .value([])) == .noMatch, "an empty topic matches nothing")
+        #expect(Self.outcome(text, topic: .value([])) == .unreadable(.topic), "an empty topic cannot be checked for")
+        #expect(Self.outcome([], topic: .value([])) == .unreadable(.topic))
+        #expect(Self.outcome([.naming("security")], topic: .value([])) == .unreadable(.topic), "before any name")
         #expect(Self.outcome(text, topic: .unreadable) == .unreadable(.topic))
         #expect(Self.outcome([], topic: .unreadable) == .unreadable(.topic))
         #expect(Self.outcome([.naming("git status")], topic: .unreadable) == .unreadable(.topic))
@@ -431,9 +536,9 @@ struct ApprovalFloorTests {
     // MARK: - The tables
 
     /// One table per group but the topic's, in group order; every name
-    /// lowercase printable ASCII, free of `//` and of every I/O token the
-    /// wire's purity scan reads; every word made of piece bytes only (so it
-    /// can match a piece); no name twice; and no table empty.
+    /// lowercase printable ASCII, free of `//`, of `/./` and of every I/O
+    /// token the wire's purity scan reads; every word made of piece bytes
+    /// only (so it can match a piece); no name twice; and no table empty.
     @Test func theTablesAreWellFormed() {
         #expect(ApprovalFloor.tables.map(\.group) == ApprovalFloorGroup.allCases.filter { $0 != .alertTopic })
         var seen: Set<String> = []
@@ -441,7 +546,7 @@ struct ApprovalFloorTests {
             #expect(!(table.words + table.substrings).isEmpty, "\(table.group) has names")
             for name in table.words + table.substrings {
                 #expect(!name.isEmpty && name == name.lowercased() && ApprovalFloor.isPrintableASCII(name), "\(name)")
-                #expect(!name.contains("//"), "\(name)")
+                #expect(!name.contains("//") && !name.contains("/./"), "\(name)")
                 for token in WireContractTests.ioTokens {
                     #expect(!name.contains(token), "'\(token)' in \(name)")
                 }
@@ -527,6 +632,13 @@ struct ApprovalFloorTests {
         return ""
     }
 
+    /// The string literal that follows `marker` in `text`, read as written
+    /// ("" if absent).
+    static func literal(after marker: String, in text: String) -> String {
+        guard let range = text.range(of: marker) else { return "" }
+        return String(text[range.upperBound...].prefix { $0 != "\"" })
+    }
+
     /// The Security identifiers NapCat's keychain store uses, read from its
     /// source (the item calls and the `kSec` keys).
     static func keychainIdentifiers() throws -> [String] {
@@ -537,13 +649,15 @@ struct ApprovalFloorTests {
     }
 
     /// Each name with a definition elsewhere in the repository: the four
-    /// Mac targets' constants, and where a value lives only in a script, the
+    /// Mac targets' constants (for the watchdog, the two literals its
+    /// controller spells), and where a value lives only in a script, the
     /// Makefile, the manifest or a property list, there.
     static func parities() throws -> [Parity] {
         let makefile = try repoFile("Makefile"), manifest = try repoFile("Package.swift")
         let setup = try repoFile("scripts/setup.sh"), uninstall = try repoFile("scripts/uninstall.sh")
         let installChannel = try repoFile("scripts/install-channel.sh"), uninstallChannel = try repoFile("scripts/uninstall-channel.sh")
         let identifiers = try keychainIdentifiers()
+        let watchdog = try repoFile("Sources/NapCat/WatchdogController.swift")
         let executable = manifest.components(separatedBy: ".executable(name: \"").dropFirst().first.map { String($0.prefix { $0 != "\"" }) } ?? ""
         let smc: [String] = PrivilegedCommand.allCases.map(\.executablePath).filter { $0.hasSuffix("/smc") }
         let sleep: [String] = [PrivilegedCommand.stayAwakeOn, .stayAwakeOff].map { $0.argv.joined(separator: " ") }
@@ -594,10 +708,17 @@ struct ApprovalFloorTests {
                    source: "the remote approvals switch's key"),
             Parity(name: "pairingrecordtodelete", group: .ownNames, relation: .equal, definitions: [DefaultsKey.pairingRecordToDelete],
                    source: "the pairing clean-up key"),
+            Parity(name: "napcat-watchdog", group: .ownNames, relation: .equal,
+                   definitions: [literal(after: "forResource: \"", in: watchdog), literal(after: "command.contains(\"", in: watchdog)],
+                   source: "the watchdog's script and the process it reaps"),
             Parity(name: "napcat-approvals", group: .ownNames, relation: .versioned, definitions: [ApprovalWire.zoneName],
                    source: "the record zone"),
             Parity(name: "napcat-prompt-created", group: .ownNames, relation: .versioned, definitions: [ApprovalWire.promptSubscriptionID],
                    source: "the prompt subscription"),
+            Parity(name: "napcat-alert-created", group: .ownNames, relation: .versioned, definitions: [AlertWire.subscriptionID],
+                   source: "the alert subscription"),
+            Parity(name: "napcat-forwarding", group: .ownNames, relation: .versioned, definitions: [ApprovalForwardingPolicy.header],
+                   source: "the forwarding policy's header"),
             Parity(name: "napcat-decision", group: .ownNames, relation: .versioned, definitions: [ApprovalSigning.decisionDomain],
                    source: "the decision domain"),
             Parity(name: "napcat-shown", group: .ownNames, relation: .versioned, definitions: [ApprovalSigning.shownDomain],
@@ -609,6 +730,9 @@ struct ApprovalFloorTests {
                    source: "the pairing response's domains and name label"),
             Parity(name: "mcp__napcat", group: .ownNames, relation: .equal, definitions: [ApprovalGate.mcpPrefix + ApprovalChannel.serverName],
                    source: "the tool-name prefix of NapCat's connector"),
+            Parity(name: "mcp__plugin_napcat", group: .ownNames, relation: .equal,
+                   definitions: [ApprovalGate.mcpPrefix + "plugin_" + ChannelPolicy.pluginName],
+                   source: "the tool-name prefix of NapCat's connector as a plugin's"),
             Parity(name: "usr/local/napcat", group: .privilegedFootprint, relation: .contains,
                    definitions: smc + [shellValue("SMC_DIR", setup), shellValue("SMC_DIR", uninstall)], source: "the root helper's folder"),
             Parity(name: "disablesleep", group: .privilegedFootprint, relation: .contains, definitions: sleep,
@@ -710,8 +834,8 @@ struct ApprovalFloorTests {
 
     /// The source-tree names, read in a checkout in a folder named NapCat,
     /// name real parts of this tree.
-    static let treePaths = ["Sources/NapCat", "Tests/NapCatTests", "ios/NapCatPhone", "third_party/smc",
-                            "Resources/NapCat.entitlements", "scripts", "Makefile", "Package.swift"]
+    static let treePaths = ["Sources/NapCat", "Sources/NapCatWire", "Sources/NapCatSeam", "Sources/NapCatChannel", "Tests/NapCatTests",
+                            "ios/NapCatPhone", "third_party/smc", "Resources/NapCat.entitlements", "scripts", "Makefile", "Package.swift"]
 
     @Test func theSourceTreeNamesAreThisTree() throws {
         let root = LidGuardStructureTests.repoRoot()
@@ -734,8 +858,9 @@ struct ApprovalFloorTests {
     /// and Apple's own names, and the keychain account reserved for the
     /// forwarding policy.
     static let namesWithNoDefinitionHere: Set<String> = [
-        "forwarding-policy", "seckeychain", "internet-password", "claude-code", "remote-settings.json", "mcpjsonservers",
-        "projectmcpservers", "development-channels", "permissionrequest", "permissiondecision", "developer id application", "cktool",
+        "forwarding-policy", "seckeychain", "internet-password", "claude-code", "remote-settings.json", "com.anthropic.claudecode",
+        "mcpjsonservers", "projectmcpservers", "development-channels", "permissionrequest", "permissiondecision",
+        "developer id application", "cktool",
     ]
 
     /// The names the gate's own tables mirror (see the test above).

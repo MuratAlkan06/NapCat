@@ -12,21 +12,26 @@
 // with a closed reason code (the group), never the matched text.
 //
 // Two scans read every string of a prompt:
-// - The name scan needs no command grammar. It reads the text as written
-//   and a copy with every `'`, `"` and `\` removed, each lowercased (ASCII
-//   letters only, as the gate lowercases). A WORD name matches a whole
-//   piece of the text split on every byte that is not an ASCII letter,
-//   digit, `_`, `.`, `+` or `-`; a SUBSTRING name matches anywhere. Each
-//   table says which of its names are which.
+// - The name scan needs no command grammar. It reads the text as written,
+//   a copy with every `'`, `"`, `\` and `$` removed, each of the two
+//   percent-decoded, and each of those four with every `//` and `/./`
+//   written as `/`, each lowercased (ASCII letters only, as the gate
+//   lowercases). A WORD name matches a whole piece of the text split on
+//   every byte that is not an ASCII letter, digit, `_`, `.`, `+` or `-`,
+//   and the rest of a piece made of `-`, one letter and more (`-aNapCat`
+//   gives `NapCat`); a SUBSTRING name matches anywhere. Each table says
+//   which of its names are which.
 // - ASCII or kept: a string that names a command, a path, a URL or a tool
 //   must be printable ASCII, or the outcome is `unreadable` and the prompt
 //   is kept. Free text (a file's text, a search query, a connector's
-//   argument) may hold any script, so the name scan also reads it
-//   case-folded, which turns U+212A KELVIN SIGN into `k` and U+017F LATIN
-//   SMALL LETTER LONG S into `s`.
-// The alert topic is matched as exact bytes, as written, without quotes or
-// backslashes, and percent-decoded. Its bytes are a parameter of each check
-// and are never kept.
+//   argument) may hold any script, so the name scan also reads its copies
+//   case-folded, which turns U+212A KELVIN SIGN into `k`, U+017F LATIN
+//   SMALL LETTER LONG S into `s`, both sharp s letters (U+00DF, U+1E9E)
+//   into `ss`, and the ligatures U+FB01 and U+FB06 into `fi` and `st`.
+// The alert topic is matched as exact bytes: as written, without quotes,
+// backslashes and `$`, and each of the two percent-decoded. An empty topic
+// is one that cannot be read. Its bytes are a parameter of each check and
+// are never kept.
 //
 // Anything the floor does not name is left to the gate's fail-closed rule.
 
@@ -36,8 +41,9 @@ public enum ApprovalFloorGroup: String, CaseIterable, Sendable {
     /// The alert topic's own bytes (the topic is the alert feed's password).
     case alertTopic
     /// NapCat's bundle and keychain names, its preference keys, its helper,
-    /// socket and receipt, its record zone, subscription and signing
-    /// domains, its connector's tools, and the word `napcat`.
+    /// watchdog, socket and receipt, its record zone, subscriptions, policy
+    /// header and signing domains, its connector's tools, and the word
+    /// `napcat`.
     case ownNames
     /// The root helper's folder, the sleep setting, the sudoers file, the
     /// failsafe login item, the busy hook and the install scripts.
@@ -55,8 +61,8 @@ public enum ApprovalFloorGroup: String, CaseIterable, Sendable {
 
 /// Why the floor cannot judge a prompt. Either way the prompt is kept.
 public enum ApprovalFloorUnreadable: String, CaseIterable, Sendable {
-    /// An alert topic exists but could not be read, so no prompt can be
-    /// checked for it.
+    /// An alert topic exists but could not be read, or is empty, so no
+    /// prompt can be checked for it.
     case topic
     /// A string that names a command, a path, a URL or a tool holds a byte
     /// outside printable ASCII.
@@ -89,7 +95,8 @@ public enum ApprovalFloorString: Sendable {
 public enum ApprovalFloorTopic: Sendable {
     /// No topic is set: there is nothing to match.
     case absent
-    /// The topic's bytes. An empty value matches nothing, as in the gate.
+    /// The topic's bytes. An empty value cannot be checked for: it is read
+    /// as `unreadable`, and every prompt is kept.
     case value([UInt8])
     /// A topic exists but could not be read: every prompt is kept.
     case unreadable
@@ -97,12 +104,15 @@ public enum ApprovalFloorTopic: Sendable {
 
 public enum ApprovalFloor {
     /// The floor's answer for the strings of one prompt: `unreadable` when
-    /// the topic could not be read; otherwise the first group, in
-    /// `ApprovalFloorGroup` order, that any string matches; otherwise
+    /// the topic could not be read or is empty; otherwise the first group,
+    /// in `ApprovalFloorGroup` order, that any string matches; otherwise
     /// `unreadable` when a naming string is not printable ASCII; otherwise
     /// `noMatch`.
     public static func outcome(of strings: [ApprovalFloorString], topic: ApprovalFloorTopic) -> ApprovalFloorOutcome {
         if case .unreadable = topic {
+            return .unreadable(.topic)
+        }
+        if case .value(let bytes) = topic, bytes.isEmpty {
             return .unreadable(.topic)
         }
         if let group = matchedGroups(strings, topic: topic).first {
@@ -129,25 +139,26 @@ public enum ApprovalFloor {
     /// bytes are a parameter.
     static let tables: [Table] = [ownNames, privilegedFootprint, sourceTree, keychain, claudeCodeHelpers, signingAndICloud]
 
-    /// NapCat's own names. The one word is `napcat`, so a longer name that
-    /// holds it (`napcatalog`, `snapcat`) is not a match, while a path
-    /// component, a quoted app name or a process name is. The rest are
+    /// NapCat's own names. The one word is `napcat`: it matches as a path
+    /// component, a quoted app name or a process name. The rest are
     /// substrings, each specific to NapCat: the bundle ID (also the keychain
     /// service and the end of the iCloud container's name), the two keychain
     /// accounts (the paired key's by `paired-iphone`, which it starts with)
     /// and their labels, the account reserved for the forwarding policy,
     /// the preference keys of the alert server and of remote approvals, the
     /// helper, the app bundle, the support folder, the seam socket and the
-    /// channel receipt, the record zone, the prompt subscription and the
-    /// signing domains (version suffix left off, so a later version matches
-    /// too), and NapCat's connector tools.
+    /// channel receipt, the watchdog, the record zone, the prompt and alert
+    /// subscriptions, the forwarding policy's header and the signing domains
+    /// (version suffix left off, so a later version matches too), and
+    /// NapCat's connector tools, also as a plugin's.
     static let ownNames = Table(
         group: .ownNames,
         words: ["napcat"],
         substrings: ["com.muratalkan.napcat", "ntfy-topic", "lidguardntfy", "paired-iphone", "napcat ntfy topic",
                      "napcat paired iphone key", "forwarding-policy", "napcat-channel", "napcat.app", "support/napcat",
-                     "seam.sock", "channel-registration", "remoteapprovals", "pairingrecordtodelete", "napcat-approvals",
-                     "napcat-prompt-created", "napcat-decision", "napcat-shown", "napcat-pair", "mcp__napcat"])
+                     "seam.sock", "channel-registration", "remoteapprovals", "pairingrecordtodelete", "napcat-watchdog",
+                     "napcat-approvals", "napcat-prompt-created", "napcat-alert-created", "napcat-forwarding",
+                     "napcat-decision", "napcat-shown", "napcat-pair", "mcp__napcat", "mcp__plugin_napcat"])
 
     /// NapCat's privileged footprint, all substrings: the root helper's
     /// folder (written without its leading `/`, so a relative spelling
@@ -161,21 +172,23 @@ public enum ApprovalFloor {
         substrings: ["usr/local/napcat", "disablesleep", "sudoers", "com.napcat.failsafe", "napcat-busy-hook", "install-channel",
                      "uninstall-channel", "install-claude-busy-hook"])
 
-    /// NapCat's source tree, all substrings: the targets' and the tests'
-    /// folders, the phone app, the vendored helper's source and build
-    /// output, the entitlements, and the scripts folder and build files at
-    /// the top of a folder named `napcat`.
+    /// NapCat's source tree, all substrings: the targets' folders, under
+    /// `Sources` and by the three names that are NapCat's alone, the tests'
+    /// folder, the phone app, the vendored helper's source and build output,
+    /// the entitlements, and the scripts folder and build files at the top
+    /// of a folder named `napcat`.
     static let sourceTree = Table(
         group: .sourceTree,
         words: [],
-        substrings: ["sources/napcat", "napcattests", "napcatphone", "third_party/smc", "dist/smc", "napcat.entitlements",
-                     "napcat/scripts", "napcat/makefile", "napcat/package.swift"])
+        substrings: ["sources/napcat", "napcatwire", "napcatseam", "napcatchannel", "napcattests", "napcatphone",
+                     "third_party/smc", "dist/smc", "napcat.entitlements", "napcat/scripts", "napcat/makefile",
+                     "napcat/package.swift"])
 
     /// The keychain as a whole. The one word is `security`, the tool's
-    /// name, so a longer word that holds it (`insecurity`) is not a match,
-    /// while `/usr/bin/security` and a quoted or escaped spelling are. The
-    /// substrings cover the keychain's files (`keychain` is in every one of
-    /// their names), its API names and the tool's item verbs.
+    /// name: it matches standing alone, as `/usr/bin/security`, and quoted
+    /// or escaped. The substrings cover the keychain's files (`keychain` is
+    /// in every one of their names), its API names and the tool's item
+    /// verbs.
     static let keychain = Table(
         group: .keychain,
         words: ["security"],
@@ -184,14 +197,15 @@ public enum ApprovalFloor {
     /// Claude Code's helper list. The words are the `claude` command and
     /// the `claude-code` package; the substrings are the files that list
     /// helpers or settings Claude Code obeys (the user and project lists,
-    /// the managed and remote settings, the managed settings folder) and the
-    /// setting names and hook names that load helpers or answer prompts.
+    /// the managed and remote settings, the managed settings folder and the
+    /// managed preferences domain) and the setting names and hook names that
+    /// load helpers or answer prompts.
     static let claudeCodeHelpers = Table(
         group: .claudeCodeHelpers,
         words: ["claude", "claude-code"],
         substrings: [".claude.json", ".mcp.json", "managed-settings", "managed-mcp.json", "remote-settings.json",
-                     "application support/claudecode", "mcpjsonservers", "projectmcpservers", "development-channels",
-                     "permissionrequest", "permissiondecision"])
+                     "application support/claudecode", "com.anthropic.claudecode", "mcpjsonservers", "projectmcpservers",
+                     "development-channels", "permissionrequest", "permissiondecision"])
 
     /// Signing and iCloud plumbing, all substrings: the signing tool, the
     /// certificate kind and team ID NapCat is signed with, provisioning
@@ -219,27 +233,44 @@ public enum ApprovalFloor {
     }
 
     /// Whether `string` holds the topic's bytes exactly: as written,
-    /// without quotes and backslashes, or percent-decoded.
+    /// without quotes, backslashes and `$`, or either of the two
+    /// percent-decoded.
     static func holdsTopic(_ string: ApprovalFloorString, _ topic: [UInt8]) -> Bool {
         let raw: [UInt8] = Array(text(of: string).utf8)
-        return [raw, quotesRemoved(raw), percentDecoded(raw)].contains { ApprovalGate.contains($0, topic) }
-    }
-
-    /// The copies the name scan reads, each lowercased: the text as written
-    /// and without quotes and backslashes; for free text, also both copies
-    /// case-folded.
-    static func nameCopies(_ string: ApprovalFloorString) -> [[UInt8]] {
-        let raw: [UInt8] = Array(text(of: string).utf8)
         let stripped: [UInt8] = quotesRemoved(raw)
-        let copies: [[UInt8]] = [ApprovalGate.lowercased(raw), ApprovalGate.lowercased(stripped)]
-        guard case .freeText(let text) = string else { return copies }
-        return copies + [folded(text), folded(String(decoding: stripped, as: UTF8.self))]
+        return [raw, stripped, percentDecoded(raw), percentDecoded(stripped)].contains { ApprovalGate.contains($0, topic) }
     }
 
-    /// Whether one copy holds a name of `table`.
+    /// The readings the name scan reads, each once: the text as written,
+    /// without quotes, backslashes and `$`, either of the two
+    /// percent-decoded, and each of those four with its slashes collapsed.
+    static func readings(_ raw: [UInt8]) -> [[UInt8]] {
+        let stripped: [UInt8] = quotesRemoved(raw)
+        let four: [[UInt8]] = [raw, stripped, percentDecoded(raw), percentDecoded(stripped)]
+        var once: [[UInt8]] = []
+        for reading in four + four.map(slashesCollapsed) where !once.contains(reading) {
+            once.append(reading)
+        }
+        return once
+    }
+
+    /// The copies the name scan reads: each reading lowercased; for free
+    /// text, also each reading case-folded.
+    static func nameCopies(_ string: ApprovalFloorString) -> [[UInt8]] {
+        let readings: [[UInt8]] = readings(Array(text(of: string).utf8))
+        let copies: [[UInt8]] = readings.map { ApprovalGate.lowercased($0) }
+        guard case .freeText = string else { return copies }
+        return copies + readings.map { folded(String(decoding: $0, as: UTF8.self)) }
+    }
+
+    /// Whether one copy holds a name of `table`: a substring anywhere, or a
+    /// word as a whole piece or as the rest of a glued option's piece.
     static func matches(_ table: Table, _ copy: [UInt8]) -> Bool {
         table.substrings.contains { ApprovalGate.contains(copy, Array($0.utf8)) }
-            || pieces(copy).contains { piece in table.words.contains { piece.elementsEqual($0.utf8) } }
+            || pieces(copy).contains { piece in
+                let rest: ArraySlice<UInt8>? = gluedOptionValue(piece)
+                return table.words.contains { piece.elementsEqual($0.utf8) || rest?.elementsEqual($0.utf8) == true }
+            }
     }
 
     /// The pieces a word name is compared with: `copy` split on every byte
@@ -253,6 +284,36 @@ public enum ApprovalFloor {
             || pieceMarks.contains(byte)
     }
 
+    /// The rest of a piece that starts with `-` and one ASCII letter, a
+    /// one-letter option with its value glued to it (`-aNapCat` gives
+    /// `NapCat`); nil for any other piece, or when nothing follows.
+    static func gluedOptionValue(_ piece: ArraySlice<UInt8>) -> ArraySlice<UInt8>? {
+        guard piece.count > 2, piece.first == hyphen, isLetter(piece[piece.startIndex + 1]) else { return nil }
+        return piece.dropFirst(2)
+    }
+
+    /// `bytes` with every run of slashes written as one, and every slash,
+    /// dot, slash written as one slash: two spellings of the same path.
+    static func slashesCollapsed(_ bytes: [UInt8]) -> [UInt8] {
+        var collapsed: [UInt8] = []
+        var index = 0
+        while index < bytes.count {
+            if bytes[index] == slash, collapsed.last == slash {
+                index += 1
+            } else if bytes[index] == dot, collapsed.last == slash, index + 1 < bytes.count, bytes[index + 1] == slash {
+                index += 2
+            } else {
+                collapsed.append(bytes[index])
+                index += 1
+            }
+        }
+        return collapsed
+    }
+
+    private static func isLetter(_ byte: UInt8) -> Bool {
+        (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
+    }
+
     /// Whether every byte of `text` is printable ASCII (space to tilde), the
     /// gate's rule for a Bash command and a file path: no tab, line break or
     /// other control character, and nothing outside ASCII.
@@ -260,8 +321,9 @@ public enum ApprovalFloor {
         text.utf8.allSatisfy { $0 >= 0x20 && $0 <= 0x7E }
     }
 
-    /// `bytes` without any `'`, `"` or `\`. These are ASCII, so the result
-    /// of valid UTF-8 is valid UTF-8.
+    /// `bytes` without any `'`, `"`, `\` or `$` (the `$` of `$'…'` and
+    /// `$"…"` quoting). These are ASCII, so the result of valid UTF-8 is
+    /// valid UTF-8.
     static func quotesRemoved(_ bytes: [UInt8]) -> [UInt8] {
         bytes.filter { !quoteMarks.contains($0) }
     }
@@ -285,10 +347,11 @@ public enum ApprovalFloor {
     }
 
     /// `text` case-folded by the standard library's Unicode case mappings,
-    /// upper then lower: U+212A becomes `k`, U+017F becomes `s`, and ASCII
-    /// letters become lowercase.
+    /// lower, upper, then lower again: U+212A becomes `k`, U+017F `s`,
+    /// U+00DF and U+1E9E `ss`, U+FB01 `fi`, U+FB06 `st`, and ASCII letters
+    /// lowercase.
     static func folded(_ text: String) -> [UInt8] {
-        Array(text.uppercased().lowercased().utf8)
+        Array(text.lowercased().uppercased().lowercased().utf8)
     }
 
     static func text(of string: ApprovalFloorString) -> String {
@@ -309,6 +372,9 @@ public enum ApprovalFloor {
     // MARK: - Bytes
 
     private static let percent = UInt8(ascii: "%")
-    private static let quoteMarks: [UInt8] = [UInt8(ascii: "'"), UInt8(ascii: "\""), UInt8(ascii: "\\")]
+    private static let hyphen = UInt8(ascii: "-")
+    private static let slash = UInt8(ascii: "/")
+    private static let dot = UInt8(ascii: ".")
+    private static let quoteMarks: [UInt8] = [UInt8(ascii: "'"), UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "$")]
     private static let pieceMarks: [UInt8] = [UInt8(ascii: "_"), UInt8(ascii: "."), UInt8(ascii: "+"), UInt8(ascii: "-")]
 }
