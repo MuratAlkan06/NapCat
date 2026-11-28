@@ -402,7 +402,10 @@ struct SettingsWindowTests {
 
     static let secrecyNote = "Anyone who knows your topic name can read — and post to — your alerts. "
         + "Pick a long, unguessable name and keep it private."
-    static let presets = [30, 60, 120, 300, 600]
+    static let presets = [0, 30, 60, 120, 300, 600]
+    static let floorLabel = "Minimum run before alerting:"
+    static let shortRunsCaption = "Shorter runs finish silently."
+    static let immediatelyCaption = MenuStateModelTests.immediatelyCaption
     static let noLidSend = PanelLine(text: "Last message: none since NapCat started", severity: .nominal)
     static let noSessionSend = PanelLine(text: "Last session alert: none since NapCat started", severity: .nominal)
     static let topicSet = PanelLine(text: "Topic: set (hidden — it is the password to your feed)", severity: .nominal)
@@ -411,10 +414,10 @@ struct SettingsWindowTests {
         SettingsSection(title: "Destination", rows: [.line(server), .line(topic), .ntfyButtons])
     }
 
-    static func floorSection(_ seconds: Int, choices: [Int] = presets) -> SettingsSection {
+    static func floorSection(_ seconds: Int, choices: [Int] = presets,
+                             caption: String = shortRunsCaption) -> SettingsSection {
         SettingsSection(title: "Session alerts", rows: [
-            .minimumRun(label: "Only alert for runs longer than:", seconds: seconds, choices: choices,
-                        caption: "Shorter runs finish silently."),
+            .minimumRun(label: floorLabel, seconds: seconds, choices: choices, caption: caption),
         ])
     }
 
@@ -470,8 +473,13 @@ struct SettingsWindowTests {
                       ]),
             AlertsRow(name: "a stored non-preset floor, phone on", server: server, topic: topicSet,
                       lidLastSend: accepted, session: (90, noSessionSend), phone: (true, noPhone), sections: [
-                          destination(server, topicSet), floorSection(90, choices: [30, 60, 90, 120, 300, 600]),
+                          destination(server, topicSet), floorSection(90, choices: [0, 30, 60, 90, 120, 300, 600]),
                           history(accepted, noSessionSend, noPhone), phoneSection(true),
+                      ]),
+            AlertsRow(name: "Immediately stored (issue #242)", server: server, topic: topicSet,
+                      lidLastSend: accepted, session: (0, noSessionSend), phone: (false, nil), sections: [
+                          destination(server, topicSet), floorSection(0, caption: immediatelyCaption),
+                          history(accepted, noSessionSend), phoneSection(false),
                       ]),
             AlertsRow(name: "problems render in full", server: unusableServer, topic: unusableTopic,
                       lidLastSend: refused, session: (600, noSessionSend), phone: (true, unentitled), sections: [
@@ -548,10 +556,52 @@ struct SettingsWindowTests {
             #expect(lid.defaults.integer(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == 300)
             #expect(model.finishAlertMinimumRunSeconds == 300, "the mirror follows at once")
             #expect(model.alertsPane(now: 0).sections.flatMap(\.rows).contains(
-                .minimumRun(label: "Only alert for runs longer than:", seconds: 300, choices: Self.presets,
-                            caption: "Shorter runs finish silently.")))
+                .minimumRun(label: Self.floorLabel, seconds: 300, choices: Self.presets,
+                            caption: Self.shortRunsCaption)))
             model.setFinishAlertMinimumRunSeconds(29)
             #expect(lid.defaults.integer(forKey: DefaultsKey.finishAlertMinimumRunSeconds) == 30, "the one clamp")
+
+            // Issue #242: "Immediately" is stored as 0 — a value, not the
+            // key's absence — and the caption follows it; choosing 1 minute
+            // again then writes 60, since 60 is no longer what is stored.
+            model.setFinishAlertMinimumRunSeconds(0)
+            #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) as? Int == 0)
+            #expect(model.finishAlertMinimumRunSeconds == 0, "the mirror follows at once")
+            #expect(model.alertsPane(now: 0).sections.flatMap(\.rows).contains(
+                .minimumRun(label: Self.floorLabel, seconds: 0, choices: Self.presets,
+                            caption: Self.immediatelyCaption)))
+            model.setFinishAlertMinimumRunSeconds(60)
+            #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) as? Int == 60)
+            #expect(model.finishAlertMinimumRunSeconds == 60)
+        }
+    }
+
+    /// Issue #242: no migration. A floor stored before this build — the 60 s
+    /// default written explicitly, "Immediately", a non-preset value —
+    /// reads as itself when the menu and its model are built and refreshed
+    /// and the Alerts pane is composed, and is never rewritten by any of it.
+    @Test(arguments: [60, 0, 90])
+    @MainActor func aStoredFloorIsReadAsItIsAndNeverRewritten(stored: Int) {
+        withLidGuardHarness { lid in
+            lid.arm()
+            lid.defaults.set(true, forKey: DefaultsKey.claudeFinishAlertEnabled)
+            lid.defaults.set(stored, forKey: DefaultsKey.finishAlertMinimumRunSeconds)
+            let simulator = DebugPowerSimulator(batteryPercent: 80, adapterConnected: true)
+            let limiter = ChargeLimiter(power: simulator, isAppleSilicon: true, defaults: lid.defaults)
+            let menuContent = MenuContentView(
+                sleep: SleepStateController(), watchdog: WatchdogController(), power: simulator, limiter: limiter,
+                lidGuard: lid.controller, finishAlert: Self.makeFinishAlert(lid), defaults: lid.defaults,
+                settingsHooks: Self.recordingHooks(HookLog()))
+            let model = menuContent.model
+            model.refresh()
+            #expect(model.finishAlertMinimumRunSeconds == stored)
+            let rows = model.alertsPane(now: 0).sections.flatMap(\.rows)
+            #expect(rows.contains(.minimumRun(label: Self.floorLabel, seconds: stored,
+                                              choices: MenuStateModel.sessionAlertsFloorChoices(seconds: stored),
+                                              caption: stored == 0 ? Self.immediatelyCaption : Self.shortRunsCaption)))
+            model.setFinishAlertMinimumRunSeconds(stored)
+            #expect(lid.defaults.object(forKey: DefaultsKey.finishAlertMinimumRunSeconds) as? Int == stored,
+                    "choosing what is stored writes nothing new")
         }
     }
 
@@ -1479,6 +1529,26 @@ struct SettingsWindowTests {
                 + "sections.append(SettingsSection(title: \"Charge Limit\", rows: [.note(chargeControlUnavailableText)])) "
                 + "} else if featureState != .hidden {"),
             "the note replaces the controls for the gated state only")
+    }
+
+    /// Issue #242: the minimum-run row is its popup (forwarding to the model)
+    /// and the caption that follows the floor. The Immediately caption runs
+    /// to two lines, so the caption keeps its full height — it wraps, as the
+    /// window's other captions do, and is never cut off.
+    @Test func theMinimumRunCaptionWrapsToItsFullHeight() throws {
+        let views = try Self.code(Self.settingsViewFile)
+        #expect(Self.occurrences(of: "case let .minimumRun(label, seconds, choices, caption):", in: views) == 1)
+        let row = try #require(views.components(separatedBy: "case let .minimumRun(label, seconds, choices, caption):")
+            .dropFirst().first?.components(separatedBy: "case ").first)
+        #expect(MenuPanelStructureTests.flat(row) == [
+            "VStack(alignment: .leading, spacing: PanelMetrics.tight) {",
+            "Picker(label, selection: Binding( get: { seconds }, set: { model.setFinishAlertMinimumRunSeconds($0) } )) {",
+            "ForEach(choices, id: \\.self) { choice in",
+            "Text(MenuStateModel.sessionAlertsFloorText(seconds: choice)).tag(choice) } }",
+            ".accessibilityLabel(MenuStateModel.sessionAlertsFloorAccessibilityLabel)",
+            "Text(caption) .font(.caption) .foregroundStyle(.secondary) .fixedSize(horizontal: false, vertical: true)",
+            "}",
+        ].joined(separator: " "), "the minimum-run row was rewired: \(MenuPanelStructureTests.flat(row))")
     }
 
     /// Every Settings control forwards to the SAME model action as its

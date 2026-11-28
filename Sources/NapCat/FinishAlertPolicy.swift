@@ -2,7 +2,8 @@ import Foundation
 
 // Pure Track C decision logic for the Claude finish alert and the waiting
 // buzz: marker-set diffing, the hook v7 episode-start check, the run floor
-// (60 s by default, user-adjustable — issue #34), the 12 h stale cap, the
+// (60 s by default, user-adjustable — issue #34 — or none at all with the
+// "Immediately" choice, issue #242), the 12 h stale cap, the
 // batch digest, the outbox and retry tables,
 // and the arming/display predicates — plus alert-channel healing (issue #23):
 // the offline-hold state machine, its arming predicate, the held digest's max
@@ -33,8 +34,14 @@ enum FinishAlertTuning {
     /// this is what an unset or unusable stored value reads as.
     static let minimumRunSeconds = 60
     /// Issue #34: the adjustable floor's bounds (30 s – 10 min). A stored value
-    /// outside them is clamped on read.
+    /// outside them is clamped on read — except `immediatelySeconds`.
     static let minimumRunSecondsRange = 30...600
+    /// Issue #242 (owner ruling): the "Immediately" choice — no floor at all,
+    /// so every finish and waiting transition qualifies, however short the
+    /// run (a negative run is still a clock jump). The one stored value
+    /// outside `minimumRunSecondsRange` that is kept as it is; the default
+    /// stays `minimumRunSeconds`.
+    static let immediatelySeconds = 0
     /// One-shot debounce armed ONLY by a filesystem event — never periodic
     /// (B1 amendment, PLAN.md Track C).
     static let debounceSeconds: TimeInterval = 2
@@ -312,12 +319,15 @@ enum FinishAlertPolicy {
     /// The run floor a STORED `finishAlertMinimumRunSeconds` value stands for
     /// — the one clamp rule, applied on every read. Missing (nil) or not an
     /// integer (a string, a fraction, an array — a hand-edited plist) ⇒ the
-    /// 60 s default; an integer outside `minimumRunSecondsRange` ⇒ the nearer
-    /// bound. Only the alert floor of `observe` follows it: the healing
-    /// outage floor (`AlertHealingTuning.minimumOutageSeconds`) and the held
-    /// digest's max age stay fixed constants.
+    /// 60 s default; exactly `immediatelySeconds` (0, issue #242) ⇒ itself,
+    /// so a stored 0 is never read as unset; any other integer outside
+    /// `minimumRunSecondsRange` ⇒ the nearer bound. Only the alert floor of
+    /// `observe` follows it: the healing outage floor
+    /// (`AlertHealingTuning.minimumOutageSeconds`) and the held digest's max
+    /// age stay fixed constants.
     static func minimumRunSeconds(stored: Any?) -> Int {
         guard let value = stored as? Int else { return FinishAlertTuning.minimumRunSeconds }
+        guard value != FinishAlertTuning.immediatelySeconds else { return value }
         let range = FinishAlertTuning.minimumRunSecondsRange
         return min(range.upperBound, max(range.lowerBound, value))
     }
@@ -370,7 +380,8 @@ enum FinishAlertPolicy {
     ///
     /// `minimumRunSeconds` is the ONE floor of rules 3 and 4 — the finish and
     /// the waiting buzz share it (`runSuppression`). The controller passes the
-    /// user's live setting (issue #34); it defaults to the 60 s constant.
+    /// user's live setting (issue #34); it defaults to the 60 s constant. At
+    /// 0 (issue #242) nothing is `underMinimumRun`.
     /// The diff's waiting writes are counted beside rule 4
     /// (`FinishAlertObservation.waitingWrites`); counting changes no event.
     static func observe(
@@ -473,7 +484,9 @@ enum FinishAlertPolicy {
 
     /// Rule 5: run minutes for a message. Known only when the anchor was
     /// exact (a valid hook v7 `ep`, or an observed UserPromptSubmit) AND the
-    /// run lasted at least a minute.
+    /// run lasted at least a minute — so a run that qualifies under a floor
+    /// below 60 s (30 s, or none with "Immediately") but lasted less than a
+    /// minute carries no minutes, and its message names none.
     static func minutes(duration: Int, exact: Bool) -> Int? {
         guard exact, duration >= 60 else { return nil }
         return duration / 60
@@ -487,7 +500,8 @@ enum FinishAlertPolicy {
     }
 
     /// Floor + clock checks shared by finishes and waiting buzzes; nil = the
-    /// run qualifies (exactly the floor does).
+    /// run qualifies (exactly the floor does, so at a floor of 0 every run
+    /// that is not a clock jump does — a 0-second one included).
     private static func runSuppression(duration: Int, minimumRunSeconds: Int) -> FinishAlertSuppression? {
         if duration < 0 { return .clockJump }
         if duration < minimumRunSeconds { return .underMinimumRun }
