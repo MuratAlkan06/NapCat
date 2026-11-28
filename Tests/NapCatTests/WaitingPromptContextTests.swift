@@ -559,6 +559,36 @@ struct WaitingPromptContextTests {
         }
     }
 
+    /// The same diffs with no run floor ("Immediately", issue #242): nothing
+    /// is under the floor, so the short wired wait has an alert of its own —
+    /// and it yields to the phone's push, as any covered wait does: still no
+    /// send. The next short wait, unwired, now alerts (under a minute, so no
+    /// minutes).
+    @Test func withNoFloorAShortCoveredWaitYieldsToThePhonesPush() async throws {
+        let clock = SeamClock()
+        let sink = ApprovalsRecordingSink()
+        let log = ContextLog()
+        let world = try armedWorld(clock, sink)
+        world.controller.setEnabled(true)
+        defer { world.controller.setEnabled(false) }
+        try await withWiredAlerts(world, log) { h in
+            h.runFloor.value = FinishAlertTuning.immediatelySeconds
+            h.store.put(H.s1, ts: H.t0 - 10)
+            h.store.put(H.s2, ts: H.t0 - 10)
+            h.controller.reconcile()
+            clock.advance(1)
+            _ = try relay(world, sink, "abcde")
+            h.store.put(H.s1, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(log.reads.count == 2 && log.reads.last == Self.covered, "the arm's read, then the wait's")
+            #expect(h.sends.isEmpty, "an alerting wait, covered: the phone's push stands for it")
+            clock.advance(2)
+            h.store.put(H.s2, ts: H.t0, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: nil, stillWorking: 1, prompts: .none)])
+        }
+    }
+
     /// The mark is set as the alert lane arms: a prompt relayed before it
     /// stands for no wait the lane then sees.
     @Test func theMarkIsSetWhenAlertsArm() async throws {

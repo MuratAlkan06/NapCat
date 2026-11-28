@@ -46,11 +46,14 @@ enum DefaultsKey {
     static let claudeFinishAlertEnabled = "claudeFinishAlertEnabled"
     /// The session alerts' run floor in seconds (Int, issue #34): a run
     /// shorter than this never alerts — neither a finish nor a waiting buzz.
-    /// Unset reads as `FinishAlertTuning.minimumRunSeconds` (60); a stored
-    /// value is CLAMPED to `FinishAlertTuning.minimumRunSecondsRange` (30–600)
-    /// on read, and a non-integer one reads as the default
-    /// (`FinishAlertPolicy.minimumRunSeconds(stored:)`). Read live at every
-    /// marker diff, so a change applies without a restart.
+    /// Unset reads as `FinishAlertTuning.minimumRunSeconds` (60); a stored 0
+    /// is "Immediately" (`FinishAlertTuning.immediatelySeconds`, issue #242:
+    /// no floor) and is kept as it is; any other stored value is CLAMPED to
+    /// `FinishAlertTuning.minimumRunSecondsRange` (30–600) on read, and a
+    /// non-integer one reads as the default
+    /// (`FinishAlertPolicy.minimumRunSeconds(stored:)`). Nothing rewrites a
+    /// stored value. Read live at every marker diff, so a change applies
+    /// without a restart.
     static let finishAlertMinimumRunSeconds = "finishAlertMinimumRunSeconds"
 
     // MARK: F3 stage 1 — phone transport

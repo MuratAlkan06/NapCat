@@ -860,24 +860,27 @@ private final class MaskedTopicRow: NSObject, NSTextFieldDelegate {
 
 /// Issue #34: the "Session alerts" group of the ntfy settings editor — ONE
 /// popup of preset floors for the session alerts' run floor
-/// (`finishAlertMinimumRunSeconds`), every row a formatted duration
-/// (`MenuStateModel.sessionAlertsFloorText`). A stored floor that is not a
-/// preset gets one extra row of its own, selected, so merely opening the
-/// editor never changes it. It never sees the topic.
+/// (`finishAlertMinimumRunSeconds`), every row "Immediately" (issue #242) or
+/// a formatted duration (`MenuStateModel.sessionAlertsFloorText`). A stored
+/// floor that is not a preset gets one extra row of its own, selected, so
+/// merely opening the editor never changes it. It never sees the topic.
 ///
 /// Its own view, laid out bottom-up (AppKit's default coordinates) and at
 /// least the editor's field width: the caption, then the control row (the
 /// label, then the popup, on one baseline), then the group title — small,
 /// semibold, secondary, like the panel's group headers. The row
-/// widens the group rather than truncate either half. System fonts, semantic
-/// colors and the panel's `PanelMetrics` spacing only.
+/// widens the group rather than truncate either half. The caption follows
+/// the chosen row (issue #242), in a band as tall as the tallest caption a
+/// row can show, so a choice never resizes the editor (the issue #42 rule).
+/// System fonts, semantic colors and the panel's `PanelMetrics` spacing only.
 @MainActor
 final class SessionAlertsFloorGroup: NSObject {
     let view = NSView()
     let titleLabel = NSTextField(labelWithString: MenuStateModel.sessionAlertsFloorGroupTitle)
     let rowLabel = NSTextField(labelWithString: MenuStateModel.sessionAlertsFloorLabel)
     let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let caption = NSTextField(wrappingLabelWithString: MenuStateModel.sessionAlertsFloorCaption)
+    /// Its text is the chosen row's (`show()`).
+    let caption = NSTextField(wrappingLabelWithString: "")
 
     /// The gap between the editor's server field and this group's title —
     /// the panel's spacing between feature blocks.
@@ -901,20 +904,22 @@ final class SessionAlertsFloorGroup: NSObject {
         titleLabel.textColor = .secondaryLabelColor
         caption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         caption.textColor = .secondaryLabelColor
-        show()
         layOut(width: width)
+        show()
     }
 
     /// The floor as Save returns it: the selected row's seconds.
     var seconds: Int { popup.selectedTag() }
 
-    /// The popup's action: keep its spoken value on the new choice.
+    /// The popup's action: keep its spoken value and the caption on the new
+    /// choice.
     @objc func chose(_ sender: NSPopUpButton) {
         show()
     }
 
     private func show() {
         popup.setAccessibilityValue(MenuStateModel.sessionAlertsFloorText(seconds: seconds))
+        caption.stringValue = MenuStateModel.sessionAlertsFloorCaption(seconds: seconds)
     }
 
     private func layOut(width: CGFloat) {
@@ -923,8 +928,15 @@ final class SessionAlertsFloorGroup: NSObject {
         let popupSize = popup.fittingSize
         let groupWidth = max(width, labelSize.width + PanelMetrics.regular + popupSize.width)
 
+        // The caption band: MEASURED for every row's caption at the group's
+        // width, the tallest kept (`show()` then puts the chosen one in).
         let unbounded = NSRect(x: 0, y: 0, width: groupWidth, height: .greatestFiniteMagnitude)
-        let captionHeight = ceil(caption.cell?.cellSize(forBounds: unbounded).height ?? caption.fittingSize.height)
+        var captionHeight: CGFloat = 0
+        for item in popup.itemArray {
+            caption.stringValue = MenuStateModel.sessionAlertsFloorCaption(seconds: item.tag)
+            let height = ceil(caption.cell?.cellSize(forBounds: unbounded).height ?? caption.fittingSize.height)
+            captionHeight = max(captionHeight, height)
+        }
         caption.frame = NSRect(x: 0, y: 0, width: groupWidth, height: captionHeight)
 
         let rowY = captionHeight + PanelMetrics.tight

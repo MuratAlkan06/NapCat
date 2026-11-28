@@ -35,7 +35,9 @@ import Testing
 ///    database, no account check, no CloudKit identifier off its allow-list,
 ///    no way to run an operation but the database seam (security review 2,
 ///    G1), no other file in the four targets importing CloudKit in any form
-///    (G2), and nothing in the app conforms to its database seam;
+///    (G2; since #241 the other three targets' files are matched by path,
+///    so none passes under a sanctioned name), and nothing in the app
+///    conforms to its database seam;
 /// 5. the S3 test files touch nothing live;
 /// 6. the prompt record is written only through the wire;
 /// 7. (#146) the record store writes the gate's forward answer exactly as
@@ -1435,18 +1437,48 @@ struct ApprovalRecordPathStructureTests {
                                        #"\.\s*add\b"#, #"(?<!\bself)\.\s*database\b"#, #"\.\s*container\b"#,
                                        #"\bperform\b"#, #"#selector\b"#, #"\bSelector\b"#, #"\bNSSelectorFromString\b"#]
 
-    /// The two Mac files that may import CloudKit (LidGuardStructureTests
-    /// owns that table for Sources/NapCat). This lock scans all four targets,
-    /// so a re-export from the seam's or the channel's target cannot carry
-    /// CloudKit into the app either.
+    /// The two Mac files that may import CloudKit, both in Sources/NapCat
+    /// (LidGuardStructureTests owns that table for Sources/NapCat). This lock
+    /// scans all four targets, so a re-export from the seam's or the
+    /// channel's target cannot carry CloudKit into the app either. Since #241
+    /// it reads them as `iCloudSources()` names them, the other three
+    /// targets' files by path, so a file there under one of these two names
+    /// is not one of them.
+    ///
+    /// What it sees (`LidGuardStructureTests.cloudKitImport`): an import
+    /// declaration of the module in any form, with an attribute
+    /// (`@preconcurrency`, `@_exported`, `@testable`) or an access level,
+    /// scoped (`import struct CloudKit.CKRecord`), backticked, split over
+    /// lines or with a comment inside, and one inside an `#if` block
+    /// whatever its condition. What it cannot see: iCloud reached with no
+    /// CloudKit import. A `canImport(CloudKit)` condition alone imports
+    /// nothing and is not matched. A module from outside the four targets
+    /// that re-exported CloudKit, or another framework's iCloud API (Core
+    /// Data's CloudKit container, Foundation's ubiquitous key-value store),
+    /// reaches iCloud without one, and this lock does not look for either.
+    /// A class looked up by name at run time is the lookup ban's
+    /// (`PairingStructureTests.objcLookupFailures`).
     static let cloudKitFiles: Set<String> = ["CloudKitMessageSender.swift", recordPathFile]
+
+    /// Lock 4's sources (#241): the files and the form of `uncutSources()`
+    /// (whole-line comments removed), Sources/NapCat named by file name and
+    /// the other three Mac targets by path from the repository root
+    /// (`LidGuardStructureTests.otherTargetSources`, as the URL-loading lock
+    /// reads them since #236), so no file outside Sources/NapCat can match a
+    /// name in `cloudKitFiles`.
+    static func iCloudSources() throws -> Sources {
+        try LidGuardStructureTests.swiftSources(LidGuardStructureTests.wholeLineCommentsRemoved)
+            + LidGuardStructureTests.otherTargetSources(LidGuardStructureTests.wholeLineCommentsRemoved)
+    }
 
     static let seamConformance =
         #"\b(class|struct|actor|enum|extension)\b[^{\n]*:[^{\n]*\bApprovalRecordDatabase\b"#
 
-    /// `sources`: `uncutSources()`. The original checks read the
-    /// comment-stripped code, as they always did; the security-review-2
-    /// checks read the uncut text.
+    /// `sources`: `iCloudSources()` (#241: `uncutSources()`, read before,
+    /// names the other three targets' files by file name alone, so one there
+    /// under a sanctioned name passed the import check). The original checks
+    /// read the comment-stripped code, as they always did; the
+    /// security-review-2 checks read the uncut text.
     static func iCloudFailures(_ sources: Sources) -> [String] {
         var failures: [String] = []
         let uncut = text(recordPathFile, in: sources)
@@ -1470,17 +1502,34 @@ struct ApprovalRecordPathStructureTests {
         }
         for (name, text) in sources where !cloudKitFiles.contains(name)
             && text.range(of: LidGuardStructureTests.cloudKitImport, options: .regularExpression) != nil {
-            failures.append("\(name) imports CloudKit — only \(cloudKitFiles.sorted()) may, in any of the four targets")
+            failures.append("\(name) imports CloudKit — only \(cloudKitFiles.sorted()) in Sources/NapCat may, in any of the four targets")
         }
         return failures
     }
 
     @Test func theRecordPathCannotReachICloudByItself() throws {
-        let withFile = try Self.uncutSources()
+        let withFile = try Self.iCloudSources()
         #expect(Self.vacuityFailures(withFile).isEmpty, "\(Self.vacuityFailures(withFile))")
         #expect(Self.iCloudFailures(withFile).isEmpty, "\(Self.iCloudFailures(withFile))")
         #expect(Self.text(Self.recordPathFile, in: withFile).contains("func submit(_ operation: CKModifyRecordsOperation)"),
                 "vacuity: the seam the lock looks at")
+        // #241: all four Mac targets are read, in `uncutSources()`'s form,
+        // the other three by path (vacuity: each of them holds a file the
+        // scan sees), and the two sanctioned names are the two Sources/NapCat
+        // files that import CloudKit.
+        let bare = try Self.uncutSources()
+        #expect(withFile.map { $0.text } == bare.map { $0.text }
+                && withFile.map { $0.name.split(separator: "/").last.map(String.init) ?? "" } == bare.map { $0.name },
+                "vacuity: lock 4 reads every file of the four targets, as uncutSources() reads it")
+        let others = LidGuardStructureTests.networkingOtherTargets
+        #expect(ApprovalChannelStructureTests.directories.count == 4 && others.count == 3, "the four Mac targets")
+        #expect(Set(withFile.filter { $0.name.contains("/") }.map { $0.name.split(separator: "/").dropLast().joined(separator: "/") })
+                == Set(others), "vacuity: every other Mac target is read, each file named by its path")
+        #expect(Self.cloudKitFiles.count == 2, "the allow-list is explicit: two names")
+        for file in Self.cloudKitFiles.sorted() {
+            #expect(Self.text(file, in: withFile).range(of: LidGuardStructureTests.cloudKitImport, options: .regularExpression) != nil,
+                    "vacuity: \(file) is in Sources/NapCat and imports CloudKit")
+        }
         let record = Self.recordPathFile
         let mutants: [(String, Sources)] = [
             ("a container", Self.mutate(withFile, record) {
@@ -1499,13 +1548,16 @@ struct ApprovalRecordPathStructureTests {
 
     /// Security review 2 (#146): G1 (an allow-listed operation run without
     /// the seam), a CloudKit door off the allow-list, and G2 (CloudKit
-    /// imported by a third file, or re-exported by another target).
+    /// imported by a third file, or re-exported by another target). #241:
+    /// G2 in each other target, whose files are matched by path, under an
+    /// ordinary name or a sanctioned one.
     @Test func nothingRunsARecordOperationButTheSeam() throws {
-        let withFile = try Self.uncutSources()
+        let withFile = try Self.iCloudSources()
         #expect(Self.text(Self.recordPathFile, in: withFile).contains("        self.database = database\n"),
                 "vacuity: the writer's own seam is the one `.database` the lock lets through")
-        #expect(ApprovalChannelStructureTests.directories.count == 4 && withFile.contains { $0.name == "SeamSocket.swift" },
-                "vacuity: the import scan sees the seam's target")
+        #expect(ApprovalChannelStructureTests.directories.count == 4
+                && withFile.contains { $0.name == "Sources/NapCatSeam/SeamSocket.swift" },
+                "vacuity: the import scan sees the seam's target, by path")
         let record = Self.recordPathFile
         let mutants: [(String, Sources)] = [
             ("the operation started (G1)", Self.mutate(withFile, record) {
@@ -1548,7 +1600,7 @@ struct ApprovalRecordPathStructureTests {
             // G2: CloudKit imported by a third file, or re-exported by another target.
             ("a third CloudKit file, scoped import (G2)", withFile + [("ZZFetchRecords.swift",
                 "import class CloudKit.CKFetchRecordsOperation\nfunc f() { CKFetchRecordsOperation(recordIDs: []).start() }")]),
-            ("CloudKit re-exported by the seam's target", Self.mutate(withFile, "SeamSocket.swift") {
+            ("CloudKit re-exported by the seam's target", Self.mutate(withFile, "Sources/NapCatSeam/SeamSocket.swift") {
                 "@_exported import CloudKit\n" + $0 }),
             // The security re-check (#146), N2: a trailing comment inside the import.
             ("a third CloudKit file, trailing-comment import (N2)", withFile + [("ZZN2Fetch.swift",
@@ -1557,6 +1609,29 @@ struct ApprovalRecordPathStructureTests {
         for (name, mutant) in mutants {
             #expect(mutant.map { $0.text } != withFile.map { $0.text }, "canary '\(name)' did not apply")
             #expect(!Self.iCloudFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        // #241: a CloudKit import at the top of a file of each other target,
+        // in the forms the matcher sees; a new file there; and a file under
+        // each sanctioned name in each other target. The import check itself
+        // names each, by its path.
+        func atTop(_ path: String, _ line: String) -> (String, Sources) { (path, Self.mutate(withFile, path) { line + $0 }) }
+        func added(_ path: String, _ text: String) -> (String, Sources) { (path, withFile + [(name: path, text: text)]) }
+        let forms: [(String, Sources)] = [
+            atTop("Sources/NapCatSeam/SeamSocket.swift", "import CloudKit\n"),
+            atTop("Sources/NapCatChannel/ChannelServer.swift", "@preconcurrency import CloudKit\n"),
+            atTop("Sources/NapCatChannel/ChannelRelay.swift", "@_exported import CloudKit\n"),
+            atTop("Sources/NapCatWire/ApprovalWire.swift", "import struct CloudKit.CKRecord\n"),
+            atTop("Sources/NapCatWire/AlertWire.swift", "#if canImport(CloudKit)\nimport CloudKit\n#endif\n"),
+            added("Sources/NapCatChannel/ChannelRecords.swift", "import CloudKit\nlet zz: CKRecord? = nil\n"),
+        ]
+        let sanctionedNames: [(String, Sources)] = Self.cloudKitFiles.sorted().flatMap { file -> [(String, Sources)] in
+            LidGuardStructureTests.networkingOtherTargets.map { added($0 + "/" + file, "import CloudKit\n") }
+        }
+        #expect(sanctionedNames.count == 6, "vacuity: two sanctioned names, in each of three other targets")
+        for (path, mutant) in forms + sanctionedNames {
+            #expect(mutant.map { $0.text } != withFile.map { $0.text }, "canary at \(path) did not apply")
+            #expect(Self.iCloudFailures(mutant).contains { $0.hasPrefix(path + " imports CloudKit") },
+                    "canary at \(path) was NOT caught by the import check")
         }
         // Each run pattern compiles and bites on its own (one that did not
         // compile would match nothing, silently).

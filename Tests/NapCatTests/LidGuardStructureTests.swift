@@ -1517,14 +1517,16 @@ struct LidGuardStructureTests {
     static let networkingOtherTargets = ApprovalChannelStructureTests.directories.filter { $0 != "Sources/NapCat" }
 
     /// Every Swift file of the other three Mac targets (each folder is flat:
-    /// `everyFolderALockListsIsFlat`), comment-stripped as `swiftSources()`
-    /// strips, named by its path ("Sources/NapCatSeam/SeamSocket.swift").
-    static func otherTargetSources() throws -> [(name: String, text: String)] {
+    /// `everyFolderALockListsIsFlat`), stripped by `strip` as `swiftSources`
+    /// strips (`codeOnly` unless the lock reads another form: the CloudKit
+    /// import lock reads whole-line comments removed, #241), named by its
+    /// path ("Sources/NapCatSeam/SeamSocket.swift").
+    static func otherTargetSources(_ strip: (String) -> String = codeOnly) throws -> [(name: String, text: String)] {
         let root = repoRoot()
         return try networkingOtherTargets.flatMap { directory -> [(name: String, text: String)] in
             let url = root.appendingPathComponent(directory)
             let names = try FileManager.default.contentsOfDirectory(atPath: url.path).filter { $0.hasSuffix(".swift") }.sorted()
-            return try names.map { (directory + "/" + $0, codeOnly(try String(contentsOf: url.appendingPathComponent($0), encoding: .utf8))) }
+            return try names.map { (directory + "/" + $0, strip(try String(contentsOf: url.appendingPathComponent($0), encoding: .utf8))) }
         }
     }
 
