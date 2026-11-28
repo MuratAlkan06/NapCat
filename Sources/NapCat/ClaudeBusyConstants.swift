@@ -4,7 +4,7 @@ import Foundation
 /// hook script (scripts/claude-busy-hook.sh) and its installer. A PARITY LINT
 /// (ClaudeBusyHookScriptTests) byte-matches the marker-dir path, the
 /// session-id regex, the marker-line grammar tokens (hook v7: plus the
-/// optional `ep=` episode-start token and its digit bound), the six registered hook
+/// optional `ep=` episode-start token and its digit bound), the eight registered hook
 /// event names, (Track C, C1) the Notification-type classes plus the synthetic
 /// `waiting` event token, (B-2) the synthetic `waiting-after-stop` token
 /// and the two marker-phase token lists, (hook v9) the two question tokens,
@@ -76,8 +76,10 @@ enum ClaudeBusyConstants {
     /// script and set-match them against the installer's and uninstaller's
     /// printed registration lists.
     static let clearEvents = ["Stop", "StopFailure", "SessionEnd", "Notification", "SubagentStop"]
-    /// All six events the hook is registered for.
-    static var allEvents: [String] { [setEvent] + clearEvents }
+    /// All eight events the hook is registered for: the six above, then
+    /// (hook v9) the two question tool events, each registered with
+    /// `questionToolName` as its matcher.
+    static var allEvents: [String] { [setEvent] + clearEvents + questionToolEvents }
 
     /// Hook v9 — the two OBSERVE-ONLY tool events. Each is registered with
     /// `questionToolName` as its matcher, prints nothing and exits 0, so the

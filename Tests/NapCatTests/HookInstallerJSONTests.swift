@@ -5,8 +5,9 @@ import AppKit
 import Testing
 @testable import NapCat
 
-/// Audit F-7 (issue #103): the hook installer prints the six exec-form
-/// registrations the user pastes into ~/.claude/settings.json. It used to
+/// Audit F-7 (issue #103): the hook installer prints the exec-form
+/// registrations (eight since hook v9) the user pastes into
+/// ~/.claude/settings.json. It used to
 /// splice $HOME into that JSON raw, so a quote or backslash in the path broke
 /// — or added to — the pasted JSON. Now every path goes through the
 /// installer's `json_string`.
@@ -73,11 +74,11 @@ struct HookInstallerJSONTests {
         return Run(status: process.terminationStatus, stdout: String(decoding: data, as: UTF8.self))
     }
 
-    /// The six printed `"Event": [ … ],` lines as one JSON object.
+    /// The eight printed `"Event": [ … ],` lines as one JSON object.
     private static func registrations(_ printed: String) throws -> [String: Any] {
         let entries = printed.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.hasPrefix("\"") && $0.contains("\"hooks\"") }
-        try #require(entries.count == 6, "six registrations expected, got \(entries.count)")
+        try #require(entries.count == 8, "eight registrations expected, got \(entries.count)")
         let object = "{" + entries.map { $0.hasSuffix(",") ? String($0.dropLast()) : $0 }.joined(separator: ",") + "}"
         let parsed = try JSONSerialization.jsonObject(with: Data(object.utf8))
         return try #require(parsed as? [String: Any], "the printed registrations are not a JSON object")
@@ -90,10 +91,20 @@ struct HookInstallerJSONTests {
         return command?["args"] as? [String]
     }
 
+    /// The entry's keys and its `matcher`, if any (hook v9: only the two
+    /// question tool entries have one).
+    private static func entryKeys(_ registrations: [String: Any], _ event: String) -> (keys: Set<String>, matcher: Any?) {
+        let entries = registrations[event] as? [[String: Any]] ?? []
+        let entry = entries.count == 1 ? entries[0] : [:]
+        return (Set(entry.keys), entry["matcher"])
+    }
+
     /// Homes with a quote, a backslash, both, a space, non-ASCII and a
-    /// would-be command substitution: the printed JSON parses, all six
+    /// would-be command substitution: the printed JSON parses, all eight
     /// registrations carry exactly `-i`, `HOME=<home>`, `/bin/bash`,
     /// `<home>/.claude/hooks/napcat-busy-hook.sh` — and nothing was run.
+    /// The two question tool entries alone carry `"matcher":
+    /// "AskUserQuestion"`; the Notification entry has no matcher.
     @Test func thePrintedRegistrationsAreValidJSONForAnyHome() throws {
         let snippet = try Self.jsonSnippet()
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("napcat-f7-\(UUID().uuidString)")
@@ -111,6 +122,15 @@ struct HookInstallerJSONTests {
                     #expect(Self.args(registrations, event)
                             == ["-i", "HOME=" + home, "/bin/bash", home + "/" + ClaudeBusyConstants.installedHookRelativePath],
                             "\(locale) \(home): \(event) does not carry the paths byte for byte")
+                    let entry = Self.entryKeys(registrations, event)
+                    if ClaudeBusyConstants.questionToolEvents.contains(event) {
+                        #expect(entry.keys == ["matcher", "hooks"]
+                                && entry.matcher as? String == ClaudeBusyConstants.questionToolName,
+                                "\(locale) \(home): \(event) must be matched to the question tool, got \(entry.keys)")
+                    } else {
+                        #expect(entry.keys == ["hooks"] && entry.matcher == nil,
+                                "\(locale) \(home): \(event) must carry no matcher, got \(entry.keys)")
+                    }
                 }
             }
         }

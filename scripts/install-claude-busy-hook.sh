@@ -68,7 +68,7 @@ echo "ready:     $MARKER_DIR (700)"
 
 cat <<JSON
 
-Add these six entries to the "hooks" object in ~/.claude/settings.json
+Add these eight entries to the "hooks" object in ~/.claude/settings.json
 (merge with any existing hooks; do not remove yours). Paste EXACTLY — the
 exec form (/usr/bin/env -i …) is a security requirement, not cosmetic:
 
@@ -77,9 +77,20 @@ exec form (/usr/bin/env -i …) is a security requirement, not cosmetic:
   "StopFailure": [ { "hooks": [ $EXEC_CMD ] } ],
   "SubagentStop": [ { "hooks": [ $EXEC_CMD ] } ],
   "SessionEnd": [ { "hooks": [ $EXEC_CMD ] } ],
-  "Notification": [ { "hooks": [ $EXEC_CMD ] } ]
+  "Notification": [ { "hooks": [ $EXEC_CMD ] } ],
+  "PreToolUse": [ { "matcher": "AskUserQuestion", "hooks": [ $EXEC_CMD ] } ],
+  "PostToolUse": [ { "matcher": "AskUserQuestion", "hooks": [ $EXEC_CMD ] } ]
+
+If you already have "PreToolUse" or "PostToolUse" entries, add the NapCat
+object to that array instead of a second key. Keep the "AskUserQuestion"
+matcher on both: the hook only needs that one tool.
 
 JSON
+echo "UPDATE: PreToolUse and PostToolUse are NEW in hook version 9. If you"
+echo "        registered an earlier NapCat hook, ADD both entries above, each with"
+echo "        its \"matcher\": \"AskUserQuestion\" — they let NapCat's waiting alert"
+echo "        say when Claude is asking you a direct question. They never block or"
+echo "        change the question. A NEW Claude Code session is needed to load them."
 
 echo "UPDATE: SubagentStop is NEW in this version. If you registered an earlier"
 echo "        NapCat hook, ADD the SubagentStop entry above — it keeps NapCat"

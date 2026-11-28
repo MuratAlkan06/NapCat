@@ -464,9 +464,10 @@ yourself, no `sudo`:
 ```
 
 It deletes `~/.claude/hooks/napcat-busy-hook.sh` and the marker directory, then
-prints the six NapCat entries to delete from `~/.claude/settings.json` by hand
+prints the eight NapCat entries to delete from `~/.claude/settings.json` by hand
 (`UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`,
-`Notification` — it never edits that file); restart Claude Code afterwards.
+`Notification`, and the `PreToolUse` and `PostToolUse` entries matched to
+`AskUserQuestion` — it never edits that file); restart Claude Code afterwards.
 If you registered the remote approvals channel server, run
 `./scripts/uninstall-channel.sh` as yourself too: it removes the `napcat`
 registration from Claude Code, but only if it runs the NapCat channel server
@@ -569,7 +570,7 @@ ends with nothing left running, it does not look at the message.
 That copies the hook to the stable path `~/.claude/hooks/napcat-busy-hook.sh`
 (so `make clean` never removes it), creates the marker directory, and **prints**
 the exact registration to paste into `~/.claude/settings.json`. The installer
-never edits `settings.json` itself. Merge these six entries into your existing
+never edits `settings.json` itself. Merge these eight entries into your existing
 `"hooks"` object (replace `<HOME>` with your home directory — the installer
 prints the absolute paths for you):
 
@@ -579,7 +580,9 @@ prints the absolute paths for you):
 "StopFailure":     [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SubagentStop":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SessionEnd":      [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
-"Notification":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
+"Notification":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"PreToolUse":      [ { "matcher": "AskUserQuestion", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"PostToolUse":     [ { "matcher": "AskUserQuestion", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
 ```
 
 The `SubagentStop` entry is what keeps NapCat showing **running** while a
@@ -587,9 +590,16 @@ background subagent is still working after the main turn ends (the
 orchestrator-plus-subagents workflow). The `Notification` entry has **no
 matcher**: the hook tells waiting-on-you notifications (a permission prompt, an
 MCP input request) apart from idle ones, keeping the session busy while Claude
-waits for you, so it needs to receive every notification type. **If you
-registered an earlier version of this hook**, add the `SubagentStop` entry,
-remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
+waits for you, so it needs to receive every notification type. The
+`PreToolUse` and `PostToolUse` entries are the opposite: each **keeps its
+`"matcher": "AskUserQuestion"`**, so the hook runs only around Claude Code's
+tool for asking you a question (see "Session alerts" below); it prints
+nothing and always exits 0, so it never blocks, delays or changes the
+question. If you already have `PreToolUse` or `PostToolUse` hooks, add the
+NapCat object to that array instead of a second key. **If you registered an
+earlier version of this hook**, add whichever of the `SubagentStop`,
+`PreToolUse` and `PostToolUse` entries you are missing, remove
+`"matcher":"idle_prompt",` from your `Notification` entry, re-run
 `./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
 start a new Claude Code session so it loads. The installer prints the hook
 version it installed, and NapCat warns — in the menu and in **Settings ›
@@ -629,7 +639,7 @@ While the flag exists the hook no-ops immediately.
 
 Removes the installed hook and the marker directory and prints which
 `settings.json` entries to delete. Like the installer, it never edits
-`settings.json`; delete the six NapCat entries yourself and restart Claude Code.
+`settings.json`; delete the eight NapCat entries yourself and restart Claude Code.
 
 ### Notify me if the Mac sleeps mid-task
 

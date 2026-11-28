@@ -1547,25 +1547,56 @@ struct ClaudeBusyHookScriptTests {
         let readme = try Self.read(Self.repoRoot().appendingPathComponent("README.md"))
         let registered = Set(ClaudeBusyConstants.allEvents)
 
-        #expect(ClaudeBusyConstants.allEvents.count == 6 && registered.count == 6, "six distinct registered events")
+        // Hook v9: six events plus the two question tool events.
+        #expect(ClaudeBusyConstants.allEvents.count == 8 && registered.count == 8, "eight distinct registered events")
         #expect(ClaudeBusyConstants.clearEvents.contains("SubagentStop"), "SubagentStop is a reconcile event")
         #expect(hook.contains("SubagentStop"), "the hook must handle SubagentStop")
+        #expect(registered.isSuperset(of: ClaudeBusyConstants.questionToolEvents), "both question tool events are registered")
 
         let installerEntries = installer.split(separator: "\n").filter { $0.contains("$EXEC_CMD ]") }
             .compactMap { Self.quotedNames($0).first }
-        #expect(installerEntries.count == 6 && Set(installerEntries) == registered,
+        #expect(installerEntries.count == 8 && Set(installerEntries) == registered,
                 "installer registrations \(installerEntries) must be exactly \(registered.sorted())")
 
         let removal = try #require(uninstaller.split(separator: "\n").first { $0.contains("\"UserPromptSubmit\",") },
                                    "the uninstaller's removal list")
-        #expect(Self.quotedNames(removal).count == 6 && Set(Self.quotedNames(removal)) == registered,
+        #expect(Self.quotedNames(removal).count == 8 && Set(Self.quotedNames(removal)) == registered,
                 "uninstaller removal list \(Self.quotedNames(removal)) must be exactly \(registered.sorted())")
 
         let readmeEntries = readme.split(separator: "\n")
             .filter { $0.hasPrefix("\"") && $0.contains(ClaudeBusyConstants.installedHookRelativePath) }
             .compactMap { Self.quotedNames($0).first }
-        #expect(readmeEntries.count == 6 && Set(readmeEntries) == registered,
+        #expect(readmeEntries.count == 8 && Set(readmeEntries) == registered,
                 "README registrations \(readmeEntries) must be exactly \(registered.sorted())")
+    }
+
+    /// Hook v9: wherever a registration is printed or documented, the two
+    /// question tool entries — and only they — carry the matcher, exactly
+    /// `"matcher": "AskUserQuestion"`, placed before their `"hooks"`; every
+    /// other entry, the Notification one included, has none. The
+    /// uninstaller names the matcher for the two entries it lists.
+    @Test func onlyTheQuestionEntriesCarryTheMatcher() throws {
+        let installer = try Self.read(Self.installerURL)
+        let uninstaller = try Self.read(Self.uninstallerURL)
+        let readme = try Self.read(Self.repoRoot().appendingPathComponent("README.md"))
+        let matcher = #""matcher": "\#(ClaudeBusyConstants.questionToolName)", "hooks": ["#
+        let installerLines = installer.split(separator: "\n").map(String.init).filter { $0.contains("$EXEC_CMD ]") }
+        let readmeLines = readme.split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix("\"") && $0.contains(ClaudeBusyConstants.installedHookRelativePath) }
+        for (name, lines) in [("installer", installerLines), ("README", readmeLines)] {
+            #expect(lines.count == ClaudeBusyConstants.allEvents.count, "\(name): one line per registration")
+            for line in lines {
+                let event = Self.quotedNames(Substring(line)).first ?? "?"
+                if ClaudeBusyConstants.questionToolEvents.contains(event) {
+                    #expect(line.contains(matcher), "\(name): the \(event) entry must carry \(matcher)")
+                    #expect(line.components(separatedBy: "matcher").count == 2, "\(name): one matcher on \(event)")
+                } else {
+                    #expect(!line.contains("matcher"), "\(name): the \(event) entry must carry no matcher")
+                }
+            }
+        }
+        #expect(uninstaller.contains("The PreToolUse and PostToolUse ones carry the matcher AskUserQuestion"),
+                "the uninstaller names the matcher of the two question entries")
     }
 
     /// C1 parity: the shell's two KEEP case patterns byte-match the Swift
@@ -4111,12 +4142,15 @@ struct ClaudeBusyHookScriptTests {
 
         // C1: the Notification entry has NO matcher (the hook needs every type
         // to tell waiting-on-user apart from idle), and no printed registration
-        // line carries one.
-        #expect(installer.contains(#""Notification": [ { "hooks": [ $EXEC_CMD ] } ]"#),
+        // line carries one — except (hook v9) the two question tool entries,
+        // whose AskUserQuestion matcher `onlyTheQuestionEntriesCarryTheMatcher`
+        // pins.
+        #expect(installer.contains(#""Notification": [ { "hooks": [ $EXEC_CMD ] } ],"#),
                 "the Notification entry is registered without a matcher")
         let registrationLines = installer.split(separator: "\n").filter { $0.contains("$EXEC_CMD ]") }
-        #expect(registrationLines.count == 6, "six printed registrations, found \(registrationLines.count)")
-        for line in registrationLines {
+        #expect(registrationLines.count == 8, "eight printed registrations, found \(registrationLines.count)")
+        for line in registrationLines
+        where !ClaudeBusyConstants.questionToolEvents.contains(Self.quotedNames(line).first ?? "") {
             #expect(!line.contains("matcher"), "printed registration must not carry a matcher: \(line)")
         }
         // ...and the UPDATE note tells earlier installs to drop the old matcher.

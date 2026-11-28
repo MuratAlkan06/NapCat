@@ -40,11 +40,13 @@ fi
 cat <<'NOTE'
 
 Now DELETE the NapCat hook entries from ~/.claude/settings.json by hand
-(this uninstaller never edits that file). Remove the six entries whose
+(this uninstaller never edits that file). Remove the eight entries whose
 command runs ".../napcat-busy-hook.sh":
 
-  "UserPromptSubmit", "Stop", "StopFailure", "SubagentStop", "SessionEnd", "Notification"
+  "UserPromptSubmit", "Stop", "StopFailure", "SubagentStop", "SessionEnd", "Notification", "PreToolUse", "PostToolUse"
 
+The PreToolUse and PostToolUse ones carry the matcher AskUserQuestion
+(an earlier NapCat install may have only the first six).
 If those events have no other hooks, remove the whole key. Restart Claude
 Code afterwards so the removal takes effect.
 NOTE
