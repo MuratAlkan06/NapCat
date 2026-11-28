@@ -618,11 +618,12 @@ struct MenuStateModelTests {
         #expect(presets.contains(FinishAlertTuning.minimumRunSeconds), "the default is a preset — no reset row")
     }
 
-    /// Issue #242: the "Immediately" caption, word for word. Its "2 seconds"
-    /// is the watcher's debounce: a run or wait over before the marker
-    /// folder has been quiet that long may never be read.
+    /// Issue #242: the "Immediately" caption, word for word (the owner's
+    /// approved wording). Its "about 2 seconds" is the watcher's debounce:
+    /// a run or wait over before the marker folder has been quiet that long
+    /// may never be read.
     static let immediatelyCaption =
-        "Every finish and wait alerts, however short, except a run or wait over within 2 seconds, which can go unseen."
+        "Every finish and wait alerts. One that's over within about 2 seconds can be missed."
 
     /// Issue #34: the popup's formatter. No floor as "Immediately" (issue
     /// #242), under a minute in seconds, whole minutes in minutes, anything

@@ -1602,8 +1602,8 @@ final class MenuStateModel: ObservableObject {
     /// or wait over within it may never be seen.
     nonisolated static func sessionAlertsFloorCaption(seconds: Int) -> String {
         guard seconds == FinishAlertTuning.immediatelySeconds else { return "Shorter runs finish silently." }
-        return "Every finish and wait alerts, however short, except a run or wait over within "
-            + "\(Int(FinishAlertTuning.debounceSeconds)) seconds, which can go unseen."
+        return "Every finish and wait alerts. One that's over within about "
+            + "\(Int(FinishAlertTuning.debounceSeconds)) seconds can be missed."
     }
 
     /// The popup's preset floors in seconds, ascending: "Immediately" (0,

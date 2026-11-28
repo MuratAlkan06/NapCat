@@ -772,8 +772,8 @@ silences both pushes, and the row says so.
   however short the run, and finishes close together still fold into one
   message. A push for a run under a minute names no minutes ("A Claude
   session finished — none still working", "Claude is waiting for you").
-  NapCat reads the marker folder once it has been quiet for 2 seconds, so a
-  run or a wait that is over within 2 seconds can go unseen and push nothing.
+  NapCat reads the marker folder once it has been quiet for 2 seconds, so a run
+  or a wait that is over within about 2 seconds can be missed and push nothing.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
   — none still working"), which also keeps the feed clear of ntfy's rate limit.
 - **One waiting push per turn**, unless the session stops or resumes in between.
@@ -1007,11 +1007,10 @@ command, then delete
   episode start, so until the hook is reinstalled such a session is still
   re-anchored at its latest hook event: the minutes in its pushes can come out
   low or be left out, and a run that ends within the minimum run (60 seconds by
-  default, none with Immediately) of that point stays quiet. Upgrade in this order: rebuild and
-  relaunch NapCat first, then reinstall the hook
-  (`./scripts/install-claude-busy-hook.sh`) and start a new Claude Code
-  session. A NapCat build older than the hook cannot read version 7 markers at
-  all.
+  default, none with Immediately) of that point stays quiet. Upgrade in this
+  order: rebuild and relaunch NapCat first, then reinstall the hook
+  (`./scripts/install-claude-busy-hook.sh`) and start a new Claude Code session.
+  A NapCat build older than the hook cannot read version 7 markers at all.
 - **An outage lives in memory only.** When an outage began and which alerts are
   held across it are kept by the running app, not saved. Quitting or
   restarting NapCat mid-outage forgets the outage and its held alerts: they are
