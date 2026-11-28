@@ -103,9 +103,13 @@ alert-topic item that exists reads as unreadable unless it holds a valid
 value, exactly the value the alerts are sent to, read from the item itself
 at launch or saved to it since; a launch that could not finish moving the
 topic into the keychain reads as unreadable; while the topic reads as
-unreadable every prompt is kept as `forbidden.secretAccess`; and while the
-feature is unarmed (every build so far) each prompt the gate classified is
-logged `suppressed.notArmed` instead of the gate's code.
+unreadable every prompt is kept, logged with the gate's own code, unchanged:
+`floorUnreadable.topic`, or `unclassifiable.malformedToolName` or
+`unclassifiable.previewTooLarge`, which the gate checks before the floor
+(the intake keeps every prompt in that state too: one the gate keeps with
+the gate's code, any other with the floor's); and while the feature is
+unarmed (every build so far) each prompt the gate classified is logged
+`suppressed.notArmed` instead of the gate's code.
 
 ## The never-sent floor
 
