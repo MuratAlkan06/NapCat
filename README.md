@@ -105,7 +105,7 @@ is active. It reopens on the pane you used last:
 |---|---|
 | **General** | Launch at Login · the charge limit (its switch, the 50–100% slider and its status) · whether Lock Screen is available on this macOS · Updates: **Check for Updates…** and **Check for updates automatically** |
 | **Alerts** | the ntfy server and topic (the topic itself is never shown), **ntfy settings…** and **Send test message** · how long a Claude run must last before a session alert · History: the last lid alert, session alert and phone alert · Phone alerts (beta) |
-| **Claude** | the Claude status, when the busy hook last ran and whether its installed copy is current, whether Claude is holding the Mac awake · **Pause detection** · the command that installs the busy hook · Remote approvals: the **Mac-only preview** switch and the iPhone pairing (**Pair iPhone…** while no iPhone is paired, then the paired phone's code, **Pair a New iPhone…** and **Unpair…**; nothing is armed by pairing, and the iPhone app cannot answer prompts yet; the Mac looks for the iPhone's reply in your iCloud, sent from the iPhone app's Settings › Pairing › **Pair with Mac**; the first live pairing waits on the pairing record type's deploy to NapCat's CloudKit schema in Production) |
+| **Claude** | the Claude status, when the busy hook last ran and whether its installed copy is current, whether Claude is holding the Mac awake · **Pause detection** · the command that installs the busy hook · Remote approvals: the **Mac-only preview** switch and the iPhone pairing (**Pair iPhone…** while no iPhone is paired, then the paired phone's code, **Pair a New iPhone…** and **Unpair…**, and **Try Again** after an Unpair the keychain refused; nothing is armed by pairing, and the iPhone app cannot answer prompts yet; the Mac looks for the iPhone's reply in your iCloud, sent from the iPhone app's Settings › Pairing › **Pair with Mac**; the first live pairing waits on the pairing record type's deploy to NapCat's CloudKit schema in Production) |
 
 The Alerts and Claude panes are absent in the
 [debug battery simulator](#debug-battery-simulator) mode, like the Alerts card
@@ -499,7 +499,9 @@ paired iPhone's public key (the **NapCat paired iPhone key** item, kept if you
 paired an iPhone in Settings › Claude): not a secret, but what the Mac would
 trust a signed answer by. **Unpair…** in Settings › Claude asks the keychain
 to delete it too; if the keychain refuses, the item stays, and
-Settings › Claude still shows the pairing as long as it can read the item.
+Settings › Claude says so and offers **Try Again** until a deletion or a new
+pairing goes through or NapCat quits; after a relaunch it shows the pairing
+as long as it can read the item.
 
 ## Debug battery simulator
 
