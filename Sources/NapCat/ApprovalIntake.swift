@@ -113,10 +113,14 @@ enum ApprovalAuditEvent: Equatable, Sendable {
 }
 
 extension ApprovalClassification {
-    /// Fail closed: without the secrets the gate must look for, every prompt
-    /// is kept on the Mac as secret access.
+    /// Fail closed: without the secrets the gate must look for, no prompt
+    /// leaves the Mac. The gate keeps every prompt then (its floor reads the
+    /// topic as unreadable: `floorUnreadable.topic`, or the tool name's shape
+    /// or the preview's size code, checked before the floor), and its answer
+    /// passes unchanged. A forward in that state, which the gate never
+    /// gives, is kept with the floor's code.
     func failingClosed(secretsKnown: Bool) -> ApprovalClassification {
-        secretsKnown ? self : .suppress(.forbidden(.secretAccess))
+        secretsKnown || forwardedTool == nil ? self : .suppress(.floorUnreadable(.topic))
     }
 
     /// The tool the gate forwards this prompt as, or nil when it keeps it.
@@ -287,7 +291,8 @@ final class ApprovalIntake {
         // text (which carries the model's own description).
         let copy = ApprovalGate.forwardedPreview(toolName: request.toolName, inputPreview: request.inputPreview)
         // A secret that exists but could not be read is one the gate cannot
-        // look for: the prompt is then secret access, whatever it is.
+        // look for: the gate then keeps the prompt with its own code, and the
+        // fold keeps it too, whatever the gate answered.
         let known = secrets()
         let classification = ApprovalGate.classify(toolName: request.toolName, inputPreview: request.inputPreview,
                                                    topic: Self.floorTopic(known), policy: .listedOnly).failingClosed(secretsKnown: known != nil)

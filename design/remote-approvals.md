@@ -554,7 +554,8 @@ It builds controls only: nothing can be forwarded yet.
   it holds a valid value, exactly the value the alerts are sent to, read
   from the item itself at launch or saved to it since; a launch that could
   not finish moving the topic into the keychain reads as unreadable; and
-  then every prompt stays local. The host holds at most 64 servers and, per
+  then every prompt stays local, logged with the gate's own code (see "The
+  gate's order (#253)"). The host holds at most 64 servers and, per
   server, 64 of its 256 prompts; part of a frame left unfinished for 5
   seconds closes the link, and a server quiet for a minute with nothing
   waiting on the phone is let go (it reconnects with its next prompt; the
@@ -1505,7 +1506,12 @@ once.
   stored, the value the alerts are sent to, read from the item itself at
   launch or saved to it since, and then that value is the one the gate is
   handed; a launch that could not finish moving the topic into the keychain
-  is unreadable; only no item at all is absent (#254).
+  is unreadable; only no item at all is absent (#254). While the topic is
+  unreadable, every prompt is kept and logged with the gate's own code,
+  unchanged: `floorUnreadable.topic`, or the tool name's shape or the
+  preview's size code, which come before the floor. The intake keeps every
+  prompt in that state too: one the gate keeps with the gate's code, any
+  other with the floor's (#265).
 - **Risky kinds.** Every forbidden family the row finds, and the relay's
   credential placeholder (the secrets kind), is noted, every one, not only
   the first. A prompt is forwarded only when the set admits its kind and

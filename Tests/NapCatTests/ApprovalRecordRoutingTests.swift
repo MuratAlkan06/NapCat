@@ -150,7 +150,7 @@ struct ApprovalRecordRoutingTests {
         let unreadable = RoutedIntake()
         unreadable.secrets = nil
         unreadable.receive("abcde")
-        #expect(unreadable.codes == ["prompt=\(RoutedIntake.id(1).hex) suppressed.gate.forbidden.secretAccess"])
+        #expect(unreadable.codes == ["prompt=\(RoutedIntake.id(1).hex) suppressed.gate.floorUnreadable.topic"])
 
         let topic = "napcat-TESTONLYz9y8x7w6v5"
         let holding = RoutedIntake()

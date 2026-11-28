@@ -3351,8 +3351,11 @@ struct DecisionSinkStructureTests {
         // declared, an expression rewritten), whole-line comments and blank
         // lines between members, and a new extension in another file (the
         // header pin's to catch, not this one's).
-        let failingClosedBody: String = "        secretsKnown ? self : .suppress(.forbidden(.secretAccess))\n"
-        let rewritten: String = "        let known: Bool = secretsKnown\n        return known ? self : .suppress(.forbidden(.secretAccess))\n"
+        let failingClosedBody: String = "        secretsKnown || forwardedTool == nil ? self : .suppress(.floorUnreadable(.topic))\n"
+        let rewritten: String = "        let known: Bool = secretsKnown\n"
+            + "        return known || forwardedTool == nil ? self : .suppress(.floorUnreadable(.topic))\n"
+        #expect(ApprovalChannelStructureTests.count(failingClosedBody, in: Self.text(intake, in: sources)) == 1,
+                "vacuity: the body the control rewrites is in the intake once")
         let noted: String = LidGuardStructureTests.wholeLineCommentsRemoved("\n    // zz: a note between members\n\n")
         let controls: Sources = Self.adding(Self.mutate(sources, intake) {
             $0.replacingOccurrences(of: failingClosedBody, with: rewritten)
