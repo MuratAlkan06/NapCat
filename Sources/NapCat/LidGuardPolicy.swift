@@ -222,7 +222,10 @@ enum LidGuardMessageKind: Equatable, Sendable {
     /// `minutes` into its run (session lane). F4 slice S2: while remote
     /// approvals are on, `prompts` counts the permission prompts wired
     /// sessions had just relayed — Int counts per kind, nothing else.
-    case needsAttention(minutes: Int?, stillWorking: Int, prompts: WaitingPromptCounts = .none)
+    /// `questions` is how many direct questions the buzz names: 1 when it
+    /// stands for exactly one wait and that wait is a question
+    /// (`FinishAlertDigest.messages`), else 0.
+    case needsAttention(minutes: Int?, stillWorking: Int, prompts: WaitingPromptCounts = .none, questions: Int = 0)
     /// Alert healing (issue #23): the ONE push after a connectivity outage
     /// healed — how many `minutes` the connection was down (rounded up, at
     /// least 1), how many held session alerts were `deliveredLate` or
@@ -544,6 +547,9 @@ enum LidGuardPolicy {
     ///   " — 2 Bash permission prompts" / " — 3 permission prompts" for
     ///   mixed kinds)
     ///   (+ " — 1 other still working" / " — N others still working");
+    ///   with `questions` exactly 1 (one wait, a direct question) the opening
+    ///   reads "Claude is asking you a question" instead, and the parts after
+    ///   it are the same;
     /// - `connectionRestored` (alert healing): "Connection was down 14 min."
     ///   plus one segment per non-zero count, singular or plural — "1 session
     ///   alert delivered late." / "K session alerts delivered late.", the same
@@ -563,7 +569,8 @@ enum LidGuardPolicy {
             }
             let after = knownMinutes(minutes).map { " after \($0) min" } ?? ""
             return "A Claude session finished" + after + " — " + stillWorkingPhrase(stillWorking)
-        case .needsAttention(let minutes, let stillWorking, let prompts):
+        case .needsAttention(let minutes, let stillWorking, let prompts, let questions):
+            let opening = questions == 1 ? "Claude is asking you a question" : "Claude is waiting for you"
             let elapsed = knownMinutes(minutes).map { " — \($0) min in" } ?? ""
             let context = promptsPhrase(prompts).map { " — " + $0 } ?? ""
             let others: String
@@ -572,7 +579,7 @@ enum LidGuardPolicy {
             case 1: others = " — 1 other still working"
             default: others = " — \(stillWorking) others still working"
             }
-            return "Claude is waiting for you" + elapsed + context + others
+            return opening + elapsed + context + others
         case .connectionRestored(let minutes, let deliveredLate, let dropped, let lidMissed):
             // A count below 1 adds no segment; 1 is singular.
             func segment(_ count: Int, _ one: String, _ many: String) -> String? {

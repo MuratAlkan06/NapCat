@@ -4,10 +4,11 @@ import Foundation
 /// hook script (scripts/claude-busy-hook.sh) and its installer. A PARITY LINT
 /// (ClaudeBusyHookScriptTests) byte-matches the marker-dir path, the
 /// session-id regex, the marker-line grammar tokens (hook v7: plus the
-/// optional `ep=` episode-start token and its digit bound), the six registered hook
+/// optional `ep=` episode-start token and its digit bound), the eight registered hook
 /// event names, (Track C, C1) the Notification-type classes plus the synthetic
 /// `waiting` event token, (B-2) the synthetic `waiting-after-stop` token
-/// and the two marker-phase token lists, and (S7) the hook version stamp
+/// and the two marker-phase token lists, (hook v9) the two question tokens,
+/// the question tool's events and its name, and (S7) the hook version stamp
 /// between this file and the shell script — the watchdog byte-match precedent
 /// (WatchdogControllerTests) applied to Track B.
 ///
@@ -75,8 +76,23 @@ enum ClaudeBusyConstants {
     /// script and set-match them against the installer's and uninstaller's
     /// printed registration lists.
     static let clearEvents = ["Stop", "StopFailure", "SessionEnd", "Notification", "SubagentStop"]
-    /// All six events the hook is registered for.
-    static var allEvents: [String] { [setEvent] + clearEvents }
+    /// All eight events the hook is registered for: the six above, then
+    /// (hook v9) the two question tool events, each registered with
+    /// `questionToolName` as its matcher.
+    static var allEvents: [String] { [setEvent] + clearEvents + questionToolEvents }
+
+    /// Hook v9 — the two OBSERVE-ONLY tool events. Each is registered with
+    /// `questionToolName` as its matcher, prints nothing and exits 0, so the
+    /// tool call is never blocked, delayed or altered: PreToolUse writes
+    /// `questionEventToken`, PostToolUse (the question was answered) ends it.
+    /// MUST byte-match the shell case pattern, in order (parity lint).
+    static let questionToolEvents = ["PreToolUse", "PostToolUse"]
+
+    /// Hook v9 — the one tool the question events are about (Claude Code's
+    /// tool for asking the user a question): the registrations' matcher, and
+    /// the only `tool_name` the hook acts on. MUST byte-match the shell
+    /// `QUESTION_TOOL` (parity lint).
+    static let questionToolName = "AskUserQuestion"
 
     /// Synthetic marker event token (C1): a Notification of a WAITING type
     /// rewrites the marker as `event=waiting` (never the raw "Notification"),
@@ -92,10 +108,27 @@ enum ClaudeBusyConstants {
     /// `WAITING_AFTER_STOP_EVENT` (parity lint).
     static let waitingAfterStopEventToken = "waiting-after-stop"
 
+    /// Synthetic marker event token (hook v9): a direct question (Claude
+    /// Code's AskUserQuestion tool) is about to be asked — written by
+    /// PreToolUse. In flight, and NOT a waiting token: Claude waits on the
+    /// user only once the question's waiting notification arrives
+    /// (`waitingQuestionEventToken`). MUST byte-match the shell
+    /// `QUESTION_EVENT` (parity lint).
+    static let questionEventToken = "question"
+
+    /// Synthetic marker event token (hook v9): the same WAITING class as
+    /// `waitingEventToken`, written by a WAITING-type Notification while the
+    /// marker holds either question token, so the wait is a direct question.
+    /// In flight. The app treats it as waiting, and a waiting alert entered
+    /// through it names the question. MUST byte-match the shell
+    /// `WAITING_QUESTION_EVENT` (parity lint).
+    static let waitingQuestionEventToken = "waiting-question"
+
     /// B-2 marker PHASE, encoded in the marker's `event` token: the main turn
-    /// is still IN FLIGHT. MUST byte-match the shell `marker_phase` case
-    /// pattern, in order (parity lint).
-    static let inFlightEventTokens = ["UserPromptSubmit", "Notification", "waiting"]
+    /// is still IN FLIGHT (hook v9 adds the two question tokens). MUST
+    /// byte-match the shell `marker_phase` case pattern, in order (parity
+    /// lint).
+    static let inFlightEventTokens = ["UserPromptSubmit", "Notification", "waiting", "question", "waiting-question"]
 
     /// B-2 marker PHASE: the main turn has ENDED (only background work keeps
     /// the marker). MUST byte-match the shell `marker_phase` case pattern, in
@@ -162,7 +195,7 @@ enum ClaudeBusyConstants {
     /// shell script's `# napcat-hook-version: N` stamp (parity lint); bump
     /// both whenever the hook's behavior changes, so an installed copy left
     /// behind by an earlier install reads as out of date in the menu.
-    static let hookVersion = 8
+    static let hookVersion = 9
 
     /// The stamp line's fixed prefix; the rest of the line is the decimal
     /// version. It must sit within the first `installedHookReadBytes` bytes.

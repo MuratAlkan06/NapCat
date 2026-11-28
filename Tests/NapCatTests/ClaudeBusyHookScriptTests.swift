@@ -165,6 +165,154 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    // MARK: - The damaged-file guard (a copy cut short exits 0)
+
+    /// Line 3: until line 4 clears it, an EXIT trap ends the run in status 0.
+    static let guardTrapLine = #"trap exit\ 0 EXIT"#
+    /// Line 4: exit 0 at once unless the file's last line is the final
+    /// `exit 0`, then clear the trap.
+    static let guardCheckLine = #"[ "$(/usr/bin/tail -n 1 "$0" 2>/dev/null)" = "exit 0" ] || exit 0; trap - EXIT"#
+
+    /// Pure lint (reusable for canaries): the guard is lines 3 and 4,
+    /// verbatim (under the line-2 stamp, above every other line of code);
+    /// the file ends with the line `exit 0` and one newline, the line the
+    /// guard compares; and no other line begins with `exit 0`, so a cut can
+    /// never end on a line the guard would take for the last one.
+    static func damagedFileGuardFailures(_ script: String) -> [String] {
+        var failures: [String] = []
+        let lines = script.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if lines.count < 4 || lines[2] != guardTrapLine { failures.append("line 3 must be `\(guardTrapLine)`") }
+        if lines.count < 4 || lines[3] != guardCheckLine { failures.append("line 4 must be `\(guardCheckLine)`") }
+        if !script.hasSuffix("\nexit 0\n") {
+            failures.append("the file must end with the line `exit 0` and one newline")
+        }
+        let starts = lines.indices.filter { lines[$0].hasPrefix("exit 0") }
+        if starts != [lines.count - 2] {
+            failures.append("only the last line may begin with `exit 0`, found at lines \(starts.map { $0 + 1 })")
+        }
+        return failures
+    }
+
+    @Test func theDamagedFileGuardOpensTheScript() throws {
+        let failures = Self.damagedFileGuardFailures(try Self.read(Self.hookScriptURL))
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    @Test func damagedFileGuardLintCatchesMutants() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        try #require(Self.damagedFileGuardFailures(original).isEmpty, "canary baseline must be clean")
+        let guardLines = Self.guardTrapLine + "\n" + Self.guardCheckLine + "\n"
+        let mutants: [(String, String)] = [
+            ("guard dropped", original.replacingOccurrences(of: guardLines, with: "")),
+            ("trap line dropped", original.replacingOccurrences(of: Self.guardTrapLine + "\n", with: "")),
+            ("trap never cleared", original.replacingOccurrences(of: "; trap - EXIT\n", with: "\n")),
+            ("guard moved below the header", original.replacingOccurrences(of: guardLines, with: "")
+                .replacingOccurrences(of: "\numask 077\n", with: "\n" + guardLines + "umask 077\n")),
+            ("a blank line after the final exit 0", original + "\n"),
+            ("a comment after the final exit 0", original + "# end\n"),
+            ("another line begins with exit 0", original.replacingOccurrences(of: "\nmain\nexit 0\n",
+                                                                              with: "\nexit 0 # early\nmain\nexit 0\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != original, "canary setup '\(name)'")
+            #expect(!Self.damagedFileGuardFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// The byte offset where each line starts (line 1 at 0), and the size.
+    nonisolated static func lineStarts(_ bytes: [UInt8]) -> [Int] {
+        [0] + bytes.indices.filter { bytes[$0] == UInt8(ascii: "\n") && $0 + 1 < bytes.count }.map { $0 + 1 }
+    }
+
+    /// Where to cut the hook: offset 0 and every 500th byte; every byte of
+    /// line 4 (the quoted check); just before and just after a sample of
+    /// about 120 of the quote characters on code lines (a cut inside a
+    /// quoted region is where a syntax error is most likely); either side of
+    /// every line that closes a function; and every byte of the last two
+    /// lines short of the whole file (the file minus its final newline is
+    /// complete code). Sorted, without repeats; every point is short of the
+    /// whole file.
+    nonisolated static func damagedFileCutPoints(_ bytes: [UInt8]) -> [Int] {
+        let starts = lineStarts(bytes)
+        let size = bytes.count
+        var points = Set([0] + Array(stride(from: 500, to: size - 1, by: 500)))
+        if starts.count > 4 { points.formUnion(starts[3]...starts[4]) }
+        var quotes: [Int] = []
+        for (line, start) in starts.enumerated() {
+            let end = line + 1 < starts.count ? starts[line + 1] : size
+            let text = bytes[start..<end]
+            guard let first = text.first(where: { $0 != UInt8(ascii: " ") }), first != UInt8(ascii: "#") else { continue }
+            quotes += text.indices.filter { [UInt8(ascii: "\""), UInt8(ascii: "'"), UInt8(ascii: "`")].contains(bytes[$0]) }
+            if text.elementsEqual(Array("}\n".utf8)) { points.formUnion([start, start + 1]) }
+        }
+        let step = max(1, quotes.count / 120)
+        for index in stride(from: 0, to: quotes.count, by: step) { points.formUnion([quotes[index], quotes[index] + 1]) }
+        if starts.count > 2 { points.formUnion(starts[starts.count - 2]..<(size - 1)) }
+        return points.filter { $0 < size - 1 }.sorted()
+    }
+
+    /// A copy of the hook cut short (an interrupted copy, a full disk) does
+    /// nothing and gets in nobody's way: cut at every point above and run
+    /// with a PreToolUse payload for the question tool, it exits 0 with
+    /// nothing on stdout, and afterwards nothing at all was written under
+    /// the test HOME (no marker folder, no marker, no hook.log), since the
+    /// guard ends the run before any of it. Line 3 is run byte by byte too:
+    /// there a cut can still end in a non-zero status (the shell reports a
+    /// command or builtin cut mid-word), but never with output or a write.
+    @Test func aHookCutShortExitsZeroWritesNothingAndPrintsNothing() throws {
+        let bytes = Array(try Data(contentsOf: Self.hookScriptURL))
+        let starts = Self.lineStarts(bytes)
+        try #require(starts.count > 4, "the hook has more than four lines")
+        let trapLine = (starts[2] + 1)..<starts[3]    // cuts that leave line 3 partial
+        let points = Self.damagedFileCutPoints(bytes)
+        #expect(points.count >= 250 && points.contains(0) && points.contains(starts[3] + 10), "vacuity: \(points.count) cut points")
+        let json = toolJSON("PreToolUse", "a9000030-0230-4abc-8def-000000000230")
+        try withThrowingHome { home in
+            let cut = home.appendingPathComponent("cut-busy-hook.sh")
+            var failed: [String] = []
+            for point in points + Array(trapLine) {
+                try Data(bytes.prefix(point)).write(to: cut)
+                let result = runScript(cut, json: json, home: home)
+                let inTrapLine = trapLine.contains(point)
+                if (!inTrapLine && result.exitCode != 0) || !result.stdout.isEmpty {
+                    failed.append("cut at byte \(point): status \(result.exitCode), \(result.stdout.utf8.count) bytes on stdout")
+                }
+            }
+            #expect(failed.isEmpty, "\(failed.count) of \(points.count + trapLine.count) cut points failed: \(failed.prefix(10))")
+            let written = try FileManager.default.contentsOfDirectory(atPath: home.path)
+            #expect(written == [cut.lastPathComponent], "a cut copy must write nothing under HOME, found \(written)")
+        }
+    }
+
+    /// The first `points` cut of `script` (run in `home`) that exits 2, if any.
+    private func firstExitTwo(_ script: [UInt8], at points: [Int], home: URL) throws -> Int? {
+        let cut = home.appendingPathComponent("cut-busy-hook.sh")
+        let json = toolJSON("PreToolUse", "a9000031-0231-4abc-8def-000000000231")
+        for point in points {
+            try Data(script.prefix(point)).write(to: cut)
+            if runScript(cut, json: json, home: home).exitCode == 2 { return point }
+        }
+        return nil
+    }
+
+    /// Canaries: without the guard, the cut points above do exit 2 (the
+    /// status that blocks a tool call); with the check but without line 3's
+    /// trap, a cut inside the check line does. So the test above has teeth.
+    @Test func withoutTheGuardACutCopyExitsTwo() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let unguarded = original.replacingOccurrences(of: Self.guardTrapLine + "\n" + Self.guardCheckLine + "\n", with: "")
+        let untrapped = original.replacingOccurrences(of: Self.guardTrapLine + "\n", with: "")
+        #expect(unguarded != original && untrapped != original, "canary setup: the guard lines must exist")
+        try withThrowingHome { home in
+            let bytes = Array(unguarded.utf8)
+            let unguardedTwo = try firstExitTwo(bytes, at: Self.damagedFileCutPoints(bytes), home: home)
+            #expect(unguardedTwo != nil, "without the guard some cut point must exit 2")
+            let checkLine = Self.lineStarts(Array(untrapped.utf8))
+            let untrappedTwo = try firstExitTwo(Array(untrapped.utf8), at: Array((checkLine[2] + 1)..<checkLine[3]), home: home)
+            #expect(untrappedTwo != nil, "without the trap line a cut inside the check must exit 2")
+        }
+    }
+
     // MARK: - Behavioral run against the shipped script (no real Claude)
 
     private struct RunResult { let stdout: String; let exitCode: Int32 }
@@ -743,6 +891,66 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    /// The event name and the session id are read as strings only: an
+    /// object, a number, a boolean or an array there is ignored exactly like
+    /// the field left out — the same one log line, exit 0, nothing on
+    /// stdout, the session's marker byte-identical and no other marker. (In
+    /// raw form an object prints its keys and a number its digits, so
+    /// `{"Stop":1}` passed as a Stop, an object keyed by a session id named
+    /// that session, and 12345678 was a valid session id.)
+    @Test func aNonStringEventNameOrSessionIdIsIgnoredLikeAMissingOne() {
+        let session = "e3000004-0034-4abc-8def-000000000034"
+        var cases: [(json: String, missing: String)] = []
+        for value in [#"{"Stop":1}"#, #"{"UserPromptSubmit":1}"#, "12", "true", #"["Stop"]"#] {
+            cases.append((#"{"hook_event_name":\#(value),"session_id":"\#(session)"}"#, #"{"session_id":"\#(session)"}"#))
+        }
+        for value in [#"{"\#(session)":1}"#, "12345678", "true", #"["\#(session)"]"#] {
+            for event in ["Stop", "UserPromptSubmit"] {
+                cases.append((#"{"hook_event_name":"\#(event)","session_id":\#(value)}"#, #"{"hook_event_name":"\#(event)"}"#))
+            }
+        }
+        for (json, missing) in cases {
+            withHome { home in
+                primeMarker(session, home: home)
+                let marker = markerDir(home).appendingPathComponent(session)
+                let planted = FileManager.default.contents(atPath: marker.path)
+                var logged: [String] = []
+                for payload in [missing, json] {
+                    let result = runHook(json: payload, home: home)
+                    #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(payload)")
+                    logged.append(hookLog(home).split(separator: "\n").last.map { String($0.drop { $0 != " " }) } ?? "")
+                }
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(logged[0].hasPrefix(" ignore reason=") && logged[1] == logged[0],
+                        "\(json) must log what the missing field logs (\(logged[0])), got \(logged[1])")
+                #expect(hookLog(home).split(separator: "\n").count == 3, "\(json): the set line and the two ignore lines")
+                #expect(FileManager.default.contents(atPath: marker.path) == planted, "\(json): the marker is left as it was")
+                #expect(sessionShapedFiles(in: markerDir(home)) == [session], "\(json): no other marker")
+            }
+        }
+    }
+
+    /// Canary: read the two fields in any type again and an object keyed
+    /// Stop clears the marker, and a number names a session of its own.
+    @Test func nonStringEventAndSessionCanary() throws {
+        try withThrowingHome { home in
+            let url = try mutantHook(home) {
+                $0.replacingOccurrences(of: "plutil -extract hook_event_name raw -expect string -o -",
+                                        with: "plutil -extract hook_event_name raw -o -")
+                    .replacingOccurrences(of: "plutil -extract session_id raw -expect string -o -",
+                                          with: "plutil -extract session_id raw -o -")
+            }
+            let session = "e3000005-0035-4abc-8def-000000000035"
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("UserPromptSubmit", at: marker)
+            _ = runScript(url, json: #"{"hook_event_name":{"Stop":1},"session_id":"\#(session)"}"#, home: home)
+            #expect(waitForFile(marker, present: false), "read in any type, an object keyed Stop clears the marker")
+            _ = runScript(url, json: #"{"hook_event_name":"UserPromptSubmit","session_id":12345678}"#, home: home)
+            #expect(waitForFile(markerDir(home).appendingPathComponent("12345678"), present: true),
+                    "read in any type, a number names a session")
+        }
+    }
+
     /// Canary (H3): log the raw event again and the forged line lands in
     /// hook.log — proves the event=invalid rows have teeth.
     @Test func rawEventLoggingCanary() throws {
@@ -1228,7 +1436,9 @@ struct ClaudeBusyHookScriptTests {
         // 6 → 7: the marker carries the episode start (`ep=`, sixth field).
         // 7 → 8: a Stop kept for background work logs whether the final
         // message asks (one closed word in hook.log; the marker unchanged).
-        #expect(ClaudeBusyConstants.hookVersion == 8, "the contract value of this hook version")
+        // 8 → 9: PreToolUse / PostToolUse on AskUserQuestion mark a direct
+        // question (`question`, `waiting-question`).
+        #expect(ClaudeBusyConstants.hookVersion == 9, "the contract value of this hook version")
         #expect(ClaudeBusyConstants.hookVersionStampPrefix == "# napcat-hook-version: ")
     }
 
@@ -1264,8 +1474,14 @@ struct ClaudeBusyHookScriptTests {
         #expect(lines.contains(#"echo "installed: $HOOK_DEST (755, hook version ${HOOK_VERSION:-unknown})""#),
                 "the installer must print the version it installed")
         let extract = try #require(lines.firstIndex(of: extraction))
-        let install = try #require(lines.firstIndex { $0.hasPrefix(#"if ! /usr/bin/install -m 755 "$SRC" "$HOOK_DEST""#) })
-        #expect(install < extract, "the stamp is read from the copy just installed")
+        // The copy goes to a temporary name, is checked with `bash -n`, and
+        // is then renamed into place; the stamp is read after the rename.
+        let install = try #require(lines.firstIndex(of: #"if ! /usr/bin/install -m 755 "$SRC" "$HOOK_TMP"; then"#))
+        let check = try #require(lines.firstIndex(of: #"if ! /bin/bash -n "$HOOK_TMP" 2>/dev/null; then"#))
+        let rename = try #require(lines.firstIndex(of: #"if ! /bin/mv -f "$HOOK_TMP" "$HOOK_DEST"; then"#))
+        #expect(install < check && check < rename && rename < extract, "the stamp is read from the copy just installed")
+        #expect(!lines.contains { $0.contains("/usr/bin/install") && $0.contains("$HOOK_DEST") },
+                "the installed path is only ever written by the rename")
 
         let sed = Process()
         sed.executableURL = URL(fileURLWithPath: "/usr/bin/sed")
@@ -1276,6 +1492,108 @@ struct ClaudeBusyHookScriptTests {
         let printed = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         sed.waitUntilExit()
         #expect(printed == "\(ClaudeBusyConstants.hookVersion)\n", "the installer would print \(String(reflecting: printed))")
+    }
+
+    private struct InstallerRun { let status: Int32; let stdout: String; let stderr: String }
+
+    /// Runs a COPY of the installer (`installer`, the committed text unless
+    /// given) from `sandbox/scripts/`, next to `hook` as the source it
+    /// installs, with HOME = `sandbox/home`: everything it writes lands under
+    /// the sandbox, never in the real home.
+    private func runInstallerCopy(sandbox: URL, hook: Data, installer: String? = nil) throws -> InstallerRun {
+        let scripts = sandbox.appendingPathComponent("scripts")
+        let home = sandbox.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let copy = scripts.appendingPathComponent("install-claude-busy-hook.sh")
+        try Data((try installer ?? Self.read(Self.installerURL)).utf8).write(to: copy)
+        try hook.write(to: scripts.appendingPathComponent("claude-busy-hook.sh"))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [copy.path]
+        process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let stdout = Pipe(), stderr = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        let out = stdout.fileHandleForReading.readDataToEndOfFile()
+        let err = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return InstallerRun(status: process.terminationStatus, stdout: String(decoding: out, as: UTF8.self),
+                            stderr: String(decoding: err, as: UTF8.self))
+    }
+
+    /// Whether `bash -n` accepts `script` (written to `url` first).
+    private func bashParses(_ script: Data, at url: URL) throws -> Bool {
+        try script.write(to: url)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-n", url.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    /// The hook cut 40 bytes into main()'s body: a copy that cannot parse.
+    private static func cutInsideMain(_ source: Data) throws -> Data {
+        let text = String(decoding: source, as: UTF8.self)
+        let body = try #require(text.range(of: "\nmain() {\n"), "the hook defines main()")
+        return Data(source.prefix(text.utf8.distance(from: text.utf8.startIndex, to: body.upperBound) + 40))
+    }
+
+    /// The installer, RUN (a copy, in a sandbox HOME): it installs the hook
+    /// byte for byte with mode 755 and leaves no temporary file; given a
+    /// source that does not parse (the hook cut inside main()), it exits 1
+    /// with an error saying so, prints no registration, removes its
+    /// temporary copy and leaves the installed copy exactly as it was.
+    @Test func theInstallerRefusesACopyThatDoesNotParse() throws {
+        let source = try Data(contentsOf: Self.hookScriptURL)
+        try withThrowingHome { sandbox in
+            let dest = sandbox.appendingPathComponent("home/" + ClaudeBusyConstants.installedHookRelativePath)
+            let hooks = dest.deletingLastPathComponent()
+            let fresh = try runInstallerCopy(sandbox: sandbox, hook: source)
+            #expect(fresh.status == 0, "\(fresh.stderr)")
+            #expect(FileManager.default.contents(atPath: dest.path) == source, "the installed copy is the source, byte for byte")
+            let mode = (try FileManager.default.attributesOfItem(atPath: dest.path)[.posixPermissions] as? NSNumber)?.intValue
+            #expect(mode == 0o755, "mode \(String(describing: mode.map { String($0, radix: 8) }))")
+            let afterInstall = try FileManager.default.contentsOfDirectory(atPath: hooks.path)
+            #expect(afterInstall == [dest.lastPathComponent], "no temporary file is left: \(afterInstall)")
+            #expect(fresh.stdout.contains("installed: \(dest.path) (755, hook version \(ClaudeBusyConstants.hookVersion))"))
+
+            let cut = try Self.cutInsideMain(source)
+            let cutParses = try bashParses(cut, at: sandbox.appendingPathComponent("cut.sh"))
+            try #require(!cutParses, "setup: the cut copy does not parse")
+            let refused = try runInstallerCopy(sandbox: sandbox, hook: cut)
+            #expect(refused.status == 1, "status \(refused.status)")
+            #expect(refused.stderr.contains("error: the copied hook does not parse as a bash script, so \(dest.path) was left as it was."),
+                    "\(refused.stderr)")
+            #expect(refused.stdout.isEmpty, "nothing is printed, no registration: \(refused.stdout.prefix(200))")
+            #expect(FileManager.default.contents(atPath: dest.path) == source, "the installed copy is left as it was")
+            let afterRefusal = try FileManager.default.contentsOfDirectory(atPath: hooks.path)
+            #expect(afterRefusal == [dest.lastPathComponent], "the temporary copy is removed: \(afterRefusal)")
+        }
+    }
+
+    /// Canary: without the parse check, the same cut copy replaces the
+    /// installed one — so the test above has teeth.
+    @Test func withoutTheParseCheckTheInstallerInstallsABrokenCopy() throws {
+        let source = try Data(contentsOf: Self.hookScriptURL)
+        let installer = try Self.read(Self.installerURL)
+        let check = #"if ! /bin/bash -n "$HOOK_TMP" 2>/dev/null; then"#
+        let mutant = installer.replacingOccurrences(of: check, with: "if false; then")
+        #expect(mutant != installer, "canary setup: the parse check must exist")
+        try withThrowingHome { sandbox in
+            let dest = sandbox.appendingPathComponent("home/" + ClaudeBusyConstants.installedHookRelativePath)
+            let fresh = try runInstallerCopy(sandbox: sandbox, hook: source, installer: mutant)
+            #expect(fresh.status == 0, "\(fresh.stderr)")
+            let cut = try Self.cutInsideMain(source)
+            let broken = try runInstallerCopy(sandbox: sandbox, hook: cut, installer: mutant)
+            #expect(broken.status == 0, "\(broken.stderr)")
+            #expect(FileManager.default.contents(atPath: dest.path) == cut, "without the check the cut copy is installed")
+        }
     }
 
     /// Hook v7: an app build older than this hook cannot read its markers,
@@ -1545,29 +1863,56 @@ struct ClaudeBusyHookScriptTests {
         let readme = try Self.read(Self.repoRoot().appendingPathComponent("README.md"))
         let registered = Set(ClaudeBusyConstants.allEvents)
 
-        #expect(ClaudeBusyConstants.allEvents.count == 6 && registered.count == 6, "six distinct registered events")
+        // Hook v9: six events plus the two question tool events.
+        #expect(ClaudeBusyConstants.allEvents.count == 8 && registered.count == 8, "eight distinct registered events")
         #expect(ClaudeBusyConstants.clearEvents.contains("SubagentStop"), "SubagentStop is a reconcile event")
         #expect(hook.contains("SubagentStop"), "the hook must handle SubagentStop")
+        #expect(registered.isSuperset(of: ClaudeBusyConstants.questionToolEvents), "both question tool events are registered")
 
         let installerEntries = installer.split(separator: "\n").filter { $0.contains("$EXEC_CMD ]") }
             .compactMap { Self.quotedNames($0).first }
-        #expect(installerEntries.count == 6 && Set(installerEntries) == registered,
+        #expect(installerEntries.count == 8 && Set(installerEntries) == registered,
                 "installer registrations \(installerEntries) must be exactly \(registered.sorted())")
 
         let removal = try #require(uninstaller.split(separator: "\n").first { $0.contains("\"UserPromptSubmit\",") },
                                    "the uninstaller's removal list")
-        #expect(Self.quotedNames(removal).count == 6 && Set(Self.quotedNames(removal)) == registered,
+        #expect(Self.quotedNames(removal).count == 8 && Set(Self.quotedNames(removal)) == registered,
                 "uninstaller removal list \(Self.quotedNames(removal)) must be exactly \(registered.sorted())")
 
         let readmeEntries = readme.split(separator: "\n")
             .filter { $0.hasPrefix("\"") && $0.contains(ClaudeBusyConstants.installedHookRelativePath) }
             .compactMap { Self.quotedNames($0).first }
-        #expect(readmeEntries.count == 6 && Set(readmeEntries) == registered,
+        #expect(readmeEntries.count == 8 && Set(readmeEntries) == registered,
                 "README registrations \(readmeEntries) must be exactly \(registered.sorted())")
+    }
 
-        // PreToolUse carries no background_tasks, so it is deliberately NOT wired.
-        #expect(!hook.contains("PreToolUse"), "PreToolUse must not be handled (no background_tasks signal)")
-        #expect(!installer.contains("PreToolUse"), "PreToolUse must not be registered")
+    /// Hook v9: wherever a registration is printed or documented, the two
+    /// question tool entries — and only they — carry the matcher, exactly
+    /// `"matcher": "AskUserQuestion"`, placed before their `"hooks"`; every
+    /// other entry, the Notification one included, has none. The
+    /// uninstaller names the matcher for the two entries it lists.
+    @Test func onlyTheQuestionEntriesCarryTheMatcher() throws {
+        let installer = try Self.read(Self.installerURL)
+        let uninstaller = try Self.read(Self.uninstallerURL)
+        let readme = try Self.read(Self.repoRoot().appendingPathComponent("README.md"))
+        let matcher = #""matcher": "\#(ClaudeBusyConstants.questionToolName)", "hooks": ["#
+        let installerLines = installer.split(separator: "\n").map(String.init).filter { $0.contains("$EXEC_CMD ]") }
+        let readmeLines = readme.split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix("\"") && $0.contains(ClaudeBusyConstants.installedHookRelativePath) }
+        for (name, lines) in [("installer", installerLines), ("README", readmeLines)] {
+            #expect(lines.count == ClaudeBusyConstants.allEvents.count, "\(name): one line per registration")
+            for line in lines {
+                let event = Self.quotedNames(Substring(line)).first ?? "?"
+                if ClaudeBusyConstants.questionToolEvents.contains(event) {
+                    #expect(line.contains(matcher), "\(name): the \(event) entry must carry \(matcher)")
+                    #expect(line.components(separatedBy: "matcher").count == 2, "\(name): one matcher on \(event)")
+                } else {
+                    #expect(!line.contains("matcher"), "\(name): the \(event) entry must carry no matcher")
+                }
+            }
+        }
+        #expect(uninstaller.contains("The PreToolUse and PostToolUse ones carry the matcher AskUserQuestion"),
+                "the uninstaller names the matcher of the two question entries")
     }
 
     /// C1 parity: the shell's two KEEP case patterns byte-match the Swift
@@ -1670,7 +2015,8 @@ struct ClaudeBusyHookScriptTests {
         // Vacuity: the probe really exists, and the contract values hold.
         #expect(Self.functionBody("marker_phase", in: script).count >= 10)
         #expect(ClaudeBusyConstants.waitingAfterStopEventToken == "waiting-after-stop")
-        #expect(ClaudeBusyConstants.inFlightEventTokens == ["UserPromptSubmit", "Notification", "waiting"])
+        #expect(ClaudeBusyConstants.inFlightEventTokens
+                == ["UserPromptSubmit", "Notification", "waiting", "question", "waiting-question"])
         #expect(ClaudeBusyConstants.postStopEventTokens
                 == ["Stop", "StopFailure", "SessionEnd", "SubagentStop", "waiting-after-stop"])
         // The synthetic token is no real hook event and parses as a marker event.
@@ -1693,7 +2039,8 @@ struct ClaudeBusyHookScriptTests {
         let shellMutants: [(String, String, String)] = [
             ("shell case pattern", "SubagentStop|waiting-after-stop)", "SubagentStop)"),
             ("shell token variable", "WAITING_AFTER_STOP_EVENT=waiting-after-stop", "WAITING_AFTER_STOP_EVENT=waiting"),
-            ("shell extra in-flight token", "Notification|waiting)", "Notification|waiting|Stop)"),
+            ("shell extra in-flight token", "|waiting-question)", "|waiting-question|Stop)"),
+            ("shell question token dropped", "waiting|question|waiting-question)", "waiting)"),
             ("shell token regex", "TOKEN_RE='^[A-Za-z-]{1,32}$'", "TOKEN_RE='^[A-Za-z]{1,32}$'"),
             ("shell unbounded read", "head -c 256 \"$1\"", "cat \"$1\""),
             ("shell SessionEnd dropped (S11)", "StopFailure|SessionEnd|SubagentStop", "StopFailure|SubagentStop"),
@@ -1759,12 +2106,14 @@ struct ClaudeBusyHookScriptTests {
     nonisolated static let wait = "waiting-on-user", resume = "work-continues", bgKeep = "background-task-running",
                midTurn = "main-turn-in-flight"
 
-    /// (prior token) × (event) × (background task running), 8 × 4 × 2 = 64
+    /// (prior token) × (event) × (background task running), 10 × 4 × 2 = 80
     /// rows — the frozen B-2 rules, written out (never computed). S11 added
     /// the `SessionEnd` prior (POST-STOP, rows E1–E8). Hook v5 changed the
     /// four POST-STOP `idle_prompt` + no-task rows (S7, E7, A7, P7) from
     /// clear to SPARE: a Notification carries no `background_tasks`, so it
     /// can never prove the background work that kept the marker has ended.
+    /// Hook v9 added the two question priors (rows Q1–Q8, WQ1–WQ8); the 64
+    /// rows before them are unchanged.
     nonisolated static let phaseRows: [PhaseRow] = {
         let was = "waiting-after-stop"
         typealias E = PhaseEvent
@@ -1817,6 +2166,29 @@ struct ClaudeBusyHookScriptTests {
             (.idlePrompt, false, nil, .clear),
             (.idlePrompt, true, "Notification", .keep(bgKeep)),
         ])
+        // Hook v9: the two question tokens are IN FLIGHT. A wait keeps the
+        // question (`waiting-question`); every other event treats them like
+        // any in-flight token, so it drops the question.
+        all += rows("Q", "question", [
+            (.subagentStop, false, "Notification", .keep(midTurn)),
+            (.subagentStop, true, "Notification", .keep(midTurn)),
+            (.permissionPrompt, false, "waiting-question", .keep(wait)),
+            (.permissionPrompt, true, "waiting-question", .keep(wait)),
+            (.quotaAutoResumeFired, false, "Notification", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Notification", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Notification", .keep(bgKeep)),
+        ])
+        all += rows("WQ", "waiting-question", [
+            (.subagentStop, false, "Notification", .keep(midTurn)),
+            (.subagentStop, true, "Notification", .keep(midTurn)),
+            (.permissionPrompt, false, "waiting-question", .keep(wait)),
+            (.permissionPrompt, true, "waiting-question", .keep(wait)),
+            (.quotaAutoResumeFired, false, "Notification", .keep(resume)),
+            (.quotaAutoResumeFired, true, "Notification", .keep(resume)),
+            (.idlePrompt, false, nil, .clear),
+            (.idlePrompt, true, "Notification", .keep(bgKeep)),
+        ])
         // Phase POST-STOP.
         all += rows("S", "Stop", [
             (.subagentStop, false, nil, .clear),
@@ -1864,11 +2236,11 @@ struct ClaudeBusyHookScriptTests {
     }()
 
     @Test func phaseRowsCoverTheWholeGrid() {
-        #expect(Self.phaseRows.count == 64, "vacuity guard — 8 priors × 4 events × 2 bg states")
-        #expect(Set(Self.phaseRows.map(\.id)).count == 64)
+        #expect(Self.phaseRows.count == 80, "vacuity guard — 10 priors × 4 events × 2 bg states")
+        #expect(Set(Self.phaseRows.map(\.id)).count == 80)
         let priors = Set(Self.phaseRows.map { $0.prior ?? "absent" })
-        #expect(priors == ["absent", "UserPromptSubmit", "Notification", "waiting", "Stop", "SessionEnd",
-                           "SubagentStop", "waiting-after-stop"], "the grid's eight prior states")
+        #expect(priors == ["absent", "UserPromptSubmit", "Notification", "waiting", "question", "waiting-question",
+                           "Stop", "SessionEnd", "SubagentStop", "waiting-after-stop"], "the grid's ten prior states")
         // Every listed phase token is a prior in the grid (except StopFailure,
         // which `stopFailureAndSessionEndArePostStop` pins).
         let listed = Set(ClaudeBusyConstants.inFlightEventTokens + ClaudeBusyConstants.postStopEventTokens)
@@ -2267,7 +2639,8 @@ struct ClaudeBusyHookScriptTests {
         Array("v1 ts=\(ts) event=\(token) pid=999999 src=planted ep=\(ep)\n".utf8)
     }
 
-    /// Every in-episode rewrite — waiting, a mid-turn SubagentStop, a kept
+    /// Every in-episode rewrite — (hook v9) a question asked, waited on and
+    /// answered, waiting, a mid-turn SubagentStop, a kept
     /// Stop, waiting after Stop, a resume, a post-Stop SubagentStop keep, and
     /// a UserPromptSubmit while the marker persists — carries the episode
     /// start over unchanged; only `ts` (and the token) move. The Swift reader
@@ -2279,6 +2652,11 @@ struct ClaudeBusyHookScriptTests {
             let start = Int(Date().timeIntervalSince1970) - 600
             plantBytes(plantedLine("UserPromptSubmit", ts: start, ep: String(start)), at: marker)
             let steps: [(json: String, token: String)] = [
+                // Hook v9: a question asked, waited on and answered.
+                (toolJSON("PreToolUse", session), ClaudeBusyConstants.questionEventToken),
+                (notificationJSON(session, notificationType: quoted("permission_prompt")),
+                 ClaudeBusyConstants.waitingQuestionEventToken),
+                (toolJSON("PostToolUse", session), "Notification"),
                 (notificationJSON(session, notificationType: quoted("permission_prompt")), "waiting"),
                 (eventJSON("SubagentStop", session, backgroundTasks: Self.doneTask), "Notification"),
                 (eventJSON("Stop", session, backgroundTasks: Self.runningTask), "Stop"),
@@ -3480,6 +3858,594 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    // MARK: - Hook v9: a direct question (PreToolUse / PostToolUse on AskUserQuestion)
+
+    /// `tool_name` for the question tool, as a JSON string literal.
+    private static let questionTool = "\"\(ClaudeBusyConstants.questionToolName)\""
+
+    /// A PreToolUse / PostToolUse payload for `session`. `tool` is the RAW
+    /// JSON literal for `tool_name` (nil omits the field); `extra` adds raw
+    /// fields (the tool's input or response).
+    private func toolJSON(_ event: String, _ session: String,
+                          tool: String? = ClaudeBusyHookScriptTests.questionTool, extra: [String] = []) -> String {
+        var fields = [#""hook_event_name":"\#(event)""#, #""session_id":"\#(session)""#]
+        if let tool { fields.append(#""tool_name":\#(tool)"#) }
+        fields += extra
+        return "{" + fields.joined(separator: ",") + "}"
+    }
+
+    /// What a question-event run did to the marker.
+    enum QuestionOutcome: Equatable, Sendable {
+        /// Rewritten by the hook with this token.
+        case rewritten(String)
+        /// Left byte-identical.
+        case spared
+        /// There was no marker, and there is none afterwards.
+        case absent
+    }
+
+    struct QuestionRow: CustomTestStringConvertible, Sendable {
+        let id: String
+        let event: String
+        /// The marker's event token before the run; nil = no marker.
+        let prior: String?
+        let outcome: QuestionOutcome
+        /// The run's one hook.log line, after its timestamp. A keep line
+        /// goes on with `pid=… src=unknown`; an ignore line ends here.
+        let logged: String
+        var testDescription: String { "\(id): \(prior ?? "absent") + \(event) → \(outcome)" }
+    }
+
+    nonisolated static let questionSession = "a9000001-0201-4abc-8def-000000000201"
+
+    /// Both question events × every phase token (and no marker): 2 × 11 rows,
+    /// written out. PreToolUse writes `question` unless the marker is
+    /// post-Stop; PostToolUse ends either question token as `Notification`
+    /// and touches nothing else.
+    nonisolated static let questionRows: [QuestionRow] = {
+        let s = questionSession
+        func asked(_ id: String, _ prior: String?, _ phase: String) -> QuestionRow {
+            QuestionRow(id: id, event: "PreToolUse", prior: prior, outcome: .rewritten("question"),
+                        logged: " keep session=\(s) event=PreToolUse phase=\(phase) reason=question-asked pid=")
+        }
+        func afterStop(_ id: String, _ prior: String) -> QuestionRow {
+            QuestionRow(id: id, event: "PreToolUse", prior: prior, outcome: .spared,
+                        logged: " ignore reason=poststop-question session=\(s) event=PreToolUse")
+        }
+        func answered(_ id: String, _ prior: String) -> QuestionRow {
+            QuestionRow(id: id, event: "PostToolUse", prior: prior, outcome: .rewritten("Notification"),
+                        logged: " keep session=\(s) event=PostToolUse reason=question-answered pid=")
+        }
+        func noQuestion(_ id: String, _ prior: String?) -> QuestionRow {
+            QuestionRow(id: id, event: "PostToolUse", prior: prior, outcome: prior == nil ? .absent : .spared,
+                        logged: " ignore reason=no-question session=\(s) event=PostToolUse")
+        }
+        return [
+            asked("PQ-N", nil, "none"),
+            asked("PQ-U", "UserPromptSubmit", "inflight"),
+            asked("PQ-K", "Notification", "inflight"),
+            asked("PQ-W", "waiting", "inflight"),
+            asked("PQ-Q", "question", "inflight"),
+            asked("PQ-WQ", "waiting-question", "inflight"),
+            afterStop("PQ-S", "Stop"),
+            afterStop("PQ-F", "StopFailure"),
+            afterStop("PQ-E", "SessionEnd"),
+            afterStop("PQ-A", "SubagentStop"),
+            afterStop("PQ-P", "waiting-after-stop"),
+            noQuestion("AQ-N", nil),
+            noQuestion("AQ-U", "UserPromptSubmit"),
+            noQuestion("AQ-K", "Notification"),
+            noQuestion("AQ-W", "waiting"),
+            answered("AQ-Q", "question"),
+            answered("AQ-WQ", "waiting-question"),
+            noQuestion("AQ-S", "Stop"),
+            noQuestion("AQ-F", "StopFailure"),
+            noQuestion("AQ-E", "SessionEnd"),
+            noQuestion("AQ-A", "SubagentStop"),
+            noQuestion("AQ-P", "waiting-after-stop"),
+        ]
+    }()
+
+    @Test func questionRowsCoverEveryPhaseToken() {
+        let tokens: Set<String?> = Set([nil] + (ClaudeBusyConstants.inFlightEventTokens
+                                                + ClaudeBusyConstants.postStopEventTokens).map(Optional.some))
+        #expect(tokens.count == 11, "vacuity: no marker plus ten phase tokens")
+        for event in ClaudeBusyConstants.questionToolEvents {
+            let priors = Self.questionRows.filter { $0.event == event }.map(\.prior)
+            #expect(priors.count == 11 && Set(priors) == tokens, "\(event): one row per prior state")
+        }
+        #expect(Self.questionRows.count == 22 && Set(Self.questionRows.map(\.id)).count == 22)
+    }
+
+    /// Every question event, through the shipped script: exit 0, nothing on
+    /// stdout, the row's marker outcome, and its one log line.
+    @Test(arguments: questionRows)
+    func questionEventTable(_ row: QuestionRow) {
+        withHome { home in
+            let session = Self.questionSession
+            let marker = markerDir(home).appendingPathComponent(session)
+            if let prior = row.prior { plantMarker(prior, at: marker) }
+            let planted = FileManager.default.contents(atPath: marker.path)
+            let result = runHook(json: toolJSON(row.event, session), home: home)
+            #expect(result.exitCode == 0, "\(row.id): the hook always exits 0")
+            #expect(result.stdout.isEmpty, "\(row.id): nothing reaches stdout")
+            switch row.outcome {
+            case .rewritten(let token):
+                let contents = waitForRewrite(marker, event: token)
+                let pattern = "^v1 ts=[0-9]+ event=\(token) pid=[0-9]+ src=unknown ep=[1-9][0-9]*\n$"
+                #expect(contents.range(of: pattern, options: .regularExpression) != nil,
+                        "\(row.id): marker \(String(reflecting: contents)) must be rewritten as event=\(token)")
+                #expect(ClaudeActivityPolicy.parseMarker(contents)?.event == token, "\(row.id): the Swift reader parses it")
+            case .spared:
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(planted != nil && FileManager.default.contents(atPath: marker.path) == planted,
+                        "\(row.id): the marker must be left byte-identical")
+            case .absent:
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(sessionShapedFiles(in: markerDir(home)).isEmpty, "\(row.id): no marker is created")
+            }
+            let lines = hookLog(home).split(separator: "\n").map(String.init)
+            #expect(lines.count == 1, "\(row.id): exactly one log line, got \(lines)")
+            if case .rewritten = row.outcome {
+                #expect(lines.count == 1 && lines[0].contains(row.logged) && lines[0].hasSuffix(" src=unknown"),
+                        "\(row.id): \(lines)")
+            } else {
+                #expect(lines.count == 1 && lines[0].hasSuffix(row.logged), "\(row.id): \(lines)")
+            }
+        }
+    }
+
+    /// Only a `tool_name` that is exactly AskUserQuestion counts. Another
+    /// tool, a near miss (case, whitespace, a newline, a CR, a NUL, a
+    /// prefix), a non-string or no field at all is ignored on both events:
+    /// the marker is left as it was (none is created), and the one log line
+    /// names the event but never the value.
+    @Test func onlyTheQuestionToolIsActedOn() {
+        let cases: [String?] = [
+            quoted("Bash"), quoted("askuserquestion"), quoted("AskUserQuestion "), quoted(" AskUserQuestion"),
+            quoted("AskUserQuestions"), quoted("mcp__x__AskUserQuestion"),
+            #""AskUserQuestion\n""#, #""AskUserQuestion\r""#, #""AskUser\u0000Question""#, #""AskUserQuestion\u0000""#,
+            nil, "42", "true", "null", #"["AskUserQuestion"]"#, #"{"AskUserQuestion":1}"#,
+        ]
+        let runs: [(event: String, prior: String?)] = [
+            ("PreToolUse", "UserPromptSubmit"), ("PreToolUse", nil), ("PostToolUse", "question"),
+            ("PostToolUse", "waiting-question"),
+        ]
+        for tool in cases {
+            for run in runs {
+                withHome { home in
+                    let session = "a9000003-0203-4abc-8def-000000000203"
+                    let marker = markerDir(home).appendingPathComponent(session)
+                    if let prior = run.prior { plantMarker(prior, at: marker) }
+                    let planted = FileManager.default.contents(atPath: marker.path)
+                    let label = "\(run.event) over \(run.prior ?? "no marker"), tool_name \(tool ?? "absent")"
+                    let result = runHook(json: toolJSON(run.event, session, tool: tool), home: home)
+                    #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(label)")
+                    Thread.sleep(forTimeInterval: 0.15)
+                    #expect(FileManager.default.contents(atPath: marker.path) == planted, "\(label): left as it was")
+                    let log = hookLog(home)
+                    #expect(log.split(separator: "\n").count == 1 && log.hasSuffix(" ignore reason=other-tool event=\(run.event)\n"),
+                            "\(label): \(String(reflecting: log))")
+                    #expect(!log.lowercased().contains("askuser") && !log.contains("Bash"), "\(label): the value is never logged")
+                }
+            }
+        }
+    }
+
+    /// A question event with a bad session id, or a payload the stdin gate
+    /// refuses (cut off mid-question), is ignored exactly like any other
+    /// event: exit 0, nothing on stdout, no marker.
+    @Test func aQuestionEventWithABadSessionOrBrokenJSONWritesNothing() {
+        for event in ClaudeBusyConstants.questionToolEvents {
+            withHome { home in
+                let result = runHook(json: toolJSON(event, "not-a-session"), home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(event)")
+                #expect(hookLog(home).hasSuffix(" ignore reason=bad-session event=\(event)\n"), "\(String(reflecting: hookLog(home)))")
+                let session = "a9000004-0204-4abc-8def-000000000204"
+                let cut = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","tool_name":"AskUserQuestion","tool_input":{"questions":["#
+                let broken = runHook(json: cut, home: home)
+                #expect(broken.exitCode == 0 && broken.stdout.isEmpty, "\(event)")
+                #expect(hookLog(home).hasSuffix(" ignore reason=stdin-not-json\n"), "\(String(reflecting: hookLog(home)))")
+                Thread.sleep(forTimeInterval: 0.15)
+                #expect(sessionShapedFiles(in: markerDir(home)).isEmpty, "\(event): no marker")
+            }
+        }
+    }
+
+    /// The question probe never trusts the marker: a token that only looks
+    /// like a question token (longer, shorter, NUL- or CR-spliced, on line
+    /// two, past the first 256 bytes, under another version) reads as no
+    /// question, so PostToolUse leaves the file untouched. A question token
+    /// inside the first 256 bytes is still read.
+    @Test func theQuestionProbeNeverTrustsTheMarker() {
+        let pad = String(repeating: "0", count: 300)
+        let cases: [(name: String, bytes: [UInt8])] = [
+            ("a longer token", Array("v1 ts=1 event=questions pid=1 src=x\n".utf8)),
+            ("a shorter token", Array("v1 ts=1 event=quest pid=1 src=x\n".utf8)),
+            ("a NUL-spliced token", Array("v1 ts=1 event=ques".utf8) + [0] + Array("tion pid=1 src=x\n".utf8)),
+            ("a CR in the token", Array("v1 ts=1 event=waiting-question\r pid=1 src=x\n".utf8)),
+            ("the token on line two", Array("v1 ts=1\nevent=question pid=1 src=x\n".utf8)),
+            ("another version", Array("v2 ts=1 event=question pid=1 src=x\n".utf8)),
+            ("the token past the first 256 bytes", Array("v1 ts=\(pad) event=question pid=1 src=x\n".utf8)),
+            ("garbage", Array("not a marker\n".utf8)),
+            ("empty", []),
+        ]
+        for (name, bytes) in cases {
+            withHome { home in
+                let session = "a9000005-0205-4abc-8def-000000000205"
+                let marker = markerDir(home).appendingPathComponent(session)
+                plantBytes(bytes, at: marker)
+                let result = runHook(json: toolJSON("PostToolUse", session), home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty, "\(name)")
+                Thread.sleep(forTimeInterval: 0.1)
+                #expect(FileManager.default.contents(atPath: marker.path) == Data(bytes), "\(name): left untouched")
+                #expect(hookLog(home).hasSuffix(" ignore reason=no-question session=\(session) event=PostToolUse\n"),
+                        "\(name): \(String(reflecting: hookLog(home)))")
+            }
+        }
+        withHome { home in
+            let session = "a9000005-0205-4abc-8def-000000000205"
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantBytes(Array("v1 ts=1 event=question pid=1 src=\(pad)\n".utf8), at: marker)
+            _ = runHook(json: toolJSON("PostToolUse", session), home: home)
+            #expect(waitForRewrite(marker, event: "Notification").contains("event=Notification "),
+                    "a token inside the first 256 bytes is read")
+        }
+    }
+
+    /// UX safety on the new read: a FIFO planted under the marker's name
+    /// never blocks PostToolUse (the probe reads regular files only).
+    @Test func aFifoAtTheMarkerPathNeverBlocksTheQuestionProbe() {
+        withHome { home in
+            let session = "a9000006-0206-4abc-8def-000000000206"
+            let marker = markerDir(home).appendingPathComponent(session)
+            try? FileManager.default.createDirectory(at: markerDir(home), withIntermediateDirectories: true)
+            #expect(mkfifo(marker.path, 0o600) == 0, "setup: FIFO created")
+            let unblocker = DispatchWorkItem {
+                let fd = open(marker.path, O_WRONLY | O_NONBLOCK)
+                if fd >= 0 { close(fd) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 4, execute: unblocker)
+            let started = Date()
+            let result = runHook(json: toolJSON("PostToolUse", session), home: home)
+            let elapsed = Date().timeIntervalSince(started)
+            unblocker.cancel()
+            #expect(result.exitCode == 0)
+            #expect(elapsed < 3, "the hook must return at once, took \(elapsed) s")
+            #expect(hookLog(home).hasSuffix(" ignore reason=no-question session=\(session) event=PostToolUse\n"))
+        }
+    }
+
+    /// A v8 marker (the six-field line hook v8 writes, a v8 token) takes the
+    /// question events like any other: PreToolUse in flight writes
+    /// `question` and keeps the episode start; after Stop, and on
+    /// PostToolUse (a v8 marker never holds a question token), the line is
+    /// left byte-identical.
+    @Test func aV8MarkerTakesTheQuestionEventsWithoutLosingItsEpisode() {
+        let v8Tokens = ["UserPromptSubmit", "Notification", "waiting",
+                        "Stop", "StopFailure", "SessionEnd", "SubagentStop", "waiting-after-stop"]
+        for token in v8Tokens {
+            for event in ClaudeBusyConstants.questionToolEvents {
+                withHome { home in
+                    let session = "a9000007-0207-4abc-8def-000000000207"
+                    let marker = markerDir(home).appendingPathComponent(session)
+                    let start = Int(Date().timeIntervalSince1970) - 600
+                    let line = plantedLine(token, ts: start, ep: String(start))
+                    plantBytes(line, at: marker)
+                    #expect(runHook(json: toolJSON(event, session), home: home).exitCode == 0)
+                    if event == "PreToolUse" && Self.phase(of: token) == "inflight" {
+                        let parsed = ClaudeActivityPolicy.parseMarker(waitForRewrite(marker, event: "question"))
+                        #expect(parsed?.event == "question" && parsed?.ep == String(start),
+                                "\(token) + \(event): question, the episode start carried over")
+                    } else {
+                        Thread.sleep(forTimeInterval: 0.15)
+                        #expect(FileManager.default.contents(atPath: marker.path) == Data(line),
+                                "\(token) + \(event): left byte-identical")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The AskUserQuestion payloads, carrying `text` pieces as the question,
+    /// its header, its options and the answer.
+    private func questionPayloads(_ session: String, _ text: [String]) -> (asked: String, answered: String) {
+        let j = Self.jsonString
+        let questions = #""questions":[{"question":\#(j(text[0])),"header":\#(j(text[1])),"#
+            + #""options":[{"label":\#(j(text[2])),"description":\#(j(text[3]))},"#
+            + #"{"label":\#(j(text[4])),"description":\#(j(text[5]))}],"multiSelect":false}]"#
+        let input = #""tool_input":{\#(questions)}"#
+        let response = #""tool_response":{\#(questions),"answers":{\#(j(text[0])):\#(j(text[2]))}}"#
+        let id = #""tool_use_id":"toolu_01ABC""#
+        return (toolJSON("PreToolUse", session, extra: [input, id]),
+                toolJSON("PostToolUse", session, extra: [input, response, id]))
+    }
+
+    /// End to end through the shipped script and the app policy: a question
+    /// is asked, waited on, answered, then a permission wait follows in the
+    /// same turn. The hook writes question → waiting-question → Notification
+    /// → waiting, and the two waits alert separately; only the first names
+    /// the question. Without the two question registrations (an install that
+    /// kept only the six earlier entries) the same turn writes `waiting`
+    /// twice: one alert with the plain wording, as before.
+    @Test func scenarioQ_aQuestionThenAPermissionWaitAlertSeparately() {
+        func bodies(_ tokens: [String], session: String) -> [String] {
+            let t = 1_800_000_000
+            var tracked = FinishAlertPolicy.baseline(current: [], now: t)
+            var out: [String] = []
+            for (index, token) in ([ClaudeBusyConstants.setEvent] + tokens).enumerated() {
+                let ts = t + index * 120
+                let observation = FinishAlertPolicy.observe(
+                    previous: tracked,
+                    current: [IdentifiedBusyMarker(sessionID: session,
+                                                   marker: BusyMarker(ts: ts, event: token, pid: 1, src: "unknown"))],
+                    now: ts + 1)
+                for event in observation.events {
+                    var digest = FinishAlertDigest()
+                    digest.fold(event, stillWorking: observation.stillWorking, at: Double(ts))
+                    out += digest.messages().map { LidGuardPolicy.messageBody(kind: $0, clockTime: "09:41") }
+                }
+                tracked = observation.tracked
+            }
+            return out
+        }
+        let text = ["Which build should ship?", "Build", "Debug", "Fast", "Release", "Signed"]
+        withHome { home in
+            let session = "a9000008-0208-4abc-8def-000000000208"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let payloads = questionPayloads(session, text)
+            let permission = notificationJSON(session, notificationType: quoted("permission_prompt"))
+            let steps: [(json: String, token: String)] = [
+                (payloads.asked, "question"), (permission, "waiting-question"),
+                (payloads.answered, "Notification"), (permission, "waiting"),
+            ]
+            var tokens: [String] = []
+            for step in steps {
+                let result = runHook(json: step.json, home: home)
+                #expect(result.exitCode == 0 && result.stdout.isEmpty)
+                tokens.append(ClaudeActivityPolicy.parseMarker(waitForMarkerEvent(marker, event: step.token))?.event ?? "?")
+            }
+            #expect(tokens == ["question", "waiting-question", "Notification", "waiting"])
+            #expect(bodies(tokens, session: session)
+                    == ["Claude is asking you a question — 4 min in", "Claude is waiting for you — 8 min in"])
+        }
+        withHome { home in
+            let session = "a9000009-0209-4abc-8def-000000000209"
+            primeMarker(session, home: home)
+            let marker = markerDir(home).appendingPathComponent(session)
+            let permission = notificationJSON(session, notificationType: quoted("permission_prompt"))
+            var tokens: [String] = []
+            for _ in 0..<2 {
+                _ = runHook(json: permission, home: home)
+                tokens.append(ClaudeActivityPolicy.parseMarker(waitForRewrite(marker, event: "waiting"))?.event ?? "?")
+            }
+            #expect(tokens == ["waiting", "waiting"])
+            #expect(bodies(tokens, session: session) == ["Claude is waiting for you — 2 min in"])
+        }
+    }
+
+    /// Privacy: nothing of a question — its text, header, options or the
+    /// answer, nor the waiting notification's message — is written anywhere.
+    /// Distinctive questions go through PreToolUse, the waiting Notification
+    /// and PostToolUse (and once a PreToolUse after Stop); afterwards no file
+    /// under the test HOME holds any 8-character piece of them, no name there
+    /// does, and no temp file is left.
+    @Test func aQuestionsTextIsNeverWrittenAnywhere() {
+        let d = Self.distinctive
+        let sets: [[String]] = [
+            ["Shall we \(d(20, 11)) the gizmo?", d(12, 12), d(16, 13), "Option \(d(24, 14))", d(10, 15), d(30, 16)],
+            ["全部 \(d(16, 21))？", d(9, 22), "\(d(14, 23)) 🚀", d(40, 24), d(8, 25), d(18, 26)],
+        ]
+        let notes = [d(28, 31), d(28, 32)]
+        withHome { home in
+            for (index, text) in sets.enumerated() {
+                let session = "a900001\(index)-0210-4abc-8def-000000000210"
+                let marker = markerDir(home).appendingPathComponent(session)
+                let payloads = questionPayloads(session, text)
+                let waiting = notificationJSON(session, notificationType: quoted("permission_prompt"))
+                    .replacingOccurrences(of: "}", with: #","message":\#(Self.jsonString(notes[index]))}"#)
+                primeMarker(session, home: home)
+                _ = runHook(json: payloads.asked, home: home)
+                #expect(waitForMarkerEvent(marker, event: "question").contains("event=question "))
+                _ = runHook(json: waiting, home: home)
+                #expect(waitForMarkerEvent(marker, event: "waiting-question").contains("event=waiting-question "))
+                _ = runHook(json: payloads.answered, home: home)
+                #expect(waitForMarkerEvent(marker, event: "Notification").contains("event=Notification "))
+                _ = runHook(json: eventJSON("Stop", session, backgroundTasks: Self.runningTask), home: home)
+                #expect(waitForMarkerEvent(marker, event: "Stop").contains("event=Stop "))
+                _ = runHook(json: payloads.asked, home: home)
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+            #expect(hookLog(home).components(separatedBy: "reason=question-answered").count == sets.count + 1,
+                    "non-vacuity: every question was answered through the hook")
+            let files = everyFile(under: home)
+            #expect(files.contains { $0.path.hasSuffix("/" + ClaudeBusyConstants.logFileName) }, "the walk sees hook.log")
+            let names = everyName(under: home)
+            var leaks: [String] = []
+            for text in sets.flatMap({ $0 }) + notes {
+                let characters = Array(text)
+                guard characters.count >= 8 else { continue }
+                for start in 0...(characters.count - 8) {
+                    let piece = String(characters[start..<(start + 8)])
+                    let bytes = Data(piece.utf8)
+                    for file in files where file.data.range(of: bytes) != nil {
+                        leaks.append("\(String(reflecting: piece)) in \(file.path)")
+                    }
+                    for name in names where Data(name.utf8).range(of: bytes) != nil {
+                        leaks.append("\(String(reflecting: piece)) in the name \(name)")
+                    }
+                }
+            }
+            #expect(leaks.isEmpty, "question text written to disk: \(leaks.prefix(5))")
+            let temp = ((try? FileManager.default.contentsOfDirectory(atPath: markerDir(home).path)) ?? [])
+                .filter { $0.hasPrefix(".payload.") || $0.hasPrefix(".marker.") }
+            #expect(temp.isEmpty, "no temp file is left: \(temp)")
+        }
+    }
+
+    /// Pure parity check (reusable for canaries): the shell's two question
+    /// tokens and tool name byte-match the Swift constants; main() handles
+    /// exactly the two tool events in one case arm; the tool probe compares
+    /// a whole, validated string with QUESTION_TOOL; the question probe reads
+    /// like marker_phase and matches exactly the two tokens; and on the
+    /// Swift side both tokens are in-flight, pass the marker-token check, and
+    /// are neither a hook event nor another waiting token.
+    static func questionParityFailures(
+        _ script: String,
+        question: String = ClaudeBusyConstants.questionEventToken,
+        waitingQuestion: String = ClaudeBusyConstants.waitingQuestionEventToken,
+        tool: String = ClaudeBusyConstants.questionToolName,
+        events: [String] = ClaudeBusyConstants.questionToolEvents,
+        inFlight: [String] = ClaudeBusyConstants.inFlightEventTokens
+    ) -> [String] {
+        var failures: [String] = []
+        let codeLines = script.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        for (name, value) in [("QUESTION_EVENT", question), ("WAITING_QUESTION_EVENT", waitingQuestion),
+                              ("QUESTION_TOOL", tool)] where !codeLines.contains("\(name)=\(value)") {
+            failures.append("\(name) must byte-match '\(value)'")
+        }
+        let arm = events.joined(separator: "|") + ")"
+        let main = functionBody("main", in: script)
+        if main.filter({ $0 == arm }).count != 1 { failures.append("main must handle '\(arm)' in exactly one case arm") }
+        if events.count != 2 || Set(events).count != 2 { failures.append("exactly two distinct question tool events") }
+        let probe = functionBody("question_tool", in: script)
+        for line in [#"t=$( (set -o pipefail; plutil -extract tool_name raw -expect string -o - "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#') && printf x ) || return 1"#,
+                     #"[ "$t" = "$QUESTION_TOOL${NL}x" ]"#] where !probe.contains(line) {
+            failures.append("question_tool must contain '\(line)'")
+        }
+        let reader = functionBody("marker_question", in: script)
+        for line in [#"[ -f "$1" ] || { printf no; return 0; }"#,
+                     #"line=$(head -c 256 "$1" 2>/dev/null | LC_ALL=C /usr/bin/tr '\000' '#')"#,
+                     #""$QUESTION_EVENT"|"$WAITING_QUESTION_EVENT") printf yes ;;"#] where !reader.contains(line) {
+            failures.append("marker_question must contain '\(line)'")
+        }
+        let tokenRegex = "^[A-Za-z-]{1,32}$"
+        for token in [question, waitingQuestion] {
+            if !inFlight.contains(token) { failures.append("'\(token)' must be IN-FLIGHT") }
+            if ClaudeBusyConstants.postStopEventTokens.contains(token) { failures.append("'\(token)' must not be POST-STOP") }
+            if token.range(of: tokenRegex, options: .regularExpression) == nil {
+                failures.append("'\(token)' can never pass the marker-token check")
+            }
+            if (ClaudeBusyConstants.allEvents + events).contains(token) {
+                failures.append("'\(token)' must not collide with a hook event name")
+            }
+            if [ClaudeBusyConstants.waitingEventToken, ClaudeBusyConstants.waitingAfterStopEventToken].contains(token) {
+                failures.append("'\(token)' must not be another waiting token")
+            }
+        }
+        if question == waitingQuestion { failures.append("the two question tokens must differ") }
+        return failures
+    }
+
+    @Test func questionTokensAndToolMatchSwiftConstants() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        #expect(Self.questionParityFailures(script).isEmpty, "\(Self.questionParityFailures(script))")
+        // The contract values.
+        #expect(ClaudeBusyConstants.questionEventToken == "question")
+        #expect(ClaudeBusyConstants.waitingQuestionEventToken == "waiting-question")
+        #expect(ClaudeBusyConstants.questionToolName == "AskUserQuestion")
+        #expect(ClaudeBusyConstants.questionToolEvents == ["PreToolUse", "PostToolUse"])
+        for token in [ClaudeBusyConstants.questionEventToken, ClaudeBusyConstants.waitingQuestionEventToken] {
+            #expect(ClaudeActivityPolicy.parseMarker("v1 ts=1 event=\(token) pid=1 src=unknown ep=1\n")?.event == token)
+        }
+    }
+
+    /// Canaries: a drift on either side fails the parity check.
+    @Test func questionParityCatchesADriftOnEitherSide() throws {
+        let script = try Self.read(Self.hookScriptURL)
+        try #require(Self.questionParityFailures(script).isEmpty, "canary baseline must be clean")
+        let shellMutants: [(String, String, String)] = [
+            ("shell question token", "QUESTION_EVENT=question\n", "QUESTION_EVENT=asking\n"),
+            ("shell waiting token", "WAITING_QUESTION_EVENT=waiting-question", "WAITING_QUESTION_EVENT=waiting"),
+            ("shell tool name", "QUESTION_TOOL=AskUserQuestion", "QUESTION_TOOL=AskUser"),
+            ("one tool event dropped", "    PreToolUse|PostToolUse)", "    PreToolUse)"),
+            ("tool probe loosened", #"[ "$t" = "$QUESTION_TOOL${NL}x" ]"#, #"[ -n "$t" ]"#),
+            ("tool probe takes any type", "plutil -extract tool_name raw -expect string -o -", "plutil -extract tool_name raw -o -"),
+            ("question probe reads a FIFO", #"  [ -f "$1" ] || { printf no; return 0; }"# + "\n", ""),
+            ("question probe matches one token", #""$QUESTION_EVENT"|"$WAITING_QUESTION_EVENT") printf yes ;;"#,
+             #""$QUESTION_EVENT") printf yes ;;"#),
+        ]
+        for (name, target, replacement) in shellMutants {
+            let mutant = script.replacingOccurrences(of: target, with: replacement)
+            #expect(mutant != script, "canary setup '\(name)'")
+            #expect(!Self.questionParityFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+        let inFlight = ClaudeBusyConstants.inFlightEventTokens
+        #expect(!Self.questionParityFailures(script, question: "asking").isEmpty, "Swift question token drift")
+        #expect(!Self.questionParityFailures(script, waitingQuestion: "waiting").isEmpty, "Swift waiting token drift")
+        #expect(!Self.questionParityFailures(script, tool: "AskUser").isEmpty, "Swift tool name drift")
+        #expect(!Self.questionParityFailures(script, events: ["PreToolUse"]).isEmpty, "Swift event list drift")
+        #expect(!Self.questionParityFailures(script, inFlight: inFlight.filter { $0 != "question" }).isEmpty,
+                "Swift in-flight list without the question token")
+    }
+
+    /// Runs `transform(shipped script)` from the test HOME and returns its URL.
+    private func mutantHook(_ home: URL, _ transform: (String) -> String) throws -> URL {
+        let original = try Self.read(Self.hookScriptURL)
+        let mutant = transform(original)
+        #expect(mutant != original, "canary setup: the mutated line must exist")
+        let url = home.appendingPathComponent("mutant-busy-hook.sh")
+        try mutant.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Canaries: neuter each new branch and the behaviour its rows pin
+    /// breaks — so those rows have teeth.
+    @Test func questionBranchCanaries() throws {
+        let session = "a9000020-0220-4abc-8def-000000000220"
+        let permission = notificationJSON(session, notificationType: quoted("permission_prompt"))
+        // A wait on a question without its line reads as a plain wait.
+        try withThrowingHome { home in
+            let url = try mutantHook(home) {
+                $0.replacingOccurrences(
+                    of: #"        [ "$phase" = inflight ] && [ "$(marker_question "$marker")" = yes ] && token=$WAITING_QUESTION_EVENT"# + "\n",
+                    with: "")
+            }
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("question", at: marker)
+            _ = runScript(url, json: permission, home: home)
+            #expect(waitForRewrite(marker, event: "waiting").contains("event=waiting "),
+                    "without the line a question wait is written as waiting")
+        }
+        // Without the post-Stop guard, PreToolUse after Stop writes `question`.
+        try withThrowingHome { home in
+            let url = try mutantHook(home) {
+                $0.replacingOccurrences(of: #"        if [ "$phase" = poststop ]; then"#, with: "        if false; then")
+            }
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("Stop", at: marker)
+            _ = runScript(url, json: toolJSON("PreToolUse", session), home: home)
+            #expect(waitForRewrite(marker, event: "question").contains("event=question "),
+                    "without the guard a post-Stop marker is rewritten")
+        }
+        // Without the tool check, any tool marks a question.
+        try withThrowingHome { home in
+            let url = try mutantHook(home) {
+                $0.replacingOccurrences(of: #"      if [ "$tool" != "$QUESTION_TOOL" ]; then"#, with: "      if false; then")
+            }
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("UserPromptSubmit", at: marker)
+            _ = runScript(url, json: toolJSON("PreToolUse", session, tool: quoted("Bash")), home: home)
+            #expect(waitForRewrite(marker, event: "question").contains("event=question "),
+                    "without the check another tool's PreToolUse writes question")
+        }
+        // Without the answered branch, the question stays after PostToolUse.
+        try withThrowingHome { home in
+            let url = try mutantHook(home) {
+                $0.replacingOccurrences(of: #"      elif [ "$(marker_question "$marker")" = yes ]; then"#, with: "      elif false; then")
+            }
+            let marker = markerDir(home).appendingPathComponent(session)
+            plantMarker("waiting-question", at: marker)
+            let planted = FileManager.default.contents(atPath: marker.path)
+            _ = runScript(url, json: toolJSON("PostToolUse", session), home: home)
+            Thread.sleep(forTimeInterval: 0.15)
+            #expect(planted != nil && FileManager.default.contents(atPath: marker.path) == planted,
+                    "without the branch an answered question is never ended")
+        }
+    }
+
     // MARK: - Installer registration is EXEC FORM only (no shell-form path)
 
     @Test func installerPrintsExecFormRegistration() throws {
@@ -3492,12 +4458,15 @@ struct ClaudeBusyHookScriptTests {
 
         // C1: the Notification entry has NO matcher (the hook needs every type
         // to tell waiting-on-user apart from idle), and no printed registration
-        // line carries one.
-        #expect(installer.contains(#""Notification": [ { "hooks": [ $EXEC_CMD ] } ]"#),
+        // line carries one — except (hook v9) the two question tool entries,
+        // whose AskUserQuestion matcher `onlyTheQuestionEntriesCarryTheMatcher`
+        // pins.
+        #expect(installer.contains(#""Notification": [ { "hooks": [ $EXEC_CMD ] } ],"#),
                 "the Notification entry is registered without a matcher")
         let registrationLines = installer.split(separator: "\n").filter { $0.contains("$EXEC_CMD ]") }
-        #expect(registrationLines.count == 6, "six printed registrations, found \(registrationLines.count)")
-        for line in registrationLines {
+        #expect(registrationLines.count == 8, "eight printed registrations, found \(registrationLines.count)")
+        for line in registrationLines
+        where !ClaudeBusyConstants.questionToolEvents.contains(Self.quotedNames(line).first ?? "") {
             #expect(!line.contains("matcher"), "printed registration must not carry a matcher: \(line)")
         }
         // ...and the UPDATE note tells earlier installs to drop the old matcher.

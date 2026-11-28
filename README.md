@@ -464,9 +464,10 @@ yourself, no `sudo`:
 ```
 
 It deletes `~/.claude/hooks/napcat-busy-hook.sh` and the marker directory, then
-prints the six NapCat entries to delete from `~/.claude/settings.json` by hand
+prints the eight NapCat entries to delete from `~/.claude/settings.json` by hand
 (`UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`,
-`Notification` — it never edits that file); restart Claude Code afterwards.
+`Notification`, and the `PreToolUse` and `PostToolUse` entries matched to
+`AskUserQuestion` — it never edits that file); restart Claude Code afterwards.
 If you registered the remote approvals channel server, run
 `./scripts/uninstall-channel.sh` as yourself too: it removes the `napcat`
 registration from Claude Code, but only if it runs the NapCat channel server
@@ -558,7 +559,13 @@ work is still running, the hook looks at the last 400 bytes of Claude's final
 message, on the Mac, to judge whether the turn ended with a question, and logs
 one word for it (`asks`, `no`, `absent` or `unreadable`). It keeps none of the
 text, and nothing acts on that word yet. On every other event, and when a turn
-ends with nothing left running, it does not look at the message.
+ends with nothing left running, it does not look at the message. Since hook
+version 9, the two entries matched to `AskUserQuestion` (Claude Code's tool for
+asking you a question) hand the hook that question, its options and, once you
+answer, your answer. The hook copies them to the temporary file with the rest;
+of those two events it reads the event name, the session id and
+`background_tasks`, as it does for every event, and the tool's name. None of
+the question or the answer is kept, logged or sent.
 
 ### Install and register — BY HAND
 
@@ -568,8 +575,11 @@ ends with nothing left running, it does not look at the message.
 
 That copies the hook to the stable path `~/.claude/hooks/napcat-busy-hook.sh`
 (so `make clean` never removes it), creates the marker directory, and **prints**
-the exact registration to paste into `~/.claude/settings.json`. The installer
-never edits `settings.json` itself. Merge these six entries into your existing
+the exact registration to paste into `~/.claude/settings.json`. The new copy
+is written under a temporary name and checked with `bash -n`, then put in
+place of the old one in a single rename; a copy that does not parse is refused
+and the old one is kept. The installer
+never edits `settings.json` itself. Merge these eight entries into your existing
 `"hooks"` object (replace `<HOME>` with your home directory — the installer
 prints the absolute paths for you):
 
@@ -579,7 +589,9 @@ prints the absolute paths for you):
 "StopFailure":     [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SubagentStop":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
 "SessionEnd":      [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
-"Notification":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
+"Notification":    [ { "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"PreToolUse":      [ { "matcher": "AskUserQuestion", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ],
+"PostToolUse":     [ { "matcher": "AskUserQuestion", "hooks": [ {"type":"command","command":"/usr/bin/env","args":["-i","HOME=<HOME>","/bin/bash","<HOME>/.claude/hooks/napcat-busy-hook.sh"],"timeout":5} ] } ]
 ```
 
 The `SubagentStop` entry is what keeps NapCat showing **running** while a
@@ -587,9 +599,21 @@ background subagent is still working after the main turn ends (the
 orchestrator-plus-subagents workflow). The `Notification` entry has **no
 matcher**: the hook tells waiting-on-you notifications (a permission prompt, an
 MCP input request) apart from idle ones, keeping the session busy while Claude
-waits for you, so it needs to receive every notification type. **If you
-registered an earlier version of this hook**, add the `SubagentStop` entry,
-remove `"matcher":"idle_prompt",` from your `Notification` entry, re-run
+waits for you, so it needs to receive every notification type. The
+`PreToolUse` and `PostToolUse` entries are the opposite: each **keeps its
+`"matcher": "AskUserQuestion"`**, so the hook runs only around Claude Code's
+tool for asking you a question (see "Session alerts" below). Every path
+through the hook ends in exit 0 and it prints nothing, so it does not block or
+change the question. It runs before the question is shown and normally takes
+well under a second; the registration's 5-second timeout bounds it, and a
+hook that times out does not block the tool call. If the matcher is left off,
+the hook runs before and after every tool call instead: it still prints
+nothing, and for any other tool it changes nothing but adds a line to
+`hook.log`. If you already have `PreToolUse` or `PostToolUse` hooks, add the
+NapCat object to that array instead of a second key. **If you registered an
+earlier version of this hook**, add whichever of the `SubagentStop`,
+`PreToolUse` and `PostToolUse` entries you are missing, remove
+`"matcher":"idle_prompt",` from your `Notification` entry, re-run
 `./scripts/install-claude-busy-hook.sh` to refresh the installed script, and
 start a new Claude Code session so it loads. The installer prints the hook
 version it installed, and NapCat warns — in the menu and in **Settings ›
@@ -601,9 +625,11 @@ before bash starts; registering the bare script path (shell form) would let thos
 run attacker code before the hook's own safeguards ever execute. Paste it exactly.
 Hooks load at session start, so **open a new Claude Code session** afterward.
 
-The hook is written so a bug in it can never break your Claude Code session: it
-always exits 0, never prints to stdout, does its marker write in the background,
-and does nothing at all if a kill-switch flag is present.
+The hook is written to stay out of your Claude Code session's way: every path
+through it ends in exit 0, it never prints to stdout, it does its marker write
+in the background, and it does nothing at all if a kill-switch flag is present.
+A copy of the hook that was cut short stops at once, without reading the event
+or writing anything.
 
 ### Kill switch
 
@@ -629,7 +655,7 @@ While the flag exists the hook no-ops immediately.
 
 Removes the installed hook and the marker directory and prints which
 `settings.json` entries to delete. Like the installer, it never edits
-`settings.json`; delete the six NapCat entries yourself and restart Claude Code.
+`settings.json`; delete the eight NapCat entries yourself and restart Claude Code.
 
 ### Notify me if the Mac sleeps mid-task
 
@@ -747,7 +773,11 @@ session's marker until the main turn *and* every background subagent it started
 have ended, so the marker going away *is* the finish — NapCat pushes then.
 **Waiting:** when Claude stops mid-turn to wait for you (a permission prompt, an
 MCP input request, a usage-limit wait), the hook marks the session as waiting
-and NapCat pushes once for that wait.
+and NapCat pushes once for that wait. When the wait is a direct question
+(Claude Code's `AskUserQuestion` tool, with the two entries hook version 9
+registers), the push opens with "Claude is asking you a question" instead of
+"Claude is waiting for you"; the rest of it is the same. A push that stands for
+two or more waits keeps the plain wording.
 
 While armed, NapCat watches the marker folder with a file-system notification on
 that one folder — nothing polls, and with the toggle off the watcher does not
@@ -778,10 +808,13 @@ silences both pushes, and the row says so.
   or a wait that is over within about 2 seconds can be missed and push nothing.
 - **Finishes close together fold into one message** ("3 Claude sessions finished
   — none still working"), which also keeps the feed clear of ntfy's rate limit.
-- **One waiting push per turn**, unless the session stops or resumes in between.
+- **One waiting push per turn**, unless the session stops or resumes in between,
+  or you answer a direct question: a later wait in that turn pushes again.
 - **The message vocabulary is closed** — counts and minutes only; nothing from
   your session ever leaves the Mac. For example: "A Claude session finished
-  after 42 min — 1 still working", "Claude is waiting for you — 12 min in".
+  after 42 min — 1 still working", "Claude is waiting for you — 12 min in",
+  "Claude is asking you a question — 3 min in". A question push never carries
+  the question itself.
   While the Remote approvals preview is switched on, a waiting push may add how
   many permission prompts wired sessions just opened, and their tool kind from
   a fixed list ("— 1 Bash permission prompt") — never a command, a path or any
@@ -1020,6 +1053,19 @@ command, then delete
 - **Session alerts reveal when you work.** Every alert adds a little
   work-pattern metadata (when you start and stop) to your topic feed — the topic
   is the password, keep it private.
+- **The question wording is best-effort.** NapCat learns of a direct question
+  from the two hook events around Claude Code's `AskUserQuestion` tool. A
+  question you dismiss without answering leaves the session marked as asking
+  until another hook event replaces it (your next prompt or the end of the
+  turn at the latest), so a permission wait in between can be pushed as a
+  question. If you answer at the very moment the question's waiting
+  notification fires, that push can be lost, or the session can stay marked as
+  waiting on the question: the push may then still read as a question, and a
+  later wait in that turn may not push separately. Anything else that rewrites
+  the busy marker while a question is open (a subagent finishing, say) makes
+  its push use the plain wording. With a NapCat build older than hook version 9,
+  a question wait pushes nothing at all, so relaunch NapCat before you
+  reinstall the hook.
 - **A finish alert can come early with an older hook.** With a hook installed
   before the main-turn tracking above, a subagent finishing mid-turn can clear
   the busy marker early and trigger a premature finish alert; refresh the hook

@@ -7,7 +7,8 @@
 # What it does:
 #   1. copies claude-busy-hook.sh to the STABLE path
 #      ~/.claude/hooks/napcat-busy-hook.sh (NOT under dist/, so `make clean`
-#      never removes it) and chmods it 755;
+#      never removes it) and chmods it 755 — written under a temporary name,
+#      checked with `bash -n`, then renamed into place in one step;
 #   2. creates the marker directory 700 if absent;
 #   3. PRINTS the exact EXEC-FORM registration JSON to paste into
 #      ~/.claude/settings.json BY HAND. This installer NEVER edits settings.json.
@@ -54,7 +55,27 @@ fi
 EXEC_CMD='{"type":"command","command":"/usr/bin/env","args":["-i",'"$HOME_ARG_JSON"',"/bin/bash",'"$HOOK_DEST_JSON"'],"timeout":5}'
 
 mkdir -p "$HOOK_DIR" || { echo "error: could not create $HOOK_DIR" >&2; exit 1; }
-if ! /usr/bin/install -m 755 "$SRC" "$HOOK_DEST"; then
+# The new copy is written under a temporary name in the same folder, checked
+# with `bash -n`, then renamed over the old copy in one step: a Claude session
+# never runs a half-written hook, and a copy that does not parse never
+# replaces the one already installed.
+HOOK_TMP="$(/usr/bin/mktemp "$HOOK_DIR/.napcat-busy-hook.XXXXXX")" || {
+    echo "error: could not create a temporary file in $HOOK_DIR" >&2
+    exit 1
+}
+if ! /usr/bin/install -m 755 "$SRC" "$HOOK_TMP"; then
+    /bin/rm -f "$HOOK_TMP"
+    echo "error: could not install the hook to $HOOK_DEST" >&2
+    exit 1
+fi
+if ! /bin/bash -n "$HOOK_TMP" 2>/dev/null; then
+    /bin/rm -f "$HOOK_TMP"
+    echo "error: the copied hook does not parse as a bash script, so $HOOK_DEST was left as it was." >&2
+    echo "       Check $SRC (a fresh checkout has an intact copy) and run this again." >&2
+    exit 1
+fi
+if ! /bin/mv -f "$HOOK_TMP" "$HOOK_DEST"; then
+    /bin/rm -f "$HOOK_TMP"
     echo "error: could not install the hook to $HOOK_DEST" >&2
     exit 1
 fi
@@ -68,7 +89,7 @@ echo "ready:     $MARKER_DIR (700)"
 
 cat <<JSON
 
-Add these six entries to the "hooks" object in ~/.claude/settings.json
+Add these eight entries to the "hooks" object in ~/.claude/settings.json
 (merge with any existing hooks; do not remove yours). Paste EXACTLY — the
 exec form (/usr/bin/env -i …) is a security requirement, not cosmetic:
 
@@ -77,9 +98,20 @@ exec form (/usr/bin/env -i …) is a security requirement, not cosmetic:
   "StopFailure": [ { "hooks": [ $EXEC_CMD ] } ],
   "SubagentStop": [ { "hooks": [ $EXEC_CMD ] } ],
   "SessionEnd": [ { "hooks": [ $EXEC_CMD ] } ],
-  "Notification": [ { "hooks": [ $EXEC_CMD ] } ]
+  "Notification": [ { "hooks": [ $EXEC_CMD ] } ],
+  "PreToolUse": [ { "matcher": "AskUserQuestion", "hooks": [ $EXEC_CMD ] } ],
+  "PostToolUse": [ { "matcher": "AskUserQuestion", "hooks": [ $EXEC_CMD ] } ]
+
+If you already have "PreToolUse" or "PostToolUse" entries, add the NapCat
+object to that array instead of a second key. Keep the "AskUserQuestion"
+matcher on both: the hook only needs that one tool.
 
 JSON
+echo "UPDATE: PreToolUse and PostToolUse are NEW in hook version 9. If you"
+echo "        registered an earlier NapCat hook, ADD both entries above, each with"
+echo "        its \"matcher\": \"AskUserQuestion\" — they let NapCat's waiting alert"
+echo "        say when Claude is asking you a direct question. They never block or"
+echo "        change the question. A NEW Claude Code session is needed to load them."
 
 echo "UPDATE: SubagentStop is NEW in this version. If you registered an earlier"
 echo "        NapCat hook, ADD the SubagentStop entry above — it keeps NapCat"

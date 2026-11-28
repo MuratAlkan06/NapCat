@@ -432,6 +432,88 @@ struct FinishAlertPolicyTests {
                         Step(m1(t + 360, "Notification"), now: t + 362),
                         Step(m1(t + 480, w), now: t + 482, [.waiting(minutes: 8)], waitingWrites: 1),
                      ]),
+        ] + questionScenarios
+    }()
+
+    /// Hook v9: a direct question. `question` (about to be asked) is in
+    /// flight but not waiting; `waiting-question` is a waiting token whose
+    /// transition counts a question. Row ids are LOCKED.
+    static let questionScenarios: [Scenario] = {
+        let t = Self.t0, ups = Self.ups, w = Self.waiting, was = ClaudeBusyConstants.waitingAfterStopEventToken
+        let q = ClaudeBusyConstants.questionEventToken, wq = ClaudeBusyConstants.waitingQuestionEventToken
+        return [
+            Scenario(id: "Q1", note: "UPS → question → waiting-question ⇒ one buzz, counted as a question",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 290, q), now: t + 292),
+                        Step(m1(t + 300, wq), now: t + 302, [.waiting(minutes: 5, questions: 1)], waitingWrites: 1),
+                        Step(m1(t + 400, wq), now: t + 402, waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q2", note: "an answered question (→ Notification) ends the episode; a later permission wait buzzes plainly",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 290, q), now: t + 292),
+                        Step(m1(t + 300, wq), now: t + 302, [.waiting(minutes: 5, questions: 1)], waitingWrites: 1),
+                        Step(m1(t + 360, "Notification"), now: t + 362),
+                        Step(m1(t + 480, w), now: t + 482, [.waiting(minutes: 8)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q3", note: "waiting-question → waiting seen directly (a write in between missed): one write, no second buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, wq), now: t + 302, [.waiting(minutes: 5, questions: 1)], waitingWrites: 1),
+                        Step(m1(t + 360, w), now: t + 362, waitingWrites: 1),
+                        Step(m1(t + 420, wq), now: t + 422, waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q4", note: "waiting → waiting-question seen directly: one write, no second, relabelled buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 360, wq), now: t + 362, waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q5", note: "question alone is never a wait: rewrites, then the finish",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, q), now: t + 302),
+                        Step(m1(t + 360, q), now: t + 362),
+                        Step([], now: t + 600, [.finished(minutes: 10)]),
+                     ]),
+            Scenario(id: "Q6", note: "waiting → question (a new question asked) ends the episode; its wait buzzes as a question",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, w), now: t + 302, [.waiting(minutes: 5)], waitingWrites: 1),
+                        Step(m1(t + 360, q), now: t + 362),
+                        Step(m1(t + 420, wq), now: t + 422, [.waiting(minutes: 7, questions: 1)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q7", note: "new id first seen as waiting-question, older ts ⇒ question buzz, minutes nil (inexact)",
+                     baseline: nil, steps: [
+                        Step(m1(t, wq), now: t + 600, [.waiting(minutes: nil, questions: 1)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q8", note: "already waiting on a question at arm time ⇒ no buzz for that episode",
+                     baseline: m1(t, wq), steps: [
+                        Step(m1(t + 300, wq), now: t + 302, waitingWrites: 1),
+                        Step(m1(t + 400, "Notification"), now: t + 402),
+                        Step(m1(t + 500, wq), now: t + 502, [.waiting(minutes: nil, questions: 1)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q9", note: "floor: a question wait 10 s in ⇒ suppressed; later rewrites never buzz the episode",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 5, q), now: t + 5),
+                        Step(m1(t + 10, wq), now: t + 10, suppressed: [.underMinimumRun], waitingWrites: 1),
+                        Step(m1(t + 100, wq), now: t + 100, waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q10", note: "question → Stop (kept for background work) → waiting-after-stop ⇒ a plain buzz",
+                     baseline: nil, steps: [
+                        Step(m1(t, ups), now: t + 2),
+                        Step(m1(t + 300, q), now: t + 302),
+                        Step(m1(t + 600, "Stop"), now: t + 602),
+                        Step(m1(t + 660, was), now: t + 662, [.waiting(minutes: 11)], waitingWrites: 1),
+                     ]),
+            Scenario(id: "Q11", note: "a question wait and a permission wait in one diff: one of each",
+                     baseline: nil, steps: [
+                        Step([marker(Self.s1, t, ups), marker(Self.s2, t, ups)], now: t + 2),
+                        Step([marker(Self.s1, t + 300, wq), marker(Self.s2, t + 300, w)], now: t + 302,
+                             [.waiting(minutes: 5, questions: 1), .waiting(minutes: 5)], waitingWrites: 2),
+                     ]),
         ]
     }()
 
@@ -588,14 +670,15 @@ struct FinishAlertPolicyTests {
         let s2Rows: [(kind: LidGuardMessageKind, expected: String)] =
             WaitingPromptContextTests.bodyRows.map { ($0.kind, $0.expected) }
         let trackCRows: [(kind: LidGuardMessageKind, expected: String)] =
-            LidGuardPolicyTests.needsAttentionRows.map { ($0.kind, $0.expected) }
+            (LidGuardPolicyTests.needsAttentionRows + LidGuardPolicyTests.questionRows).map { ($0.kind, $0.expected) }
         let rows: [(kind: LidGuardMessageKind, expected: String)] = s2Rows + trackCRows
         var checked = 0
         for row in rows {
-            guard case .needsAttention(let minutes, let stillWorking, let prompts) = row.kind else { continue }
+            guard case .needsAttention(let minutes, let stillWorking, let prompts, let questions) = row.kind else { continue }
             let left: WaitingPromptCounts = FinishAlertPolicy.promptsWithoutEvidence(prompts, withEvidence: .none)
             #expect(left == prompts, "\(row.expected)")
-            let rebuilt: LidGuardMessageKind = .needsAttention(minutes: minutes, stillWorking: stillWorking, prompts: left)
+            let rebuilt: LidGuardMessageKind = .needsAttention(minutes: minutes, stillWorking: stillWorking, prompts: left,
+                                                               questions: questions)
             #expect(LidGuardPolicy.messageBody(kind: rebuilt, clockTime: "09:41") == row.expected)
             checked += 1
         }
@@ -1187,7 +1270,8 @@ struct FinishAlertPolicyTests {
         #expect(observation.events == [.waiting(minutes: 25)])
     }
 
-    /// Ids are internal keys: every event payload leaf is an Int (or nil).
+    /// Ids are internal keys: every event payload leaf is an Int (or nil) —
+    /// minutes, and (hook v9) the waiting event's question count.
     @Test func eventsCarryOnlyIntMinutes() {
         func leaves(_ value: Any) -> [Any] {
             let mirror = Mirror(reflecting: value)
@@ -1197,14 +1281,15 @@ struct FinishAlertPolicyTests {
             return [value]
         }
         let events: [(event: FinishAlertEvent, leafCount: Int)] = [
-            (.finished(minutes: 3), 1), (.waiting(minutes: 7), 1),
-            (.finished(minutes: nil), 0), (.waiting(minutes: nil), 0),
+            (.finished(minutes: 3), 1), (.waiting(minutes: 7), 2),
+            (.finished(minutes: nil), 0), (.waiting(minutes: nil), 1),
+            (.waiting(minutes: 7, questions: 1), 2), (.waiting(minutes: nil, questions: 1), 1),
         ]
         for (event, leafCount) in events {
             let found = Mirror(reflecting: event).children.flatMap { leaves($0.value) }
             #expect(found.count == leafCount, "\(event): the payload walk must see every value (non-vacuous)")
             for leaf in found {
-                #expect(leaf is Int, "\(event): only Int minutes may ride in an event — never a session id")
+                #expect(leaf is Int, "\(event): only Int minutes and counts may ride in an event — never a session id")
             }
             switch event { case .finished, .waiting: break }   // closed: a new case must be added here
         }
@@ -1257,6 +1342,37 @@ struct FinishAlertPolicyTests {
         #expect(two.messages() == [.needsAttention(minutes: nil, stillWorking: 1)],
                 "two folded waits: minutes omitted (they differ per session)")
         #expect(two.firstWaitingMinutes == 12)
+    }
+
+    /// Hook v9: the buzz names a question only when it stands for exactly
+    /// one wait and that wait is a question; any other fold names none, so
+    /// its message is the one it was before.
+    @Test func onlyALoneQuestionWaitNamesTheQuestion() {
+        func messages(_ events: [FinishAlertEvent]) -> [LidGuardMessageKind] {
+            var digest = FinishAlertDigest()
+            for (index, event) in events.enumerated() { digest.fold(event, stillWorking: 2, at: Double(index)) }
+            return digest.messages()
+        }
+        #expect(messages([.waiting(minutes: 12, questions: 1)])
+                == [.needsAttention(minutes: 12, stillWorking: 1, questions: 1)])
+        #expect(messages([.waiting(minutes: nil, questions: 1)])
+                == [.needsAttention(minutes: nil, stillWorking: 1, questions: 1)])
+        #expect(messages([.waiting(minutes: 12, questions: 1), .waiting(minutes: 30)])
+                == [.needsAttention(minutes: nil, stillWorking: 1)], "a question folded with a plain wait")
+        #expect(messages([.waiting(minutes: 12), .waiting(minutes: 30, questions: 1)])
+                == [.needsAttention(minutes: nil, stillWorking: 1)], "a plain wait folded with a question")
+        #expect(messages([.waiting(minutes: 12, questions: 1), .waiting(minutes: 30, questions: 1)])
+                == [.needsAttention(minutes: nil, stillWorking: 1)], "two questions")
+        #expect(messages([.finished(minutes: 9), .waiting(minutes: 4, questions: 1)])
+                == [.needsAttention(minutes: 4, stillWorking: 1, questions: 1),
+                    .sessionFinished(minutes: 9, folded: 1, stillWorking: 2)], "waiting first, beside a finish")
+        #expect(messages([.waiting(minutes: 12, questions: 7)])
+                == [.needsAttention(minutes: 12, stillWorking: 1, questions: 1)], "one event is one question")
+        #expect(messages([.waiting(minutes: 12, questions: -1)]) == [.needsAttention(minutes: 12, stillWorking: 1)],
+                "a count below 1 is no question")
+        var digest = FinishAlertDigest()
+        digest.fold(.waiting(minutes: 12, questions: 1), stillWorking: 2, at: 0)
+        #expect(digest.waitingQuestions == 1 && digest.eventCount == 1, "a question is one waiting event")
     }
 
     // MARK: - S10: absorbing a queued message back after a 429
@@ -1317,6 +1433,15 @@ struct FinishAlertPolicyTests {
                   prior: [.finished(minutes: 9)],
                   kind: .connectionRestored(minutes: 14, deliveredLate: 1, dropped: 0, lidMissed: 0), at: 100,
                   expected: [.sessionFinished(minutes: 9, folded: 1, stillWorking: 5)], originatedAt: nil),
+        AbsorbRow(id: "A15 a question buzz re-enters as one question wait",
+                  prior: [], kind: .needsAttention(minutes: 12, stillWorking: 4, questions: 1), at: 100,
+                  expected: [.needsAttention(minutes: 12, stillWorking: 2, questions: 1)], originatedAt: 100),
+        AbsorbRow(id: "A16 joins a folded wait: two waits, the question no longer named",
+                  prior: [.waiting(minutes: 4)], kind: .needsAttention(minutes: 12, stillWorking: 1, questions: 1),
+                  at: 100, expected: [.needsAttention(minutes: nil, stillWorking: 2)], originatedAt: 100),
+        AbsorbRow(id: "A17 a plain buzz joins a folded question: two waits, none named",
+                  prior: [.waiting(minutes: 4, questions: 1)], kind: .needsAttention(minutes: 12, stillWorking: 1),
+                  at: 100, expected: [.needsAttention(minutes: nil, stillWorking: 2)], originatedAt: 100),
     ]
 
     @Test(arguments: absorbRows)
@@ -1345,6 +1470,10 @@ struct FinishAlertPolicyTests {
             [.waiting(minutes: 4), .waiting(minutes: 30)],
             [.finished(minutes: 9), .waiting(minutes: 4)],
             [.finished(minutes: 9), .finished(minutes: 3), .waiting(minutes: nil), .waiting(minutes: 1)],
+            [.waiting(minutes: 4, questions: 1)],
+            [.finished(minutes: 9), .waiting(minutes: nil, questions: 1)],
+            [.waiting(minutes: 4, questions: 1), .waiting(minutes: 30)],
+            [.waiting(minutes: 4, questions: 1), .waiting(minutes: 30, questions: 1)],
         ]
         for events in shapes {
             var original = FinishAlertDigest()

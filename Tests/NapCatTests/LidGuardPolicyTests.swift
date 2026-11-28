@@ -533,10 +533,12 @@ struct LidGuardPolicyTests {
             (.lidAlert(busySessionCount: 3), 1),
             (.sessionFinished(minutes: 42, folded: 2, stillWorking: 1), 3),
             (.sessionFinished(minutes: nil, folded: 1, stillWorking: 0), 2),
-            // F4 slice S2: + the five prompt counts (a struct of Ints).
-            (.needsAttention(minutes: 12, stillWorking: 1), 7),
-            (.needsAttention(minutes: nil, stillWorking: 0), 6),
-            (.needsAttention(minutes: 3, stillWorking: 0, prompts: WaitingPromptCounts(bash: 1, write: 2)), 7),
+            // F4 slice S2: + the five prompt counts (a struct of Ints);
+            // hook v9: + the question count.
+            (.needsAttention(minutes: 12, stillWorking: 1), 8),
+            (.needsAttention(minutes: nil, stillWorking: 0), 7),
+            (.needsAttention(minutes: 3, stillWorking: 0, prompts: WaitingPromptCounts(bash: 1, write: 2)), 8),
+            (.needsAttention(minutes: 3, stillWorking: 0, questions: 1), 8),
             (.connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 1), 4),
         ]
         for (kind, leafCount) in kinds {
@@ -560,6 +562,8 @@ struct LidGuardPolicyTests {
                 != .sessionFinished(minutes: nil, folded: 1, stillWorking: 0))
         #expect(LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 0)
                 != .needsAttention(minutes: 12, stillWorking: 1))
+        #expect(LidGuardMessageKind.needsAttention(minutes: 12, stillWorking: 0)
+                != .needsAttention(minutes: 12, stillWorking: 0, questions: 1))
         #expect(LidGuardMessageKind.connectionRestored(minutes: 14, deliveredLate: 2, dropped: 0, lidMissed: 1)
                 != .connectionRestored(minutes: 14, deliveredLate: 1, dropped: 1, lidMissed: 1))
     }
@@ -700,9 +704,63 @@ struct LidGuardPolicyTests {
                 expected: "Claude is waiting for you"),
     ]
 
-    @Test(arguments: sessionFinishedRows + needsAttentionRows)
+    /// Hook v9: a buzz that stands for one direct question. Only the opening
+    /// changes; the parts after it are the waiting body's, byte for byte. A
+    /// question count other than 1 is the plain waiting body.
+    static let questionRows: [BodyRow] = [
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0, questions: 1),
+                expected: "Claude is asking you a question — 12 min in"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 0, questions: 1),
+                expected: "Claude is asking you a question"),
+        BodyRow(kind: .needsAttention(minutes: 0, stillWorking: 0, questions: 1),
+                expected: "Claude is asking you a question"),
+        BodyRow(kind: .needsAttention(minutes: 42, stillWorking: 1, questions: 1),
+                expected: "Claude is asking you a question — 42 min in — 1 other still working"),
+        BodyRow(kind: .needsAttention(minutes: nil, stillWorking: 3, questions: 1),
+                expected: "Claude is asking you a question — 3 others still working"),
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 1, prompts: WaitingPromptCounts(bash: 2), questions: 1),
+                expected: "Claude is asking you a question — 12 min in — 2 Bash permission prompts — 1 other still working"),
+        BodyRow(kind: .needsAttention(minutes: -3, stillWorking: -1, questions: 1),
+                expected: "Claude is asking you a question"),
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0, questions: 0),
+                expected: "Claude is waiting for you — 12 min in"),
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0, questions: 2),
+                expected: "Claude is waiting for you — 12 min in"),
+        BodyRow(kind: .needsAttention(minutes: 12, stillWorking: 0, questions: -1),
+                expected: "Claude is waiting for you — 12 min in"),
+    ]
+
+    @Test(arguments: sessionFinishedRows + needsAttentionRows + questionRows)
     func trackCBodiesAreTheExactClosedVocabulary(row: BodyRow) {
         #expect(LidGuardPolicy.messageBody(kind: row.kind, clockTime: "22:49") == row.expected)
+    }
+
+    /// Hook v9 property sweep: with no question every waiting body is
+    /// exactly the one it was (an explicit 0 is the default), and with one
+    /// question it is that body with only the opening replaced.
+    @Test func aQuestionChangesOnlyTheOpeningOfTheWaitingBody() {
+        let generic = "Claude is waiting for you", question = "Claude is asking you a question"
+        let prompts: [WaitingPromptCounts] = [.none, WaitingPromptCounts(bash: 1), WaitingPromptCounts(write: 1, edit: 2)]
+        var checked = 0
+        for minutes in [nil, -1, 0, 1, 42] as [Int?] {
+            for stillWorking in [-1, 0, 1, 3] {
+                for counts in prompts {
+                    let before = LidGuardPolicy.messageBody(
+                        kind: .needsAttention(minutes: minutes, stillWorking: stillWorking, prompts: counts), clockTime: "22:49")
+                    let none = LidGuardPolicy.messageBody(
+                        kind: .needsAttention(minutes: minutes, stillWorking: stillWorking, prompts: counts, questions: 0),
+                        clockTime: "22:49")
+                    let one = LidGuardPolicy.messageBody(
+                        kind: .needsAttention(minutes: minutes, stillWorking: stillWorking, prompts: counts, questions: 1),
+                        clockTime: "22:49")
+                    #expect(none == before, "no question: byte-identical")
+                    #expect(before.hasPrefix(generic))
+                    #expect(one == question + before.dropFirst(generic.count), "\(one)")
+                    checked += 1
+                }
+            }
+        }
+        #expect(checked == 60, "vacuity: the whole grid is walked")
     }
 
     /// Property sweep over the whole folded × stillWorking × minutes grid: no

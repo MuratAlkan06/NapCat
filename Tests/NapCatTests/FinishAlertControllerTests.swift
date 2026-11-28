@@ -1098,7 +1098,7 @@ struct FinishAlertControllerTests {
     }
 
     /// With no floor, a wait 0 s into its run alerts — once: rewrites that
-    /// stay waiting (the other waiting token included) never alert again;
+    /// stay waiting (the other waiting tokens included) never alert again;
     /// a new session first seen already waiting alerts too. No minutes.
     @Test func immediatelyAWaitingEpisodeAlertsOnce() async throws {
         try await withFinishAlertHarness { h in
@@ -1111,7 +1111,8 @@ struct FinishAlertControllerTests {
             let kind = try #require(h.sends.first?.kind)
             #expect(LidGuardPolicy.messageBody(kind: kind, clockTime: "22:49") == "Claude is waiting for you")
 
-            for token in [H.waiting, ClaudeBusyConstants.waitingAfterStopEventToken] {
+            for token in [H.waiting, ClaudeBusyConstants.waitingAfterStopEventToken,
+                          ClaudeBusyConstants.waitingQuestionEventToken] {
                 h.advance(40)
                 h.store.put(H.s1, ts: h.now, event: token)
                 await h.settle()
@@ -1142,6 +1143,37 @@ struct FinishAlertControllerTests {
             await h.settle()
             #expect(h.sends.count == 1, "a rewrite that stays waiting never re-buzzes")
             #expect(h.scheduler.pending.isEmpty)
+        }
+    }
+
+    /// Hook v9: a direct question's wait goes out naming the question; once
+    /// it is answered (`Notification`), a later permission wait is a new
+    /// episode and goes out with the plain waiting body.
+    @Test func aQuestionWaitIsSentNamingTheQuestion() async throws {
+        try await withFinishAlertHarness { h in
+            h.store.put(H.s1, ts: H.t0 - 720)
+            h.store.put(H.s2, ts: H.t0 - 60)
+            h.controller.reconcile()
+            h.store.put(H.s1, ts: H.t0 - 10, event: ClaudeBusyConstants.questionEventToken)
+            await h.settle()
+            #expect(h.sends.isEmpty, "a question about to be asked is not a wait")
+            h.store.put(H.s1, ts: H.t0, event: ClaudeBusyConstants.waitingQuestionEventToken)
+            await h.settle()
+            #expect(h.sends.map(\.kind) == [.needsAttention(minutes: 12, stillWorking: 1, questions: 1)])
+            let question = try #require(h.sends.first?.kind)
+            #expect(LidGuardPolicy.messageBody(kind: question, clockTime: "22:49")
+                    == "Claude is asking you a question — 12 min in — 1 other still working")
+
+            h.advance(40)
+            h.store.put(H.s1, ts: h.now, event: "Notification")
+            await h.settle()
+            h.advance(40)
+            h.store.put(H.s1, ts: h.now, event: H.waiting)
+            await h.settle()
+            #expect(h.sends.dropFirst().map(\.kind) == [.needsAttention(minutes: 13, stillWorking: 1)])
+            let plain = try #require(h.sends.last?.kind)
+            #expect(LidGuardPolicy.messageBody(kind: plain, clockTime: "22:49")
+                    == "Claude is waiting for you — 13 min in — 1 other still working")
         }
     }
 
