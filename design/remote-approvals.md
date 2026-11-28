@@ -540,8 +540,8 @@ It builds controls only: nothing can be forwarded yet.
   and every push reads as before.
 - **Hardening.** An alert-topic item that exists reads as unreadable unless
   it holds a valid value, exactly the value the alerts are sent to, read
-  from the item itself at launch; a launch that could not finish moving the
-  topic into the keychain reads as unreadable; and
+  from the item itself at launch or saved to it since; a launch that could
+  not finish moving the topic into the keychain reads as unreadable; and
   then every prompt stays local. The host holds at most 64 servers and, per
   server, 64 of its 256 prompts; part of a frame left unfinished for 5
   seconds closes the link, and a server quiet for a minute with nothing
@@ -657,9 +657,9 @@ this section points at them.
     produces evidence, such a prompt must also block the drop for the
     10-second window.
   - An alert-topic item that exists reads as unreadable unless it holds a
-    valid value read from the item itself at launch, and so does a launch
-    that could not finish moving the topic into the keychain (#254; done,
-    see "The gate's order (#253)").
+    valid value read from the item itself at launch or saved to it since,
+    and so does a launch that could not finish moving the topic into the
+    keychain (#254; done, see "The gate's order (#253)").
   - A refused Unpair is remembered in memory only and only by the pane:
     the decision verifier reads the slot itself, so the key the owner
     asked to remove would still verify, during the run and after a
@@ -1491,9 +1491,9 @@ once.
   floor runs. The intake reads the lid guard's answer for the topic: an
   item that exists is unreadable unless it holds a valid value exactly as
   stored, the value the alerts are sent to, read from the item itself at
-  launch, and then that value is the one the gate is handed; a launch that
-  could not finish moving the topic into the keychain is unreadable; only
-  no item at all is absent (#254).
+  launch or saved to it since, and then that value is the one the gate is
+  handed; a launch that could not finish moving the topic into the keychain
+  is unreadable; only no item at all is absent (#254).
 - **Risky kinds.** Every forbidden family the row finds, and the relay's
   credential placeholder (the secrets kind), is noted, every one, not only
   the first. A prompt is forwarded only when the set admits its kind and
