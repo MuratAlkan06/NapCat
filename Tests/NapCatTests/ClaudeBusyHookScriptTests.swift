@@ -165,6 +165,154 @@ struct ClaudeBusyHookScriptTests {
         }
     }
 
+    // MARK: - The damaged-file guard (a copy cut short exits 0)
+
+    /// Line 3: until line 4 clears it, an EXIT trap ends the run in status 0.
+    static let guardTrapLine = #"trap exit\ 0 EXIT"#
+    /// Line 4: exit 0 at once unless the file's last line is the final
+    /// `exit 0`, then clear the trap.
+    static let guardCheckLine = #"[ "$(/usr/bin/tail -n 1 "$0" 2>/dev/null)" = "exit 0" ] || exit 0; trap - EXIT"#
+
+    /// Pure lint (reusable for canaries): the guard is lines 3 and 4,
+    /// verbatim (under the line-2 stamp, above every other line of code);
+    /// the file ends with the line `exit 0` and one newline, the line the
+    /// guard compares; and no other line begins with `exit 0`, so a cut can
+    /// never end on a line the guard would take for the last one.
+    static func damagedFileGuardFailures(_ script: String) -> [String] {
+        var failures: [String] = []
+        let lines = script.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if lines.count < 4 || lines[2] != guardTrapLine { failures.append("line 3 must be `\(guardTrapLine)`") }
+        if lines.count < 4 || lines[3] != guardCheckLine { failures.append("line 4 must be `\(guardCheckLine)`") }
+        if !script.hasSuffix("\nexit 0\n") {
+            failures.append("the file must end with the line `exit 0` and one newline")
+        }
+        let starts = lines.indices.filter { lines[$0].hasPrefix("exit 0") }
+        if starts != [lines.count - 2] {
+            failures.append("only the last line may begin with `exit 0`, found at lines \(starts.map { $0 + 1 })")
+        }
+        return failures
+    }
+
+    @Test func theDamagedFileGuardOpensTheScript() throws {
+        let failures = Self.damagedFileGuardFailures(try Self.read(Self.hookScriptURL))
+        #expect(failures.isEmpty, "\(failures)")
+    }
+
+    @Test func damagedFileGuardLintCatchesMutants() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        try #require(Self.damagedFileGuardFailures(original).isEmpty, "canary baseline must be clean")
+        let guardLines = Self.guardTrapLine + "\n" + Self.guardCheckLine + "\n"
+        let mutants: [(String, String)] = [
+            ("guard dropped", original.replacingOccurrences(of: guardLines, with: "")),
+            ("trap line dropped", original.replacingOccurrences(of: Self.guardTrapLine + "\n", with: "")),
+            ("trap never cleared", original.replacingOccurrences(of: "; trap - EXIT\n", with: "\n")),
+            ("guard moved below the header", original.replacingOccurrences(of: guardLines, with: "")
+                .replacingOccurrences(of: "\numask 077\n", with: "\n" + guardLines + "umask 077\n")),
+            ("a blank line after the final exit 0", original + "\n"),
+            ("a comment after the final exit 0", original + "# end\n"),
+            ("another line begins with exit 0", original.replacingOccurrences(of: "\nmain\nexit 0\n",
+                                                                              with: "\nexit 0 # early\nmain\nexit 0\n")),
+        ]
+        for (name, mutant) in mutants {
+            #expect(mutant != original, "canary setup '\(name)'")
+            #expect(!Self.damagedFileGuardFailures(mutant).isEmpty, "canary '\(name)' was NOT caught")
+        }
+    }
+
+    /// The byte offset where each line starts (line 1 at 0), and the size.
+    nonisolated static func lineStarts(_ bytes: [UInt8]) -> [Int] {
+        [0] + bytes.indices.filter { bytes[$0] == UInt8(ascii: "\n") && $0 + 1 < bytes.count }.map { $0 + 1 }
+    }
+
+    /// Where to cut the hook: offset 0 and every 500th byte; every byte of
+    /// line 4 (the quoted check); just before and just after a sample of
+    /// about 120 of the quote characters on code lines (a cut inside a
+    /// quoted region is where a syntax error is most likely); either side of
+    /// every line that closes a function; and every byte of the last two
+    /// lines short of the whole file (the file minus its final newline is
+    /// complete code). Sorted, without repeats; every point is short of the
+    /// whole file.
+    nonisolated static func damagedFileCutPoints(_ bytes: [UInt8]) -> [Int] {
+        let starts = lineStarts(bytes)
+        let size = bytes.count
+        var points = Set([0] + Array(stride(from: 500, to: size - 1, by: 500)))
+        if starts.count > 4 { points.formUnion(starts[3]...starts[4]) }
+        var quotes: [Int] = []
+        for (line, start) in starts.enumerated() {
+            let end = line + 1 < starts.count ? starts[line + 1] : size
+            let text = bytes[start..<end]
+            guard let first = text.first(where: { $0 != UInt8(ascii: " ") }), first != UInt8(ascii: "#") else { continue }
+            quotes += text.indices.filter { [UInt8(ascii: "\""), UInt8(ascii: "'"), UInt8(ascii: "`")].contains(bytes[$0]) }
+            if text.elementsEqual(Array("}\n".utf8)) { points.formUnion([start, start + 1]) }
+        }
+        let step = max(1, quotes.count / 120)
+        for index in stride(from: 0, to: quotes.count, by: step) { points.formUnion([quotes[index], quotes[index] + 1]) }
+        if starts.count > 2 { points.formUnion(starts[starts.count - 2]..<(size - 1)) }
+        return points.filter { $0 < size - 1 }.sorted()
+    }
+
+    /// A copy of the hook cut short (an interrupted copy, a full disk) does
+    /// nothing and gets in nobody's way: cut at every point above and run
+    /// with a PreToolUse payload for the question tool, it exits 0 with
+    /// nothing on stdout, and afterwards nothing at all was written under
+    /// the test HOME (no marker folder, no marker, no hook.log), since the
+    /// guard ends the run before any of it. Line 3 is run byte by byte too:
+    /// there a cut can still end in a non-zero status (the shell reports a
+    /// command or builtin cut mid-word), but never with output or a write.
+    @Test func aHookCutShortExitsZeroWritesNothingAndPrintsNothing() throws {
+        let bytes = Array(try Data(contentsOf: Self.hookScriptURL))
+        let starts = Self.lineStarts(bytes)
+        try #require(starts.count > 4, "the hook has more than four lines")
+        let trapLine = (starts[2] + 1)..<starts[3]    // cuts that leave line 3 partial
+        let points = Self.damagedFileCutPoints(bytes)
+        #expect(points.count >= 250 && points.contains(0) && points.contains(starts[3] + 10), "vacuity: \(points.count) cut points")
+        let json = toolJSON("PreToolUse", "a9000030-0230-4abc-8def-000000000230")
+        try withThrowingHome { home in
+            let cut = home.appendingPathComponent("cut-busy-hook.sh")
+            var failed: [String] = []
+            for point in points + Array(trapLine) {
+                try Data(bytes.prefix(point)).write(to: cut)
+                let result = runScript(cut, json: json, home: home)
+                let inTrapLine = trapLine.contains(point)
+                if (!inTrapLine && result.exitCode != 0) || !result.stdout.isEmpty {
+                    failed.append("cut at byte \(point): status \(result.exitCode), \(result.stdout.utf8.count) bytes on stdout")
+                }
+            }
+            #expect(failed.isEmpty, "\(failed.count) of \(points.count + trapLine.count) cut points failed: \(failed.prefix(10))")
+            let written = try FileManager.default.contentsOfDirectory(atPath: home.path)
+            #expect(written == [cut.lastPathComponent], "a cut copy must write nothing under HOME, found \(written)")
+        }
+    }
+
+    /// The first `points` cut of `script` (run in `home`) that exits 2, if any.
+    private func firstExitTwo(_ script: [UInt8], at points: [Int], home: URL) throws -> Int? {
+        let cut = home.appendingPathComponent("cut-busy-hook.sh")
+        let json = toolJSON("PreToolUse", "a9000031-0231-4abc-8def-000000000231")
+        for point in points {
+            try Data(script.prefix(point)).write(to: cut)
+            if runScript(cut, json: json, home: home).exitCode == 2 { return point }
+        }
+        return nil
+    }
+
+    /// Canaries: without the guard, the cut points above do exit 2 (the
+    /// status that blocks a tool call); with the check but without line 3's
+    /// trap, a cut inside the check line does. So the test above has teeth.
+    @Test func withoutTheGuardACutCopyExitsTwo() throws {
+        let original = try Self.read(Self.hookScriptURL)
+        let unguarded = original.replacingOccurrences(of: Self.guardTrapLine + "\n" + Self.guardCheckLine + "\n", with: "")
+        let untrapped = original.replacingOccurrences(of: Self.guardTrapLine + "\n", with: "")
+        #expect(unguarded != original && untrapped != original, "canary setup: the guard lines must exist")
+        try withThrowingHome { home in
+            let bytes = Array(unguarded.utf8)
+            let unguardedTwo = try firstExitTwo(bytes, at: Self.damagedFileCutPoints(bytes), home: home)
+            #expect(unguardedTwo != nil, "without the guard some cut point must exit 2")
+            let checkLine = Self.lineStarts(Array(untrapped.utf8))
+            let untrappedTwo = try firstExitTwo(Array(untrapped.utf8), at: Array((checkLine[2] + 1)..<checkLine[3]), home: home)
+            #expect(untrappedTwo != nil, "without the trap line a cut inside the check must exit 2")
+        }
+    }
+
     // MARK: - Behavioral run against the shipped script (no real Claude)
 
     private struct RunResult { let stdout: String; let exitCode: Int32 }
@@ -1266,8 +1414,14 @@ struct ClaudeBusyHookScriptTests {
         #expect(lines.contains(#"echo "installed: $HOOK_DEST (755, hook version ${HOOK_VERSION:-unknown})""#),
                 "the installer must print the version it installed")
         let extract = try #require(lines.firstIndex(of: extraction))
-        let install = try #require(lines.firstIndex { $0.hasPrefix(#"if ! /usr/bin/install -m 755 "$SRC" "$HOOK_DEST""#) })
-        #expect(install < extract, "the stamp is read from the copy just installed")
+        // The copy goes to a temporary name, is checked with `bash -n`, and
+        // is then renamed into place; the stamp is read after the rename.
+        let install = try #require(lines.firstIndex(of: #"if ! /usr/bin/install -m 755 "$SRC" "$HOOK_TMP"; then"#))
+        let check = try #require(lines.firstIndex(of: #"if ! /bin/bash -n "$HOOK_TMP" 2>/dev/null; then"#))
+        let rename = try #require(lines.firstIndex(of: #"if ! /bin/mv -f "$HOOK_TMP" "$HOOK_DEST"; then"#))
+        #expect(install < check && check < rename && rename < extract, "the stamp is read from the copy just installed")
+        #expect(!lines.contains { $0.contains("/usr/bin/install") && $0.contains("$HOOK_DEST") },
+                "the installed path is only ever written by the rename")
 
         let sed = Process()
         sed.executableURL = URL(fileURLWithPath: "/usr/bin/sed")
@@ -1278,6 +1432,108 @@ struct ClaudeBusyHookScriptTests {
         let printed = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         sed.waitUntilExit()
         #expect(printed == "\(ClaudeBusyConstants.hookVersion)\n", "the installer would print \(String(reflecting: printed))")
+    }
+
+    private struct InstallerRun { let status: Int32; let stdout: String; let stderr: String }
+
+    /// Runs a COPY of the installer (`installer`, the committed text unless
+    /// given) from `sandbox/scripts/`, next to `hook` as the source it
+    /// installs, with HOME = `sandbox/home`: everything it writes lands under
+    /// the sandbox, never in the real home.
+    private func runInstallerCopy(sandbox: URL, hook: Data, installer: String? = nil) throws -> InstallerRun {
+        let scripts = sandbox.appendingPathComponent("scripts")
+        let home = sandbox.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let copy = scripts.appendingPathComponent("install-claude-busy-hook.sh")
+        try Data((try installer ?? Self.read(Self.installerURL)).utf8).write(to: copy)
+        try hook.write(to: scripts.appendingPathComponent("claude-busy-hook.sh"))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [copy.path]
+        process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        let stdout = Pipe(), stderr = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        let out = stdout.fileHandleForReading.readDataToEndOfFile()
+        let err = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return InstallerRun(status: process.terminationStatus, stdout: String(decoding: out, as: UTF8.self),
+                            stderr: String(decoding: err, as: UTF8.self))
+    }
+
+    /// Whether `bash -n` accepts `script` (written to `url` first).
+    private func bashParses(_ script: Data, at url: URL) throws -> Bool {
+        try script.write(to: url)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-n", url.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    /// The hook cut 40 bytes into main()'s body: a copy that cannot parse.
+    private static func cutInsideMain(_ source: Data) throws -> Data {
+        let text = String(decoding: source, as: UTF8.self)
+        let body = try #require(text.range(of: "\nmain() {\n"), "the hook defines main()")
+        return Data(source.prefix(text.utf8.distance(from: text.utf8.startIndex, to: body.upperBound) + 40))
+    }
+
+    /// The installer, RUN (a copy, in a sandbox HOME): it installs the hook
+    /// byte for byte with mode 755 and leaves no temporary file; given a
+    /// source that does not parse (the hook cut inside main()), it exits 1
+    /// with an error saying so, prints no registration, removes its
+    /// temporary copy and leaves the installed copy exactly as it was.
+    @Test func theInstallerRefusesACopyThatDoesNotParse() throws {
+        let source = try Data(contentsOf: Self.hookScriptURL)
+        try withThrowingHome { sandbox in
+            let dest = sandbox.appendingPathComponent("home/" + ClaudeBusyConstants.installedHookRelativePath)
+            let hooks = dest.deletingLastPathComponent()
+            let fresh = try runInstallerCopy(sandbox: sandbox, hook: source)
+            #expect(fresh.status == 0, "\(fresh.stderr)")
+            #expect(FileManager.default.contents(atPath: dest.path) == source, "the installed copy is the source, byte for byte")
+            let mode = (try FileManager.default.attributesOfItem(atPath: dest.path)[.posixPermissions] as? NSNumber)?.intValue
+            #expect(mode == 0o755, "mode \(String(describing: mode.map { String($0, radix: 8) }))")
+            let afterInstall = try FileManager.default.contentsOfDirectory(atPath: hooks.path)
+            #expect(afterInstall == [dest.lastPathComponent], "no temporary file is left: \(afterInstall)")
+            #expect(fresh.stdout.contains("installed: \(dest.path) (755, hook version \(ClaudeBusyConstants.hookVersion))"))
+
+            let cut = try Self.cutInsideMain(source)
+            let cutParses = try bashParses(cut, at: sandbox.appendingPathComponent("cut.sh"))
+            try #require(!cutParses, "setup: the cut copy does not parse")
+            let refused = try runInstallerCopy(sandbox: sandbox, hook: cut)
+            #expect(refused.status == 1, "status \(refused.status)")
+            #expect(refused.stderr.contains("error: the copied hook does not parse as a bash script, so \(dest.path) was left as it was."),
+                    "\(refused.stderr)")
+            #expect(refused.stdout.isEmpty, "nothing is printed, no registration: \(refused.stdout.prefix(200))")
+            #expect(FileManager.default.contents(atPath: dest.path) == source, "the installed copy is left as it was")
+            let afterRefusal = try FileManager.default.contentsOfDirectory(atPath: hooks.path)
+            #expect(afterRefusal == [dest.lastPathComponent], "the temporary copy is removed: \(afterRefusal)")
+        }
+    }
+
+    /// Canary: without the parse check, the same cut copy replaces the
+    /// installed one — so the test above has teeth.
+    @Test func withoutTheParseCheckTheInstallerInstallsABrokenCopy() throws {
+        let source = try Data(contentsOf: Self.hookScriptURL)
+        let installer = try Self.read(Self.installerURL)
+        let check = #"if ! /bin/bash -n "$HOOK_TMP" 2>/dev/null; then"#
+        let mutant = installer.replacingOccurrences(of: check, with: "if false; then")
+        #expect(mutant != installer, "canary setup: the parse check must exist")
+        try withThrowingHome { sandbox in
+            let dest = sandbox.appendingPathComponent("home/" + ClaudeBusyConstants.installedHookRelativePath)
+            let fresh = try runInstallerCopy(sandbox: sandbox, hook: source, installer: mutant)
+            #expect(fresh.status == 0, "\(fresh.stderr)")
+            let cut = try Self.cutInsideMain(source)
+            let broken = try runInstallerCopy(sandbox: sandbox, hook: cut, installer: mutant)
+            #expect(broken.status == 0, "\(broken.stderr)")
+            #expect(FileManager.default.contents(atPath: dest.path) == cut, "without the check the cut copy is installed")
+        }
     }
 
     /// Hook v7: an app build older than this hook cannot read its markers,

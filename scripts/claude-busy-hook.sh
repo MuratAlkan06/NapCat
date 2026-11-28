@@ -1,5 +1,7 @@
 #!/bin/bash
 # napcat-hook-version: 9
+trap exit\ 0 EXIT
+[ "$(/usr/bin/tail -n 1 "$0" 2>/dev/null)" = "exit 0" ] || exit 0; trap - EXIT
 # NapCat "Claude is busy" companion hook (Track B, slices B1 + B3; Track C, C1;
 # B-2).
 #
@@ -7,7 +9,8 @@
 # of the INSTALLED copy and compares the stamp with the version it expects
 # (ClaudeBusyConstants.hookVersion, parity-linted), so the menu can say when
 # the installed copy is out of date. Keep it on line 2; bump it whenever this
-# script's behavior changes.
+# script's behavior changes. The two lines under it are the damaged-file
+# guard (see HARD UX-SAFETY LAYERS below); keep them on lines 3 and 4.
 #
 # Registered in ~/.claude/settings.json for eight entries (six events, plus
 # PreToolUse and PostToolUse matched to the AskUserQuestion tool — hook v9)
@@ -131,12 +134,22 @@
 #     with an unconditional `exit 0`, and there is no bare non-zero exit
 #     anywhere. A non-zero status (a value of 2 in particular) would BLOCK the
 #     user's prompt / force a turn to continue — impossible from here.
+#   * DAMAGED-FILE GUARD (lines 3 and 4, the first code that runs). A copy of
+#     this file cut short (an interrupted copy, a full disk) would stop at a
+#     syntax error, which bash reports as status 2. Line 4 compares the
+#     file's last line with the final `exit 0` and, when they differ, exits 0
+#     before anything else runs: no read of stdin, no write, no log. Line 3
+#     covers a cut inside line 4 itself: until line 4 clears it, an EXIT trap
+#     turns any status into 0. Only a cut inside line 3 can still end in
+#     another status (a word of it cut short), and it runs nothing else
+#     either. So the file must END with the line `exit 0`, and no other line
+#     may begin with it (lint-enforced).
 #   * STDOUT IS SILENCED before any logic runs (exec >/dev/null): Claude injects
 #     a command hook's stdout into the model context, so nothing here may print
 #     to stdout. Diagnostics go to a private hook.log, never stdout.
 #   * NO errexit is ever enabled; no network calls; no waiting/blocking.
-#   * Layer 6 KILL SWITCH: the FIRST action checks for a DISABLED flag and, if
-#     present, no-ops immediately.
+#   * Layer 6 KILL SWITCH: the first action after the damaged-file guard
+#     checks for a DISABLED flag and, if present, no-ops immediately.
 #   * Layer 4 FIRE-AND-FORGET: the marker write is backgrounded and atomic, so
 #     a stalled filesystem cannot delay the prompt; the script returns at once.
 #
@@ -220,9 +233,10 @@ RSQUO=$'\xe2\x80\x99'
 FW_RPAREN=$'\xef\xbc\x89'
 RCORNER=$'\xe3\x80\x8d'
 
-# Layer 6 — kill switch. FIRST action: if the user paused detection, do nothing
-# (no reads, no writes, no log) and succeed. Placed before every write in the
-# file so it can never be bypassed.
+# Layer 6 — kill switch. FIRST action after the damaged-file guard (which reads
+# only this file): if the user paused detection, do nothing (no reads, no
+# writes, no log) and succeed. Placed before every write in the file so it can
+# never be bypassed.
 if [ -e "$DISABLED_FLAG" ]; then
   exit 0
 fi
